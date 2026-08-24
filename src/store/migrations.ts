@@ -2,31 +2,35 @@ import type { Database } from "bun:sqlite";
 
 const migration1 = `
 CREATE TABLE weeks (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   goal TEXT NOT NULL,
   token_budget INTEGER NOT NULL CHECK(token_budget > 0),
   status TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 CREATE TABLE tasks (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   week_id TEXT NOT NULL REFERENCES weeks(id),
   title TEXT NOT NULL,
   spec_json TEXT NOT NULL,
   spec_path TEXT,
   spec_hash TEXT,
-  status TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN (
+    'draft', 'needs_input', 'needs_replan', 'ready', 'claimed', 'scouting',
+    'implementing', 'reviewing', 'done', 'rejected', 'failed_infra'
+  )),
   priority INTEGER NOT NULL CHECK(priority >= 0),
-  risk TEXT NOT NULL,
+  risk TEXT NOT NULL CHECK(risk IN ('low', 'medium', 'high')),
   token_ceiling INTEGER NOT NULL CHECK(token_ceiling > 0),
   approval_required INTEGER NOT NULL CHECK(approval_required IN (0, 1)),
   approved INTEGER NOT NULL CHECK(approved IN (0, 1)),
-  root_task_id TEXT,
-  parent_task_id TEXT,
-  discovered_from_review_id TEXT,
-  context_id TEXT,
+  root_task_id TEXT REFERENCES tasks(id) DEFERRABLE INITIALLY DEFERRED,
+  parent_task_id TEXT REFERENCES tasks(id) DEFERRABLE INITIALLY DEFERRED,
+  discovered_from_review_id TEXT REFERENCES reviews(id) DEFERRABLE INITIALLY DEFERRED,
+  context_id TEXT REFERENCES contexts(id) DEFERRABLE INITIALLY DEFERRED,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  UNIQUE(week_id, id)
 );
 CREATE TABLE task_deps (
   task_id TEXT NOT NULL REFERENCES tasks(id),
@@ -35,49 +39,53 @@ CREATE TABLE task_deps (
   PRIMARY KEY(task_id, depends_on_task_id, kind)
 );
 CREATE TABLE contexts (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   thread_id TEXT NOT NULL,
   anchor_id TEXT NOT NULL,
-  source_task_id TEXT NOT NULL,
-  parent_context_id TEXT,
+  source_task_id TEXT NOT NULL REFERENCES tasks(id) DEFERRABLE INITIALLY DEFERRED,
+  parent_context_id TEXT REFERENCES contexts(id) DEFERRABLE INITIALLY DEFERRED,
   git_commit TEXT NOT NULL,
   summary_artifact TEXT
 );
 CREATE TABLE attempts (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   task_id TEXT NOT NULL REFERENCES tasks(id),
-  role TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('scout', 'implement', 'review')),
   model TEXT NOT NULL,
   effort TEXT NOT NULL CHECK(effort IN ('medium', 'high', 'xhigh')),
-  status TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('running', 'succeeded', 'failed_infra')),
   thread_id TEXT,
   retry_index INTEGER NOT NULL CHECK(retry_index BETWEEN 0 AND 2),
   git_commit TEXT,
   started_at TEXT NOT NULL,
-  ended_at TEXT
+  ended_at TEXT,
+  UNIQUE(task_id, id)
 );
 CREATE TABLE reviews (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   task_id TEXT NOT NULL REFERENCES tasks(id),
-  attempt_id TEXT NOT NULL REFERENCES attempts(id),
+  attempt_id TEXT NOT NULL,
   decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected')),
-  findings_json TEXT NOT NULL
+  findings_json TEXT NOT NULL,
+  FOREIGN KEY(task_id, attempt_id) REFERENCES attempts(task_id, id)
+    DEFERRABLE INITIALLY DEFERRED
 );
 CREATE TABLE model_decisions (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   task_id TEXT NOT NULL REFERENCES tasks(id),
-  role TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('scout', 'implement', 'review')),
   model TEXT NOT NULL,
   effort TEXT NOT NULL CHECK(effort IN ('medium', 'high', 'xhigh')),
   token_budget INTEGER NOT NULL CHECK(token_budget > 0),
-  context_id TEXT,
+  context_id TEXT REFERENCES contexts(id) DEFERRABLE INITIALLY DEFERRED,
   fallback_models_json TEXT NOT NULL,
-  decided_by TEXT NOT NULL,
+  decided_by TEXT NOT NULL CHECK(decided_by IN ('rule', 'advisor-llm', 'fallback')),
   confidence REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
-  rationale_json TEXT NOT NULL
+  rationale_json TEXT NOT NULL,
+  UNIQUE(task_id, id)
 );
 CREATE TABLE usage (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY NOT NULL,
   week_id TEXT NOT NULL REFERENCES weeks(id),
   task_id TEXT REFERENCES tasks(id),
   attempt_id TEXT REFERENCES attempts(id),
@@ -87,7 +95,15 @@ CREATE TABLE usage (
   cached_input_tokens INTEGER NOT NULL CHECK(cached_input_tokens >= 0),
   output_tokens INTEGER NOT NULL CHECK(output_tokens >= 0),
   reasoning_output_tokens INTEGER NOT NULL CHECK(reasoning_output_tokens >= 0),
-  cost REAL
+  cost REAL CHECK(cost IS NULL OR cost >= 0),
+  CHECK(attempt_id IS NULL OR task_id IS NOT NULL),
+  CHECK(model_decision_id IS NULL OR task_id IS NOT NULL),
+  FOREIGN KEY(week_id, task_id) REFERENCES tasks(week_id, id)
+    DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY(task_id, attempt_id) REFERENCES attempts(task_id, id)
+    DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY(task_id, model_decision_id) REFERENCES model_decisions(task_id, id)
+    DEFERRABLE INITIALLY DEFERRED
 );
 CREATE TABLE events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,

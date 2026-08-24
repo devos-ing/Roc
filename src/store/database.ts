@@ -6,8 +6,13 @@ import { migrate } from "./migrations";
 export function openDatabase(path: string): Database {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path, { create: true, strict: true });
-  db.exec("PRAGMA foreign_keys = ON");
-  if (path !== ":memory:") db.exec("PRAGMA journal_mode = WAL");
-  migrate(db);
-  return db;
+  try {
+    db.exec("PRAGMA foreign_keys = ON");
+    if (path !== ":memory:") db.exec("PRAGMA journal_mode = WAL");
+    migrate(db);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
