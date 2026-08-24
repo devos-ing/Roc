@@ -109,10 +109,13 @@ CREATE TABLE events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   idempotency_key TEXT NOT NULL UNIQUE,
   task_id TEXT REFERENCES tasks(id),
-  attempt_id TEXT REFERENCES attempts(id),
+  attempt_id TEXT,
   type TEXT NOT NULL,
   payload_json TEXT NOT NULL,
-  occurred_at TEXT NOT NULL
+  occurred_at TEXT NOT NULL,
+  CHECK(attempt_id IS NULL OR task_id IS NOT NULL),
+  FOREIGN KEY(task_id, attempt_id) REFERENCES attempts(task_id, id)
+    DEFERRABLE INITIALLY DEFERRED
 );
 `;
 

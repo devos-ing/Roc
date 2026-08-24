@@ -231,6 +231,63 @@ test("reviews and usage preserve task and week attribution", () => {
   }
 });
 
+test("events reject attempts attributed to a different or missing task", () => {
+  const db = openDatabase(":memory:");
+  try {
+    db.exec(`
+      INSERT INTO weeks (id, goal, token_budget, status, created_at)
+      VALUES ('week-1', 'Ship foundation', 1000, 'active', 'now');
+      INSERT INTO tasks (
+        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        approval_required, approved, created_at, updated_at
+      ) VALUES
+        ('task-1', 'week-1', 'First', '{}', 'draft', 0, 'low', 100, 0, 0, 'now', 'now'),
+        ('task-2', 'week-1', 'Second', '{}', 'draft', 1, 'low', 100, 0, 0, 'now', 'now');
+      INSERT INTO attempts (
+        id, task_id, role, model, effort, status, retry_index, started_at
+      ) VALUES ('attempt-1', 'task-1', 'scout', 'gpt-5', 'high', 'running', 0, 'now');
+    `);
+
+    for (const sql of [
+      "INSERT INTO events (idempotency_key, task_id, attempt_id, type, payload_json, occurred_at) VALUES ('event-wrong-task', 'task-2', 'attempt-1', 'attempt.started', '{}', 'now')",
+      "INSERT INTO events (idempotency_key, attempt_id, type, payload_json, occurred_at) VALUES ('event-missing-task', 'attempt-1', 'attempt.started', '{}', 'now')",
+    ]) {
+      expect(() => db.exec(sql)).toThrow();
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test("events permit global, task-only, and correctly attributed attempt events", () => {
+  const db = openDatabase(":memory:");
+  try {
+    db.exec(`
+      INSERT INTO weeks (id, goal, token_budget, status, created_at)
+      VALUES ('week-1', 'Ship foundation', 1000, 'active', 'now');
+      INSERT INTO tasks (
+        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        approval_required, approved, created_at, updated_at
+      ) VALUES ('task-1', 'week-1', 'First', '{}', 'draft', 0, 'low', 100, 0, 0, 'now', 'now');
+      INSERT INTO attempts (
+        id, task_id, role, model, effort, status, retry_index, started_at
+      ) VALUES ('attempt-1', 'task-1', 'scout', 'gpt-5', 'high', 'running', 0, 'now');
+    `);
+
+    expect(() => db.exec(`
+      INSERT INTO events (idempotency_key, type, payload_json, occurred_at)
+      VALUES ('event-global', 'week.started', '{}', 'now');
+      INSERT INTO events (idempotency_key, task_id, type, payload_json, occurred_at)
+      VALUES ('event-task', 'task-1', 'task.created', '{}', 'now');
+      INSERT INTO events (idempotency_key, task_id, attempt_id, type, payload_json, occurred_at)
+      VALUES ('event-attempt', 'task-1', 'attempt-1', 'attempt.started', '{}', 'now');
+    `)).not.toThrow();
+    expect(db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM events").get()?.count).toBe(3);
+  } finally {
+    db.close();
+  }
+});
+
 test("database initialization closes its handle before rethrowing", () => {
   const directory = mkdtempSync(join(tmpdir(), "agile-agents-db-"));
   const path = join(directory, "future.sqlite");

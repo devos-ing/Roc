@@ -61,6 +61,36 @@ test("records the complete audit event for a valid transition", () => {
   }
 });
 
+test("treats an identical transition replay as a successful no-op", () => {
+  const { db, repo } = createRepository();
+  try {
+    createTask(repo, "F1");
+    repo.transitionTask("F1", "ready", "test:F1:ready");
+
+    expect(() => repo.transitionTask("F1", "ready", "test:F1:ready")).not.toThrow();
+    expect(repo.listTasks()).toMatchObject([{ id: "F1", status: "ready" }]);
+    expect(db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM events").get()?.count).toBe(1);
+  } finally {
+    db.close();
+  }
+});
+
+test("rejects conflicting reuse of a transition idempotency key", () => {
+  const { db, repo } = createRepository();
+  try {
+    createTask(repo, "F1");
+    repo.transitionTask("F1", "ready", "test:F1:transition");
+
+    expect(() => repo.transitionTask("F1", "claimed", "test:F1:transition")).toThrow(
+      "Idempotency key conflict: test:F1:transition",
+    );
+    expect(repo.listTasks()).toMatchObject([{ id: "F1", status: "ready" }]);
+    expect(db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM events").get()?.count).toBe(1);
+  } finally {
+    db.close();
+  }
+});
+
 test("rolls back a second task transition when its idempotency key already exists", () => {
   const { db, repo } = createRepository();
   try {

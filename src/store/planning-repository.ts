@@ -9,7 +9,7 @@ import {
   type TaskStatus,
   type WeeklyPlan,
 } from "../domain/schemas";
-import { assertTransition } from "../domain/transitions";
+import { assertTransition, canTransition } from "../domain/transitions";
 
 type TaskRow = {
   id: string;
@@ -23,6 +23,28 @@ type TaskRow = {
   approval_required: number;
   approved: number;
 };
+
+type StatusChangedEventRow = {
+  task_id: string | null;
+  type: string;
+  payload_json: string;
+};
+
+function parseStatusChangePayload(payloadJson: string): { from: TaskStatus; to: TaskStatus } | undefined {
+  try {
+    const payload: unknown = JSON.parse(payloadJson);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+    const keys = Object.keys(payload);
+    if (keys.length !== 2 || !keys.includes("from") || !keys.includes("to")) return undefined;
+    const values = payload as Record<string, unknown>;
+    return {
+      from: TaskStatusSchema.parse(values.from),
+      to: TaskStatusSchema.parse(values.to),
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 export class PlanningRepository {
   constructor(
@@ -94,6 +116,25 @@ export class PlanningRepository {
       ).get(taskId);
       if (!row) throw new Error(`Task not found: ${taskId}`);
       const from = TaskStatusSchema.parse(row.status);
+
+      const existingEvent = this.db.query<StatusChangedEventRow, [string]>(`
+        SELECT task_id, type, payload_json
+        FROM events WHERE idempotency_key = ?
+      `).get(eventKey);
+      if (existingEvent) {
+        const payload = parseStatusChangePayload(existingEvent.payload_json);
+        if (
+          existingEvent.task_id === taskId &&
+          existingEvent.type === "task.status_changed" &&
+          payload?.to === target &&
+          canTransition(payload.from, payload.to) &&
+          from === payload.to
+        ) {
+          return;
+        }
+        throw new Error(`Idempotency key conflict: ${eventKey}`);
+      }
+
       assertTransition(from, target);
       const now = this.now();
       this.db.query("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").run(target, now, taskId);

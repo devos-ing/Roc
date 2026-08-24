@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -158,5 +158,43 @@ test("rejects traversal and unsafe task IDs before creating artifact directories
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  }
+});
+
+test("rejects a symlinked ticket directory without writing outside the project", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-artifact-root-"));
+  const external = await mkdtemp(join(tmpdir(), "agile-artifact-external-"));
+  try {
+    await mkdir(join(root, ".agile"));
+    await writeFile(join(external, "sentinel.txt"), "unchanged");
+    await symlink(external, join(root, ".agile", "tickets"), "dir");
+
+    await expect(writeTicketArtifact(root, task)).rejects.toThrow(/symbolic link/);
+
+    expect(await readFile(join(external, "sentinel.txt"), "utf8")).toBe("unchanged");
+    expect(await pathExists(join(external, "F6.md"))).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
+  }
+});
+
+test("rejects a symlinked destination without changing its external target", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-artifact-root-"));
+  const external = await mkdtemp(join(tmpdir(), "agile-artifact-external-"));
+  const externalTarget = join(external, "outside.md");
+  const tickets = join(root, ".agile", "tickets");
+  try {
+    await mkdir(tickets, { recursive: true });
+    await writeFile(externalTarget, "unchanged");
+    await symlink(externalTarget, join(tickets, "F6.md"), "file");
+
+    await expect(writeTicketArtifact(root, task)).rejects.toThrow(/symbolic link/);
+
+    expect(await readFile(externalTarget, "utf8")).toBe("unchanged");
+    expect(await readdir(tickets)).toEqual(["F6.md"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
   }
 });
