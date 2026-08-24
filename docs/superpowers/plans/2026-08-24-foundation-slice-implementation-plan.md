@@ -33,7 +33,7 @@ test/store/planning-repository.test.ts repository transactions
 test/artifacts/writer.test.ts        artifact output and hashing
 ```
 
-### Task F1: Project scaffold and CLI help
+### Task 1: F1 — Project scaffold and CLI help
 
 **Execution profile:** Scout Luna + high; Implement Luna + high; Review Sol + high.
 
@@ -151,7 +151,7 @@ git add package.json bun.lock tsconfig.json src/cli/help.ts src/cli/main.ts test
 git commit -m "chore: scaffold Bun CLI"
 ```
 
-### Task F2: Domain and Zod contracts
+### Task 2: F2 — Domain and Zod contracts
 
 **Execution profile:** Scout Luna + high; Implement Terra + high; Review Sol + high.
 
@@ -325,7 +325,7 @@ git add src/domain/schemas.ts test/domain/schemas.test.ts
 git commit -m "feat: define orchestration domain contracts"
 ```
 
-### Task F3: Task-state transition function
+### Task 3: F3 — Task-state transition function
 
 **Execution profile:** Scout Luna + high; Implement Sol + xhigh; Review Sol + xhigh.
 
@@ -427,7 +427,7 @@ git add src/domain/transitions.ts test/domain/transitions.test.ts
 git commit -m "feat: enforce task state transitions"
 ```
 
-### Task F4: SQLite migration
+### Task 4: F4 — SQLite migration
 
 **Execution profile:** Scout Luna + high; Implement Sol + xhigh; Review Sol + xhigh.
 
@@ -622,7 +622,7 @@ git add src/store/migrations.ts src/store/database.ts test/store/database.test.t
 git commit -m "feat: add orchestration database schema"
 ```
 
-### Task F5: Planning repository and audit events
+### Task 5: F5 — Planning repository and audit events
 
 **Execution profile:** Scout Luna + high; Implement Terra + high; Review Sol + high.
 
@@ -801,7 +801,7 @@ git add src/store/planning-repository.ts test/store/planning-repository.test.ts
 git commit -m "feat: persist plans and audited task transitions"
 ```
 
-### Task F6: Markdown artifact writer
+### Task 6: F6 — Markdown artifact writer
 
 **Execution profile:** Scout Luna + high; Implement Luna + high; Review Sol + high.
 
@@ -927,7 +927,7 @@ git add src/artifacts/writer.ts test/artifacts/writer.test.ts
 git commit -m "feat: render versionable ticket artifacts"
 ```
 
-### Task F7: CLI init/list vertical slice
+### Task 7: F7 — CLI init/list vertical slice
 
 **Execution profile:** Scout Luna + high; Implement Terra + high; Review Sol + high.
 
