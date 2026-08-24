@@ -127,8 +127,7 @@ export class PlanningRepository {
           existingEvent.task_id === taskId &&
           existingEvent.type === "task.status_changed" &&
           payload?.to === target &&
-          canTransition(payload.from, payload.to) &&
-          from === payload.to
+          canTransition(payload.from, payload.to)
         ) {
           return;
         }

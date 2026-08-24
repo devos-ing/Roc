@@ -75,6 +75,21 @@ test("treats an identical transition replay as a successful no-op", () => {
   }
 });
 
+test("keeps later task progress when replaying an earlier successful transition", () => {
+  const { db, repo } = createRepository();
+  try {
+    createTask(repo, "F1");
+    repo.transitionTask("F1", "ready", "test:F1:ready");
+    repo.transitionTask("F1", "claimed", "test:F1:claimed");
+
+    expect(() => repo.transitionTask("F1", "ready", "test:F1:ready")).not.toThrow();
+    expect(repo.listTasks()).toMatchObject([{ id: "F1", status: "claimed" }]);
+    expect(db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM events").get()?.count).toBe(2);
+  } finally {
+    db.close();
+  }
+});
+
 test("rejects conflicting reuse of a transition idempotency key", () => {
   const { db, repo } = createRepository();
   try {
