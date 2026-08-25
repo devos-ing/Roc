@@ -18,7 +18,11 @@ import {
   type HarnessEvent,
   type HarnessStepRequest,
 } from "../harness/contracts";
-import { baselineRoute, retryRoute, type Route } from "../scheduler/model-routing";
+import {
+  createStaticModelAdvisor,
+  type ModelAdvisor,
+  type Route,
+} from "../scheduler/model-routing";
 
 export type IdFactory = (kind: "attempt" | "decision" | "event" | "review" | "task") => string;
 export type RepositoryFaultPoint = "after_event_insert" | "before_cursor_update";
@@ -150,6 +154,7 @@ export class OrchestrationRepository {
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly id: IdFactory = (kind) => `${kind}-${crypto.randomUUID()}`,
     private readonly fault: (point: RepositoryFaultPoint) => void = () => {},
+    private readonly advisor: ModelAdvisor = createStaticModelAdvisor(),
   ) {}
 
   claimNext(leaseOwnerId?: string): { taskId: string } | undefined {
@@ -295,11 +300,11 @@ export class OrchestrationRepository {
       const latestAttempt = this.db.query<{
         id: string;
         role: string;
-        model: string;
+        model_profile: string;
         status: string;
         retry_index: number;
       }, [string]>(`
-        SELECT id, role, model, status, retry_index FROM attempts
+        SELECT id, role, model_profile, status, retry_index FROM attempts
         WHERE task_id = ?
         ORDER BY rowid DESC
         LIMIT 1
@@ -312,7 +317,7 @@ export class OrchestrationRepository {
       if (role === "review") this.latestRoleOutput(row.id, "implement");
 
       let retryIndex: 0 | 1 | 2;
-      let route: Route;
+      let routeInput: Parameters<ModelAdvisor["decide"]>[0];
       if (latestAttempt?.status === "failed_infra") {
         const failure = this.db.query<{ error_code: string }, [string]>(`
           SELECT json_extract(payload_json, '$.code') AS error_code
@@ -325,13 +330,33 @@ export class OrchestrationRepository {
         const nextRetryIndex = latestAttempt.retry_index === 0 ? 1 : latestAttempt.retry_index === 1 ? 2 : undefined;
         if (nextRetryIndex === undefined) throw new Error(`Cannot retry exhausted ${role} attempt for task ${row.id}`);
         retryIndex = nextRetryIndex;
-        if (latestAttempt.model !== "luna" && latestAttempt.model !== "terra" && latestAttempt.model !== "sol") {
-          throw new Error(`Invalid prior model for retry: ${latestAttempt.model}`);
-        }
-        route = retryRoute(role, ticket.spec.risk, retryIndex, latestAttempt.model, failure.error_code);
+        routeInput = {
+          role,
+          risk: ticket.spec.risk,
+          retryIndex,
+          priorProfile: ModelProfileSchema.parse(latestAttempt.model_profile),
+          priorErrorCode: failure.error_code,
+        };
       } else {
         retryIndex = 0;
-        route = baselineRoute(role, ticket.spec.risk);
+        routeInput = { role, risk: ticket.spec.risk, retryIndex };
+      }
+      const route: Route | undefined = this.advisor.decide(routeInput);
+      if (route === undefined) {
+        assertTransition(from, "needs_replan");
+        const now = this.now();
+        this.db.query("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?")
+          .run("needs_replan", now, row.id);
+        this.db.query(`
+          INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+          VALUES(?, ?, 'task.needs_replan', ?, ?)
+        `).run(
+          this.id("event"),
+          row.id,
+          JSON.stringify({ reason: "no_compatible_model", role, effort: ticket.spec.risk === "high" ? "xhigh" : "high" }),
+          now,
+        );
+        return undefined;
       }
       const decisionId = this.id("decision");
       const attemptId = this.id("attempt");
@@ -346,7 +371,7 @@ export class OrchestrationRepository {
         row.id,
         role,
         route.model,
-        route.model,
+        route.profile,
         route.effort,
         ticket.spec.tokenCeiling,
         row.context_id,
@@ -357,7 +382,7 @@ export class OrchestrationRepository {
         INSERT INTO attempts(
           id, task_id, role, model, model_profile, effort, status, retry_index, started_at
         ) VALUES(?, ?, ?, ?, ?, ?, 'running', ?, ?)
-      `).run(attemptId, row.id, role, route.model, route.model, route.effort, retryIndex, now);
+      `).run(attemptId, row.id, role, route.model, route.profile, route.effort, retryIndex, now);
 
       if (from !== to) {
         assertTransition(from, to);
@@ -376,7 +401,7 @@ export class OrchestrationRepository {
         attemptId,
         JSON.stringify({
           role,
-          modelProfile: route.model,
+          modelProfile: route.profile,
           model: route.model,
           effort: route.effort,
           retryIndex,

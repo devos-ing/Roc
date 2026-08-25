@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HarnessEvent } from "../../src/harness/contracts";
 import { openDatabase } from "../../src/store/database";
+import { createModelAdvisor, createStaticModelAdvisor, type ModelAdvisor } from "../../src/scheduler/model-routing";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
 
@@ -41,6 +42,7 @@ function setup(
   path = ":memory:",
   fault: (point: "after_event_insert" | "before_cursor_update") => void = () => {},
   now: () => string = () => "2026-08-25T00:00:01.000Z",
+  advisor: ModelAdvisor = createStaticModelAdvisor(),
 ) {
   const db = openDatabase(path);
   const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
@@ -69,6 +71,7 @@ function setup(
     now,
     (kind) => `${kind}-${counters[kind] = (counters[kind] ?? 0) + 1}`,
     fault,
+    advisor,
   );
   return { db, repo, counters };
 }
@@ -268,6 +271,58 @@ test("skips a task with an unfinished dependency", () => {
   try {
     db.exec("INSERT INTO task_deps(task_id, depends_on_task_id, kind) VALUES ('T1', 'T2', 'blocks')");
     expect(repo.claimNext()).toEqual({ taskId: "T2" });
+  } finally {
+    db.close();
+  }
+});
+
+test("persists the advisor profile separately from its selected catalog model", () => {
+  const { db, repo } = setup(
+    ":memory:",
+    () => {},
+    () => "2026-08-25T00:00:01.000Z",
+    createModelAdvisor([
+      { id: "gpt-5.6-luna", supportedReasoningEfforts: ["high"] },
+      { id: "gpt-5.6-terra", supportedReasoningEfforts: ["high", "xhigh"] },
+      { id: "gpt-5.6-sol", supportedReasoningEfforts: ["high", "xhigh"] },
+    ]),
+  );
+  try {
+    expect(startScout(repo)).toBe("attempt-1");
+    expect(repo.inspect().tasks[0]).toMatchObject({
+      modelDecisions: [{
+        modelProfile: "luna",
+        model: "gpt-5.6-luna",
+        effort: "high",
+        fallbackModels: ["gpt-5.6-terra", "gpt-5.6-sol"],
+      }],
+      attempts: [{ modelProfile: "luna", model: "gpt-5.6-luna", effort: "high" }],
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test("replans without consuming attempt or decision IDs when no compatible model exists", () => {
+  const { db, repo, counters } = setup(
+    ":memory:",
+    () => {},
+    () => "2026-08-25T00:00:01.000Z",
+    createModelAdvisor([{ id: "gpt-5.6-luna", supportedReasoningEfforts: ["low"] }]),
+  );
+  try {
+    expect(repo.claimNext()).toEqual({ taskId: "T1" });
+    expect(repo.beginNextAttempt()).toBeUndefined();
+    expect(repo.inspectTask("T1")).toEqual({ id: "T1", status: "needs_replan" });
+    expect(repo.listAttempts("T1")).toEqual([]);
+    expect(counters.attempt).toBeUndefined();
+    expect(counters.decision).toBeUndefined();
+    expect(db.query<{ type: string; payload_json: string }, []>(`
+      SELECT type, payload_json FROM events WHERE task_id = 'T1' ORDER BY seq DESC LIMIT 1
+    `).get()).toEqual({
+      type: "task.needs_replan",
+      payload_json: JSON.stringify({ reason: "no_compatible_model", role: "scout", effort: "high" }),
+    });
   } finally {
     db.close();
   }
