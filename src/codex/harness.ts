@@ -202,6 +202,11 @@ export function createCodexHarness(input: {
   const now = input.now ?? (() => new Date().toISOString());
   const activeAttempts = new Map<string, ActiveAttempt>();
   const terminalAttempts = new Set<string>();
+  const policyInterruptedTurns = new Set<string>();
+
+  function turnSource(threadId: string, turnId: string): string {
+    return JSON.stringify([threadId, turnId]);
+  }
 
   function terminalize(active: ActiveAttempt): void {
     activeAttempts.delete(active.attemptId);
@@ -263,6 +268,9 @@ export function createCodexHarness(input: {
         threadId: existing.threadId,
         turnId: existing.turnId,
         usage: zeroUsage,
+        ...(existing.reviewStatusBefore === undefined
+          ? {}
+          : { reviewStatusBefore: existing.reviewStatusBefore }),
       };
       return delivery(cursor, {
         type: "attempt.started",
@@ -509,6 +517,7 @@ export function createCodexHarness(input: {
         } catch {
           // The policy block is authoritative even if the interrupted process exits first.
         }
+        policyInterruptedTurns.add(turnSource(active.threadId, active.turnId));
         terminalize(active);
         return delivery(withoutTerminalMarkers(cursor), {
           type: "attempt.blocked_policy",
@@ -709,6 +718,16 @@ export function createCodexHarness(input: {
             active.threadId,
             error,
           );
+        }
+        const interruptedSource = turnSource(
+          notification.params.threadId,
+          notification.params.turn.id,
+        );
+        if (
+          notification.params.turn.status === "interrupted" &&
+          policyInterruptedTurns.delete(interruptedSource)
+        ) {
+          continue;
         }
         sameSource(notification.params.threadId, notification.params.turn.id, active, request);
         if (notification.params.turn.status !== "completed") {

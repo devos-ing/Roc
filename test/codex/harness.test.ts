@@ -271,6 +271,13 @@ function completedTurn(threadId: string, turnId: string): ServerMessage {
   };
 }
 
+function interruptedTurn(threadId: string, turnId: string): ServerMessage {
+  return {
+    method: "turn/completed",
+    params: { threadId, turn: { id: turnId, status: "interrupted" } },
+  };
+}
+
 function completedReviewItem(
   threadId: string,
   turnId: string,
@@ -633,6 +640,96 @@ test("fails Review closed when the read-only turn mutates the worktree", async (
   expect(JSON.stringify(failed)).not.toContain('"type":"attempt.output"');
 });
 
+test("preserves the Review status baseline across start redispatch and reconciliation", async () => {
+  const baseline = " M preexisting-review-state.txt";
+  const reviewOutput = {
+    kind: "review" as const,
+    decision: "accepted" as const,
+    findings: [],
+    remainingGaps: [],
+  };
+  const worktrees = memoryWorktrees();
+  worktrees.status = async () => baseline;
+  const client = new RecordedCodexClient([], {
+    threadIds: ["thread-review-anchor"],
+  });
+  const harness = createCodexHarness({
+    client,
+    worktrees,
+    now: () => "2026-08-26T00:00:00.000Z",
+  });
+  const request: HarnessStepRequest = {
+    mode: "dispatch",
+    attempt: {
+      attemptId: "attempt-review-redispatch",
+      taskId: ticket.id,
+      role: "review",
+      retryIndex: 0,
+      modelProfile: "sol",
+      model: "gpt-5.6-sol",
+      effort: "xhigh",
+    },
+    input: {
+      role: "review",
+      ticket: { ...ticket, status: "reviewing" },
+      scout: scoutOutput,
+      implementation: {
+        kind: "implement",
+        commitSha: "b".repeat(40),
+        validation: ["bun test"],
+        risks: [],
+        limitations: [],
+      },
+    },
+  };
+
+  const first = await harness.step(request);
+  const redispatched = await harness.step(request);
+  if (first.kind !== "event" || redispatched.kind !== "event") {
+    throw new Error("Expected Review start deliveries");
+  }
+
+  expect(JSON.parse(first.nextCursor)).toMatchObject({ reviewStatusBefore: baseline });
+  expect(JSON.parse(redispatched.nextCursor)).toMatchObject({ reviewStatusBefore: baseline });
+
+  const reconcileClient = new RecordedCodexClient([], {
+    threadReads: [{
+      thread: {
+        id: "thread-review",
+        turns: [{
+          id: "turn-review",
+          status: "completed",
+          error: null,
+          completedAt: 1_777_000_000,
+          items: [{
+            type: "exitedReviewMode",
+            id: "item-review-recovered",
+            review: JSON.stringify(reviewOutput),
+          }],
+        }],
+      },
+    }],
+  });
+  const reconciled = await createCodexHarness({
+    client: reconcileClient,
+    worktrees,
+    now: () => "2026-08-26T00:00:00.000Z",
+  }).step({
+    ...request,
+    mode: "reconcile",
+    backendCursor: redispatched.nextCursor,
+  });
+
+  expect(reconciled).toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.output",
+      attemptId: "attempt-review-redispatch",
+      output: reviewOutput,
+    },
+  });
+});
+
 test("rejects an Implement output until its reported commit is verified", async () => {
   const commitSha = "b".repeat(40);
   const client = new RecordedCodexClient([
@@ -681,20 +778,25 @@ test("rejects an Implement output until its reported commit is verified", async 
   });
 });
 
-test("declines an Implement approval request, interrupts, and emits one policy block", async () => {
-  const client = new RecordedCodexClient([{
-    method: "item/commandExecution/requestApproval",
-    id: 91,
-    params: {
-      threadId: "thread-implement",
-      turnId: "turn-implement",
-      itemId: "command-1",
-      startedAtMs: 1_777_000_000_000,
-      environmentId: null,
+test("drains a policy-interrupted terminal before progressing the next fresh attempt", async () => {
+  const client = new RecordedCodexClient([
+    {
+      method: "item/commandExecution/requestApproval",
+      id: 91,
+      params: {
+        threadId: "thread-implement",
+        turnId: "turn-implement",
+        itemId: "command-1",
+        startedAtMs: 1_777_000_000_000,
+        environmentId: null,
+      },
     },
-  }], {
-    threadIds: ["thread-implement"],
-    turnIds: ["turn-implement"],
+    interruptedTurn("thread-implement", "turn-implement"),
+    completedItem("thread-scout-next", "turn-scout-next", "item-scout-next", scoutOutput),
+    completedTurn("thread-scout-next", "turn-scout-next"),
+  ], {
+    threadIds: ["thread-implement", "thread-scout-next", "thread-scout-third"],
+    turnIds: ["turn-implement", "turn-scout-next", "turn-scout-third"],
   });
   const harness = createCodexHarness({
     client,
@@ -722,6 +824,46 @@ test("declines an Implement approval request, interrupts, and emits one policy b
     "attempt-implement:turn-implement:blocked_policy:approval_required",
   );
   await expect(harness.cancel("attempt-implement")).resolves.toBeUndefined();
+
+  const nextRequest = makeScoutRequest("attempt-scout-next");
+  const nextStarted = await harness.step(nextRequest);
+  if (nextStarted.kind !== "event") {
+    throw new Error(`Unexpected ${nextStarted.kind} delivery`);
+  }
+  const nextOutput = await harness.step({
+    ...nextRequest,
+    backendCursor: nextStarted.nextCursor,
+  });
+  if (nextOutput.kind !== "event") throw new Error(`Unexpected ${nextOutput.kind} delivery`);
+  const nextCompleted = await harness.step({
+    ...nextRequest,
+    backendCursor: nextOutput.nextCursor,
+  });
+
+  expect(nextOutput.event).toMatchObject({
+    type: "attempt.output",
+    attemptId: "attempt-scout-next",
+    output: scoutOutput,
+  });
+  expect(nextCompleted).toMatchObject({
+    kind: "event",
+    event: { type: "attempt.completed", attemptId: "attempt-scout-next" },
+  });
+
+  client.enqueue(interruptedTurn("thread-unrelated", "turn-unrelated"));
+  const thirdRequest = makeScoutRequest("attempt-scout-third");
+  const thirdStarted = await harness.step(thirdRequest);
+  if (thirdStarted.kind !== "event") {
+    throw new Error(`Unexpected ${thirdStarted.kind} delivery`);
+  }
+  await expect(harness.step({
+    ...thirdRequest,
+    backendCursor: thirdStarted.nextCursor,
+  })).rejects.toMatchObject({
+    code: "codex_notification_identity_mismatch",
+    attemptId: "attempt-scout-third",
+    threadId: "thread-scout-third",
+  });
 });
 
 test("uses the exact fail-closed response for every supported server request", async () => {
