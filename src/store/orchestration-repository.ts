@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { z } from "zod";
+import { z } from "zod";
 import { ContextRefSchema, StoredTaskSchema, TaskStatusSchema, TicketSpecSchema } from "../domain/schemas";
 import { assertTransition } from "../domain/transitions";
 import {
@@ -20,6 +20,72 @@ export type RunningAttempt = {
   input: z.infer<typeof HarnessRoleInputSchema>;
   backendCursor?: string;
 };
+
+const NonEmpty = z.string().trim().min(1);
+const TokenTotalsSchema = z.object({
+  inputTokens: z.number().int().nonnegative(),
+  cachedInputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  reasoningOutputTokens: z.number().int().nonnegative(),
+}).strict();
+const InspectionModelDecisionSchema = z.object({
+  id: NonEmpty,
+  role: AgentRoleSchema,
+  model: NonEmpty,
+  effort: z.enum(["medium", "high", "xhigh"]),
+  tokenTarget: z.number().int().positive(),
+  fallbackModels: z.array(NonEmpty),
+  decidedBy: z.enum(["rule", "advisor-llm", "fallback"]),
+  confidence: z.number().min(0).max(1),
+  rationale: z.array(NonEmpty).min(1),
+}).strict();
+const InspectionRoleSchema = z.object({
+  role: AgentRoleSchema,
+  actual: TokenTotalsSchema,
+}).strict();
+const InspectionAttemptSchema = z.object({
+  id: NonEmpty,
+  role: AgentRoleSchema,
+  model: NonEmpty,
+  effort: z.enum(["medium", "high", "xhigh"]),
+  status: z.enum(["running", "succeeded", "failed_infra"]),
+  retryIndex: z.union([z.literal(0), z.literal(1), z.literal(2)]),
+  ...TokenTotalsSchema.shape,
+}).strict();
+const InspectionTaskSchema = z.object({
+  id: NonEmpty,
+  status: TaskStatusSchema,
+  priority: z.number().int().nonnegative(),
+  tokenTarget: z.number().int().positive(),
+  actual: TokenTotalsSchema,
+  contextRef: ContextRefSchema.optional(),
+  modelDecisions: z.array(InspectionModelDecisionSchema),
+  roles: z.array(InspectionRoleSchema),
+  attempts: z.array(InspectionAttemptSchema),
+}).strict();
+const InspectionSchedulerSchema = z.object({
+  activeTaskId: NonEmpty.optional(),
+  activeAttemptId: NonEmpty.optional(),
+}).strict();
+const InspectionWeekSchema = z.object({
+  id: z.string().regex(/^\d{4}-W\d{2}$/),
+  tokenTarget: z.number().int().positive(),
+  actual: TokenTotalsSchema,
+}).strict();
+const InspectionSnapshotSchema = z.object({
+  scheduler: InspectionSchedulerSchema,
+  weeks: z.array(InspectionWeekSchema),
+  tasks: z.array(InspectionTaskSchema),
+}).strict();
+
+export type TokenTotals = z.infer<typeof TokenTotalsSchema>;
+export type InspectionModelDecision = z.infer<typeof InspectionModelDecisionSchema>;
+export type InspectionRole = z.infer<typeof InspectionRoleSchema>;
+export type InspectionAttempt = z.infer<typeof InspectionAttemptSchema>;
+export type InspectionTask = z.infer<typeof InspectionTaskSchema>;
+export type InspectionScheduler = z.infer<typeof InspectionSchedulerSchema>;
+export type InspectionWeek = z.infer<typeof InspectionWeekSchema>;
+export type InspectionSnapshot = z.infer<typeof InspectionSnapshotSchema>;
 
 type TaskRow = {
   id: string;
@@ -353,6 +419,27 @@ export class OrchestrationRepository {
         if (event.output.kind === "implement") {
           this.db.query("UPDATE attempts SET git_commit = ? WHERE id = ?").run(event.output.commitSha, attemptId);
         }
+      } else if (event.type === "attempt.usage_delta") {
+        const inserted = this.db.query(`
+          INSERT INTO usage(
+            id, week_id, task_id, attempt_id, category,
+            input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens
+          )
+          SELECT
+            $eventId, task.week_id, task.id, attempt.id, attempt.role,
+            $inputTokens, $cachedInputTokens, $outputTokens, $reasoningOutputTokens
+          FROM attempts AS attempt
+          JOIN tasks AS task ON task.id = attempt.task_id
+          WHERE attempt.id = $attemptId
+        `).run({
+          eventId: event.eventId,
+          attemptId,
+          inputTokens: event.inputTokens,
+          cachedInputTokens: event.cachedInputTokens,
+          outputTokens: event.outputTokens,
+          reasoningOutputTokens: event.reasoningOutputTokens,
+        }).changes;
+        if (inserted !== 1) throw new Error(`Unable to record usage for attempt: ${attemptId}`);
       } else if (event.type === "attempt.completed") {
         const outputRow = this.db.query<{ payload_json: string }, [string, string]>(`
           SELECT payload_json FROM events
@@ -580,7 +667,7 @@ export class OrchestrationRepository {
           }
         }
       } else {
-        throw new Error(`Unsupported harness event in happy-path repository: ${event.type}`);
+        throw new Error("Unsupported harness event in happy-path repository");
       }
 
       this.fault("before_cursor_update");
@@ -623,6 +710,218 @@ export class OrchestrationRepository {
     return this.db.query<{ id: string; status: string }, [string]>(
       "SELECT id, status FROM tasks WHERE id = ?",
     ).get(taskId) ?? undefined;
+  }
+
+  inspect(): InspectionSnapshot {
+    const weeks = this.db.query<{
+      id: string;
+      token_target: number;
+      input_tokens: number;
+      cached_input_tokens: number;
+      output_tokens: number;
+      reasoning_output_tokens: number;
+    }, []>(`
+      SELECT
+        week.id,
+        week.token_budget AS token_target,
+        COALESCE(SUM(usage.input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(usage.cached_input_tokens), 0) AS cached_input_tokens,
+        COALESCE(SUM(usage.output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(usage.reasoning_output_tokens), 0) AS reasoning_output_tokens
+      FROM weeks AS week
+      LEFT JOIN usage ON usage.week_id = week.id
+      GROUP BY week.id, week.token_budget
+      ORDER BY week.id ASC
+    `).all().map((row) => ({
+      id: row.id,
+      tokenTarget: row.token_target,
+      actual: tokenTotals(row),
+    }));
+    const tasks = this.db.query<{
+      id: string;
+      status: string;
+      priority: number;
+      token_target: number;
+      context_id: string | null;
+      context_thread_id: string | null;
+      context_anchor_id: string | null;
+      context_source_task_id: string | null;
+      context_git_commit: string | null;
+      context_summary_artifact: string | null;
+      input_tokens: number;
+      cached_input_tokens: number;
+      output_tokens: number;
+      reasoning_output_tokens: number;
+    }, []>(`
+      SELECT
+        task.id,
+        task.status,
+        task.priority,
+        task.token_ceiling AS token_target,
+        task.context_id,
+        context.thread_id AS context_thread_id,
+        context.anchor_id AS context_anchor_id,
+        context.source_task_id AS context_source_task_id,
+        context.git_commit AS context_git_commit,
+        context.summary_artifact AS context_summary_artifact,
+        COALESCE(SUM(usage.input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(usage.cached_input_tokens), 0) AS cached_input_tokens,
+        COALESCE(SUM(usage.output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(usage.reasoning_output_tokens), 0) AS reasoning_output_tokens
+      FROM tasks AS task
+      LEFT JOIN contexts AS context ON context.id = task.context_id
+      LEFT JOIN usage ON usage.task_id = task.id
+      GROUP BY task.id
+      ORDER BY task.priority ASC, task.id ASC
+    `).all();
+    const roleRows = this.db.query<{
+      task_id: string;
+      role: string;
+      input_tokens: number;
+      cached_input_tokens: number;
+      output_tokens: number;
+      reasoning_output_tokens: number;
+    }, []>(`
+      SELECT
+        usage.task_id,
+        usage.category AS role,
+        COALESCE(SUM(usage.input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(usage.cached_input_tokens), 0) AS cached_input_tokens,
+        COALESCE(SUM(usage.output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(usage.reasoning_output_tokens), 0) AS reasoning_output_tokens
+      FROM usage
+      WHERE usage.task_id IS NOT NULL
+      GROUP BY usage.task_id, usage.category
+      ORDER BY usage.task_id ASC,
+        CASE usage.category WHEN 'scout' THEN 0 WHEN 'implement' THEN 1 ELSE 2 END ASC,
+        usage.category ASC
+    `).all();
+    const attempts = this.db.query<{
+      id: string;
+      task_id: string;
+      role: string;
+      model: string;
+      effort: string;
+      status: string;
+      retry_index: number;
+      input_tokens: number;
+      cached_input_tokens: number;
+      output_tokens: number;
+      reasoning_output_tokens: number;
+    }, []>(`
+      SELECT
+        attempt.id,
+        attempt.task_id,
+        attempt.role,
+        attempt.model,
+        attempt.effort,
+        attempt.status,
+        attempt.retry_index,
+        COALESCE(SUM(usage.input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(usage.cached_input_tokens), 0) AS cached_input_tokens,
+        COALESCE(SUM(usage.output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(usage.reasoning_output_tokens), 0) AS reasoning_output_tokens
+      FROM attempts AS attempt
+      LEFT JOIN usage ON usage.attempt_id = attempt.id
+      GROUP BY attempt.id
+      ORDER BY attempt.started_at ASC, attempt.id ASC
+    `).all();
+    const decisions = this.db.query<{
+      id: string;
+      task_id: string;
+      role: string;
+      model: string;
+      effort: string;
+      token_target: number;
+      fallback_models_json: string;
+      decided_by: string;
+      confidence: number;
+      rationale_json: string;
+    }, []>(`
+      SELECT
+        id, task_id, role, model, effort, token_budget AS token_target,
+        fallback_models_json, decided_by, confidence, rationale_json
+      FROM model_decisions
+      ORDER BY task_id ASC,
+        CASE role WHEN 'scout' THEN 0 WHEN 'implement' THEN 1 ELSE 2 END ASC,
+        id ASC
+    `).all();
+    const activeTask = this.db.query<{ id: string }, []>(`
+      SELECT id FROM tasks
+      WHERE status IN ('claimed', 'scouting', 'implementing', 'reviewing')
+      ORDER BY priority ASC, created_at ASC, id ASC
+      LIMIT 1
+    `).get();
+    const activeAttempt = this.db.query<{ id: string }, []>(`
+      SELECT id FROM attempts
+      WHERE status = 'running'
+      ORDER BY started_at ASC, id ASC
+      LIMIT 1
+    `).get();
+
+    const rolesByTask = new Map<string, InspectionRole[]>();
+    for (const row of roleRows) {
+      const roles = rolesByTask.get(row.task_id) ?? [];
+      roles.push(InspectionRoleSchema.parse({ role: row.role, actual: tokenTotals(row) }));
+      rolesByTask.set(row.task_id, roles);
+    }
+    const attemptsByTask = new Map<string, InspectionAttempt[]>();
+    for (const row of attempts) {
+      const taskAttempts = attemptsByTask.get(row.task_id) ?? [];
+      taskAttempts.push(InspectionAttemptSchema.parse({
+        id: row.id,
+        role: row.role,
+        model: row.model,
+        effort: row.effort,
+        status: row.status,
+        retryIndex: row.retry_index,
+        ...tokenTotals(row),
+      }));
+      attemptsByTask.set(row.task_id, taskAttempts);
+    }
+    const decisionsByTask = new Map<string, InspectionModelDecision[]>();
+    for (const row of decisions) {
+      const taskDecisions = decisionsByTask.get(row.task_id) ?? [];
+      taskDecisions.push(InspectionModelDecisionSchema.parse({
+        id: row.id,
+        role: row.role,
+        model: row.model,
+        effort: row.effort,
+        tokenTarget: row.token_target,
+        fallbackModels: JSON.parse(row.fallback_models_json),
+        decidedBy: row.decided_by,
+        confidence: row.confidence,
+        rationale: JSON.parse(row.rationale_json),
+      }));
+      decisionsByTask.set(row.task_id, taskDecisions);
+    }
+
+    return InspectionSnapshotSchema.parse({
+      scheduler: {
+        ...(activeTask == null ? {} : { activeTaskId: activeTask.id }),
+        ...(activeAttempt == null ? {} : { activeAttemptId: activeAttempt.id }),
+      },
+      weeks,
+      tasks: tasks.map((row) => InspectionTaskSchema.parse({
+        id: row.id,
+        status: row.status,
+        priority: row.priority,
+        tokenTarget: row.token_target,
+        actual: tokenTotals(row),
+        ...(row.context_id === null ? {} : {
+          contextRef: ContextRefSchema.parse({
+            threadId: row.context_thread_id,
+            anchorId: row.context_anchor_id,
+            sourceTaskId: row.context_source_task_id,
+            gitCommit: row.context_git_commit,
+            summaryArtifact: row.context_summary_artifact ?? undefined,
+          }),
+        }),
+        modelDecisions: decisionsByTask.get(row.id) ?? [],
+        roles: rolesByTask.get(row.id) ?? [],
+        attempts: attemptsByTask.get(row.id) ?? [],
+      })),
+    });
   }
 
   listTasksByRoot(rootTaskId: string): Array<{
@@ -693,4 +992,18 @@ export class OrchestrationRepository {
     }
     return event.output;
   }
+}
+
+function tokenTotals(row: {
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+}): TokenTotals {
+  return TokenTotalsSchema.parse({
+    inputTokens: row.input_tokens,
+    cachedInputTokens: row.cached_input_tokens,
+    outputTokens: row.output_tokens,
+    reasoningOutputTokens: row.reasoning_output_tokens,
+  });
 }

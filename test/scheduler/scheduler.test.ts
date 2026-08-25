@@ -51,6 +51,8 @@ function roleDeliveries(
   key: string,
   attemptId: string,
   output: Extract<HarnessEvent, { type: "attempt.output" }>["output"],
+  usage?: Pick<Extract<HarnessEvent, { type: "attempt.usage_delta" }>,
+    "inputTokens" | "cachedInputTokens" | "outputTokens" | "reasoningOutputTokens">,
 ) {
   return [
     {
@@ -64,25 +66,36 @@ function roleDeliveries(
         threadId: `thread-${key}`,
       },
     },
-    {
+    ...(usage === undefined ? [] : [{
       nextCursor: "2",
+      event: {
+        type: "attempt.usage_delta" as const,
+        eventId: `${key}:usage`,
+        attemptId,
+        sequence: 2,
+        occurredAt: "2026-08-25T00:00:03.000Z",
+        ...usage,
+      },
+    }]),
+    {
+      nextCursor: usage === undefined ? "2" : "3",
       event: {
         type: "attempt.output" as const,
         eventId: `${key}:output`,
         attemptId,
-        sequence: 2,
-        occurredAt: "2026-08-25T00:00:03.000Z",
+        sequence: usage === undefined ? 2 : 3,
+        occurredAt: usage === undefined ? "2026-08-25T00:00:03.000Z" : "2026-08-25T00:00:04.000Z",
         output,
       },
     },
     {
-      nextCursor: "3",
+      nextCursor: usage === undefined ? "3" : "4",
       event: {
         type: "attempt.completed" as const,
         eventId: `${key}:completed`,
         attemptId,
-        sequence: 3,
-        occurredAt: "2026-08-25T00:00:04.000Z",
+        sequence: usage === undefined ? 3 : 4,
+        occurredAt: usage === undefined ? "2026-08-25T00:00:04.000Z" : "2026-08-25T00:00:05.000Z",
       },
     },
   ];
@@ -177,9 +190,9 @@ function setupAcceptedTask(
     (kind) => `${kind}-${counters[kind] = (counters[kind] ?? 0) + 1}`,
   );
   const fake = createFakeHarness({ attempts: [
-    { taskId: "T1", role: "scout", retryIndex: 0, expect: { model: "luna", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("scout", "attempt-1", scoutOutput) },
-    { taskId: "T1", role: "implement", retryIndex: 0, expect: { model: "terra", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("implement", "attempt-2", implementOutput) },
-    { taskId: "T1", role: "review", retryIndex: 0, expect: { model: "sol", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("review", "attempt-3", finalReviewOutput) },
+    { taskId: "T1", role: "scout", retryIndex: 0, expect: { model: "luna", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("scout", "attempt-1", scoutOutput, { inputTokens: 10, cachedInputTokens: 2, outputTokens: 4, reasoningOutputTokens: 1 }) },
+    { taskId: "T1", role: "implement", retryIndex: 0, expect: { model: "terra", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("implement", "attempt-2", implementOutput, { inputTokens: 20, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 }) },
+    { taskId: "T1", role: "review", retryIndex: 0, expect: { model: "sol", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("review", "attempt-3", finalReviewOutput, { inputTokens: 5, cachedInputTokens: 1, outputTokens: 2, reasoningOutputTokens: 1 }) },
   ] });
   const requests: HarnessStepRequest[] = [];
   const harness: AgentHarness = {
@@ -213,6 +226,29 @@ test("runs Scout, Implement, and isolated Review to done", async () => {
     });
     expect(requests.every((request) => request.attempt.contextRef?.sourceTaskId === "C")).toBe(true);
     expect(JSON.stringify(reviewRequest)).not.toContain("thread-implement");
+    expect(repo.inspect()).toMatchObject({
+      weeks: [{
+        id: "2026-W34",
+        actual: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+      }, {
+        id: "2026-W35",
+        actual: { inputTokens: 35, cachedInputTokens: 7, outputTokens: 14, reasoningOutputTokens: 4 },
+      }],
+      tasks: [{ id: "C", roles: [], attempts: [] }, {
+        id: "T1",
+        actual: { inputTokens: 35, cachedInputTokens: 7, outputTokens: 14, reasoningOutputTokens: 4 },
+        roles: [
+          { role: "scout", actual: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 4, reasoningOutputTokens: 1 } },
+          { role: "implement", actual: { inputTokens: 20, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 } },
+          { role: "review", actual: { inputTokens: 5, cachedInputTokens: 1, outputTokens: 2, reasoningOutputTokens: 1 } },
+        ],
+        attempts: [
+          { id: "attempt-1", inputTokens: 10, cachedInputTokens: 2, outputTokens: 4, reasoningOutputTokens: 1 },
+          { id: "attempt-2", inputTokens: 20, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 },
+          { id: "attempt-3", inputTokens: 5, cachedInputTokens: 1, outputTokens: 2, reasoningOutputTokens: 1 },
+        ],
+      }],
+    });
     expect(() => fake.assertComplete()).not.toThrow();
   } finally {
     db.close();

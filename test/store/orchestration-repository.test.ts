@@ -73,6 +73,40 @@ function setup(
   return { db, repo, counters };
 }
 
+function setupInspect() {
+  const db = openDatabase(":memory:");
+  const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
+  planning.createWeek({
+    id: "2026-W35",
+    goal: "Inspect deterministic token usage",
+    nonGoals: [],
+    tokenBudget: 100_000,
+    ticketIds: ["T1"],
+  });
+  planning.createTask({
+    id: "T1",
+    weekId: "2026-W35",
+    title: "Inspect token usage",
+    spec: ticketSpec,
+    priority: 0,
+    approvalRequired: false,
+    approved: true,
+  });
+  planning.transitionTask("T1", "ready", "T1:ready");
+
+  const counters: Record<string, number> = {};
+  const repo = new OrchestrationRepository(
+    db,
+    () => "2026-08-25T00:00:01.000Z",
+    (kind) => `${kind}-${counters[kind] = (counters[kind] ?? 0) + 1}`,
+  );
+  const claimed = repo.claimNext();
+  if (!claimed) throw new Error("Expected T1 to be claimed");
+  const attempt = repo.beginNextAttempt();
+  if (!attempt || attempt.role !== "scout") throw new Error("Expected a Scout attempt");
+  return { db, repo, attemptId: attempt.attemptId };
+}
+
 function expectEventAbsent(db: Database, eventId: string): void {
   expect(db.query<{ count: number }, [string]>(`
     SELECT COUNT(*) AS count FROM events WHERE idempotency_key = ?
@@ -385,32 +419,102 @@ test("rolls back completion when the attempt has no matching output", () => {
   }
 });
 
-for (const unsupportedEvent of [{
-  type: "attempt.usage_delta" as const,
-  inputTokens: 10,
-  cachedInputTokens: 2,
-  outputTokens: 3,
-  reasoningOutputTokens: 1,
-}]) {
-  test(`rolls back unsupported ${unsupportedEvent.type}`, () => {
-    const { db, repo } = setup();
-    try {
-      const attemptId = startScout(repo);
-      expect(() => repo.applyHarnessEvent(attemptId, "cursor-unsupported", {
-        ...unsupportedEvent,
-        eventId: `scout:${unsupportedEvent.type}`,
-        attemptId,
-        sequence: 1,
-        occurredAt: "2026-08-25T00:00:02.000Z",
-      })).toThrow(`Unsupported harness event in happy-path repository: ${unsupportedEvent.type}`);
-      expectEventAbsent(db, `scout:${unsupportedEvent.type}`);
-      expect(repo.getRunningAttempt()?.backendCursor).toBeUndefined();
-      expect(repo.listAttempts("T1")).toMatchObject([{ role: "scout", status: "running" }]);
-    } finally {
-      db.close();
-    }
-  });
-}
+test("records each token delta once and inspects deterministic usage totals", () => {
+  const { db, repo, attemptId } = setupInspect();
+  try {
+    repo.applyHarnessEvent(attemptId, "1", {
+      type: "attempt.started",
+      eventId: "scout:started",
+      attemptId,
+      sequence: 1,
+      occurredAt: "2026-08-25T00:00:02.000Z",
+    });
+    const firstDelta = {
+      type: "attempt.usage_delta" as const,
+      eventId: "scout:usage-1",
+      attemptId,
+      sequence: 2,
+      occurredAt: "2026-08-25T00:00:03.000Z",
+      inputTokens: 10,
+      cachedInputTokens: 2,
+      outputTokens: 4,
+      reasoningOutputTokens: 1,
+    };
+    repo.applyHarnessEvent(attemptId, "2", firstDelta);
+    repo.applyHarnessEvent(attemptId, "3", firstDelta);
+    repo.applyHarnessEvent(attemptId, "4", {
+      type: "attempt.usage_delta",
+      eventId: "scout:usage-2",
+      attemptId,
+      sequence: 3,
+      occurredAt: "2026-08-25T00:00:04.000Z",
+      inputTokens: 5,
+      cachedInputTokens: 1,
+      outputTokens: 2,
+      reasoningOutputTokens: 1,
+    });
+
+    expect(repo.inspect()).toEqual({
+      scheduler: { activeTaskId: "T1", activeAttemptId: "attempt-1" },
+      weeks: [{
+        id: "2026-W35",
+        tokenTarget: 100_000,
+        actual: {
+          inputTokens: 15,
+          cachedInputTokens: 3,
+          outputTokens: 6,
+          reasoningOutputTokens: 2,
+        },
+      }],
+      tasks: [{
+        id: "T1",
+        status: "scouting",
+        priority: 0,
+        tokenTarget: 10_000,
+        actual: {
+          inputTokens: 15,
+          cachedInputTokens: 3,
+          outputTokens: 6,
+          reasoningOutputTokens: 2,
+        },
+        modelDecisions: [{
+          id: "decision-1",
+          role: "scout",
+          model: "luna",
+          effort: "high",
+          tokenTarget: 10_000,
+          fallbackModels: ["terra", "sol"],
+          decidedBy: "rule",
+          confidence: 1,
+          rationale: ["scout baseline", "medium risk"],
+        }],
+        roles: [{
+          role: "scout",
+          actual: {
+            inputTokens: 15,
+            cachedInputTokens: 3,
+            outputTokens: 6,
+            reasoningOutputTokens: 2,
+          },
+        }],
+        attempts: [{
+          id: "attempt-1",
+          role: "scout",
+          model: "luna",
+          effort: "high",
+          status: "running",
+          retryIndex: 0,
+          inputTokens: 15,
+          cachedInputTokens: 3,
+          outputTokens: 6,
+          reasoningOutputTokens: 2,
+        }],
+      }],
+    });
+  } finally {
+    db.close();
+  }
+});
 
 test("terminal infrastructure failure marks ready dependents for replanning", () => {
   const { db, repo } = setup();
