@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
@@ -77,7 +77,38 @@ test("commits dirty task changes once and reuses the sole clean task commit", as
     const workspace = await manager.prepare("T1");
     await writeFile(join(workspace.path, "answer.txt"), "42\n");
 
-    const firstCommit = await manager.commitChanges("T1");
+    const managerModule = new URL(
+      "../../src/workspace/task-worktree.ts",
+      import.meta.url,
+    ).href;
+    const commitProcess = Bun.spawn([
+      process.execPath,
+      "--eval",
+      [
+        `import { createTaskWorktreeManager } from ${JSON.stringify(managerModule)};`,
+        `const manager = await createTaskWorktreeManager(${JSON.stringify(root)}, "HEAD");`,
+        `await manager.commitChanges("T1");`,
+      ].join("\n"),
+    ], {
+      cwd: root,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Hostile Author",
+        GIT_AUTHOR_EMAIL: "hostile-author@example.test",
+        GIT_COMMITTER_NAME: "Hostile Committer",
+        GIT_COMMITTER_EMAIL: "hostile-committer@example.test",
+      },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const [commitExitCode, commitStderr] = await Promise.all([
+      commitProcess.exited,
+      new Response(commitProcess.stderr).text(),
+    ]);
+    if (commitExitCode !== 0) {
+      throw new Error(`trusted commit subprocess failed: ${commitStderr.trim()}`);
+    }
+    const firstCommit = (await git(["rev-parse", "HEAD"], workspace.path)).stdout.trim();
 
     expect(firstCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(await manager.status("T1")).toBe("");
@@ -89,10 +120,12 @@ test("commits dirty task changes once and reuses the sole clean task commit", as
     expect((await git([
       "show",
       "-s",
-      "--format=%an <%ae>%n%s",
+      "--format=%an <%ae>%n%cn <%ce>%n%s",
       firstCommit,
     ], root)).stdout.trim()).toBe(
-      "Agile Agents <agile-agents@local>\nagile(T1): implement ticket",
+      "Agile Agents <agile-agents@local>\n" +
+      "Agile Agents <agile-agents@local>\n" +
+      "agile(T1): implement ticket",
     );
 
     const replayedCommit = await manager.commitChanges("T1");
@@ -103,6 +136,30 @@ test("commits dirty task changes once and reuses the sole clean task commit", as
       "--count",
       `${workspace.baseCommit}..refs/heads/${workspace.branch}`,
     ], root)).stdout.trim()).toBe("1");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("does not run worktree-controlled Git hooks from the trusted commit", async () => {
+  const root = await createRepository();
+  try {
+    const manager = await createTaskWorktreeManager(root, "HEAD");
+    const workspace = await manager.prepare("T1");
+    const hooksPath = join(workspace.path, ".githooks");
+    const sentinel = join(root, "untrusted-hook-ran.txt");
+    await mkdir(hooksPath);
+    await writeFile(
+      join(hooksPath, "pre-commit"),
+      `#!/bin/sh\nprintf 'ran\\n' > ${JSON.stringify(sentinel)}\n`,
+    );
+    await chmod(join(hooksPath, "pre-commit"), 0o755);
+    await git(["config", "core.hooksPath", hooksPath], root);
+    await writeFile(join(workspace.path, "implementation.txt"), "implemented\n");
+
+    await manager.commitChanges("T1");
+
+    expect(await Bun.file(sentinel).exists()).toBe(false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

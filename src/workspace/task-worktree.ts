@@ -32,11 +32,16 @@ function isFileError(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
 }
 
-async function spawnGit(args: string[], cwd: string): Promise<GitResult> {
+async function spawnGit(
+  args: string[],
+  cwd: string,
+  env?: Record<string, string | undefined>,
+): Promise<GitResult> {
   const process = Bun.spawn(["git", ...args], {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
+    ...(env === undefined ? {} : { env }),
   });
   const [exitCode, stdout, stderr] = await Promise.all([
     process.exited,
@@ -46,8 +51,12 @@ async function spawnGit(args: string[], cwd: string): Promise<GitResult> {
   return { exitCode, stdout, stderr };
 }
 
-async function git(args: string[], cwd: string): Promise<GitResult> {
-  const result = await spawnGit(args, cwd);
+async function git(
+  args: string[],
+  cwd: string,
+  env?: Record<string, string | undefined>,
+): Promise<GitResult> {
+  const result = await spawnGit(args, cwd, env);
   if (result.exitCode !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim()}`);
   }
@@ -268,15 +277,27 @@ export async function createTaskWorktreeManager(
           throw new Error(`Task worktree has no uncommitted changes: ${candidate.path}`);
         }
         await git(["add", "-A"], candidate.path);
-        await git([
-          "-c",
-          "user.name=Agile Agents",
-          "-c",
-          "user.email=agile-agents@local",
-          "commit",
-          "-m",
-          `agile(${candidate.taskId}): implement ticket`,
-        ], candidate.path);
+        await git(
+          [
+            "-c",
+            "user.name=Agile Agents",
+            "-c",
+            "user.email=agile-agents@local",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-m",
+            `agile(${candidate.taskId}): implement ticket`,
+          ],
+          candidate.path,
+          {
+            ...process.env,
+            GIT_AUTHOR_NAME: "Agile Agents",
+            GIT_AUTHOR_EMAIL: "agile-agents@local",
+            GIT_COMMITTER_NAME: "Agile Agents",
+            GIT_COMMITTER_EMAIL: "agile-agents@local",
+          },
+        );
       } else if (count !== 1) {
         throw new Error(
           `Task branch ${candidate.branch} must contain exactly one task commit; found ${count}`,
