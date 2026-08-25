@@ -13,6 +13,7 @@ import {
 import { baselineRoute, retryRoute, type Route } from "../scheduler/model-routing";
 
 export type IdFactory = (kind: "attempt" | "decision" | "event" | "review" | "task") => string;
+export type RepositoryFaultPoint = "after_event_insert" | "before_cursor_update";
 
 export type RunningAttempt = {
   descriptor: HarnessStepRequest["attempt"];
@@ -68,6 +69,7 @@ export class OrchestrationRepository {
     private readonly db: Database,
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly id: IdFactory = (kind) => `${kind}-${crypto.randomUUID()}`,
+    private readonly fault: (point: RepositoryFaultPoint) => void = () => {},
   ) {}
 
   claimNext(): { taskId: string } | undefined {
@@ -309,6 +311,7 @@ export class OrchestrationRepository {
         if (duplicate.attempt_id !== attemptId || duplicate.payload_json !== JSON.stringify(event)) {
           throw new Error(`Harness event idempotency conflict: ${event.eventId}`);
         }
+        this.fault("before_cursor_update");
         this.db.query("UPDATE attempts SET backend_cursor = ? WHERE id = ?").run(nextCursor, attemptId);
         return;
       }
@@ -325,6 +328,7 @@ export class OrchestrationRepository {
         INSERT INTO events(idempotency_key, task_id, attempt_id, type, payload_json, occurred_at)
         VALUES(?, ?, ?, ?, ?, ?)
       `).run(event.eventId, attempt.task_id, attemptId, event.type, JSON.stringify(event), event.occurredAt);
+      this.fault("after_event_insert");
 
       if (event.type === "attempt.started") {
         if (event.threadId !== undefined) {
@@ -567,8 +571,40 @@ export class OrchestrationRepository {
         throw new Error(`Unsupported harness event in happy-path repository: ${event.type}`);
       }
 
+      this.fault("before_cursor_update");
       this.db.query("UPDATE attempts SET backend_cursor = ? WHERE id = ?").run(nextCursor, attemptId);
     })();
+  }
+
+  acquireLease(ownerId: string, now: string, expiresAt: string): boolean {
+    return this.db.transaction(() => {
+      this.db.query(`
+        INSERT INTO scheduler_lease(lease_key, owner_id, heartbeat_at, expires_at)
+        VALUES('scheduler', ?, ?, ?)
+        ON CONFLICT(lease_key) DO UPDATE SET
+          owner_id = excluded.owner_id,
+          heartbeat_at = excluded.heartbeat_at,
+          expires_at = excluded.expires_at
+        WHERE scheduler_lease.owner_id = excluded.owner_id
+           OR scheduler_lease.expires_at <= excluded.heartbeat_at
+      `).run(ownerId, now, expiresAt);
+      return this.db.query<{ owner_id: string }, []>(
+        "SELECT owner_id FROM scheduler_lease WHERE lease_key = 'scheduler'",
+      ).get()?.owner_id === ownerId;
+    })();
+  }
+
+  heartbeatLease(ownerId: string, now: string, expiresAt: string): boolean {
+    return this.db.query(`
+      UPDATE scheduler_lease SET heartbeat_at = ?, expires_at = ?
+      WHERE lease_key = 'scheduler' AND owner_id = ? AND expires_at > ?
+    `).run(now, expiresAt, ownerId, now).changes === 1;
+  }
+
+  releaseLease(ownerId: string): boolean {
+    return this.db.query(
+      "DELETE FROM scheduler_lease WHERE lease_key = 'scheduler' AND owner_id = ?",
+    ).run(ownerId).changes === 1;
   }
 
   inspectTask(taskId: string): { id: string; status: string } | undefined {

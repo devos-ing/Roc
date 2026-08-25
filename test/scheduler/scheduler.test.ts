@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
 import type { AgentHarness, HarnessEvent, HarnessStepRequest } from "../../src/harness/contracts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createFakeHarness } from "../../src/harness/fake";
 import { Scheduler } from "../../src/scheduler/scheduler";
 import { openDatabase } from "../../src/store/database";
@@ -213,6 +216,98 @@ test("runs Scout, Implement, and isolated Review to done", async () => {
     expect(() => fake.assertComplete()).not.toThrow();
   } finally {
     db.close();
+  }
+});
+
+test("reconciles from the committed cursor after a post-commit crash", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "agile-agents-scheduler-crash-"));
+  const databasePath = join(directory, "scheduler.db");
+  const db = openDatabase(databasePath);
+  let reopened: ReturnType<typeof openDatabase> | undefined;
+  try {
+    const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
+    planning.createWeek({
+      id: "2026-W35", goal: "Reconcile", nonGoals: [], tokenBudget: 100_000, ticketIds: ["T1"],
+    });
+    planning.createTask({
+      id: "T1",
+      weekId: "2026-W35",
+      title: "Reconcile after a crash",
+      spec: {
+        problem: "A scheduler can crash after commit",
+        desiredOutcome: "Resume from the durable cursor",
+        scope: ["scheduler"],
+        nonGoals: [],
+        acceptanceCriteria: ["the event is not redelivered"],
+        validation: ["bun test"],
+        dependencies: [],
+        risk: "medium",
+        contextCandidates: [],
+        tokenCeiling: 10_000,
+      },
+      priority: 0,
+      approvalRequired: false,
+      approved: true,
+    });
+    planning.transitionTask("T1", "ready", "T1:ready");
+    const counters: Record<string, number> = {};
+    const repo = new OrchestrationRepository(
+      db,
+      () => "2026-08-25T00:00:01.000Z",
+      (kind) => `${kind}-${counters[kind] = (counters[kind] ?? 0) + 1}`,
+    );
+    const event = {
+      type: "attempt.started" as const,
+      eventId: "scout:started",
+      attemptId: "attempt-1",
+      sequence: 1,
+      occurredAt: "2026-08-25T00:00:02.000Z",
+      threadId: "thread-scout",
+    };
+    const scheduler = new Scheduler(repo, {
+      async step() {
+        return { kind: "event", nextCursor: "cursor-1", event };
+      },
+      async cancel() {},
+    }, (point) => {
+      if (point === "after_delivery_commit") throw new Error(`crash:${point}`);
+    });
+
+    expect(await scheduler.tick()).toEqual({ kind: "task_claimed", taskId: "T1" });
+    expect(await scheduler.tick()).toEqual({ kind: "attempt_started", attemptId: "attempt-1" });
+    await expect(scheduler.tick()).rejects.toThrow("crash:after_delivery_commit");
+    db.close();
+
+    reopened = openDatabase(databasePath);
+    const resumedRepo = new OrchestrationRepository(reopened);
+    const resumedRequests: HarnessStepRequest[] = [];
+    const resumed = new Scheduler(resumedRepo, {
+      async step(request) {
+        resumedRequests.push(request);
+        return { kind: "idle" };
+      },
+      async cancel() {},
+    });
+
+    expect(await resumed.tick()).toEqual({ kind: "idle" });
+    expect(resumedRequests).toMatchObject([{
+      mode: "reconcile",
+      backendCursor: "cursor-1",
+      attempt: { attemptId: "attempt-1" },
+    }]);
+    expect(reopened.query<{ count: number }, [string]>(`
+      SELECT COUNT(*) AS count FROM events WHERE idempotency_key = ?
+    `).get(event.eventId)?.count).toBe(1);
+    expect(reopened.query<{ thread_id: string | null; backend_cursor: string | null }, [string]>(`
+      SELECT thread_id, backend_cursor FROM attempts WHERE id = ?
+    `).get(event.attemptId)).toEqual({
+      thread_id: "thread-scout",
+      backend_cursor: "cursor-1",
+    });
+  } finally {
+    if (reopened) reopened.close();
+    else db.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

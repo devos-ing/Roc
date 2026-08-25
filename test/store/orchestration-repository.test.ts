@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { HarnessEvent } from "../../src/harness/contracts";
 import { openDatabase } from "../../src/store/database";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
@@ -34,8 +37,11 @@ const implementOutput = {
   limitations: [],
 };
 
-function setup() {
-  const db = openDatabase(":memory:");
+function setup(
+  path = ":memory:",
+  fault: (point: "after_event_insert" | "before_cursor_update") => void = () => {},
+) {
+  const db = openDatabase(path);
   const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
   planning.createWeek({
     id: "2026-W35",
@@ -61,6 +67,7 @@ function setup() {
     db,
     () => "2026-08-25T00:00:01.000Z",
     (kind) => `${kind}-${counters[kind] = (counters[kind] ?? 0) + 1}`,
+    fault,
   );
   return { db, repo, counters };
 }
@@ -155,6 +162,80 @@ test("advances the cursor when replaying the identical harness event", () => {
     db.close();
   }
 });
+
+test("rolls back a duplicate delivery cursor when the cursor fault fires", () => {
+  let crashBeforeCursorUpdate = false;
+  const { db, repo } = setup(":memory:", (point) => {
+    if (crashBeforeCursorUpdate && point === "before_cursor_update") {
+      throw new Error("crash:before_cursor_update");
+    }
+  });
+  try {
+    const attemptId = startScout(repo);
+    const event = {
+      type: "attempt.started" as const,
+      eventId: "scout:started",
+      attemptId,
+      sequence: 1,
+      occurredAt: "2026-08-25T00:00:02.000Z",
+    };
+    repo.applyHarnessEvent(attemptId, "cursor-1", event);
+    crashBeforeCursorUpdate = true;
+
+    expect(() => repo.applyHarnessEvent(attemptId, "cursor-replayed", event))
+      .toThrow("crash:before_cursor_update");
+    expect(repo.getRunningAttempt()?.backendCursor).toBe("cursor-1");
+    expect(db.query<{ count: number }, [string]>(`
+      SELECT COUNT(*) AS count FROM events WHERE idempotency_key = ?
+    `).get(event.eventId)?.count).toBe(1);
+  } finally {
+    db.close();
+  }
+});
+
+for (const faultPoint of ["after_event_insert", "before_cursor_update"] as const) {
+  test(`replays once after a crash at ${faultPoint}`, () => {
+    const directory = mkdtempSync(join(tmpdir(), "agile-agents-reconcile-"));
+    const databasePath = join(directory, "scheduler.db");
+    let reopened: Database | undefined;
+    const { db, repo } = setup(databasePath, (point) => {
+      if (point === faultPoint) throw new Error(`crash:${point}`);
+    });
+    const attemptId = startScout(repo);
+    const event = {
+      type: "attempt.started" as const,
+      eventId: "scout:started",
+      attemptId,
+      sequence: 1,
+      occurredAt: "2026-08-25T00:00:02.000Z",
+      threadId: "thread-scout",
+    };
+
+    try {
+      expect(() => repo.applyHarnessEvent(attemptId, "cursor-1", event))
+        .toThrow(`crash:${faultPoint}`);
+      db.close();
+
+      reopened = openDatabase(databasePath);
+      const resumed = new OrchestrationRepository(reopened);
+      resumed.applyHarnessEvent(attemptId, "cursor-1", event);
+
+      expect(reopened.query<{ count: number }, [string]>(`
+        SELECT COUNT(*) AS count FROM events WHERE idempotency_key = ?
+      `).get(event.eventId)?.count).toBe(1);
+      expect(reopened.query<{ thread_id: string | null; backend_cursor: string | null }, [string]>(`
+        SELECT thread_id, backend_cursor FROM attempts WHERE id = ?
+      `).get(attemptId)).toEqual({
+        thread_id: "thread-scout",
+        backend_cursor: "cursor-1",
+      });
+    } finally {
+      if (reopened) reopened.close();
+      else db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
 
 test("rejects duplicate event IDs with conflicting payloads or attempts", () => {
   const { db, repo } = setup();

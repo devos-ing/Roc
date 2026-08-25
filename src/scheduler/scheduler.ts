@@ -7,12 +7,15 @@ export type TickResult =
   | { kind: "task_claimed"; taskId: string }
   | { kind: "idle" };
 
+export type SchedulerFaultPoint = "after_delivery_commit";
+
 export class Scheduler {
   private readonly reconcile = new Set<string>();
 
   constructor(
     private readonly repo: OrchestrationRepository,
     private readonly harness: AgentHarness,
+    private readonly fault: (point: SchedulerFaultPoint) => void = () => {},
   ) {
     const active = repo.getRunningAttempt();
     if (active) this.reconcile.add(active.descriptor.attemptId);
@@ -32,6 +35,7 @@ export class Scheduler {
       if (delivery.kind === "idle") return { kind: "idle" };
       if (delivery.kind === "closed") throw new Error(`Harness closed before attempt completion: ${attemptId}`);
       this.repo.applyHarnessEvent(attemptId, delivery.nextCursor, delivery.event);
+      this.fault("after_delivery_commit");
       return { kind: "delivery", attemptId, eventId: delivery.event.eventId };
     }
 
