@@ -221,6 +221,8 @@ test("passes normalized Codex scheduler options to the runtime seam", async () =
 test("requires backend-specific scheduler options before invoking the runtime", async () => {
   const cases: Array<{ args: string[]; message: string }> = [
     { args: ["scheduler", "run", "--backend", "fake"], message: "--fake-script PATH" },
+    { args: ["scheduler", "run", "--backend", "fake", "--repo", "."], message: "does not accept --repo" },
+    { args: ["scheduler", "run", "--backend", "fake", "--base", "HEAD"], message: "does not accept --base" },
     { args: ["scheduler", "run", "--backend", "codex", "--repo", ".", "--fake-script", "scenario.json"], message: "does not accept --fake-script" },
     { args: ["scheduler", "run", "--backend", "codex"], message: "--repo PATH" },
   ];

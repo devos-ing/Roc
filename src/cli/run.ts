@@ -391,6 +391,14 @@ export async function runCli(args: string[], io: CliIo, runtime: CliRuntime = de
       }
     }
 
+    if (parsed.values.repo !== undefined) {
+      io.err("scheduler run --backend fake does not accept --repo");
+      return 2;
+    }
+    if (parsed.values.base !== undefined) {
+      io.err("scheduler run --backend fake does not accept --base");
+      return 2;
+    }
     if (fakeScript === undefined) {
       io.err("scheduler run --backend fake requires --fake-script PATH");
       return 2;
