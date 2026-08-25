@@ -44,6 +44,128 @@ export const TurnStartResponseSchema = z.object({
   turn: z.object({ id: NonEmpty }).passthrough(),
 }).passthrough();
 
+export const ReviewStartResponseSchema = z.object({
+  reviewThreadId: NonEmpty,
+  turn: z.object({ id: NonEmpty }).passthrough(),
+}).passthrough();
+
+export const ExitedReviewModeItemSchema = z.object({
+  type: z.literal("exitedReviewMode"),
+  id: NonEmpty,
+  review: z.string(),
+}).passthrough();
+
+export const ThreadHistoryTurnSchema = z.object({
+  id: NonEmpty,
+  items: z.array(z.object({ type: NonEmpty, id: NonEmpty }).passthrough()),
+  status: z.enum(["completed", "interrupted", "failed", "inProgress"]),
+  error: z.unknown().nullable().optional(),
+  completedAt: z.number().nonnegative().nullable().optional(),
+}).passthrough();
+
+export const ThreadReadResponseSchema = z.object({
+  thread: z.object({
+    id: NonEmpty,
+    turns: z.array(ThreadHistoryTurnSchema),
+  }).passthrough(),
+}).passthrough();
+
+const CommandExecutionRequestApprovalSchema = z.object({
+  method: z.literal("item/commandExecution/requestApproval"),
+  id: RpcIdSchema,
+  params: z.object({
+    threadId: NonEmpty,
+    turnId: NonEmpty,
+    itemId: NonEmpty,
+    startedAtMs: z.number().nonnegative(),
+    environmentId: NonEmpty.nullable(),
+  }).passthrough(),
+}).passthrough();
+
+const FileChangeRequestApprovalSchema = z.object({
+  method: z.literal("item/fileChange/requestApproval"),
+  id: RpcIdSchema,
+  params: z.object({
+    threadId: NonEmpty,
+    turnId: NonEmpty,
+    itemId: NonEmpty,
+    startedAtMs: z.number().nonnegative(),
+  }).passthrough(),
+}).passthrough();
+
+const PermissionsRequestApprovalSchema = z.object({
+  method: z.literal("item/permissions/requestApproval"),
+  id: RpcIdSchema,
+  params: z.object({
+    threadId: NonEmpty,
+    turnId: NonEmpty,
+    itemId: NonEmpty,
+    environmentId: NonEmpty.nullable(),
+    startedAtMs: z.number().nonnegative(),
+    cwd: NonEmpty,
+    reason: z.string().nullable(),
+    permissions: z.object({}).passthrough(),
+  }).passthrough(),
+}).passthrough();
+
+const ToolRequestUserInputSchema = z.object({
+  method: z.literal("item/tool/requestUserInput"),
+  id: RpcIdSchema,
+  params: z.object({
+    threadId: NonEmpty,
+    turnId: NonEmpty,
+    itemId: NonEmpty,
+    questions: z.array(z.unknown()),
+    autoResolutionMs: z.number().nonnegative().nullable(),
+  }).passthrough(),
+}).passthrough();
+
+const McpServerElicitationRequestSchema = z.object({
+  method: z.literal("mcpServer/elicitation/request"),
+  id: RpcIdSchema,
+  params: z.discriminatedUnion("mode", [
+    z.object({
+      threadId: NonEmpty,
+      turnId: NonEmpty.nullable(),
+      serverName: NonEmpty,
+      mode: z.literal("form"),
+      _meta: z.unknown(),
+      message: z.string(),
+      requestedSchema: z.object({
+        type: z.literal("object"),
+        properties: z.object({}).passthrough(),
+      }).passthrough(),
+    }).passthrough(),
+    z.object({
+      threadId: NonEmpty,
+      turnId: NonEmpty.nullable(),
+      serverName: NonEmpty,
+      mode: z.literal("openai/form"),
+      _meta: z.unknown(),
+      message: z.string(),
+      requestedSchema: z.unknown(),
+    }).passthrough(),
+    z.object({
+      threadId: NonEmpty,
+      turnId: NonEmpty.nullable(),
+      serverName: NonEmpty,
+      mode: z.literal("url"),
+      _meta: z.unknown(),
+      message: z.string(),
+      url: NonEmpty,
+      elicitationId: NonEmpty,
+    }).passthrough(),
+  ]),
+}).passthrough();
+
+export const KnownServerRequestSchema = z.discriminatedUnion("method", [
+  CommandExecutionRequestApprovalSchema,
+  FileChangeRequestApprovalSchema,
+  PermissionsRequestApprovalSchema,
+  ToolRequestUserInputSchema,
+  McpServerElicitationRequestSchema,
+]);
+
 export const TokenUsageTotalsSchema = z.object({
   inputTokens: z.number().int().nonnegative(),
   cachedInputTokens: z.number().int().nonnegative(),

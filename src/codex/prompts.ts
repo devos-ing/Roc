@@ -2,12 +2,14 @@ import { z } from "zod";
 import {
   HarnessRoleInputSchema,
   ImplementOutputSchema,
+  ReviewOutputSchema,
   ScoutOutputSchema,
   type HarnessStepRequest,
 } from "../harness/contracts";
 
 export const ScoutOutputJsonSchema = z.toJSONSchema(ScoutOutputSchema);
 export const ImplementOutputJsonSchema = z.toJSONSchema(ImplementOutputSchema);
+export const ReviewOutputJsonSchema = z.toJSONSchema(ReviewOutputSchema);
 
 export function scoutPrompt(
   input: Extract<HarnessStepRequest["input"], { role: "scout" }>,
@@ -46,5 +48,30 @@ export function implementPrompt(
     "",
     "Validated Scout capsule:",
     JSON.stringify(validated.scout, null, 2),
+  ].join("\n");
+}
+
+export function reviewPrompt(
+  input: Extract<HarnessStepRequest["input"], { role: "review" }>,
+): string {
+  const validated = HarnessRoleInputSchema.parse(input);
+  if (validated.role !== "review") throw new Error("Expected Review input");
+
+  return [
+    "You are the Review agent for an isolated software ticket.",
+    `Review the exact Implement commit ${validated.implementation.commitSha}.`,
+    "Do not create, edit, rename, or delete files. Do not make commits.",
+    "Return only one JSON object matching this exact Review output JSON schema:",
+    JSON.stringify(ReviewOutputJsonSchema),
+    "Do not infer acceptance from prose. Use decision \"accepted\" only when the ticket is satisfied.",
+    "",
+    "Validated ticket:",
+    JSON.stringify(validated.ticket, null, 2),
+    "",
+    "Validated Scout capsule:",
+    JSON.stringify(validated.scout, null, 2),
+    "",
+    "Validated Implement result:",
+    JSON.stringify(validated.implementation, null, 2),
   ].join("\n");
 }

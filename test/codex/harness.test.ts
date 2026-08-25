@@ -6,8 +6,10 @@ import type { CodexClientApi } from "../../src/codex/client";
 import { createCodexHarness } from "../../src/codex/harness";
 import {
   ImplementOutputJsonSchema,
+  ReviewOutputJsonSchema,
   ScoutOutputJsonSchema,
   implementPrompt,
+  reviewPrompt,
   scoutPrompt,
 } from "../../src/codex/prompts";
 import type {
@@ -52,10 +54,32 @@ async function createRepository(): Promise<string> {
 
 class RecordedCodexClient implements CodexClientApi {
   readonly requests: { method: string; params: unknown }[] = [];
-  private readonly threadIds = ["thread-scout", "thread-implement"];
-  private readonly turnIds = ["turn-scout", "turn-implement"];
+  readonly responses: { id: string | number; result: unknown }[] = [];
+  readonly responseErrors: {
+    id: string | number;
+    code: number;
+    message: string;
+  }[] = [];
+  private readonly threadIds: string[];
+  private readonly turnIds: string[];
+  private readonly threadReads: unknown[];
 
-  constructor(private readonly messages: ServerMessage[]) {}
+  constructor(
+    private readonly messages: ServerMessage[],
+    options: {
+      threadIds?: string[];
+      turnIds?: string[];
+      threadReads?: unknown[];
+    } = {},
+  ) {
+    this.threadIds = options.threadIds ?? [
+      "thread-scout",
+      "thread-implement",
+      "thread-review-anchor",
+    ];
+    this.turnIds = options.turnIds ?? ["turn-scout", "turn-implement"];
+    this.threadReads = options.threadReads ?? [];
+  }
 
   async request(method: string, params: unknown): Promise<unknown> {
     this.requests.push({ method, params });
@@ -69,13 +93,31 @@ class RecordedCodexClient implements CodexClientApi {
       if (!id) throw new Error("Unexpected turn/start");
       return { turn: { id } };
     }
+    if (method === "review/start") {
+      return {
+        reviewThreadId: "thread-review",
+        turn: { id: "turn-review" },
+      };
+    }
+    if (method === "thread/resume") {
+      return { thread: { id: (params as { threadId: string }).threadId } };
+    }
+    if (method === "thread/read") {
+      const response = this.threadReads.shift();
+      if (!response) throw new Error("Unexpected thread/read");
+      return response;
+    }
     if (method === "turn/interrupt") return {};
     throw new Error(`Unexpected request: ${method}`);
   }
 
   notify(): void {}
-  respond(): void {}
-  respondError(): void {}
+  respond(id: string | number, result: unknown): void {
+    this.responses.push({ id, result });
+  }
+  respondError(id: string | number, code: number, message: string): void {
+    this.responseErrors.push({ id, code, message });
+  }
 
   async nextServerMessage(): Promise<ServerMessage> {
     const message = this.messages.shift();
@@ -143,6 +185,45 @@ function makeScoutRequest(attemptId = "attempt-scout"): HarnessStepRequest {
   };
 }
 
+function makeImplementRequest(attemptId = "attempt-implement"): HarnessStepRequest {
+  return {
+    mode: "dispatch",
+    attempt: {
+      attemptId,
+      taskId: ticket.id,
+      role: "implement",
+      retryIndex: 0,
+      modelProfile: "terra",
+      model: "gpt-5.6-terra",
+      effort: "high",
+    },
+    input: {
+      role: "implement",
+      ticket: { ...ticket, status: "implementing" },
+      scout: scoutOutput,
+    },
+  };
+}
+
+function backendCursor(
+  threadId: string,
+  turnId: string,
+  nextSequence = 2,
+): string {
+  return JSON.stringify({
+    version: 1,
+    nextSequence,
+    threadId,
+    turnId,
+    usage: {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+    },
+  });
+}
+
 function memoryWorktrees(): TaskWorktreeManager {
   return {
     async prepare(taskId) {
@@ -190,6 +271,22 @@ function completedTurn(threadId: string, turnId: string): ServerMessage {
   };
 }
 
+function completedReviewItem(
+  threadId: string,
+  turnId: string,
+  itemId: string,
+  output: unknown,
+): ServerMessage {
+  return {
+    method: "item/completed",
+    params: {
+      threadId,
+      turnId,
+      item: { type: "exitedReviewMode", id: itemId, review: JSON.stringify(output) },
+    },
+  };
+}
+
 async function collect(
   harness: AgentHarness,
   request: HarnessStepRequest,
@@ -232,7 +329,7 @@ function observed(events: HarnessEvent[]): unknown[] {
   });
 }
 
-test("dispatches fresh Scout and Implement turns with normalized cumulative usage", async () => {
+test("dispatches fresh Scout, Implement, and detached Review with normalized usage", async () => {
   const root = await createRepository();
   try {
     const worktrees = await createTaskWorktreeManager(root, "HEAD");
@@ -324,6 +421,53 @@ test("dispatches fresh Scout and Implement turns with normalized cumulative usag
     expect(implementPrompt(implementInput)).toContain("Create exactly one Git commit");
     expect(implementPrompt(implementInput)).toContain(JSON.stringify(implementInput.scout, null, 2));
 
+    const reviewOutput = {
+      kind: "review" as const,
+      decision: "accepted" as const,
+      findings: [],
+      remainingGaps: [],
+    };
+    client.enqueue(
+      completedReviewItem("thread-review", "turn-review", "item-review", reviewOutput),
+      completedTurn("thread-review", "turn-review"),
+    );
+    const reviewInput = {
+      role: "review" as const,
+      ticket: { ...ticket, status: "reviewing" as const },
+      scout: scoutOutput,
+      implementation: implementOutput,
+    };
+    const reviewRequest: HarnessStepRequest = {
+      mode: "dispatch",
+      attempt: {
+        attemptId: "attempt-review",
+        taskId: ticket.id,
+        role: "review",
+        retryIndex: 0,
+        modelProfile: "sol",
+        model: "gpt-5.6-sol",
+        effort: "xhigh",
+      },
+      input: reviewInput,
+    };
+    const statusBeforeReview = await worktrees.status(ticket.id);
+    const review = await collect(harness, reviewRequest);
+    const statusAfterReview = await worktrees.status(ticket.id);
+
+    expect(observed(review.events)).toEqual([
+      { type: "attempt.started", threadId: "thread-review", turnId: "turn-review" },
+      { type: "attempt.output", output: reviewOutput },
+      { type: "attempt.completed" },
+    ]);
+    expect(review.events.map((event) => event.eventId)).toEqual([
+      "attempt-review:turn-review:started",
+      "attempt-review:item-review:output",
+      "attempt-review:turn-review:completed",
+    ]);
+    expect(statusAfterReview).toBe(statusBeforeReview);
+    expect(reviewPrompt(reviewInput)).toContain(commitSha);
+    expect(reviewPrompt(reviewInput)).toContain(JSON.stringify(ReviewOutputJsonSchema));
+
     expect(client.requests).toEqual([
       {
         method: "thread/start",
@@ -373,9 +517,31 @@ test("dispatches fresh Scout and Implement turns with normalized cumulative usag
           outputSchema: ImplementOutputJsonSchema,
         },
       },
+      {
+        method: "thread/start",
+        params: {
+          model: "gpt-5.6-sol",
+          cwd: workspace.path,
+          approvalPolicy: "never",
+          sandbox: "read-only",
+          serviceName: "agile_agents",
+        },
+      },
+      {
+        method: "review/start",
+        params: {
+          threadId: "thread-review-anchor",
+          target: { type: "custom", instructions: reviewPrompt(reviewInput) },
+          delivery: "detached",
+        },
+      },
     ]);
+    const reviewStart = client.requests.at(-1);
+    expect(JSON.stringify(reviewStart)).not.toContain("thread-implement");
+    expect(reviewStart?.params).not.toHaveProperty("history");
+    expect(client.requests.filter((request) => request.method === "turn/start")).toHaveLength(2);
     const requestCount = client.requests.length;
-    await harness.cancel("attempt-implement");
+    await harness.cancel("attempt-review");
     expect(client.requests).toHaveLength(requestCount);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -405,6 +571,66 @@ test("rejects output that does not exactly match the role schema", async () => {
     component: "codex-harness",
     attemptId: "attempt-invalid-output",
   });
+});
+
+test("fails Review closed when the read-only turn mutates the worktree", async () => {
+  const reviewOutput = {
+    kind: "review" as const,
+    decision: "accepted" as const,
+    findings: [],
+    remainingGaps: [],
+  };
+  const client = new RecordedCodexClient([
+    completedReviewItem("thread-review", "turn-review", "item-review", reviewOutput),
+  ], {
+    threadIds: ["thread-review-anchor"],
+  });
+  const worktrees = memoryWorktrees();
+  const statuses = ["", " M src/codex/harness.ts"];
+  worktrees.status = async () => statuses.shift() ?? " M src/codex/harness.ts";
+  const harness = createCodexHarness({
+    client,
+    worktrees,
+    now: () => "2026-08-26T00:00:00.000Z",
+  });
+  const request: HarnessStepRequest = {
+    mode: "dispatch",
+    attempt: {
+      attemptId: "attempt-review-mutated",
+      taskId: ticket.id,
+      role: "review",
+      retryIndex: 0,
+      modelProfile: "sol",
+      model: "gpt-5.6-sol",
+      effort: "xhigh",
+    },
+    input: {
+      role: "review",
+      ticket: { ...ticket, status: "reviewing" },
+      scout: scoutOutput,
+      implementation: {
+        kind: "implement",
+        commitSha: "b".repeat(40),
+        validation: ["bun test"],
+        risks: [],
+        limitations: [],
+      },
+    },
+  };
+  const started = await harness.step(request);
+  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+
+  const failed = await harness.step({ ...request, backendCursor: started.nextCursor });
+
+  expect(failed).toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.failed_infra",
+      code: "review_mutated_workspace",
+      retryable: true,
+    },
+  });
+  expect(JSON.stringify(failed)).not.toContain('"type":"attempt.output"');
 });
 
 test("rejects an Implement output until its reported commit is verified", async () => {
@@ -453,6 +679,323 @@ test("rejects an Implement output until its reported commit is verified", async 
     retryable: true,
     attemptId: "attempt-invalid-commit",
   });
+});
+
+test("declines an Implement approval request, interrupts, and emits one policy block", async () => {
+  const client = new RecordedCodexClient([{
+    method: "item/commandExecution/requestApproval",
+    id: 91,
+    params: {
+      threadId: "thread-implement",
+      turnId: "turn-implement",
+      itemId: "command-1",
+      startedAtMs: 1_777_000_000_000,
+      environmentId: null,
+    },
+  }], {
+    threadIds: ["thread-implement"],
+    turnIds: ["turn-implement"],
+  });
+  const harness = createCodexHarness({
+    client,
+    worktrees: memoryWorktrees(),
+    now: () => "2026-08-26T00:00:00.000Z",
+  });
+  const request = makeImplementRequest();
+  const started = await harness.step(request);
+  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+
+  const delivery = await harness.step({ ...request, backendCursor: started.nextCursor });
+  if (delivery.kind !== "event") throw new Error(`Unexpected ${delivery.kind} delivery`);
+
+  expect(client.responses).toContainEqual({ id: 91, result: { decision: "decline" } });
+  expect(client.requests).toContainEqual({
+    method: "turn/interrupt",
+    params: { threadId: "thread-implement", turnId: "turn-implement" },
+  });
+  expect(delivery.event).toMatchObject({
+    type: "attempt.blocked_policy",
+    code: "approval_required",
+    attemptId: "attempt-implement",
+  });
+  expect(delivery.event.eventId).toBe(
+    "attempt-implement:turn-implement:blocked_policy:approval_required",
+  );
+  await expect(harness.cancel("attempt-implement")).resolves.toBeUndefined();
+});
+
+test("uses the exact fail-closed response for every supported server request", async () => {
+  const cases: {
+    method: string;
+    params: Record<string, unknown>;
+    expected: unknown;
+  }[] = [
+    {
+      method: "item/fileChange/requestApproval",
+      params: { itemId: "file-1", startedAtMs: 1_777_000_000_000 },
+      expected: { decision: "decline" },
+    },
+    {
+      method: "item/permissions/requestApproval",
+      params: {
+        itemId: "permission-1",
+        environmentId: null,
+        startedAtMs: 1_777_000_000_000,
+        cwd: "/tmp/agile-harness-T1",
+        reason: null,
+        permissions: {},
+      },
+      expected: { permissions: {}, scope: "turn" },
+    },
+    {
+      method: "item/tool/requestUserInput",
+      params: { itemId: "input-1", questions: [], autoResolutionMs: null },
+      expected: { answers: {} },
+    },
+    {
+      method: "mcpServer/elicitation/request",
+      params: {
+        serverName: "recorded",
+        mode: "form",
+        _meta: null,
+        message: "Choose",
+        requestedSchema: { type: "object", properties: {} },
+      },
+      expected: { action: "decline", content: null, _meta: null },
+    },
+  ];
+
+  for (const [index, item] of cases.entries()) {
+    const id = 100 + index;
+    const client = new RecordedCodexClient([{
+      method: item.method,
+      id,
+      params: {
+        threadId: "thread-implement",
+        turnId: "turn-implement",
+        ...item.params,
+      },
+    }], {
+      threadIds: ["thread-implement"],
+      turnIds: ["turn-implement"],
+    });
+    const harness = createCodexHarness({
+      client,
+      worktrees: memoryWorktrees(),
+      now: () => "2026-08-26T00:00:00.000Z",
+    });
+    const request = makeImplementRequest(`attempt-policy-${index}`);
+    const started = await harness.step(request);
+    if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+    const blocked = await harness.step({ ...request, backendCursor: started.nextCursor });
+
+    expect(client.responses).toEqual([{ id, result: item.expected }]);
+    expect(blocked).toMatchObject({
+      kind: "event",
+      event: { type: "attempt.blocked_policy", code: "approval_required" },
+    });
+  }
+});
+
+test("rejects an unknown server request with method-not-found and still blocks", async () => {
+  const client = new RecordedCodexClient([{
+    method: "plugin/unknownApproval",
+    id: "unknown-1",
+    params: { any: "payload" },
+  }], {
+    threadIds: ["thread-implement"],
+    turnIds: ["turn-implement"],
+  });
+  const harness = createCodexHarness({
+    client,
+    worktrees: memoryWorktrees(),
+    now: () => "2026-08-26T00:00:00.000Z",
+  });
+  const request = makeImplementRequest("attempt-unknown-request");
+  const started = await harness.step(request);
+  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+
+  const blocked = await harness.step({ ...request, backendCursor: started.nextCursor });
+
+  expect(client.responseErrors).toEqual([{
+    id: "unknown-1",
+    code: -32601,
+    message: "Method not found",
+  }]);
+  expect(blocked).toMatchObject({
+    kind: "event",
+    event: { type: "attempt.blocked_policy", code: "approval_required" },
+  });
+  expect(client.requests.at(-1)).toEqual({
+    method: "turn/interrupt",
+    params: { threadId: "thread-implement", turnId: "turn-implement" },
+  });
+});
+
+test("reconciles authoritative structured output and terminal completion", async () => {
+  const history = {
+    thread: {
+      id: "thread-scout",
+      turns: [{
+        id: "turn-scout",
+        status: "completed",
+        error: null,
+        completedAt: 1_777_000_000,
+        items: [{
+          type: "agentMessage",
+          id: "item-scout-recovered",
+          text: JSON.stringify(scoutOutput),
+          phase: "final_answer",
+        }],
+      }],
+    },
+  };
+  const client = new RecordedCodexClient([], {
+    threadReads: [history],
+  });
+  const harness = createCodexHarness({
+    client,
+    worktrees: memoryWorktrees(),
+    now: () => "2026-08-26T00:00:00.000Z",
+  });
+  const request: HarnessStepRequest = {
+    ...makeScoutRequest("attempt-reconcile"),
+    mode: "reconcile",
+    backendCursor: backendCursor("thread-scout", "turn-scout"),
+  };
+
+  const output = await harness.step(request);
+  if (output.kind !== "event") throw new Error(`Unexpected ${output.kind} delivery`);
+  const resumedClient = new RecordedCodexClient([], { threadReads: [history] });
+  const resumedHarness = createCodexHarness({
+    client: resumedClient,
+    worktrees: memoryWorktrees(),
+    now: () => "2026-08-26T00:00:00.000Z",
+  });
+  const completed = await resumedHarness.step({
+    ...request,
+    backendCursor: output.nextCursor,
+  });
+
+  expect(output.event).toMatchObject({
+    type: "attempt.output",
+    eventId: "attempt-reconcile:item-scout-recovered:output",
+    sequence: 2,
+    output: scoutOutput,
+  });
+  expect(completed).toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.completed",
+      eventId: "attempt-reconcile:turn-scout:completed",
+      sequence: 3,
+    },
+  });
+  expect(client.requests).toEqual([
+    { method: "thread/resume", params: { threadId: "thread-scout" } },
+    { method: "thread/read", params: { threadId: "thread-scout", includeTurns: true } },
+  ]);
+  expect(resumedClient.requests).toEqual(client.requests);
+});
+
+test("classifies reconciliation without persisted turn identity as orphaned", async () => {
+  const client = new RecordedCodexClient([]);
+  const harness = createCodexHarness({
+    client,
+    worktrees: memoryWorktrees(),
+    now: () => "2026-08-26T00:00:00.000Z",
+  });
+
+  const delivery = await harness.step({
+    ...makeScoutRequest("attempt-no-cursor"),
+    mode: "reconcile",
+  });
+
+  expect(delivery).toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.failed_infra",
+      eventId: "attempt-no-cursor:reconcile:failed_infra:orphaned_turn",
+      sequence: 1,
+      code: "orphaned_turn",
+      retryable: true,
+    },
+  });
+  expect(client.requests).toEqual([]);
+});
+
+for (const status of ["failed", "interrupted"] as const) {
+  test(`reconciles a ${status} turn as retryable infrastructure failure`, async () => {
+    const client = new RecordedCodexClient([], {
+      threadReads: [{
+        thread: {
+          id: "thread-scout",
+          turns: [{
+            id: "turn-scout",
+            status,
+            error: status === "failed" ? { message: "provider stopped" } : null,
+            completedAt: 1_777_000_000,
+            items: [],
+          }],
+        },
+      }],
+    });
+    const harness = createCodexHarness({ client, worktrees: memoryWorktrees() });
+    const delivery = await harness.step({
+      ...makeScoutRequest(`attempt-${status}`),
+      mode: "reconcile",
+      backendCursor: backendCursor("thread-scout", "turn-scout"),
+    });
+
+    expect(delivery).toMatchObject({
+      kind: "event",
+      event: {
+        type: "attempt.failed_infra",
+        eventId: `attempt-${status}:turn-scout:failed_infra:turn_${status}`,
+        code: `turn_${status}`,
+        retryable: true,
+      },
+    });
+  });
+}
+
+test("does not infer Implement success from a commit without structured history", async () => {
+  let commitAssertions = 0;
+  const worktrees = memoryWorktrees();
+  worktrees.assertCommit = async () => {
+    commitAssertions += 1;
+  };
+  const client = new RecordedCodexClient([], {
+    threadReads: [{
+      thread: {
+        id: "thread-implement",
+        turns: [{
+          id: "turn-implement",
+          status: "completed",
+          error: null,
+          completedAt: 1_777_000_000,
+          items: [{ type: "commandExecution", id: "commit-command" }],
+        }],
+      },
+    }],
+  });
+  const harness = createCodexHarness({ client, worktrees });
+  const delivery = await harness.step({
+    ...makeImplementRequest("attempt-orphaned"),
+    mode: "reconcile",
+    backendCursor: backendCursor("thread-implement", "turn-implement"),
+  });
+
+  expect(delivery).toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.failed_infra",
+      eventId: "attempt-orphaned:turn-implement:failed_infra:orphaned_turn",
+      code: "orphaned_turn",
+      retryable: true,
+    },
+  });
+  expect(commitAssertions).toBe(0);
 });
 
 test("interrupts an active turn and only treats terminal attempts as cancellation no-ops", async () => {

@@ -158,6 +158,16 @@ function startReview(repo: OrchestrationRepository): string {
   return review.attemptId;
 }
 
+function startImplement(repo: OrchestrationRepository): string {
+  const scoutAttemptId = startScout(repo);
+  applyOutputAndCompletion(repo, scoutAttemptId, "scout", scoutOutput);
+  const implement = repo.beginNextAttempt();
+  if (!implement || implement.role !== "implement") {
+    throw new Error("Expected an Implement attempt");
+  }
+  return implement.attemptId;
+}
+
 test("claims the first approved ready task once", () => {
   const { db, repo } = setup();
   try {
@@ -780,13 +790,13 @@ test("inspection includes the verified Implement commit", () => {
   }
 });
 
-test("policy-blocked attempts move active tasks to replanning without retry", () => {
+test("an Implement policy block replans its task without retry and leaves the next ready task claimable", () => {
   const { db, repo } = setup();
   try {
-    const attemptId = startScout(repo);
+    const attemptId = startImplement(repo);
     const event = {
       type: "attempt.blocked_policy",
-      eventId: "scout:policy-blocked",
+      eventId: `${attemptId}:turn-implement:blocked_policy:approval_required`,
       attemptId,
       sequence: 1,
       occurredAt: "2026-08-26T00:00:02.000Z",
@@ -801,7 +811,7 @@ test("policy-blocked attempts move active tasks to replanning without retry", ()
       "SELECT status FROM attempts WHERE id = ?",
     ).get(attemptId)?.status).toBe("blocked_policy");
     expect(db.query<{ count: number }, []>(
-      "SELECT COUNT(*) AS count FROM events WHERE idempotency_key = 'scout:policy-blocked'",
+      "SELECT COUNT(*) AS count FROM events WHERE idempotency_key = 'attempt-2:turn-implement:blocked_policy:approval_required'",
     ).get()?.count).toBe(1);
     expect(db.query<{ count: number }, []>(
       "SELECT COUNT(*) AS count FROM events WHERE task_id = 'T1' AND type = 'task.needs_replan'",
@@ -809,7 +819,9 @@ test("policy-blocked attempts move active tasks to replanning without retry", ()
     expect(db.query<{ backend_cursor: string | null }, [string]>(
       "SELECT backend_cursor FROM attempts WHERE id = ?",
     ).get(attemptId)?.backend_cursor).toBe("replayed");
+    expect(repo.listAttempts("T1")).toHaveLength(2);
     expect(repo.beginNextAttempt()).toBeUndefined();
+    expect(repo.claimNext()).toEqual({ taskId: "T2" });
   } finally {
     db.close();
   }
