@@ -310,11 +310,19 @@ export class OrchestrationRepository {
           ORDER BY seq DESC LIMIT 1
         `).get(attemptId, attempt.role);
         if (!outputRow) throw new Error(`Attempt completed without ${attempt.role} output: ${attemptId}`);
+        const outputEvent = HarnessEventSchema.parse(JSON.parse(outputRow.payload_json));
+        if (
+          attempt.role === "review" &&
+          outputEvent.type === "attempt.output" &&
+          outputEvent.output.kind === "review" &&
+          outputEvent.output.decision !== "accepted"
+        ) {
+          throw new Error(`Unsupported Review decision in happy-path repository: ${outputEvent.output.decision}`);
+        }
         this.db.query(`
           UPDATE attempts SET status = 'succeeded', ended_at = ? WHERE id = ?
         `).run(event.occurredAt, attemptId);
 
-        const outputEvent = HarnessEventSchema.parse(JSON.parse(outputRow.payload_json));
         if (
           attempt.role === "review" &&
           outputEvent.type === "attempt.output" &&
