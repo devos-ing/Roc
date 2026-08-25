@@ -99,6 +99,29 @@ test("delivers scripted events by persisted cursor, including duplicate event ID
   expect(() => fake.assertComplete()).not.toThrow();
 });
 
+test("binds authored event attempt IDs to the active runtime attempt", async () => {
+  const fake = createFakeHarness(scenario);
+  const runtimeAttemptId = `attempt-${crypto.randomUUID()}`;
+
+  const delivery = await fake.harness.step({
+    ...request,
+    attempt: { ...request.attempt, attemptId: runtimeAttemptId },
+  });
+
+  expect(delivery).toEqual({
+    kind: "event" as const,
+    nextCursor: "1",
+    event: {
+      type: "attempt.started" as const,
+      eventId: "T1:scout:0:started",
+      attemptId: runtimeAttemptId,
+      sequence: 1,
+      occurredAt: "2026-08-25T00:00:00.000Z",
+      threadId: "thread-T1",
+    },
+  });
+});
+
 test("fails fast for a model mismatch, missing script, and unconsumed delivery", async () => {
   const mismatch = createFakeHarness(scenario);
   await expect(mismatch.harness.step({

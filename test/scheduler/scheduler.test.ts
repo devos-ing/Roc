@@ -398,6 +398,38 @@ test("caps retryable Scout infrastructure failures and upgrades only the final r
   }
 });
 
+test("retries only a failed Implement role and persists both routing rationales", async () => {
+  const { db, repo } = setupAcceptedTask();
+  const fake = createFakeHarness({ attempts: [
+    { taskId: "T1", role: "scout", retryIndex: 0, expect: { model: "luna", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("scout", "attempt-1", scoutOutput) },
+    { taskId: "T1", role: "implement", retryIndex: 0, expect: { model: "terra", effort: "high", contextRef: inheritedContext }, deliveries: infraFailureDelivery("implement-0", "attempt-2", "backend_unavailable", true) },
+    { taskId: "T1", role: "implement", retryIndex: 1, expect: { model: "terra", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("implement-1", "attempt-3", implementOutput) },
+    { taskId: "T1", role: "review", retryIndex: 0, expect: { model: "sol", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("review", "attempt-4", reviewOutput) },
+  ] });
+  const scheduler = new Scheduler(repo, fake.harness);
+  try {
+    await scheduler.runUntilIdle(30);
+
+    expect(repo.listAttempts("T1")).toMatchObject([
+      { role: "scout", retryIndex: 0, model: "luna", status: "succeeded" },
+      { role: "implement", retryIndex: 0, model: "terra", status: "failed_infra" },
+      { role: "implement", retryIndex: 1, model: "terra", status: "succeeded" },
+      { role: "review", retryIndex: 0, model: "sol", status: "succeeded" },
+    ]);
+    expect(repo.listAttempts("T1").filter((attempt) => attempt.role === "scout")).toHaveLength(1);
+    expect(repo.inspect().tasks.find((task) => task.id === "T1")?.modelDecisions).toMatchObject([
+      { id: "decision-1", role: "scout", model: "luna", rationale: ["scout baseline", "medium risk"] },
+      { id: "decision-2", role: "implement", model: "terra", rationale: ["implement baseline", "medium risk"] },
+      { id: "decision-3", role: "implement", model: "terra", rationale: ["implement retry 1", "model retained"] },
+      { id: "decision-4", role: "review", model: "sol", rationale: ["review baseline", "medium risk"] },
+    ]);
+    expect(repo.inspectTask("T1")).toEqual({ id: "T1", status: "done" });
+    expect(() => fake.assertComplete()).not.toThrow();
+  } finally {
+    db.close();
+  }
+});
+
 test("retries a model-unavailable Scout with Terra immediately", async () => {
   const { db, repo } = setupAcceptedTask();
   const fake = createFakeHarness({ attempts: [

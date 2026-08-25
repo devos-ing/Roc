@@ -138,8 +138,9 @@ export class OrchestrationRepository {
     private readonly fault: (point: RepositoryFaultPoint) => void = () => {},
   ) {}
 
-  claimNext(): { taskId: string } | undefined {
+  claimNext(leaseOwnerId?: string): { taskId: string } | undefined {
     return this.db.transaction(() => {
+      this.assertLeaseOwner(leaseOwnerId);
       const row = this.db.query<{ id: string }, []>(`
         SELECT task.id
         FROM tasks AS task
@@ -254,8 +255,11 @@ export class OrchestrationRepository {
     };
   }
 
-  beginNextAttempt(): { attemptId: string; taskId: string; role: "scout" | "implement" | "review" } | undefined {
+  beginNextAttempt(
+    leaseOwnerId?: string,
+  ): { attemptId: string; taskId: string; role: "scout" | "implement" | "review" } | undefined {
     return this.db.transaction(() => {
+      this.assertLeaseOwner(leaseOwnerId);
       const row = this.db.query<TaskRow, []>(`
         SELECT id, week_id, title, spec_json, spec_path, spec_hash, status,
                priority, approval_required, approved, context_id
@@ -367,16 +371,10 @@ export class OrchestrationRepository {
     leaseOwnerId?: string,
   ): void {
     this.db.transaction(() => {
+      this.assertLeaseOwner(leaseOwnerId);
       const event = HarnessEventSchema.parse(rawEvent);
       if (event.attemptId !== attemptId) {
         throw new Error(`Harness event attempt mismatch: ${event.attemptId} !== ${attemptId}`);
-      }
-      if (leaseOwnerId !== undefined) {
-        const lease = this.db.query<{ owned: number }, [string, string]>(`
-          SELECT 1 AS owned FROM scheduler_lease
-          WHERE lease_key = 'scheduler' AND owner_id = ? AND expires_at > ?
-        `).get(leaseOwnerId, this.now());
-        if (!lease) throw new Error("Scheduler lease was lost");
       }
       const attempt = this.db.query<{ task_id: string; role: string; status: string; retry_index: number }, [string]>(
         "SELECT task_id, role, status, retry_index FROM attempts WHERE id = ?",
@@ -673,6 +671,15 @@ export class OrchestrationRepository {
       this.fault("before_cursor_update");
       this.db.query("UPDATE attempts SET backend_cursor = ? WHERE id = ?").run(nextCursor, attemptId);
     })();
+  }
+
+  private assertLeaseOwner(leaseOwnerId?: string): void {
+    if (leaseOwnerId === undefined) return;
+    const lease = this.db.query<{ owned: number }, [string, string]>(`
+      SELECT 1 AS owned FROM scheduler_lease
+      WHERE lease_key = 'scheduler' AND owner_id = ? AND expires_at > ?
+    `).get(leaseOwnerId, this.now());
+    if (!lease) throw new Error("Scheduler lease was lost");
   }
 
   acquireLease(ownerId: string, now: string, expiresAt: string): boolean {

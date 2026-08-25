@@ -167,6 +167,102 @@ test("claims the first approved ready task once", () => {
   }
 });
 
+test("a stale lease owner cannot claim or consume generated IDs after takeover", () => {
+  let currentNow = "2026-08-25T00:00:01.000Z";
+  const { db, repo, counters } = setup(":memory:", () => {}, () => currentNow);
+  try {
+    expect(repo.acquireLease(
+      "owner-1",
+      "2026-08-25T00:00:00.000Z",
+      "2026-08-25T00:00:10.000Z",
+    )).toBe(true);
+    currentNow = "2026-08-25T00:00:11.000Z";
+    expect(repo.acquireLease(
+      "owner-2",
+      currentNow,
+      "2026-08-25T00:00:21.000Z",
+    )).toBe(true);
+    const eventCount = db.query<{ count: number }, []>(
+      "SELECT COUNT(*) AS count FROM events",
+    ).get()?.count;
+
+    expect(() => repo.claimNext("owner-1")).toThrow("Scheduler lease was lost");
+    expect(repo.inspectTask("T1")).toEqual({ id: "T1", status: "ready" });
+    expect(repo.inspectTask("T2")).toEqual({ id: "T2", status: "ready" });
+    expect(db.query<{ count: number }, []>(
+      "SELECT COUNT(*) AS count FROM events",
+    ).get()?.count).toBe(eventCount);
+    expect(counters).toEqual({});
+  } finally {
+    db.close();
+  }
+});
+
+test("a stale lease owner cannot begin an attempt or consume generated IDs after takeover", () => {
+  let currentNow = "2026-08-25T00:00:01.000Z";
+  const { db, repo, counters } = setup(":memory:", () => {}, () => currentNow);
+  try {
+    expect(repo.acquireLease(
+      "owner-1",
+      "2026-08-25T00:00:00.000Z",
+      "2026-08-25T00:00:10.000Z",
+    )).toBe(true);
+    expect(repo.claimNext("owner-1")).toEqual({ taskId: "T1" });
+    currentNow = "2026-08-25T00:00:11.000Z";
+    expect(repo.acquireLease(
+      "owner-2",
+      currentNow,
+      "2026-08-25T00:00:21.000Z",
+    )).toBe(true);
+    const eventCount = db.query<{ count: number }, []>(
+      "SELECT COUNT(*) AS count FROM events",
+    ).get()?.count;
+    const idsAfterClaim = { ...counters };
+
+    expect(() => repo.beginNextAttempt("owner-1")).toThrow("Scheduler lease was lost");
+    expect(repo.inspectTask("T1")).toEqual({ id: "T1", status: "claimed" });
+    expect(db.query<{ count: number }, []>(
+      "SELECT COUNT(*) AS count FROM attempts",
+    ).get()?.count).toBe(0);
+    expect(db.query<{ count: number }, []>(
+      "SELECT COUNT(*) AS count FROM model_decisions",
+    ).get()?.count).toBe(0);
+    expect(db.query<{ count: number }, []>(
+      "SELECT COUNT(*) AS count FROM events",
+    ).get()?.count).toBe(eventCount);
+    expect(counters).toEqual(idsAfterClaim);
+  } finally {
+    db.close();
+  }
+});
+
+test("two SQLite connections commit only one claim and one audit event", () => {
+  const directory = mkdtempSync(join(tmpdir(), "agile-agents-two-claimers-"));
+  const databasePath = join(directory, "scheduler.db");
+  const { db: firstDb, repo: firstRepo } = setup(databasePath);
+  const secondDb = openDatabase(databasePath);
+  const secondRepo = new OrchestrationRepository(
+    secondDb,
+    () => "2026-08-25T00:00:02.000Z",
+    (kind) => `second-${kind}`,
+  );
+  try {
+    // Bun's SQLite API is synchronous: connection 1 commits, then connection 2 observes the active claim.
+    expect(firstRepo.claimNext()).toEqual({ taskId: "T1" });
+    expect(secondRepo.claimNext()).toBeUndefined();
+    expect(firstDb.query<{ count: number }, []>(`
+      SELECT COUNT(*) AS count FROM tasks WHERE status = 'claimed'
+    `).get()?.count).toBe(1);
+    expect(firstDb.query<{ count: number }, []>(`
+      SELECT COUNT(*) AS count FROM events WHERE type = 'task.claimed'
+    `).get()?.count).toBe(1);
+  } finally {
+    secondDb.close();
+    firstDb.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("skips a task with an unfinished dependency", () => {
   const { db, repo } = setup();
   try {

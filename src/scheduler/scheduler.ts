@@ -39,9 +39,9 @@ export class Scheduler {
       return { kind: "delivery", attemptId, eventId: delivery.event.eventId };
     }
 
-    const started = this.repo.beginNextAttempt();
+    const started = this.repo.beginNextAttempt(leaseOwnerId);
     if (started) return { kind: "attempt_started", attemptId: started.attemptId };
-    const claimed = this.repo.claimNext();
+    const claimed = this.repo.claimNext(leaseOwnerId);
     if (claimed) return { kind: "task_claimed", taskId: claimed.taskId };
     return { kind: "idle" };
   }

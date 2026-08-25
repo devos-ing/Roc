@@ -29,6 +29,28 @@ function parseCliArgs(args: string[]) {
   });
 }
 
+export function schedulerSleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    }, milliseconds);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      reject(signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+}
+
 const defaultRuntime: CliRuntime = {
   async runScheduler({ dbPath, scenario }) {
     const db = openDatabase(dbPath);
@@ -43,7 +65,7 @@ const defaultRuntime: CliRuntime = {
       const daemon = new SchedulerDaemon(scheduler, repo, {
         ownerId: `scheduler-${crypto.randomUUID()}`,
         now: () => new Date(),
-        sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+        sleep: schedulerSleep,
       });
       await daemon.run(() => stop.signal.aborted);
     } finally {

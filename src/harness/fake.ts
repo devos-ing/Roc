@@ -44,7 +44,11 @@ export function createFakeHarness(input: unknown): {
       const delivery = script.deliveries[index];
       if (!delivery) throw new Error(`Unexpected extra fake call for ${key}`);
       consumed.set(key, delivery.nextCursor);
-      return { kind: "event", ...delivery };
+      return {
+        kind: "event",
+        nextCursor: delivery.nextCursor,
+        event: { ...delivery.event, attemptId: request.attempt.attemptId },
+      };
     },
     async cancel(): Promise<void> {},
   };
