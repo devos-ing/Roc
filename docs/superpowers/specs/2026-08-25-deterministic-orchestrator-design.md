@@ -102,6 +102,15 @@ type HarnessStepRequest = {
     effort: "medium" | "high" | "xhigh";
     contextRef?: ContextRef;
   };
+  input:
+    | { role: "scout"; ticket: StoredTask }
+    | { role: "implement"; ticket: StoredTask; scout: ScoutOutput }
+    | {
+        role: "review";
+        ticket: StoredTask;
+        scout: ScoutOutput;
+        implementation: ImplementOutput;
+      };
   backendCursor?: string;
 };
 
@@ -138,7 +147,7 @@ Each scripted attempt is matched by `taskId + role + retryIndex`. It declares:
 - ordered deliveries;
 - stable event IDs, timestamps, outputs, usage deltas, and failures.
 
-The Fake provides `assertComplete()` for tests. Invalid JSON, a missing scripted attempt, an unexpected extra call, mismatched model/context, or unconsumed deliveries is a configuration error. It stops the run with a nonzero result and does not consume a task retry or silently invent success.
+The Fake provides `assertComplete()` for tests. Invalid JSON or schema stops before the database opens. A missing scripted attempt, unexpected extra call, mismatched model/context, or unconsumed delivery stops the run with a nonzero result; the current attempt remains recoverable and no retry is consumed or success invented.
 
 Fake Implement outputs a deterministic synthetic commit SHA. It does not touch Git.
 
@@ -164,7 +173,7 @@ priority ASC -> created_at ASC -> id ASC
 
 A task is claimable only when it is `ready`, approved, all dependencies are `done`, and no active attempt exists. Token targets do not participate in readiness.
 
-Atomic claim uses the existing task status as the claim: one transaction conditionally changes `ready -> claimed` and creates the Scout attempt. No separate claims table is needed.
+Atomic claim uses the existing task status as the claim: one transaction conditionally changes `ready -> claimed`; the next tick creates the Scout attempt. No separate claims table is needed.
 
 ## 8. Role Pipeline and Evidence
 
@@ -279,7 +288,8 @@ No claims table, delivery-history table, workflow table, message transcript tabl
 
 ## 15. Error Handling
 
-- Invalid scenario or missing script: configuration error; no task mutation.
+- Invalid JSON or scenario schema: configuration error before the database opens.
+- Missing script or expectation mismatch: stop the current recoverable attempt without consuming a retry.
 - Duplicate event: skip the already-applied effect and advance the cursor transactionally.
 - Invalid event sequence or attempt ID: stop with an integrity error; do not guess.
 - Semantic rejection: create one draft follow-up and move on.
