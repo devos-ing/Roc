@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { AgentHarness, HarnessStepRequest } from "../../src/harness/contracts";
+import type { AgentHarness, HarnessEvent, HarnessStepRequest } from "../../src/harness/contracts";
 import { createFakeHarness } from "../../src/harness/fake";
 import { Scheduler } from "../../src/scheduler/scheduler";
 import { openDatabase } from "../../src/store/database";
@@ -29,6 +29,13 @@ const reviewOutput = {
   remainingGaps: [],
 };
 
+const rejectedReviewOutput = {
+  kind: "review" as const,
+  decision: "rejected" as const,
+  findings: ["validation failed"],
+  remainingGaps: ["follow-up fixes validation"],
+};
+
 const inheritedContext = {
   threadId: "thread-C",
   anchorId: "anchor-C",
@@ -40,7 +47,7 @@ const inheritedContext = {
 function roleDeliveries(
   key: string,
   attemptId: string,
-  output: typeof scoutOutput | typeof implementOutput | typeof reviewOutput,
+  output: Extract<HarnessEvent, { type: "attempt.output" }>["output"],
 ) {
   return [
     {
@@ -99,7 +106,12 @@ function infraFailureDelivery(
   }];
 }
 
-function setupAcceptedTask() {
+function setupAcceptedTask(
+  finalReviewOutput: Extract<
+    Extract<HarnessEvent, { type: "attempt.output" }>["output"],
+    { kind: "review" }
+  > = reviewOutput,
+) {
   const db = openDatabase(":memory:");
   const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
   planning.createWeek({
@@ -164,7 +176,7 @@ function setupAcceptedTask() {
   const fake = createFakeHarness({ attempts: [
     { taskId: "T1", role: "scout", retryIndex: 0, expect: { model: "luna", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("scout", "attempt-1", scoutOutput) },
     { taskId: "T1", role: "implement", retryIndex: 0, expect: { model: "terra", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("implement", "attempt-2", implementOutput) },
-    { taskId: "T1", role: "review", retryIndex: 0, expect: { model: "sol", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("review", "attempt-3", reviewOutput) },
+    { taskId: "T1", role: "review", retryIndex: 0, expect: { model: "sol", effort: "high", contextRef: inheritedContext }, deliveries: roleDeliveries("review", "attempt-3", finalReviewOutput) },
   ] });
   const requests: HarnessStepRequest[] = [];
   const harness: AgentHarness = {
@@ -198,6 +210,34 @@ test("runs Scout, Implement, and isolated Review to done", async () => {
     });
     expect(requests.every((request) => request.attempt.contextRef?.sourceTaskId === "C")).toBe(true);
     expect(JSON.stringify(reviewRequest)).not.toContain("thread-implement");
+    expect(() => fake.assertComplete()).not.toThrow();
+  } finally {
+    db.close();
+  }
+});
+
+test("rejected Review creates one draft follow-up without rerunning the original task", async () => {
+  const { db, repo, scheduler, fake } = setupAcceptedTask(rejectedReviewOutput);
+  try {
+    await scheduler.runUntilIdle(40);
+
+    expect(repo.inspectTask("T1")).toMatchObject({ status: "rejected" });
+    expect(repo.listReviews("T1")).toMatchObject([{
+      decision: "rejected",
+      findings: ["validation failed"],
+    }]);
+    expect(repo.listTasksByRoot("T1")).toMatchObject([
+      { id: "T1", status: "rejected" },
+      {
+        id: "task-1",
+        status: "draft",
+        parentTaskId: "T1",
+        rootTaskId: "T1",
+        approved: false,
+      },
+    ]);
+    expect(repo.listAttempts("T1")).toHaveLength(3);
+    expect(repo.listAttempts("task-1")).toEqual([]);
     expect(() => fake.assertComplete()).not.toThrow();
   } finally {
     db.close();

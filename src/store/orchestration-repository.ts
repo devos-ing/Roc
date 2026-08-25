@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { z } from "zod";
-import { ContextRefSchema, StoredTaskSchema, TaskStatusSchema } from "../domain/schemas";
+import { ContextRefSchema, StoredTaskSchema, TaskStatusSchema, TicketSpecSchema } from "../domain/schemas";
 import { assertTransition } from "../domain/transitions";
 import {
   AgentRoleSchema,
@@ -347,17 +347,6 @@ export class OrchestrationRepository {
         `).get(attemptId, attempt.role);
         if (!outputRow) throw new Error(`Attempt completed without ${attempt.role} output: ${attemptId}`);
         const outputEvent = HarnessEventSchema.parse(JSON.parse(outputRow.payload_json));
-        if (
-          attempt.role === "review" &&
-          outputEvent.type === "attempt.output" &&
-          outputEvent.output.kind === "review" &&
-          outputEvent.output.decision !== "accepted"
-        ) {
-          throw new Error(`Unsupported Review decision in happy-path repository: ${outputEvent.output.decision}`);
-        }
-        this.db.query(`
-          UPDATE attempts SET status = 'succeeded', ended_at = ? WHERE id = ?
-        `).run(event.occurredAt, attemptId);
 
         if (
           attempt.role === "review" &&
@@ -365,6 +354,9 @@ export class OrchestrationRepository {
           outputEvent.output.kind === "review" &&
           outputEvent.output.decision === "accepted"
         ) {
+          this.db.query(`
+            UPDATE attempts SET status = 'succeeded', ended_at = ? WHERE id = ? AND status = 'running'
+          `).run(event.occurredAt, attemptId);
           this.db.query(`
             INSERT INTO reviews(id, task_id, attempt_id, decision, findings_json)
             VALUES(?, ?, ?, ?, ?)
@@ -394,6 +386,133 @@ export class OrchestrationRepository {
             JSON.stringify({ from, to: "done" }),
             event.occurredAt,
           );
+        } else if (
+          attempt.role === "review" &&
+          outputEvent.type === "attempt.output" &&
+          outputEvent.output.kind === "review" &&
+          outputEvent.output.decision === "rejected"
+        ) {
+          const review = outputEvent.output;
+          const original = this.db.query<{
+            id: string;
+            week_id: string;
+            title: string;
+            spec_json: string;
+            status: string;
+            priority: number;
+            token_ceiling: number;
+            root_task_id: string | null;
+            context_id: string | null;
+          }, [string]>(`
+            SELECT id, week_id, title, spec_json, status, priority, token_ceiling,
+                   root_task_id, context_id
+            FROM tasks WHERE id = ?
+          `).get(attempt.task_id);
+          if (!original) throw new Error(`Task not found: ${attempt.task_id}`);
+          const from = TaskStatusSchema.parse(original.status);
+          assertTransition(from, "rejected");
+          const originalSpec = TicketSpecSchema.parse(JSON.parse(original.spec_json));
+          const followUpSpec = TicketSpecSchema.parse({
+            ...originalSpec,
+            problem: `${originalSpec.problem}\n\nReview findings:\n${review.findings.map((finding) => `- ${finding}`).join("\n")}`,
+            acceptanceCriteria: [...new Set([
+              ...originalSpec.acceptanceCriteria,
+              ...review.remainingGaps,
+            ])],
+          });
+          const reviewId = this.id("review");
+          const followUpTaskId = this.id("task");
+          const rootTaskId = original.root_task_id ?? original.id;
+
+          this.db.query(`
+            INSERT INTO reviews(id, task_id, attempt_id, decision, findings_json)
+            VALUES($reviewId, $taskId, $attemptId, 'rejected', $findingsJson)
+          `).run({
+            reviewId,
+            taskId: attempt.task_id,
+            attemptId,
+            findingsJson: JSON.stringify(review.findings),
+          });
+          this.db.query(`
+            UPDATE attempts
+            SET status = 'succeeded', ended_at = $endedAt
+            WHERE id = $attemptId AND status = 'running'
+          `).run({ endedAt: event.occurredAt, attemptId });
+          this.db.query(`
+            UPDATE tasks
+            SET status = 'rejected', updated_at = $endedAt
+            WHERE id = $taskId AND status = 'reviewing'
+          `).run({ endedAt: event.occurredAt, taskId: attempt.task_id });
+          this.db.query(`
+            INSERT INTO tasks(
+              id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+              approval_required, approved, root_task_id, parent_task_id,
+              discovered_from_review_id, context_id, created_at, updated_at
+            ) VALUES(
+              $id, $weekId, $title, $specJson, 'draft', $priority, $risk, $tokenCeiling,
+              1, 0, $rootTaskId, $parentTaskId, $reviewId, $contextId, $now, $now
+            )
+          `).run({
+            id: followUpTaskId,
+            weekId: original.week_id,
+            title: original.title,
+            specJson: JSON.stringify(followUpSpec),
+            priority: original.priority,
+            risk: followUpSpec.risk,
+            tokenCeiling: original.token_ceiling,
+            rootTaskId,
+            parentTaskId: original.id,
+            reviewId,
+            contextId: original.context_id,
+            now: event.occurredAt,
+          });
+
+          const dependents = this.db.query<{ id: string }, [string]>(`
+            SELECT id FROM tasks
+            WHERE id IN (SELECT task_id FROM task_deps WHERE depends_on_task_id = ?)
+              AND status IN ('draft', 'ready')
+            ORDER BY created_at, id
+          `).all(attempt.task_id);
+          this.db.query(`
+            UPDATE tasks
+            SET status = 'needs_replan', updated_at = $now
+            WHERE id IN (SELECT task_id FROM task_deps WHERE depends_on_task_id = $rejectedTaskId)
+              AND status IN ('draft', 'ready')
+          `).run({ now: event.occurredAt, rejectedTaskId: attempt.task_id });
+
+          this.db.query(`
+            INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+            VALUES(?, ?, 'task.rejected', ?, ?)
+          `).run(
+            this.id("event"),
+            attempt.task_id,
+            JSON.stringify({ reviewId, from, to: "rejected" }),
+            event.occurredAt,
+          );
+          this.db.query(`
+            INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+            VALUES(?, ?, 'task.follow_up_created', ?, ?)
+          `).run(
+            this.id("event"),
+            followUpTaskId,
+            JSON.stringify({ reviewId, parentTaskId: original.id, rootTaskId }),
+            event.occurredAt,
+          );
+          for (const dependent of dependents) {
+            this.db.query(`
+              INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+              VALUES(?, ?, 'task.needs_replan', ?, ?)
+            `).run(
+              this.id("event"),
+              dependent.id,
+              JSON.stringify({ rejectedTaskId: attempt.task_id }),
+              event.occurredAt,
+            );
+          }
+        } else {
+          this.db.query(`
+            UPDATE attempts SET status = 'succeeded', ended_at = ? WHERE id = ? AND status = 'running'
+          `).run(event.occurredAt, attemptId);
         }
       } else if (event.type === "attempt.failed_infra") {
         this.db.query(`
@@ -456,6 +575,39 @@ export class OrchestrationRepository {
     return this.db.query<{ id: string; status: string }, [string]>(
       "SELECT id, status FROM tasks WHERE id = ?",
     ).get(taskId) ?? undefined;
+  }
+
+  listTasksByRoot(rootTaskId: string): Array<{
+    id: string;
+    status: string;
+    parentTaskId?: string;
+    rootTaskId?: string;
+    approved: boolean;
+  }> {
+    const parsedRootTaskId = StoredTaskSchema.shape.id.parse(rootTaskId);
+    const rows = this.db.query<{
+      id: string;
+      status: string;
+      parent_task_id: string | null;
+      root_task_id: string | null;
+      approved: number;
+    }, [string, string]>(`
+      SELECT id, status, parent_task_id, root_task_id, approved
+      FROM tasks
+      WHERE id = ? OR root_task_id = ?
+      ORDER BY created_at, id
+    `).all(parsedRootTaskId, parsedRootTaskId);
+    return rows.map((row) => ({
+      id: StoredTaskSchema.shape.id.parse(row.id),
+      status: TaskStatusSchema.parse(row.status),
+      ...(row.parent_task_id === null
+        ? {}
+        : { parentTaskId: StoredTaskSchema.shape.id.parse(row.parent_task_id) }),
+      ...(row.root_task_id === null
+        ? {}
+        : { rootTaskId: StoredTaskSchema.shape.id.parse(row.root_task_id) }),
+      approved: StoredTaskSchema.shape.approved.parse(Boolean(row.approved)),
+    }));
   }
 
   listAttempts(taskId: string): Array<{ role: string; model: string; effort: string; status: string; retryIndex: number }> {

@@ -62,7 +62,7 @@ function setup() {
     () => "2026-08-25T00:00:01.000Z",
     (kind) => `${kind}-${counters[kind] = (counters[kind] ?? 0) + 1}`,
   );
-  return { db, repo };
+  return { db, repo, counters };
 }
 
 function expectEventAbsent(db: Database, eventId: string): void {
@@ -325,9 +325,15 @@ test("terminal infrastructure failure marks ready dependents for replanning", ()
   }
 });
 
-test("rejects a rejected Review completion and rolls back every completion effect", () => {
-  const { db, repo } = setup();
+test("rejected Review creates one idempotent draft follow-up and replans dependents", () => {
+  const { db, repo, counters } = setup();
   try {
+    db.exec("INSERT INTO task_deps(task_id, depends_on_task_id, kind) VALUES ('T2', 'T1', 'blocks')");
+    db.exec(`
+      INSERT INTO contexts(id, thread_id, anchor_id, source_task_id, git_commit)
+      VALUES('context-T1', 'thread-T1', 'anchor-T1', 'T1', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+    `);
+    db.exec("UPDATE tasks SET context_id = 'context-T1' WHERE id = 'T1'");
     const attemptId = startReview(repo);
     repo.applyHarnessEvent(attemptId, "cursor-output", {
       type: "attempt.output",
@@ -338,23 +344,89 @@ test("rejects a rejected Review completion and rolls back every completion effec
       output: {
         kind: "review",
         decision: "rejected",
-        findings: ["Needs O5 follow-up handling"],
-        remainingGaps: ["Rejected Review is outside O3"],
+        findings: ["validation failed"],
+        remainingGaps: ["only one task is claimed", "follow-up fixes validation"],
       },
     });
 
-    expect(() => repo.applyHarnessEvent(attemptId, "cursor-completed", {
+    const completed = {
       type: "attempt.completed",
       eventId: "review:completed",
       attemptId,
       sequence: 2,
       occurredAt: "2026-08-25T00:00:03.000Z",
-    })).toThrow("Unsupported Review decision in happy-path repository: rejected");
-    expectEventAbsent(db, "review:completed");
-    expect(repo.inspectTask("T1")).toEqual({ id: "T1", status: "reviewing" });
-    expect(repo.listAttempts("T1").at(-1)).toMatchObject({ role: "review", status: "running" });
-    expect(repo.listReviews("T1")).toEqual([]);
-    expect(repo.getRunningAttempt()?.backendCursor).toBe("cursor-output");
+    } as const;
+    repo.applyHarnessEvent(attemptId, "cursor-completed", completed);
+
+    expect(repo.inspectTask("T1")).toMatchObject({ status: "rejected" });
+    expect(repo.inspectTask("T2")).toMatchObject({ status: "needs_replan" });
+    expect(repo.listAttempts("T1").at(-1)).toMatchObject({ role: "review", status: "succeeded" });
+    expect(repo.listReviews("T1")).toMatchObject([{
+      decision: "rejected",
+      findings: ["validation failed"],
+    }]);
+    expect(repo.listTasksByRoot("T1")).toMatchObject([
+      { id: "T1", status: "rejected", approved: true },
+      {
+        id: "task-1",
+        status: "draft",
+        parentTaskId: "T1",
+        rootTaskId: "T1",
+        approved: false,
+      },
+    ]);
+
+    const followUp = db.query<{
+      week_id: string;
+      title: string;
+      spec_json: string;
+      priority: number;
+      risk: string;
+      token_ceiling: number;
+      approval_required: number;
+      context_id: string | null;
+      discovered_from_review_id: string | null;
+    }, [string]>(`
+      SELECT week_id, title, spec_json, priority, risk, token_ceiling,
+             approval_required, context_id, discovered_from_review_id
+      FROM tasks WHERE id = ?
+    `).get("task-1");
+    expect(followUp).toMatchObject({
+      week_id: "2026-W35",
+      title: "T1",
+      priority: 0,
+      risk: "medium",
+      token_ceiling: 10_000,
+      approval_required: 1,
+      context_id: "context-T1",
+      discovered_from_review_id: "review-1",
+    });
+    expect(JSON.parse(followUp?.spec_json ?? "null")).toMatchObject({
+      problem: "Need deterministic scheduling\n\nReview findings:\n- validation failed",
+      acceptanceCriteria: ["only one task is claimed", "follow-up fixes validation"],
+    });
+    expect(db.query<{ depends_on_task_id: string }, []>(`
+      SELECT depends_on_task_id FROM task_deps WHERE task_id = 'T2'
+    `).all()).toEqual([{ depends_on_task_id: "T1" }]);
+    expect(db.query<{ type: string }, []>(`
+      SELECT type FROM events
+      WHERE type IN ('task.rejected', 'task.follow_up_created', 'task.needs_replan')
+      ORDER BY seq
+    `).all()).toEqual([
+      { type: "task.rejected" },
+      { type: "task.follow_up_created" },
+      { type: "task.needs_replan" },
+    ]);
+
+    const idsAfterCompletion = { ...counters };
+    repo.applyHarnessEvent(attemptId, "cursor-replayed", completed);
+
+    expect(counters).toEqual(idsAfterCompletion);
+    expect(repo.listTasksByRoot("T1")).toHaveLength(2);
+    expect(repo.listReviews("T1")).toHaveLength(1);
+    expect(db.query<{ backend_cursor: string | null }, [string]>(`
+      SELECT backend_cursor FROM attempts WHERE id = ?
+    `).get(attemptId)?.backend_cursor).toBe("cursor-replayed");
   } finally {
     db.close();
   }
