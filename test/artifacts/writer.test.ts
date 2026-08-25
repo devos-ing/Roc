@@ -152,7 +152,9 @@ test("rejects traversal and unsafe task IDs before creating artifact directories
   for (const id of ["../escaped", "nested/F6", "F6.md", "F6 with spaces", "F6\\nested"]) {
     const root = await mkdtemp(join(tmpdir(), "agile-artifact-"));
     try {
-      await expect(writeTicketArtifact(root, { ...task, id })).rejects.toThrow(/safe artifact task ID/);
+      await expect(writeTicketArtifact(root, { ...task, id })).rejects.toThrow(
+        `Unsafe artifact task ID: ${id}`,
+      );
       expect(await pathExists(join(root, ".agile"))).toBe(false);
       expect(await pathExists(join(root, "escaped.md"))).toBe(false);
     } finally {

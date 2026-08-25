@@ -1,4 +1,5 @@
 .superpowers/
 .worktrees/
 .agile/runtime/
+.agile/worktrees/
 node_modules/

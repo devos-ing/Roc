@@ -3,10 +3,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { TaskCreateSchema, type TaskCreate } from "../domain/schemas";
-
-// Artifact filenames use a portable task-ID subset: an ASCII letter/digit first,
-// followed by ASCII letters, digits, underscores, or hyphens.
-const SafeArtifactTaskId = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+import { safeTaskPathComponent } from "../domain/task-path";
 
 function isMissingFileError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
@@ -85,7 +82,9 @@ export async function writeTicketArtifact(
 ): Promise<{ path: string; sha256: string }> {
   const task = TaskCreateSchema.parse(input);
   const directory = join(projectRoot, ".agile", "tickets");
-  if (!SafeArtifactTaskId.test(task.id)) {
+  try {
+    safeTaskPathComponent(task.id);
+  } catch {
     throw new Error(`Unsafe artifact task ID: ${task.id}`);
   }
   const path = join(directory, `${task.id}.md`);
