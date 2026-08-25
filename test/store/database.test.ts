@@ -14,11 +14,29 @@ test("migration creates every approved table", () => {
 
   for (const name of [
     "attempts", "contexts", "events", "model_decisions", "reviews",
-    "task_deps", "tasks", "usage", "weeks",
+    "scheduler_lease", "task_deps", "tasks", "usage", "weeks",
   ]) {
     expect(names).toContain(name);
   }
-  expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(1);
+  expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(2);
+  const attemptColumns = db.query<{ name: string }, []>("PRAGMA table_info(attempts)").all();
+  expect(attemptColumns.map((column) => column.name)).toContain("backend_cursor");
+  const taskIndexes = db.query<{
+    seq: number;
+    name: string;
+    unique: number;
+    origin: string;
+    partial: number;
+  }, []>(
+    "PRAGMA index_list(tasks)",
+  ).all();
+  expect(taskIndexes).toContainEqual({
+    seq: expect.any(Number),
+    name: "tasks_one_followup_per_review",
+    unique: 1,
+    origin: "c",
+    partial: 1,
+  });
   db.close();
 });
 
@@ -292,13 +310,13 @@ test("database initialization closes its handle before rethrowing", () => {
   const directory = mkdtempSync(join(tmpdir(), "agile-agents-db-"));
   const path = join(directory, "future.sqlite");
   const future = new Database(path, { create: true });
-  future.exec("PRAGMA user_version = 2");
+  future.exec("PRAGMA user_version = 3");
   future.close();
 
   const close = spyOn(Database.prototype, "close");
   try {
     expect(() => openDatabase(path)).toThrow(
-      "Database version 2 is newer than supported version 1",
+      "Database version 3 is newer than supported version 2",
     );
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
@@ -323,7 +341,7 @@ test("file databases create parents and enable durable SQLite settings", () => {
 
     const reopened = openDatabase(path);
     try {
-      expect(reopened.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(1);
+      expect(reopened.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(2);
     } finally {
       reopened.close();
     }

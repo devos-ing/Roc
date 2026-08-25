@@ -119,13 +119,33 @@ CREATE TABLE events (
 );
 `;
 
+const migration2 = `
+ALTER TABLE attempts ADD COLUMN backend_cursor TEXT;
+CREATE TABLE scheduler_lease (
+  lease_key TEXT PRIMARY KEY NOT NULL CHECK(lease_key = 'scheduler'),
+  owner_id TEXT NOT NULL,
+  heartbeat_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX tasks_one_followup_per_review
+  ON tasks(discovered_from_review_id)
+  WHERE discovered_from_review_id IS NOT NULL;
+`;
+
 export function migrate(db: Database): void {
-  const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
-  if (version > 1) throw new Error(`Database version ${version} is newer than supported version 1`);
+  let version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
+  if (version > 2) throw new Error(`Database version ${version} is newer than supported version 2`);
   if (version === 0) {
     db.transaction(() => {
       db.exec(migration1);
       db.exec("PRAGMA user_version = 1");
+    })();
+    version = 1;
+  }
+  if (version === 1) {
+    db.transaction(() => {
+      db.exec(migration2);
+      db.exec("PRAGMA user_version = 2");
     })();
   }
 }
