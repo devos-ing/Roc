@@ -50,7 +50,7 @@
 | `src/store/orchestration-repository.ts` | Persist profiles/turn/base, policy block, inspection, Advisor seam |
 | `src/cli/run.ts` | Backend selection and runtime composition |
 
-### Task C1: Typed errors and structured local logging
+### Task 1 (C1): Typed errors and structured local logging
 
 **Files:**
 - Create: `src/runtime/errors.ts`
@@ -277,7 +277,7 @@ rtk git add src/runtime/errors.ts src/runtime/logger.ts test/runtime/errors-and-
 rtk git commit -m "feat: add typed runtime error logging"
 ```
 
-### Task C2: Migration v3, runtime metadata, and policy-block transition
+### Task 2 (C2): Migration v3, runtime metadata, and policy-block transition
 
 **Files:**
 - Modify: `src/domain/schemas.ts`
@@ -410,7 +410,7 @@ rtk git add src/domain/schemas.ts src/domain/transitions.ts src/harness/contract
 rtk git commit -m "feat: persist real harness attempt metadata"
 ```
 
-### Task C3: Catalog-backed deterministic Model Advisor
+### Task 3 (C3): Catalog-backed deterministic Model Advisor
 
 **Files:**
 - Modify: `src/scheduler/model-routing.ts`
@@ -548,7 +548,7 @@ rtk git add src/scheduler/model-routing.ts src/store/orchestration-repository.ts
 rtk git commit -m "feat: resolve model profiles from codex catalog"
 ```
 
-### Task C4: Task-scoped Git worktree isolation
+### Task 4 (C4): Task-scoped Git worktree isolation
 
 **Files:**
 - Create: `src/domain/task-path.ts`
@@ -662,7 +662,7 @@ rtk git add .gitignore src/domain/task-path.ts src/artifacts/writer.ts src/works
 rtk git commit -m "feat: isolate tasks in git worktrees"
 ```
 
-### Task C5: Minimal Codex app-server JSON-RPC client
+### Task 5 (C5): Minimal Codex app-server JSON-RPC client
 
 **Files:**
 - Create: `src/codex/protocol.ts`
@@ -795,7 +795,7 @@ rtk git add src/codex/protocol.ts src/codex/client.ts test/fixtures/scripted-app
 rtk git commit -m "feat: add codex app server client"
 ```
 
-### Task C6: Scout and Implement CodexHarness with normalized usage
+### Task 6 (C6): Scout and Implement CodexHarness with normalized usage
 
 **Files:**
 - Create: `src/codex/prompts.ts`
@@ -918,7 +918,7 @@ rtk git add src/codex/prompts.ts src/codex/harness.ts src/codex/protocol.ts src/
 rtk git commit -m "feat: run scout and implement through codex"
 ```
 
-### Task C7: Detached Review, approval blocking, and minimal reconciliation
+### Task 7 (C7): Detached Review, approval blocking, and minimal reconciliation
 
 **Files:**
 - Modify: `src/codex/prompts.ts`
@@ -1017,7 +1017,7 @@ rtk git add src/codex/prompts.ts src/codex/harness.ts src/codex/protocol.ts test
 rtk git commit -m "feat: add isolated codex review and recovery"
 ```
 
-### Task C8: CLI backend composition and opt-in real Codex smoke
+### Task 8 (C8): CLI backend composition and opt-in real Codex smoke
 
 **Files:**
 - Modify: `src/cli/help.ts`
