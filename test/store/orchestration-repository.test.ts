@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { Database } from "bun:sqlite";
 import type { HarnessEvent } from "../../src/harness/contracts";
 import { openDatabase } from "../../src/store/database";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
@@ -62,6 +63,12 @@ function setup() {
     (kind) => `${kind}-${counters[kind] = (counters[kind] ?? 0) + 1}`,
   );
   return { db, repo };
+}
+
+function expectEventAbsent(db: Database, eventId: string): void {
+  expect(db.query<{ count: number }, [string]>(`
+    SELECT COUNT(*) AS count FROM events WHERE idempotency_key = ?
+  `).get(eventId)?.count).toBe(0);
 }
 
 function startScout(repo: OrchestrationRepository): string {
@@ -234,6 +241,7 @@ test("rolls back an output whose kind does not match the attempt role", () => {
       occurredAt: "2026-08-25T00:00:02.000Z",
       output: implementOutput,
     })).toThrow("Harness output role mismatch: implement !== scout");
+    expectEventAbsent(db, "scout:wrong-output");
     expect(repo.getRunningAttempt()?.backendCursor).toBeUndefined();
     expect(repo.listAttempts("T1")).toMatchObject([{ role: "scout", status: "running" }]);
   } finally {
@@ -252,6 +260,7 @@ test("rolls back completion when the attempt has no matching output", () => {
       sequence: 1,
       occurredAt: "2026-08-25T00:00:02.000Z",
     })).toThrow(`Attempt completed without scout output: ${attemptId}`);
+    expectEventAbsent(db, "scout:completed");
     expect(repo.getRunningAttempt()?.backendCursor).toBeUndefined();
     expect(repo.listAttempts("T1")).toMatchObject([{ role: "scout", status: "running" }]);
   } finally {
@@ -285,6 +294,7 @@ for (const unsupportedEvent of [
         sequence: 1,
         occurredAt: "2026-08-25T00:00:02.000Z",
       })).toThrow(`Unsupported harness event in happy-path repository: ${unsupportedEvent.type}`);
+      expectEventAbsent(db, `scout:${unsupportedEvent.type}`);
       expect(repo.getRunningAttempt()?.backendCursor).toBeUndefined();
       expect(repo.listAttempts("T1")).toMatchObject([{ role: "scout", status: "running" }]);
     } finally {
@@ -318,6 +328,7 @@ test("rejects a rejected Review completion and rolls back every completion effec
       sequence: 2,
       occurredAt: "2026-08-25T00:00:03.000Z",
     })).toThrow("Unsupported Review decision in happy-path repository: rejected");
+    expectEventAbsent(db, "review:completed");
     expect(repo.inspectTask("T1")).toEqual({ id: "T1", status: "reviewing" });
     expect(repo.listAttempts("T1").at(-1)).toMatchObject({ role: "review", status: "running" });
     expect(repo.listReviews("T1")).toEqual([]);
