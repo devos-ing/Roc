@@ -1144,6 +1144,68 @@ rtk git add src/cli/help.ts src/cli/run.ts test/cli/help.test.ts test/cli/schedu
 rtk git commit -m "feat: run scheduler with real codex"
 ```
 
+### Task 9 (C6.1): Trusted Harness-owned Implement commit
+
+Live C8 evidence exposed a Codex sandbox invariant: workspace-write intentionally protects `.git` and a linked worktree's resolved Git directory as read-only. The model can edit the task worktree but cannot safely create the required commit with `approvalPolicy: "never"`. Do not use danger-full-access. Move only Git commit authorship to the trusted Harness.
+
+**Files:**
+- Modify: `src/workspace/task-worktree.ts`
+- Modify: `src/codex/prompts.ts`
+- Modify: `src/codex/harness.ts`
+- Modify: `test/workspace/task-worktree.test.ts`
+- Modify: `test/codex/harness.test.ts`
+
+- [ ] **Step 1: Add failing controlled-commit tests**
+
+Extend the real disposable worktree test to prove `commitChanges(taskId)` commits a dirty worktree once, returns a full SHA, leaves status clean, and returns the same SHA without creating a second commit when replayed. It must fail closed for zero clean commits or more than one task commit.
+
+Update the recorded Implement flow so the model's final JSON has no `commitSha`; the worktree starts dirty; the Harness returns a normalized `ImplementOutput` containing the real Harness-created SHA; `baseCommit..agile/T1` contains exactly one commit.
+
+- [ ] **Step 2: Run focused tests and verify RED**
+
+Run: `rtk bun test test/workspace/task-worktree.test.ts test/codex/harness.test.ts`
+
+Expected: FAIL because `commitChanges` and the internal draft output do not exist.
+
+- [ ] **Step 3: Add the trusted worktree commit primitive**
+
+Extend `TaskWorktreeManager` with:
+
+```ts
+commitChanges(taskId: string): Promise<string>;
+```
+
+Use argument-array Git commands only. For a prepared/reusable task branch:
+
+- count `baseCommit..refs/heads/agile/<taskId>`;
+- if the count is zero, require a non-empty porcelain status, stage with `git add -A`, and commit with fixed local identity `Agile Agents <agile-agents@local>` and message `agile(<taskId>): implement ticket`;
+- if the count is one, require a clean worktree and return its full branch HEAD idempotently;
+- otherwise fail closed;
+- after committing, require exactly one task commit, a clean worktree, and a full reachable SHA before returning.
+
+Never merge, push, reset, remove, or accept a model-supplied commit message.
+
+- [ ] **Step 4: Use an internal Implement draft schema**
+
+In `src/codex/prompts.ts`, derive and export `ImplementDraftOutputSchema` and its JSON Schema from `ImplementOutputSchema` by omitting `commitSha`. Tell Implement to edit and validate, not run Git metadata commands; the trusted Harness will commit after validating the final draft.
+
+In `src/codex/harness.ts`, send the draft JSON Schema to Codex. For live delivery and authoritative reconcile, parse the draft, call `worktrees.commitChanges(taskId)`, construct the normalized `ImplementOutput` with the returned SHA, and retain the existing stable item-derived output event ID. Map commit-state failure to retryable `invalid_implementation_commit`. Keep Scout, Review, usage, policy, and cursor behavior unchanged.
+
+- [ ] **Step 5: Verify focused, offline, and live GREEN**
+
+Run: `rtk bun test test/workspace/task-worktree.test.ts test/codex/harness.test.ts test/harness/fake.test.ts test/scheduler/scheduler.test.ts`
+
+Run: `rtk bun run check`
+
+Then resume C8 and run: `rtk env AGILE_REAL_CODEX=1 bun test test/integration/real-codex.test.ts`
+
+- [ ] **Step 6: Commit C6.1**
+
+```bash
+rtk git add src/workspace/task-worktree.ts src/codex/prompts.ts src/codex/harness.ts test/workspace/task-worktree.test.ts test/codex/harness.test.ts
+rtk git commit -m "fix: commit implement changes outside codex sandbox"
+```
+
 ## Slice completion gate
 
 Run from a clean branch after all eight task reviews are resolved:

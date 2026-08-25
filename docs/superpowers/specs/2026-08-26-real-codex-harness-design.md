@@ -152,7 +152,7 @@ branch:   agile/T1
 
 Task IDs pass the same canonical path validation used for artifacts. Git commands use argument arrays, never shell interpolation. A pre-existing worktree is reused only when Git reports the expected repository, branch, and task base. Conflicts fail closed.
 
-Scout and Review receive read-only sandbox policies. Implement receives workspace-write access limited to its task worktree. Network access is disabled in Slice 3A. Accepted and rejected worktrees are retained for human inspection; the system does not merge, push, or delete them.
+Scout and Review receive read-only sandbox policies. Implement receives workspace-write access limited to its task worktree. Network access is disabled in Slice 3A. Codex deliberately keeps `.git` and a linked worktree's resolved Git directory read-only under workspace-write, so the model edits and validates files but does not commit. After a valid final Implement draft, the trusted Harness creates the single task commit outside the turn sandbox through the worktree manager. Accepted and rejected worktrees are retained for human inspection; the system does not merge, push, or delete them.
 
 ## 5. Persistence changes
 
@@ -222,11 +222,12 @@ Scout cannot modify files.
 
 - Start a fresh thread in the same task worktree with workspace-write sandboxing.
 - Pass the ticket and validated Scout output explicitly; do not inherit the Scout conversation.
-- Require validation and exactly one Git commit for the attempted change.
-- Use `ImplementOutputSchema` as `outputSchema`.
-- Verify that the returned commit exists, belongs to the task worktree branch, and contains the reported work.
+- Require the model to edit and validate the ticket without writing Git metadata.
+- Use an internal Implement draft schema—`ImplementOutputSchema` without `commitSha`—as the Codex `outputSchema`.
+- After a valid final draft, have the trusted worktree manager stage the task-worktree changes and create exactly one fixed-message commit with a fixed local identity.
+- Return the verified commit SHA in the normalized `ImplementOutputSchema` event. If restart recovery finds exactly one clean task commit, reuse it idempotently; zero clean commits or more than one task commit fails closed.
 
-A missing or invalid commit produces retryable `invalid_implementation_commit` rather than a guessed success.
+A missing, dirty, duplicate, or invalid commit state produces retryable `invalid_implementation_commit` rather than a guessed success. The Harness never enables danger-full-access merely to let the model write Git metadata.
 
 ### 6.4 Review
 
