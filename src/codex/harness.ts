@@ -181,8 +181,8 @@ function turnSandbox(role: "scout" | "implement", workspace: TaskWorkspace): unk
     type: "workspaceWrite",
     writableRoots: [workspace.path],
     networkAccess: false,
-    excludeTmpdirEnvVar: false,
-    excludeSlashTmp: false,
+    excludeTmpdirEnvVar: true,
+    excludeSlashTmp: true,
   };
 }
 
