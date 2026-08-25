@@ -783,18 +783,18 @@ export class OrchestrationRepository {
       reasoning_output_tokens: number;
     }, []>(`
       SELECT
-        usage.task_id,
-        usage.category AS role,
+        attempt.task_id,
+        attempt.role,
         COALESCE(SUM(usage.input_tokens), 0) AS input_tokens,
         COALESCE(SUM(usage.cached_input_tokens), 0) AS cached_input_tokens,
         COALESCE(SUM(usage.output_tokens), 0) AS output_tokens,
         COALESCE(SUM(usage.reasoning_output_tokens), 0) AS reasoning_output_tokens
-      FROM usage
-      WHERE usage.task_id IS NOT NULL
-      GROUP BY usage.task_id, usage.category
-      ORDER BY usage.task_id ASC,
-        CASE usage.category WHEN 'scout' THEN 0 WHEN 'implement' THEN 1 ELSE 2 END ASC,
-        usage.category ASC
+      FROM attempts AS attempt
+      LEFT JOIN usage ON usage.attempt_id = attempt.id
+      GROUP BY attempt.task_id, attempt.role
+      ORDER BY attempt.task_id ASC,
+        CASE attempt.role WHEN 'scout' THEN 0 WHEN 'implement' THEN 1 ELSE 2 END ASC,
+        attempt.role ASC
     `).all();
     const attempts = this.db.query<{
       id: string;

@@ -419,6 +419,51 @@ test("rolls back completion when the attempt has no matching output", () => {
   }
 });
 
+test("inspects a running Scout role with zero usage", () => {
+  const { db, repo } = setupInspect();
+  try {
+    const snapshot = repo.inspect();
+
+    expect(snapshot.weeks).toEqual([{
+      id: "2026-W35",
+      tokenTarget: 100_000,
+      actual: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+      },
+    }]);
+    expect(snapshot.tasks[0]).toMatchObject({
+      id: "T1",
+      actual: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+      },
+      roles: [{
+        role: "scout",
+        actual: {
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+      }],
+      attempts: [{
+        id: "attempt-1",
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+      }],
+    });
+  } finally {
+    db.close();
+  }
+});
+
 test("records each token delta once and inspects deterministic usage totals", () => {
   const { db, repo, attemptId } = setupInspect();
   try {
