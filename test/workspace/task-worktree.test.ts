@@ -50,6 +50,10 @@ test("prepares an isolated task branch and validates its committed result", asyn
     await git(["commit", "-m", "feat: answer"], first.path);
     const commit = (await git(["rev-parse", "HEAD"], first.path)).stdout.trim();
     await expect(manager.assertCommit("T1", commit)).resolves.toBeUndefined();
+    await expect(manager.assertCommit("T1", "abc123")).rejects.toThrow(
+      "Invalid full commit SHA: abc123",
+    );
+    await expect(manager.assertCommit("T1", "0".repeat(40))).rejects.toThrow(/git cat-file -e/);
     expect(await manager.prepare("T1")).toEqual(first);
 
     await Bun.write(join(root, "outside.txt"), "outside task branch\n");
@@ -61,6 +65,25 @@ test("prepares an isolated task branch and validates its committed result", asyn
     );
 
     await expect(manager.prepare("../escape")).rejects.toThrow("Unsafe task path component");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects reuse when the existing task branch has a different base identity", async () => {
+  const root = await createRepository();
+  try {
+    const firstManager = await createTaskWorktreeManager(root, "HEAD");
+    await firstManager.prepare("T1");
+
+    await writeFile(join(root, "new-base.txt"), "new base\n");
+    await git(["add", "new-base.txt"], root);
+    await git(["commit", "-m", "test: advance base"], root);
+
+    const conflictingManager = await createTaskWorktreeManager(root, "HEAD");
+    await expect(conflictingManager.prepare("T1")).rejects.toThrow(
+      "Task branch agile/T1 does not descend from its base commit",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
