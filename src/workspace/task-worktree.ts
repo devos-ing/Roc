@@ -10,10 +10,11 @@ export type TaskWorkspace = {
 };
 
 export type TaskWorktreeManager = {
-  prepare(taskId: string): Promise<TaskWorkspace>;
-  commitChanges(taskId: string): Promise<string>;
-  assertCommit(taskId: string, commitSha: string): Promise<void>;
-  status(taskId: string): Promise<string>;
+  prepare(taskId: string, baseCommit?: string): Promise<TaskWorkspace>;
+  commitChanges(taskId: string, baseCommit?: string): Promise<string>;
+  assertCommit(taskId: string, commitSha: string, baseCommit?: string): Promise<void>;
+  assertReviewReady(taskId: string, commitSha: string, baseCommit?: string): Promise<void>;
+  status(taskId: string, baseCommit?: string): Promise<string>;
 };
 
 type GitResult = {
@@ -35,18 +36,39 @@ function isFileError(error: unknown, code: string): boolean {
 async function spawnGit(
   args: string[],
   cwd: string,
-  env?: Record<string, string | undefined>,
 ): Promise<GitResult> {
-  const process = Bun.spawn(["git", ...args], {
+  const child = Bun.spawn([
+    "git",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "user.name=Agile Agents",
+    "-c",
+    "user.email=agile-agents@local",
+    ...args,
+  ], {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
-    ...(env === undefined ? {} : { env }),
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      HOME: process.env.HOME ?? "/tmp",
+      LC_ALL: "C",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_AUTHOR_NAME: "Agile Agents",
+      GIT_AUTHOR_EMAIL: "agile-agents@local",
+      GIT_COMMITTER_NAME: "Agile Agents",
+      GIT_COMMITTER_EMAIL: "agile-agents@local",
+    },
   });
   const [exitCode, stdout, stderr] = await Promise.all([
-    process.exited,
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
   ]);
   return { exitCode, stdout, stderr };
 }
@@ -54,9 +76,8 @@ async function spawnGit(
 async function git(
   args: string[],
   cwd: string,
-  env?: Record<string, string | undefined>,
 ): Promise<GitResult> {
-  const result = await spawnGit(args, cwd, env);
+  const result = await spawnGit(args, cwd);
   if (result.exitCode !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim()}`);
   }
@@ -134,13 +155,17 @@ export async function createTaskWorktreeManager(
     await ensureRealDirectory(worktreesDirectory);
   }
 
-  function workspace(taskId: string): TaskWorkspace {
+  function workspace(taskId: string, persistedBaseCommit?: string): TaskWorkspace {
     const safeTaskId = safeTaskPathComponent(taskId);
+    const taskBaseCommit = persistedBaseCommit ?? baseCommit;
+    if (!/^[0-9a-f]{40}$/.test(taskBaseCommit)) {
+      throw new Error(`Invalid persisted base commit: ${taskBaseCommit}`);
+    }
     return {
       taskId: safeTaskId,
       path: join(worktreesDirectory, safeTaskId),
       branch: `agile/${safeTaskId}`,
-      baseCommit,
+      baseCommit: taskBaseCommit,
     };
   }
 
@@ -243,9 +268,10 @@ export async function createTaskWorktreeManager(
   await validateWorktreeRoot();
 
   return {
-    async prepare(taskId: string): Promise<TaskWorkspace> {
-      const candidate = workspace(taskId);
+    async prepare(taskId: string, persistedBaseCommit?: string): Promise<TaskWorkspace> {
+      const candidate = workspace(taskId, persistedBaseCommit);
       await validateWorktreeRoot();
+      await git(["cat-file", "-e", `${candidate.baseCommit}^{commit}`], canonicalRepo);
       const [pathExists, hasBranch] = await Promise.all([
         realDirectoryExists(candidate.path),
         branchExists(candidate.branch),
@@ -267,8 +293,8 @@ export async function createTaskWorktreeManager(
       return candidate;
     },
 
-    async commitChanges(taskId: string): Promise<string> {
-      const candidate = workspace(taskId);
+    async commitChanges(taskId: string, persistedBaseCommit?: string): Promise<string> {
+      const candidate = workspace(taskId, persistedBaseCommit);
       await assertReusable(candidate);
       const count = await taskCommitCount(candidate);
 
@@ -279,24 +305,11 @@ export async function createTaskWorktreeManager(
         await git(["add", "-A"], candidate.path);
         await git(
           [
-            "-c",
-            "user.name=Agile Agents",
-            "-c",
-            "user.email=agile-agents@local",
-            "-c",
-            "core.hooksPath=/dev/null",
             "commit",
             "-m",
             `agile(${candidate.taskId}): implement ticket`,
           ],
           candidate.path,
-          {
-            ...process.env,
-            GIT_AUTHOR_NAME: "Agile Agents",
-            GIT_AUTHOR_EMAIL: "agile-agents@local",
-            GIT_COMMITTER_NAME: "Agile Agents",
-            GIT_COMMITTER_EMAIL: "agile-agents@local",
-          },
         );
       } else if (count !== 1) {
         throw new Error(
@@ -307,14 +320,32 @@ export async function createTaskWorktreeManager(
       return validatedSingleCommit(candidate);
     },
 
-    async assertCommit(taskId: string, commitSha: string): Promise<void> {
-      const candidate = workspace(taskId);
+    async assertCommit(
+      taskId: string,
+      commitSha: string,
+      persistedBaseCommit?: string,
+    ): Promise<void> {
+      const candidate = workspace(taskId, persistedBaseCommit);
       await assertReusable(candidate);
       await assertReachableCommit(candidate, commitSha);
     },
 
-    async status(taskId: string): Promise<string> {
-      const candidate = workspace(taskId);
+    async assertReviewReady(
+      taskId: string,
+      commitSha: string,
+      persistedBaseCommit?: string,
+    ): Promise<void> {
+      const candidate = workspace(taskId, persistedBaseCommit);
+      const branchCommit = await validatedSingleCommit(candidate);
+      if (branchCommit !== commitSha) {
+        throw new Error(
+          `Task branch ${candidate.branch} HEAD is not the exact implementation commit ${commitSha}`,
+        );
+      }
+    },
+
+    async status(taskId: string, persistedBaseCommit?: string): Promise<string> {
+      const candidate = workspace(taskId, persistedBaseCommit);
       await assertReusable(candidate);
       return porcelainStatus(candidate);
     },

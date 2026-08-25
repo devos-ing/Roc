@@ -100,21 +100,34 @@ function attachRunId(error: unknown, runId: string, fallback: {
   });
 }
 
-async function runDaemon(input: {
-  daemon: SchedulerDaemon;
-  repo: OrchestrationRepository;
+export async function runDaemon(input: {
+  daemon: Pick<SchedulerDaemon, "run">;
+  repo: Pick<OrchestrationRepository, "getRunningAttempt">;
   harness: AgentHarness;
   logger: Logger;
   runId: string;
+  closeBackend?: () => Promise<void>;
+  shutdownTimeoutMs?: number;
 }): Promise<void> {
   const stop = new AbortController();
-  let interrupt = Promise.resolve();
+  let shutdown: Promise<void> | undefined;
   const onSignal = () => {
     stop.abort();
-    const active = input.repo.getRunningAttempt();
-    if (active !== undefined) {
-      interrupt = interrupt.then(() => input.harness.cancel(active.descriptor.attemptId));
-    }
+    shutdown ??= (async () => {
+      const active = input.repo.getRunningAttempt();
+      const cancellation = active === undefined
+        ? Promise.resolve()
+        : input.harness.cancel(active.descriptor.attemptId).catch(() => undefined);
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        cancellation,
+        new Promise<void>((resolve) => {
+          deadline = setTimeout(resolve, input.shutdownTimeoutMs ?? 250);
+        }),
+      ]);
+      if (deadline !== undefined) clearTimeout(deadline);
+      await input.closeBackend?.();
+    })();
   };
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
@@ -129,7 +142,7 @@ async function runDaemon(input: {
       runId: input.runId,
     });
     await input.daemon.run(() => stop.signal.aborted);
-    await interrupt;
+    await shutdown;
     await input.logger.write({
       level: "info",
       code: "SCHEDULER_RUN_STOPPED",
@@ -255,6 +268,7 @@ async function runCodex(input: Extract<SchedulerRunInput, { backend: "codex" }>,
       harness,
       logger: loggerFor({ dbPath: input.dbPath, repoPath: input.repoPath }),
       runId,
+      closeBackend: () => client.close(),
     });
   } finally {
     try {

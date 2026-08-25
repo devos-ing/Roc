@@ -61,6 +61,7 @@ export const StoredTaskSchema = TaskCreateSchema.extend({
   status: TaskStatusSchema,
   specPath: NonEmpty.optional(),
   specHash: NonEmpty.optional(),
+  baseCommit: z.string().regex(/^[0-9a-f]{40}$/).optional(),
 }).strict();
 
 export const ModelDecisionSchema = z.object({

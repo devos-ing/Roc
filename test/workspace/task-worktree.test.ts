@@ -165,6 +165,28 @@ test("does not run worktree-controlled Git hooks from the trusted commit", async
   }
 });
 
+test("does not run hostile checkout hooks while creating a task worktree", async () => {
+  const root = await createRepository();
+  try {
+    const hooksPath = join(root, ".hostile-hooks");
+    const sentinel = join(root, "hostile-post-checkout-ran.txt");
+    await mkdir(hooksPath);
+    await writeFile(
+      join(hooksPath, "post-checkout"),
+      `#!/bin/sh\nprintf 'ran\\n' > ${JSON.stringify(sentinel)}\n`,
+    );
+    await chmod(join(hooksPath, "post-checkout"), 0o755);
+    await git(["config", "core.hooksPath", hooksPath], root);
+
+    const manager = await createTaskWorktreeManager(root, "HEAD");
+    await manager.prepare("T1");
+
+    expect(await Bun.file(sentinel).exists()).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("fails closed for zero clean task commits or more than one task commit", async () => {
   const root = await createRepository();
   try {
@@ -191,16 +213,56 @@ test("rejects reuse when the existing task branch has a different base identity"
   const root = await createRepository();
   try {
     const firstManager = await createTaskWorktreeManager(root, "HEAD");
-    await firstManager.prepare("T1");
+    const first = await firstManager.prepare("T1");
 
     await writeFile(join(root, "new-base.txt"), "new base\n");
     await git(["add", "new-base.txt"], root);
     await git(["commit", "-m", "test: advance base"], root);
 
     const conflictingManager = await createTaskWorktreeManager(root, "HEAD");
+    await expect(conflictingManager.prepare("T1", first.baseCommit)).resolves.toEqual(first);
     await expect(conflictingManager.prepare("T1")).rejects.toThrow(
       "Task branch agile/T1 does not descend from its base commit",
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("requires Review to inspect the exact sole clean implementation commit", async () => {
+  const root = await createRepository();
+  try {
+    const manager = await createTaskWorktreeManager(root, "HEAD");
+    const workspace = await manager.prepare("T1");
+    await writeFile(join(workspace.path, "implementation.txt"), "implemented\n");
+    const commit = await manager.commitChanges("T1", workspace.baseCommit);
+
+    await expect(
+      manager.assertReviewReady("T1", commit, workspace.baseCommit),
+    ).resolves.toBeUndefined();
+
+    await writeFile(join(workspace.path, "implementation.txt"), "dirty\n");
+    await expect(
+      manager.assertReviewReady("T1", commit, workspace.baseCommit),
+    ).rejects.toThrow(/must be clean/i);
+    await writeFile(join(workspace.path, "implementation.txt"), "implemented\n");
+
+    await writeFile(join(workspace.path, "extra.txt"), "extra\n");
+    await git(["add", "extra.txt"], workspace.path);
+    await git(["commit", "-m", "test: forbidden second commit"], workspace.path);
+    await expect(
+      manager.assertReviewReady("T1", commit, workspace.baseCommit),
+    ).rejects.toThrow(/exactly one task commit/i);
+
+    const second = await manager.prepare("T2");
+    await writeFile(join(second.path, "other.txt"), "other\n");
+    const otherCommit = await manager.commitChanges("T2", second.baseCommit);
+    await expect(
+      manager.assertReviewReady("T2", commit, second.baseCommit),
+    ).rejects.toThrow(/exact implementation commit/i);
+    await expect(
+      manager.assertReviewReady("T2", otherCommit, second.baseCommit),
+    ).resolves.toBeUndefined();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

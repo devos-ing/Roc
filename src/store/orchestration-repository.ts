@@ -111,6 +111,7 @@ type TaskRow = {
   spec_json: string;
   spec_path: string | null;
   spec_hash: string | null;
+  base_commit: string | null;
   status: string;
   priority: number;
   approval_required: number;
@@ -145,6 +146,7 @@ function storedTask(row: TaskRow) {
     approved: Boolean(row.approved),
     specPath: row.spec_path ?? undefined,
     specHash: row.spec_hash ?? undefined,
+    baseCommit: row.base_commit ?? undefined,
   });
 }
 
@@ -210,6 +212,7 @@ export class OrchestrationRepository {
         task.spec_json,
         task.spec_path,
         task.spec_hash,
+        task.base_commit,
         task.status,
         task.priority,
         task.approval_required,
@@ -282,7 +285,7 @@ export class OrchestrationRepository {
     return this.db.transaction(() => {
       this.assertLeaseOwner(leaseOwnerId);
       const row = this.db.query<TaskRow, []>(`
-        SELECT id, week_id, title, spec_json, spec_path, spec_hash, status,
+        SELECT id, week_id, title, spec_json, spec_path, spec_hash, base_commit, status,
                priority, approval_required, approved, context_id
         FROM tasks AS task
         WHERE task.status IN ('claimed', 'scouting', 'implementing', 'reviewing')

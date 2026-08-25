@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { AgileError, normalizeError } from "../runtime/errors";
-import { ResponseEnvelopeSchema, ServerMessageSchema } from "./protocol";
+import {
+  ResponseEnvelopeSchema,
+  RpcErrorSchema,
+  ServerMessageSchema,
+  TurnErrorSchema,
+  classifyCodexTurnFailure,
+} from "./protocol";
 
 type ServerMessage = z.infer<typeof ServerMessageSchema>;
 type AppServerProcess = Bun.Subprocess<"pipe", "pipe", "pipe">;
@@ -259,14 +265,25 @@ export class CodexClient implements CodexClientApi {
       }
       this.pending.delete(response.data.id);
       if ("error" in response.data) {
-        pending.reject(new AgileError({
-          code: "CODEX_APP_SERVER_RPC_ERROR",
-          category: "protocol",
-          retryable: false,
-          component: "codex-client",
-          message: "Codex app-server rejected the request",
-          requestId: String(response.data.id),
-        }));
+        const rpcError = RpcErrorSchema.parse(response.data.error);
+        const turnError = TurnErrorSchema.safeParse(rpcError.data);
+        if (turnError.success) {
+          const classified = classifyCodexTurnFailure("failed", turnError.data);
+          pending.reject(new AgileError({
+            ...classified,
+            component: "codex-client",
+            requestId: String(response.data.id),
+          }));
+        } else {
+          pending.reject(new AgileError({
+            code: "CODEX_APP_SERVER_RPC_ERROR",
+            category: "protocol",
+            retryable: false,
+            component: "codex-client",
+            message: "Codex app-server rejected the request",
+            requestId: String(response.data.id),
+          }));
+        }
       } else {
         pending.resolve(response.data.result);
       }

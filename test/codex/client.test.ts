@@ -60,3 +60,46 @@ test("child exit rejects future message reads instead of exposing queued message
     await client.close();
   }
 });
+
+test("close immediately rejects a blocked server-message read and terminates promptly", async () => {
+  const fixturePath = join(import.meta.dir, "..", "fixtures", "scripted-app-server.ts");
+  const client = await CodexClient.start({
+    command: [process.execPath, fixturePath],
+    clientInfo: {
+      name: "agile_agents_test",
+      title: "Agile Agents Test",
+      version: "0.1.0",
+    },
+  });
+  await client.nextServerMessage();
+  const blocked = client.nextServerMessage();
+  const startedAt = Date.now();
+
+  const closing = client.close();
+
+  await expect(blocked).rejects.toMatchObject({ code: "CODEX_CLIENT_CLOSED" });
+  await closing;
+  expect(Date.now() - startedAt).toBeLessThan(2_500);
+});
+
+test("classifies structured RPC failure data for scheduler fallback", async () => {
+  const fixturePath = join(import.meta.dir, "..", "fixtures", "scripted-app-server.ts");
+  const client = await CodexClient.start({
+    command: [process.execPath, fixturePath],
+    clientInfo: {
+      name: "agile_agents_test",
+      title: "Agile Agents Test",
+      version: "0.1.0",
+    },
+  });
+  try {
+    await expect(client.request("fixture/modelUnavailable", {})).rejects.toMatchObject({
+      code: "model_unavailable",
+      category: "infra",
+      retryable: true,
+      message: "The requested Codex model is unavailable",
+    });
+  } finally {
+    await client.close();
+  }
+});

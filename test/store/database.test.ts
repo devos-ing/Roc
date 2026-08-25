@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../../src/store/database";
@@ -466,6 +466,40 @@ test("file databases create parents and enable durable SQLite settings", () => {
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("database rejects a symlinked runtime directory without creating external files", () => {
+  const root = mkdtempSync(join(tmpdir(), "agile-agents-db-symlink-"));
+  const external = mkdtempSync(join(tmpdir(), "agile-agents-db-external-"));
+  try {
+    mkdirSync(join(root, ".agile"));
+    writeFileSync(join(external, "sentinel.txt"), "unchanged\n");
+    symlinkSync(external, join(root, ".agile", "runtime"), "dir");
+
+    expect(() => openDatabase(join(root, ".agile", "runtime", "state.sqlite"))).toThrow(
+      /symbolic link/i,
+    );
+    expect(readdirSync(external)).toEqual(["sentinel.txt"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(external, { recursive: true, force: true });
+  }
+});
+
+test("database rejects a symlinked database target without changing its referent", () => {
+  const root = mkdtempSync(join(tmpdir(), "agile-agents-db-target-symlink-"));
+  const runtime = join(root, ".agile", "runtime");
+  const external = join(root, "external.sqlite");
+  try {
+    mkdirSync(runtime, { recursive: true });
+    writeFileSync(external, "unchanged\n");
+    symlinkSync(external, join(runtime, "state.sqlite"), "file");
+
+    expect(() => openDatabase(join(runtime, "state.sqlite"))).toThrow(/symbolic link/i);
+    expect(readFileSync(external, "utf8")).toBe("unchanged\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -256,6 +256,143 @@ export const TurnErrorSchema = z.object({
   additionalDetails: z.string().nullable().optional(),
 }).passthrough();
 
+export type CodexTurnFailure = {
+  code: string;
+  category: "protocol" | "infra" | "policy";
+  retryable: boolean;
+  message: string;
+};
+
+export function classifyCodexTurnFailure(
+  status: "failed" | "interrupted",
+  error: unknown,
+): CodexTurnFailure {
+  if (status === "interrupted") {
+    return {
+      code: "turn_interrupted",
+      category: "infra",
+      retryable: true,
+      message: "The Codex role turn was interrupted",
+    };
+  }
+  const parsed = TurnErrorSchema.safeParse(error);
+  const info = parsed.success ? parsed.data.codexErrorInfo : undefined;
+  if (info === "unauthorized") {
+    return {
+      code: "authentication_failed",
+      category: "infra",
+      retryable: false,
+      message: "Codex authentication failed",
+    };
+  }
+  if (info === "badRequest") {
+    const detail = parsed.success
+      ? `${parsed.data.message} ${parsed.data.additionalDetails ?? ""}`
+      : "";
+    const modelUnavailable = /model/i.test(detail) &&
+      /(unavailable|not found|not supported|unknown)/i.test(detail);
+    return modelUnavailable
+      ? {
+          code: "model_unavailable",
+          category: "infra",
+          retryable: true,
+          message: "The requested Codex model is unavailable",
+        }
+      : {
+          code: "invalid_request",
+          category: "protocol",
+          retryable: false,
+          message: "Codex rejected the role request",
+        };
+  }
+  if (info === "cyberPolicy" || info === "sandboxError") {
+    return {
+      code: info === "cyberPolicy" ? "policy_denied" : "sandbox_denied",
+      category: "policy",
+      retryable: false,
+      message: info === "cyberPolicy"
+        ? "Codex denied the role turn by policy"
+        : "Codex denied the role turn sandbox operation",
+    };
+  }
+  if (info === "contextWindowExceeded") {
+    return {
+      code: "context_window_exceeded",
+      category: "protocol",
+      retryable: false,
+      message: "The Codex context window was exceeded",
+    };
+  }
+  if (info === "sessionBudgetExceeded" || info === "usageLimitExceeded") {
+    return {
+      code: "usage_limit_exceeded",
+      category: "infra",
+      retryable: true,
+      message: "Codex usage is temporarily unavailable",
+    };
+  }
+  if (info === "serverOverloaded" || info === "internalServerError") {
+    return {
+      code: "backend_unavailable",
+      category: "infra",
+      retryable: true,
+      message: "The Codex backend is temporarily unavailable",
+    };
+  }
+  if (info && typeof info === "object") {
+    const connection = Object.values(info).find(
+      (value) => value !== null && typeof value === "object" && "httpStatusCode" in value,
+    ) as { httpStatusCode?: unknown } | undefined;
+    const httpStatus = typeof connection?.httpStatusCode === "number"
+      ? connection.httpStatusCode
+      : undefined;
+    if (httpStatus === 401 || httpStatus === 403) {
+      return {
+        code: "authentication_failed",
+        category: "infra",
+        retryable: false,
+        message: "Codex authentication failed",
+      };
+    }
+    if (httpStatus === 400) {
+      return {
+        code: "invalid_request",
+        category: "protocol",
+        retryable: false,
+        message: "Codex rejected the role request",
+      };
+    }
+    if (httpStatus === 429 || httpStatus === 408 || (httpStatus !== undefined && httpStatus >= 500)) {
+      return {
+        code: "backend_unavailable",
+        category: "infra",
+        retryable: true,
+        message: "The Codex backend is temporarily unavailable",
+      };
+    }
+    if ("activeTurnNotSteerable" in info) {
+      return {
+        code: "turn_not_steerable",
+        category: "protocol",
+        retryable: false,
+        message: "The Codex role turn could not be steered",
+      };
+    }
+    return {
+      code: "transport_failure",
+      category: "infra",
+      retryable: true,
+      message: "The Codex transport failed",
+    };
+  }
+  return {
+    code: info === "threadRollbackFailed" ? "thread_rollback_failed" : "turn_failed",
+    category: "infra",
+    retryable: true,
+    message: "The Codex role turn failed",
+  };
+}
+
 export const TurnCompletedNotificationSchema = z.object({
   method: z.literal("turn/completed"),
   params: z.object({

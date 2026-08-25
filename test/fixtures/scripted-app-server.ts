@@ -60,6 +60,19 @@ function handleMessage(message: IncomingMessage): boolean {
     case "fixture/exit":
       write({ id: requestId(message), result: {} }, () => process.exit(0));
       return false;
+    case "fixture/modelUnavailable":
+      write({
+        id: requestId(message),
+        error: {
+          code: -32602,
+          message: "provider detail must stay private",
+          data: {
+            message: "model gpt-next was not found",
+            codexErrorInfo: "badRequest",
+          },
+        },
+      });
+      return true;
     default:
       throw new Error("fixture received an unexpected method");
   }

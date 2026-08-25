@@ -18,6 +18,7 @@ type TaskRow = {
   spec_json: string;
   spec_path: string | null;
   spec_hash: string | null;
+  base_commit: string | null;
   status: TaskStatus;
   priority: number;
   approval_required: number;
@@ -87,7 +88,7 @@ export class PlanningRepository {
 
   listTasks(): StoredTask[] {
     const rows = this.db.query<TaskRow, []>(`
-      SELECT id, week_id, title, spec_json, spec_path, spec_hash, status,
+      SELECT id, week_id, title, spec_json, spec_path, spec_hash, base_commit, status,
              priority, approval_required, approved
       FROM tasks ORDER BY priority, id
     `).all();
@@ -102,6 +103,7 @@ export class PlanningRepository {
       approved: Boolean(row.approved),
       specPath: row.spec_path ?? undefined,
       specHash: row.spec_hash ?? undefined,
+      baseCommit: row.base_commit ?? undefined,
     }));
   }
 

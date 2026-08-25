@@ -238,6 +238,7 @@ function memoryWorktrees(): TaskWorktreeManager {
       return "b".repeat(40);
     },
     async assertCommit() {},
+    async assertReviewReady() {},
     async status() {
       return "";
     },
@@ -447,7 +448,7 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     );
     const reviewInput = {
       role: "review" as const,
-      ticket: { ...ticket, status: "reviewing" as const },
+      ticket: { ...ticket, status: "reviewing" as const, baseCommit: workspace.baseCommit },
       scout: scoutOutput,
       implementation: implementOutput,
     };
@@ -539,6 +540,7 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
           approvalPolicy: "never",
           sandbox: "read-only",
           serviceName: "agile_agents",
+          config: { model_reasoning_effort: "xhigh" },
         },
       },
       {
@@ -562,7 +564,7 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
   }
 });
 
-test("rejects output that does not exactly match the role schema", async () => {
+test("normalizes invalid structured output into a durable retryable failure", async () => {
   const client = new RecordedCodexClient([
     completedItem("thread-scout", "turn-scout", "item-invalid", {
       ...scoutOutput,
@@ -578,12 +580,18 @@ test("rejects output that does not exactly match the role schema", async () => {
   const started = await harness.step(request);
   if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
 
-  await expect(harness.step({ ...request, backendCursor: started.nextCursor })).rejects.toMatchObject({
-    code: "invalid_structured_output",
-    category: "protocol",
-    retryable: true,
-    component: "codex-harness",
-    attemptId: "attempt-invalid-output",
+  const failed = await harness.step({ ...request, backendCursor: started.nextCursor });
+
+  expect(failed).toMatchObject({
+    kind: "event",
+    nextCursor: expect.any(String),
+    event: {
+      type: "attempt.failed_infra",
+      code: "invalid_structured_output",
+      retryable: true,
+      attemptId: "attempt-invalid-output",
+      sequence: 2,
+    },
   });
 });
 
@@ -620,7 +628,7 @@ test("fails Review closed when the read-only turn mutates the worktree", async (
     },
     input: {
       role: "review",
-      ticket: { ...ticket, status: "reviewing" },
+      ticket: { ...ticket, status: "reviewing", baseCommit: "a".repeat(40) },
       scout: scoutOutput,
       implementation: {
         kind: "implement",
@@ -647,8 +655,8 @@ test("fails Review closed when the read-only turn mutates the worktree", async (
   expect(JSON.stringify(failed)).not.toContain('"type":"attempt.output"');
 });
 
-test("preserves the Review status baseline across start redispatch and reconciliation", async () => {
-  const baseline = " M preexisting-review-state.txt";
+test("preserves the clean Review status baseline across start redispatch and reconciliation", async () => {
+  const baseline = "";
   const reviewOutput = {
     kind: "review" as const,
     decision: "accepted" as const,
@@ -678,7 +686,7 @@ test("preserves the Review status baseline across start redispatch and reconcili
     },
     input: {
       role: "review",
-      ticket: { ...ticket, status: "reviewing" },
+      ticket: { ...ticket, status: "reviewing", baseCommit: "a".repeat(40) },
       scout: scoutOutput,
       implementation: {
         kind: "implement",
@@ -737,7 +745,55 @@ test("preserves the Review status baseline across start redispatch and reconcili
   });
 });
 
-test("rejects an Implement draft when the trusted commit cannot be created", async () => {
+test("fails Review dispatch and reconciliation before Codex when the commit invariant is invalid", async () => {
+  for (const mode of ["dispatch", "reconcile"] as const) {
+    const client = new RecordedCodexClient([]);
+    const worktrees = memoryWorktrees();
+    worktrees.assertReviewReady = async () => {
+      throw new Error("Task worktree must be clean");
+    };
+    const harness = createCodexHarness({ client, worktrees });
+    const request: HarnessStepRequest = {
+      mode,
+      attempt: {
+        attemptId: `attempt-invalid-review-${mode}`,
+        taskId: ticket.id,
+        role: "review",
+        retryIndex: 0,
+        modelProfile: "sol",
+        model: "gpt-5.6-sol",
+        effort: "xhigh",
+      },
+      input: {
+        role: "review",
+        ticket: { ...ticket, status: "reviewing", baseCommit: "a".repeat(40) },
+        scout: scoutOutput,
+        implementation: {
+          kind: "implement",
+          commitSha: "b".repeat(40),
+          validation: ["bun test"],
+          risks: [],
+          limitations: [],
+        },
+      },
+      ...(mode === "reconcile"
+        ? { backendCursor: backendCursor("thread-review", "turn-review") }
+        : {}),
+    };
+
+    await expect(harness.step(request)).resolves.toMatchObject({
+      kind: "event",
+      event: {
+        type: "attempt.failed_infra",
+        code: "invalid_review_commit",
+        retryable: false,
+      },
+    });
+    expect(client.requests).toEqual([]);
+  }
+});
+
+test("normalizes an invalid trusted Implement commit into task failure", async () => {
   const client = new RecordedCodexClient([
     completedItem("thread-scout", "turn-scout", "item-invalid-commit", {
       kind: "implement",
@@ -775,11 +831,14 @@ test("rejects an Implement draft when the trusted commit cannot be created", asy
   const started = await harness.step(request);
   if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
 
-  await expect(harness.step({ ...request, backendCursor: started.nextCursor })).rejects.toMatchObject({
-    code: "invalid_implementation_commit",
-    category: "protocol",
-    retryable: true,
-    attemptId: "attempt-invalid-commit",
+  await expect(harness.step({ ...request, backendCursor: started.nextCursor })).resolves.toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.failed_infra",
+      code: "invalid_implementation_commit",
+      retryable: true,
+      attemptId: "attempt-invalid-commit",
+    },
   });
 });
 
@@ -826,7 +885,7 @@ test("drains a policy-interrupted terminal before progressing the next fresh att
     attemptId: "attempt-implement",
   });
   expect(delivery.event.eventId).toBe(
-    "attempt-implement:turn-implement:blocked_policy:approval_required",
+    "attempt-implement:turn-implement:blocked_policy:approval_required:91",
   );
   await expect(harness.cancel("attempt-implement")).resolves.toBeUndefined();
 
@@ -864,10 +923,49 @@ test("drains a policy-interrupted terminal before progressing the next fresh att
   await expect(harness.step({
     ...thirdRequest,
     backendCursor: thirdStarted.nextCursor,
-  })).rejects.toMatchObject({
-    code: "codex_notification_identity_mismatch",
-    attemptId: "attempt-scout-third",
-    threadId: "thread-scout-third",
+  })).resolves.toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.failed_infra",
+      code: "codex_notification_identity_mismatch",
+      attemptId: "attempt-scout-third",
+    },
+  });
+});
+
+test("declines and drains a stale known server request without poisoning the active turn", async () => {
+  const client = new RecordedCodexClient([
+    {
+      method: "item/commandExecution/requestApproval",
+      id: "stale-approval",
+      params: {
+        threadId: "thread-old",
+        turnId: "turn-old",
+        itemId: "command-old",
+        startedAtMs: 1_777_000_000_000,
+        environmentId: null,
+      },
+    },
+    completedItem("thread-scout", "turn-scout", "item-scout", scoutOutput),
+  ]);
+  const harness = createCodexHarness({ client, worktrees: memoryWorktrees() });
+  const request = makeScoutRequest("attempt-stale-request");
+  const started = await harness.step(request);
+  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+
+  const output = await harness.step({ ...request, backendCursor: started.nextCursor });
+
+  expect(client.responses).toEqual([{
+    id: "stale-approval",
+    result: { decision: "decline" },
+  }]);
+  expect(client.requests).not.toContainEqual({
+    method: "turn/interrupt",
+    params: { threadId: "thread-scout", turnId: "turn-scout" },
+  });
+  expect(output).toMatchObject({
+    kind: "event",
+    event: { type: "attempt.output", output: scoutOutput },
   });
 });
 

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { runCli, schedulerSleep } from "../../src/cli/run";
+import { runCli, runDaemon, schedulerSleep } from "../../src/cli/run";
 import { AgileError } from "../../src/runtime/errors";
 import { openDatabase } from "../../src/store/database";
 import { PlanningRepository } from "../../src/store/planning-repository";
@@ -176,6 +176,51 @@ test("production sleep cancels heartbeat waits and preserves the one-second idle
   const idleElapsed = Date.now() - idleStartedAt;
   expect(idleElapsed).toBeGreaterThanOrEqual(900);
   expect(idleElapsed).toBeLessThan(2_000);
+});
+
+test("signal shutdown bounds cancellation and closes a blocked backend before waiting for the daemon", async () => {
+  let releaseDaemon: (() => void) | undefined;
+  let released = false;
+  let cancelCalled = false;
+  let closeCalled = false;
+  const running = runDaemon({
+    daemon: {
+      async run() {
+        await new Promise<void>((resolve) => {
+          releaseDaemon = () => {
+            released = true;
+            resolve();
+          };
+        });
+      },
+    },
+    repo: {
+      getRunningAttempt() {
+        return { descriptor: { attemptId: "attempt-blocked" } } as never;
+      },
+    },
+    harness: {
+      async step() { throw new Error("not used"); },
+      async cancel() {
+        cancelCalled = true;
+        await new Promise(() => {});
+      },
+    },
+    closeBackend: async () => {
+      closeCalled = true;
+      releaseDaemon?.();
+    },
+    shutdownTimeoutMs: 25,
+    logger: { async write() {}, async error() {} },
+    runId: "run-signal-test",
+  });
+
+  process.emit("SIGTERM");
+  await running;
+
+  expect(cancelCalled).toBe(true);
+  expect(closeCalled).toBe(true);
+  expect(released).toBe(true);
 });
 
 test("prints a stable JSON inspection snapshot", async () => {

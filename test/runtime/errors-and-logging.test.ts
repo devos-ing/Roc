@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgileError, normalizeError } from "../../src/runtime/errors";
@@ -67,6 +67,60 @@ test("normalizes unknown failures and logs only safe AgileError fields", async (
       component: "runtime",
       message: "Unexpected runtime failure",
     })).toBeInstanceOf(AgileError);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("logger rejects a symlinked runtime directory without writing outside the repository", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-log-symlink-"));
+  const external = await mkdtemp(join(tmpdir(), "agile-log-external-"));
+  try {
+    await mkdir(join(root, ".agile"));
+    await writeFile(join(external, "sentinel.txt"), "unchanged\n");
+    await symlink(external, join(root, ".agile", "runtime"), "dir");
+    const logger = createJsonlLogger({
+      path: join(root, ".agile", "runtime", "agile.log"),
+      err: () => {},
+    });
+
+    await expect(logger.write({
+      level: "info",
+      code: "TEST",
+      category: "domain",
+      component: "test",
+      retryable: false,
+      message: "must not escape",
+    })).rejects.toThrow(/symbolic link/i);
+
+    expect(await readdir(external)).toEqual(["sentinel.txt"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
+  }
+});
+
+test("logger rejects a symlinked log target without changing its referent", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-log-target-symlink-"));
+  const external = join(root, "external.log");
+  try {
+    await mkdir(join(root, ".agile", "runtime"), { recursive: true });
+    await writeFile(external, "unchanged\n");
+    await symlink(external, join(root, ".agile", "runtime", "agile.log"), "file");
+    const logger = createJsonlLogger({
+      path: join(root, ".agile", "runtime", "agile.log"),
+      err: () => {},
+    });
+
+    await expect(logger.write({
+      level: "info",
+      code: "TEST",
+      category: "domain",
+      component: "test",
+      retryable: false,
+      message: "must not follow",
+    })).rejects.toThrow(/symbolic link/i);
+    expect(await readFile(external, "utf8")).toBe("unchanged\n");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

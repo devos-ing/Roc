@@ -377,6 +377,7 @@ test("persists started attempt metadata and rejects a conflicting task base comm
 
     expect(repo.getRunningAttempt()).toMatchObject({
       descriptor: { attemptId, modelProfile: "luna" },
+      input: { ticket: { id: "T1", baseCommit } },
       backendCursor: "cursor-started",
     });
     expect(repo.inspect().tasks[0]?.attempts[0]).toMatchObject({

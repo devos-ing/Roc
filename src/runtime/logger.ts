@@ -1,7 +1,8 @@
-import { appendFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 import { z } from "zod";
 import { ErrorCategorySchema, type AgileError } from "./errors";
+import { prepareSafeFilePath } from "./safe-file";
 
 export const LogRecordSchema = z.object({
   timestamp: z.string().datetime(),
@@ -32,8 +33,17 @@ export function createJsonlLogger(input: {
   const now = input.now ?? (() => new Date().toISOString());
   const write = async (recordInput: LogInput): Promise<void> => {
     const record = LogRecordSchema.parse({ timestamp: now(), ...recordInput });
-    await mkdir(dirname(input.path), { recursive: true });
-    await appendFile(input.path, `${JSON.stringify(record)}\n`, "utf8");
+    const path = prepareSafeFilePath(input.path);
+    const handle = await open(
+      path,
+      constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8");
+    } finally {
+      await handle.close();
+    }
   };
   return {
     write,

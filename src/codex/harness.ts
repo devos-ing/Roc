@@ -24,6 +24,7 @@ import {
   ThreadTokenUsageUpdatedNotificationSchema,
   TurnCompletedNotificationSchema,
   TurnStartResponseSchema,
+  classifyCodexTurnFailure,
 } from "./protocol";
 import {
   ImplementDraftOutputJsonSchema,
@@ -226,6 +227,7 @@ export function createCodexHarness(input: {
     active: ActiveAttempt,
     code: string,
     message: string,
+    retryable = true,
   ): HarnessDelivery {
     terminalize(active);
     return delivery(withoutTerminalMarkers(cursor), {
@@ -235,8 +237,71 @@ export function createCodexHarness(input: {
       occurredAt: now(),
       code,
       message,
-      retryable: true,
+      retryable,
     });
+  }
+
+  function taskFailure(
+    request: SupportedRequest,
+    error: unknown,
+  ): HarnessDelivery {
+    const normalized = normalizeError(error, {
+      code: "unexpected_task_failure",
+      category: "infra",
+      retryable: true,
+      component: "codex-harness",
+      message: "The Codex task failed unexpectedly",
+      taskId: request.attempt.taskId,
+      attemptId: request.attempt.attemptId,
+    });
+    if (normalized.category === "startup" || normalized.category === "domain") {
+      throw normalized;
+    }
+
+    let cursor: BackendCursor | undefined;
+    if (request.backendCursor !== undefined) {
+      try {
+        cursor = BackendCursorSchema.parse(JSON.parse(request.backendCursor));
+      } catch {
+        // A malformed task cursor still becomes a task-scoped terminal event.
+      }
+    }
+    const known = activeAttempts.get(request.attempt.attemptId);
+    const active: ActiveAttempt = known ?? {
+      attemptId: request.attempt.attemptId,
+      taskId: request.attempt.taskId,
+      role: request.attempt.role,
+      threadId: cursor?.threadId ?? `unavailable:${request.attempt.attemptId}`,
+      turnId: cursor?.turnId ?? `unavailable:${request.attempt.attemptId}`,
+      baseCommit: request.input.ticket.baseCommit ?? "",
+      outputDelivered: false,
+      startedAt: now(),
+    };
+    const failureCursor: BackendCursor = cursor ?? {
+      version: 1,
+      nextSequence: 1,
+      threadId: active.threadId,
+      turnId: active.turnId,
+      usage: zeroUsage,
+    };
+    if (normalized.category === "policy") {
+      terminalize(active);
+      return delivery(withoutTerminalMarkers(failureCursor), {
+        type: "attempt.blocked_policy",
+        eventId: `${active.attemptId}:${active.turnId}:blocked_policy:${normalized.code}`,
+        attemptId: active.attemptId,
+        occurredAt: now(),
+        code: normalized.code,
+        message: normalized.message,
+      });
+    }
+    return failedDelivery(
+      failureCursor,
+      active,
+      normalized.code,
+      normalized.message,
+      normalized.retryable,
+    );
   }
 
   function completedDelivery(
@@ -250,6 +315,67 @@ export function createCodexHarness(input: {
       attemptId: active.attemptId,
       occurredAt: now(),
     });
+  }
+
+  function classifiedTurnFailure(
+    cursor: BackendCursor,
+    active: ActiveAttempt,
+    status: "failed" | "interrupted",
+    error: unknown,
+  ): HarnessDelivery {
+    const failure = classifyCodexTurnFailure(status, error);
+    if (failure.category === "policy") {
+      terminalize(active);
+      return delivery(withoutTerminalMarkers(cursor), {
+        type: "attempt.blocked_policy",
+        eventId: `${active.attemptId}:${active.turnId}:blocked_policy:${failure.code}`,
+        attemptId: active.attemptId,
+        occurredAt: now(),
+        code: failure.code,
+        message: failure.message,
+      });
+    }
+    return failedDelivery(
+      cursor,
+      active,
+      failure.code,
+      failure.message,
+      failure.retryable,
+    );
+  }
+
+  async function assertReviewInvariant(request: SupportedRequest): Promise<void> {
+    if (request.input.role !== "review") return;
+    const baseCommit = request.input.ticket.baseCommit;
+    if (baseCommit === undefined) {
+      throw new AgileError({
+        code: "missing_task_base_commit",
+        category: "protocol",
+        retryable: false,
+        component: "codex-harness",
+        message: "Review cannot prove the task base commit",
+        taskId: request.attempt.taskId,
+        attemptId: request.attempt.attemptId,
+      });
+    }
+    try {
+      await input.worktrees.assertReviewReady(
+        request.attempt.taskId,
+        request.input.implementation.commitSha,
+        baseCommit,
+      );
+    } catch (error) {
+      throw new AgileError({
+        code: "invalid_review_commit",
+        category: "protocol",
+        retryable: false,
+        component: "codex-harness",
+        message: "Review requires the exact sole clean implementation commit",
+        taskId: request.attempt.taskId,
+        attemptId: request.attempt.attemptId,
+        cause: error,
+      });
+    }
   }
 
   async function dispatch(request: SupportedRequest): Promise<HarnessDelivery> {
@@ -284,11 +410,18 @@ export function createCodexHarness(input: {
       });
     }
 
-    const workspace = await input.worktrees.prepare(request.attempt.taskId);
+    const workspace = await input.worktrees.prepare(
+      request.attempt.taskId,
+      request.input.ticket.baseCommit,
+    );
     let reviewStatusBefore: string | undefined;
     if (request.attempt.role === "review") {
       try {
-        reviewStatusBefore = await input.worktrees.status(request.attempt.taskId);
+        await assertReviewInvariant(request);
+        reviewStatusBefore = await input.worktrees.status(
+          request.attempt.taskId,
+          workspace.baseCommit,
+        );
       } catch (error) {
         throw normalizeError(error, {
           code: "review_status_snapshot_failed",
@@ -309,6 +442,9 @@ export function createCodexHarness(input: {
         approvalPolicy: "never",
         sandbox: threadSandbox(request.attempt.role),
         serviceName: "agile_agents",
+        ...(request.attempt.role === "review"
+          ? { config: { model_reasoning_effort: request.attempt.effort } }
+          : {}),
       });
     } catch (error) {
       throw normalizeError(error, {
@@ -494,6 +630,12 @@ export function createCodexHarness(input: {
               });
               break;
           }
+          if (
+            known.data.params.threadId !== active.threadId ||
+            known.data.params.turnId !== active.turnId
+          ) {
+            continue;
+          }
         } else {
           const knownMethod = [
             "item/commandExecution/requestApproval",
@@ -523,7 +665,7 @@ export function createCodexHarness(input: {
         return delivery(withoutTerminalMarkers(cursor), {
           type: "attempt.blocked_policy",
           eventId:
-            `${active.attemptId}:${active.turnId}:blocked_policy:approval_required`,
+            `${active.attemptId}:${active.turnId}:blocked_policy:approval_required:${String(message.id)}`,
           attemptId: active.attemptId,
           occurredAt: now(),
           code: "approval_required",
@@ -660,7 +802,7 @@ export function createCodexHarness(input: {
           }
           let commitSha: string;
           try {
-            commitSha = await input.worktrees.commitChanges(active.taskId);
+            commitSha = await input.worktrees.commitChanges(active.taskId, active.baseCommit);
           } catch (error) {
             throw protocolError(
               "invalid_implementation_commit",
@@ -687,17 +829,16 @@ export function createCodexHarness(input: {
           }
         }
         if (output.kind === "review") {
+          await assertReviewInvariant(request);
           let statusAfter: string;
           try {
-            statusAfter = await input.worktrees.status(active.taskId);
-          } catch (error) {
+            statusAfter = await input.worktrees.status(active.taskId, active.baseCommit);
+          } catch {
             return failedDelivery(
               cursor,
               active,
               "review_status_snapshot_failed",
-              error instanceof Error
-                ? `Could not verify the Review workspace: ${error.message}`
-                : "Could not verify the Review workspace",
+              "Could not verify the Review workspace",
             );
           }
           if (statusAfter !== active.reviewStatusBefore) {
@@ -744,12 +885,11 @@ export function createCodexHarness(input: {
         }
         sameSource(notification.params.threadId, notification.params.turn.id, active, request);
         if (notification.params.turn.status !== "completed") {
-          const status = notification.params.turn.status;
-          return failedDelivery(
+          return classifiedTurnFailure(
             cursor,
             active,
-            `turn_${status}`,
-            `Codex role turn ended with status ${status}`,
+            notification.params.turn.status,
+            notification.params.turn.error,
           );
         }
         if (!active.outputDelivered) {
@@ -777,7 +917,7 @@ export function createCodexHarness(input: {
       role: request.attempt.role,
       threadId: cursor.threadId,
       turnId: cursor.turnId,
-      baseCommit: "",
+      baseCommit: request.input.ticket.baseCommit ?? "",
       outputDelivered: cursor.outputDelivered === true,
       startedAt: now(),
       reviewStatusBefore: cursor.reviewStatusBefore,
@@ -788,6 +928,14 @@ export function createCodexHarness(input: {
       "orphaned_turn",
       message,
     );
+
+    if (request.attempt.role === "review") {
+      try {
+        await assertReviewInvariant(request);
+      } catch (error) {
+        return taskFailure(request, error);
+      }
+    }
 
     let rawReadResponse: unknown;
     try {
@@ -809,11 +957,11 @@ export function createCodexHarness(input: {
       return orphaned("Codex history does not contain the persisted turn");
     }
     if (turn.status === "failed" || turn.status === "interrupted") {
-      return failedDelivery(
+      return classifiedTurnFailure(
         cursor,
         recovered,
-        `turn_${turn.status}`,
-        `Codex role turn ended with status ${turn.status}`,
+        turn.status,
+        turn.error,
       );
     }
     if (turn.status !== "completed") {
@@ -862,7 +1010,10 @@ export function createCodexHarness(input: {
       }
       let commitSha: string;
       try {
-        commitSha = await input.worktrees.commitChanges(recovered.taskId);
+        commitSha = await input.worktrees.commitChanges(
+          recovered.taskId,
+          recovered.baseCommit || undefined,
+        );
       } catch {
         return failedDelivery(
           cursor,
@@ -885,9 +1036,14 @@ export function createCodexHarness(input: {
       if (cursor.reviewStatusBefore === undefined) {
         return orphaned("Recovered Review has no workspace mutation baseline");
       }
+      try {
+        await assertReviewInvariant(request);
+      } catch (error) {
+        return taskFailure(request, error);
+      }
       let statusAfter: string;
       try {
-        statusAfter = await input.worktrees.status(recovered.taskId);
+        statusAfter = await input.worktrees.status(recovered.taskId, recovered.baseCommit);
       } catch {
         return orphaned("Recovered Review workspace status is unavailable");
       }
@@ -920,52 +1076,56 @@ export function createCodexHarness(input: {
   return {
     async step(rawRequest): Promise<HarnessDelivery> {
       const request = supportedRequest(HarnessStepRequestSchema.parse(rawRequest));
-      if (request.backendCursor === undefined) {
-        if (request.mode === "reconcile") {
-          terminalAttempts.add(request.attempt.attemptId);
-          const unavailableCursor: BackendCursor = {
-            version: 1,
-            nextSequence: 1,
-            threadId: `unavailable:${request.attempt.attemptId}`,
-            turnId: `unavailable:${request.attempt.attemptId}`,
-            usage: zeroUsage,
-          };
-          return delivery(unavailableCursor, {
-            type: "attempt.failed_infra",
-            eventId:
-              `${request.attempt.attemptId}:reconcile:failed_infra:orphaned_turn`,
-            attemptId: request.attempt.attemptId,
-            occurredAt: now(),
-            code: "orphaned_turn",
-            message: "No persisted Codex turn identity is available for reconciliation",
-            retryable: true,
-          });
+      try {
+        if (request.backendCursor === undefined) {
+          if (request.mode === "reconcile") {
+            terminalAttempts.add(request.attempt.attemptId);
+            const unavailableCursor: BackendCursor = {
+              version: 1,
+              nextSequence: 1,
+              threadId: `unavailable:${request.attempt.attemptId}`,
+              turnId: `unavailable:${request.attempt.attemptId}`,
+              usage: zeroUsage,
+            };
+            return delivery(unavailableCursor, {
+              type: "attempt.failed_infra",
+              eventId:
+                `${request.attempt.attemptId}:reconcile:failed_infra:orphaned_turn`,
+              attemptId: request.attempt.attemptId,
+              occurredAt: now(),
+              code: "orphaned_turn",
+              message: "No persisted Codex turn identity is available for reconciliation",
+              retryable: true,
+            });
+          }
+          return await dispatch(request);
         }
-        return dispatch(request);
-      }
 
-      const cursor = parseCursor(request.backendCursor, request);
-      if (request.mode === "reconcile") return reconcile(request, cursor);
-      const active = activeAttempts.get(request.attempt.attemptId);
-      if (!active) {
-        throw protocolError(
-          "codex_attempt_not_active",
-          "Codex attempt is not active",
-          request,
-          cursor.threadId,
-        );
+        const cursor = parseCursor(request.backendCursor, request);
+        if (request.mode === "reconcile") return await reconcile(request, cursor);
+        const active = activeAttempts.get(request.attempt.attemptId);
+        if (!active) {
+          throw protocolError(
+            "codex_attempt_not_active",
+            "Codex attempt is not active",
+            request,
+            cursor.threadId,
+          );
+        }
+        if (active.taskId !== request.attempt.taskId || active.role !== request.attempt.role) {
+          throw protocolError(
+            "codex_attempt_identity_mismatch",
+            "Active Codex attempt identity does not match the delivery request",
+            request,
+            active.threadId,
+          );
+        }
+        sameSource(cursor.threadId, cursor.turnId, active, request);
+        if (active.reconciledCompletion) return completedDelivery(cursor, active);
+        return await nextDelivery(request, cursor, active);
+      } catch (error) {
+        return taskFailure(request, error);
       }
-      if (active.taskId !== request.attempt.taskId || active.role !== request.attempt.role) {
-        throw protocolError(
-          "codex_attempt_identity_mismatch",
-          "Active Codex attempt identity does not match the delivery request",
-          request,
-          active.threadId,
-        );
-      }
-      sameSource(cursor.threadId, cursor.turnId, active, request);
-      if (active.reconciledCompletion) return completedDelivery(cursor, active);
-      return nextDelivery(request, cursor, active);
     },
 
     async cancel(attemptId): Promise<void> {
