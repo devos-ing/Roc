@@ -24,7 +24,7 @@ test("operational database failures report an error, return 1, and close the dat
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "future.db");
   const future = new Database(dbPath, { create: true });
-  future.exec("PRAGMA user_version = 3");
+  future.exec("PRAGMA user_version = 4");
   future.close();
   const output: string[] = [];
   const errors: string[] = [];
@@ -36,7 +36,7 @@ test("operational database failures report an error, return 1, and close the dat
       err: (text) => errors.push(text),
     })).toBe(1);
     expect(output).toEqual([]);
-    expect(errors).toEqual(["Database version 3 is newer than supported version 2"]);
+    expect(errors).toEqual(["Database version 4 is newer than supported version 3"]);
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
     close.mockRestore();

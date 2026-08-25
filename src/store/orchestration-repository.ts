@@ -1,12 +1,20 @@
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
-import { ContextRefSchema, StoredTaskSchema, TaskStatusSchema, TicketSpecSchema } from "../domain/schemas";
+import {
+  ContextRefSchema,
+  ModelProfileSchema,
+  StoredTaskSchema,
+  TaskStatusSchema,
+  TicketSpecSchema,
+} from "../domain/schemas";
 import { assertTransition } from "../domain/transitions";
 import {
   AgentRoleSchema,
   HarnessAttemptSchema,
   HarnessEventSchema,
   HarnessRoleInputSchema,
+  ReasoningEffortSchema,
+  RetryIndexSchema,
   type HarnessEvent,
   type HarnessStepRequest,
 } from "../harness/contracts";
@@ -31,6 +39,7 @@ const TokenTotalsSchema = z.object({
 const InspectionModelDecisionSchema = z.object({
   id: NonEmpty,
   role: AgentRoleSchema,
+  modelProfile: ModelProfileSchema,
   model: NonEmpty,
   effort: z.enum(["medium", "high", "xhigh"]),
   tokenTarget: z.number().int().positive(),
@@ -46,10 +55,14 @@ const InspectionRoleSchema = z.object({
 const InspectionAttemptSchema = z.object({
   id: NonEmpty,
   role: AgentRoleSchema,
+  modelProfile: ModelProfileSchema,
   model: NonEmpty,
-  effort: z.enum(["medium", "high", "xhigh"]),
-  status: z.enum(["running", "succeeded", "failed_infra"]),
-  retryIndex: z.union([z.literal(0), z.literal(1), z.literal(2)]),
+  effort: ReasoningEffortSchema,
+  status: z.enum(["running", "succeeded", "failed_infra", "blocked_policy"]),
+  retryIndex: RetryIndexSchema,
+  threadId: NonEmpty.optional(),
+  turnId: NonEmpty.optional(),
+  gitCommit: NonEmpty.optional(),
   ...TokenTotalsSchema.shape,
 }).strict();
 const InspectionTaskSchema = z.object({
@@ -104,6 +117,7 @@ type TaskRow = {
 type RunningAttemptRow = TaskRow & {
   attempt_id: string;
   role: string;
+  model_profile: string;
   model: string;
   effort: string;
   retry_index: number;
@@ -180,6 +194,7 @@ export class OrchestrationRepository {
       SELECT
         attempt.id AS attempt_id,
         attempt.role,
+        attempt.model_profile,
         attempt.model,
         attempt.effort,
         attempt.retry_index,
@@ -225,6 +240,7 @@ export class OrchestrationRepository {
       taskId: row.id,
       role,
       retryIndex: row.retry_index,
+      modelProfile: row.model_profile,
       model: row.model,
       effort: row.effort,
       contextRef,
@@ -322,13 +338,14 @@ export class OrchestrationRepository {
       const now = this.now();
       this.db.query(`
         INSERT INTO model_decisions(
-          id, task_id, role, model, effort, token_budget, context_id,
+          id, task_id, role, model, model_profile, effort, token_budget, context_id,
           fallback_models_json, decided_by, confidence, rationale_json
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'rule', 1, ?)
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'rule', 1, ?)
       `).run(
         decisionId,
         row.id,
         role,
+        route.model,
         route.model,
         route.effort,
         ticket.spec.tokenCeiling,
@@ -338,9 +355,9 @@ export class OrchestrationRepository {
       );
       this.db.query(`
         INSERT INTO attempts(
-          id, task_id, role, model, effort, status, retry_index, started_at
-        ) VALUES(?, ?, ?, ?, ?, 'running', ?, ?)
-      `).run(attemptId, row.id, role, route.model, route.effort, retryIndex, now);
+          id, task_id, role, model, model_profile, effort, status, retry_index, started_at
+        ) VALUES(?, ?, ?, ?, ?, ?, 'running', ?, ?)
+      `).run(attemptId, row.id, role, route.model, route.model, route.effort, retryIndex, now);
 
       if (from !== to) {
         assertTransition(from, to);
@@ -357,7 +374,14 @@ export class OrchestrationRepository {
         this.id("event"),
         row.id,
         attemptId,
-        JSON.stringify({ role, model: route.model, effort: route.effort, retryIndex, decisionId }),
+        JSON.stringify({
+          role,
+          modelProfile: route.model,
+          model: route.model,
+          effort: route.effort,
+          retryIndex,
+          decisionId,
+        }),
         now,
       );
       return { attemptId, taskId: row.id, role };
@@ -409,6 +433,24 @@ export class OrchestrationRepository {
       if (event.type === "attempt.started") {
         if (event.threadId !== undefined) {
           this.db.query("UPDATE attempts SET thread_id = ? WHERE id = ?").run(event.threadId, attemptId);
+        }
+        if (event.turnId !== undefined) {
+          this.db.query("UPDATE attempts SET turn_id = ? WHERE id = ?").run(event.turnId, attemptId);
+        }
+        if (event.baseCommit !== undefined) {
+          const baseCommit = this.db.query<{ base_commit: string | null }, [string]>(
+            "SELECT base_commit FROM tasks WHERE id = ?",
+          ).get(attempt.task_id)?.base_commit;
+          if (baseCommit === undefined) throw new Error(`Task not found: ${attempt.task_id}`);
+          if (baseCommit !== null && baseCommit !== event.baseCommit) {
+            throw new Error(
+              `Conflicting base commit for task ${attempt.task_id}: ${event.baseCommit} !== ${baseCommit}`,
+            );
+          }
+          if (baseCommit === null) {
+            this.db.query("UPDATE tasks SET base_commit = ? WHERE id = ? AND base_commit IS NULL")
+              .run(event.baseCommit, attempt.task_id);
+          }
         }
       } else if (event.type === "attempt.output") {
         if (event.output.kind !== attempt.role) {
@@ -664,6 +706,29 @@ export class OrchestrationRepository {
             );
           }
         }
+      } else if (event.type === "attempt.blocked_policy") {
+        this.db.query(`
+          UPDATE attempts SET status = 'blocked_policy', ended_at = ? WHERE id = ?
+        `).run(event.occurredAt, attemptId);
+        const status = this.db.query<{ status: string }, [string]>(
+          "SELECT status FROM tasks WHERE id = ?",
+        ).get(attempt.task_id)?.status;
+        if (status === undefined) throw new Error(`Task not found: ${attempt.task_id}`);
+        const from = TaskStatusSchema.parse(status);
+        assertTransition(from, "needs_replan");
+        this.db.query("UPDATE tasks SET status = 'needs_replan', updated_at = ? WHERE id = ?").run(
+          event.occurredAt,
+          attempt.task_id,
+        );
+        this.db.query(`
+          INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+          VALUES(?, ?, 'task.needs_replan', ?, ?)
+        `).run(
+          this.id("event"),
+          attempt.task_id,
+          JSON.stringify({ attemptId, code: event.code, message: event.message }),
+          event.occurredAt,
+        );
       } else {
         throw new Error("Unsupported harness event in happy-path repository");
       }
@@ -807,10 +872,14 @@ export class OrchestrationRepository {
       id: string;
       task_id: string;
       role: string;
+      model_profile: string;
       model: string;
       effort: string;
       status: string;
       retry_index: number;
+      thread_id: string | null;
+      turn_id: string | null;
+      git_commit: string | null;
       input_tokens: number;
       cached_input_tokens: number;
       output_tokens: number;
@@ -820,10 +889,14 @@ export class OrchestrationRepository {
         attempt.id,
         attempt.task_id,
         attempt.role,
+        attempt.model_profile,
         attempt.model,
         attempt.effort,
         attempt.status,
         attempt.retry_index,
+        attempt.thread_id,
+        attempt.turn_id,
+        attempt.git_commit,
         COALESCE(SUM(usage.input_tokens), 0) AS input_tokens,
         COALESCE(SUM(usage.cached_input_tokens), 0) AS cached_input_tokens,
         COALESCE(SUM(usage.output_tokens), 0) AS output_tokens,
@@ -837,6 +910,7 @@ export class OrchestrationRepository {
       id: string;
       task_id: string;
       role: string;
+      model_profile: string;
       model: string;
       effort: string;
       token_target: number;
@@ -846,7 +920,7 @@ export class OrchestrationRepository {
       rationale_json: string;
     }, []>(`
       SELECT
-        id, task_id, role, model, effort, token_budget AS token_target,
+        id, task_id, role, model_profile, model, effort, token_budget AS token_target,
         fallback_models_json, decided_by, confidence, rationale_json
       FROM model_decisions
       ORDER BY task_id ASC,
@@ -878,10 +952,14 @@ export class OrchestrationRepository {
       taskAttempts.push(InspectionAttemptSchema.parse({
         id: row.id,
         role: row.role,
+        modelProfile: row.model_profile,
         model: row.model,
         effort: row.effort,
         status: row.status,
         retryIndex: row.retry_index,
+        ...(row.thread_id === null ? {} : { threadId: row.thread_id }),
+        ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
+        ...(row.git_commit === null ? {} : { gitCommit: row.git_commit }),
         ...tokenTotals(row),
       }));
       attemptsByTask.set(row.task_id, taskAttempts);
@@ -892,6 +970,7 @@ export class OrchestrationRepository {
       taskDecisions.push(InspectionModelDecisionSchema.parse({
         id: row.id,
         role: row.role,
+        modelProfile: row.model_profile,
         model: row.model,
         effort: row.effort,
         tokenTarget: row.token_target,

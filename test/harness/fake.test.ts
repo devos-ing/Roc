@@ -80,6 +80,7 @@ const request = {
     taskId: "T1",
     role: "scout" as const,
     retryIndex: 0 as const,
+    modelProfile: "luna" as const,
     model: "luna",
     effort: "high" as const,
   },

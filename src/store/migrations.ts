@@ -132,9 +132,67 @@ CREATE UNIQUE INDEX tasks_one_followup_per_review
   WHERE discovered_from_review_id IS NOT NULL;
 `;
 
+const migration3 = `
+ALTER TABLE tasks ADD COLUMN base_commit TEXT;
+
+CREATE TABLE attempts_v3 (
+  id TEXT PRIMARY KEY NOT NULL,
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  role TEXT NOT NULL CHECK(role IN ('scout', 'implement', 'review')),
+  model TEXT NOT NULL,
+  model_profile TEXT NOT NULL CHECK(model_profile IN ('luna', 'terra', 'sol')),
+  effort TEXT NOT NULL CHECK(effort IN ('medium', 'high', 'xhigh')),
+  status TEXT NOT NULL CHECK(status IN ('running', 'succeeded', 'failed_infra', 'blocked_policy')),
+  thread_id TEXT,
+  turn_id TEXT,
+  retry_index INTEGER NOT NULL CHECK(retry_index BETWEEN 0 AND 2),
+  git_commit TEXT,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  backend_cursor TEXT,
+  UNIQUE(task_id, id)
+);
+INSERT INTO attempts_v3(
+  id, task_id, role, model, model_profile, effort, status, thread_id, turn_id,
+  retry_index, git_commit, started_at, ended_at, backend_cursor
+)
+SELECT
+  id, task_id, role, model, model, effort, status, thread_id, NULL,
+  retry_index, git_commit, started_at, ended_at, backend_cursor
+FROM attempts;
+DROP TABLE attempts;
+ALTER TABLE attempts_v3 RENAME TO attempts;
+
+CREATE TABLE model_decisions_v3 (
+  id TEXT PRIMARY KEY NOT NULL,
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  role TEXT NOT NULL CHECK(role IN ('scout', 'implement', 'review')),
+  model TEXT NOT NULL,
+  model_profile TEXT NOT NULL CHECK(model_profile IN ('luna', 'terra', 'sol')),
+  effort TEXT NOT NULL CHECK(effort IN ('medium', 'high', 'xhigh')),
+  token_budget INTEGER NOT NULL CHECK(token_budget > 0),
+  context_id TEXT REFERENCES contexts(id) DEFERRABLE INITIALLY DEFERRED,
+  fallback_models_json TEXT NOT NULL,
+  decided_by TEXT NOT NULL CHECK(decided_by IN ('rule', 'advisor-llm', 'fallback')),
+  confidence REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+  rationale_json TEXT NOT NULL,
+  UNIQUE(task_id, id)
+);
+INSERT INTO model_decisions_v3(
+  id, task_id, role, model, model_profile, effort, token_budget, context_id,
+  fallback_models_json, decided_by, confidence, rationale_json
+)
+SELECT
+  id, task_id, role, model, model, effort, token_budget, context_id,
+  fallback_models_json, decided_by, confidence, rationale_json
+FROM model_decisions;
+DROP TABLE model_decisions;
+ALTER TABLE model_decisions_v3 RENAME TO model_decisions;
+`;
+
 export function migrate(db: Database): void {
   let version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
-  if (version > 2) throw new Error(`Database version ${version} is newer than supported version 2`);
+  if (version > 3) throw new Error(`Database version ${version} is newer than supported version 3`);
   if (version === 0) {
     db.transaction(() => {
       db.exec(migration1);
@@ -147,5 +205,44 @@ export function migrate(db: Database): void {
       db.exec(migration2);
       db.exec("PRAGMA user_version = 2");
     })();
+    version = 2;
+  }
+  if (version === 2) {
+    const legacy = db.query<{ model: string }, []>(`
+      SELECT model
+      FROM (
+        SELECT model, 0 AS source FROM attempts
+        UNION ALL
+        SELECT model, 1 AS source FROM model_decisions
+      )
+      WHERE model NOT IN ('luna', 'terra', 'sol')
+      ORDER BY source, model
+      LIMIT 1
+    `).get();
+    if (legacy) throw new Error(`Cannot map legacy model profile: ${legacy.model}`);
+
+    const foreignKeys = db.query<{ foreign_keys: number }, []>(
+      "PRAGMA foreign_keys",
+    ).get()?.foreign_keys ?? 0;
+    db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      db.transaction(() => {
+        db.exec(migration3);
+        const violation = db.query<{
+          table: string;
+          rowid: number | null;
+          parent: string;
+          fkid: number;
+        }, []>("PRAGMA foreign_key_check").get();
+        if (violation) {
+          throw new Error(
+            `Foreign key check failed during migration 3: ${violation.table} row ${violation.rowid ?? "unknown"}`,
+          );
+        }
+        db.exec("PRAGMA user_version = 3");
+      })();
+    } finally {
+      db.exec(foreignKeys === 0 ? "PRAGMA foreign_keys = OFF" : "PRAGMA foreign_keys = ON");
+    }
   }
 }

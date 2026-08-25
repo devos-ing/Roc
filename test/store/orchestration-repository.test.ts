@@ -294,6 +294,56 @@ test("advances the cursor when replaying the identical harness event", () => {
   }
 });
 
+test("persists started attempt metadata and rejects a conflicting task base commit", () => {
+  const { db, repo } = setup();
+  try {
+    const attemptId = startScout(repo);
+    const baseCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    repo.applyHarnessEvent(attemptId, "cursor-started", {
+      type: "attempt.started",
+      eventId: "scout:started-with-metadata",
+      attemptId,
+      sequence: 1,
+      occurredAt: "2026-08-26T00:00:02.000Z",
+      threadId: "thread-scout",
+      turnId: "turn-scout",
+      baseCommit,
+    });
+
+    expect(repo.getRunningAttempt()).toMatchObject({
+      descriptor: { attemptId, modelProfile: "luna" },
+      backendCursor: "cursor-started",
+    });
+    expect(repo.inspect().tasks[0]?.attempts[0]).toMatchObject({
+      id: attemptId,
+      modelProfile: "luna",
+      threadId: "thread-scout",
+      turnId: "turn-scout",
+    });
+    expect(db.query<{ base_commit: string | null }, [string]>(
+      "SELECT base_commit FROM tasks WHERE id = ?",
+    ).get("T1")?.base_commit).toBe(baseCommit);
+
+    expect(() => repo.applyHarnessEvent(attemptId, "cursor-conflict", {
+      type: "attempt.started",
+      eventId: "scout:conflicting-base",
+      attemptId,
+      sequence: 2,
+      occurredAt: "2026-08-26T00:00:03.000Z",
+      baseCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    })).toThrow(
+      "Conflicting base commit for task T1: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb !== aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    expectEventAbsent(db, "scout:conflicting-base");
+    expect(repo.getRunningAttempt()?.backendCursor).toBe("cursor-started");
+    expect(db.query<{ base_commit: string | null }, [string]>(
+      "SELECT base_commit FROM tasks WHERE id = ?",
+    ).get("T1")?.base_commit).toBe(baseCommit);
+  } finally {
+    db.close();
+  }
+});
+
 test("rolls back a duplicate delivery cursor when the cursor fault fires", () => {
   let crashBeforeCursorUpdate = false;
   const { db, repo } = setup(":memory:", (point) => {
@@ -621,6 +671,7 @@ test("records each token delta once and inspects deterministic usage totals", ()
         modelDecisions: [{
           id: "decision-1",
           role: "scout",
+          modelProfile: "luna",
           model: "luna",
           effort: "high",
           tokenTarget: 10_000,
@@ -641,6 +692,7 @@ test("records each token delta once and inspects deterministic usage totals", ()
         attempts: [{
           id: "attempt-1",
           role: "scout",
+          modelProfile: "luna",
           model: "luna",
           effort: "high",
           status: "running",
@@ -652,6 +704,57 @@ test("records each token delta once and inspects deterministic usage totals", ()
         }],
       }],
     });
+  } finally {
+    db.close();
+  }
+});
+
+test("inspection includes the verified Implement commit", () => {
+  const { db, repo } = setup();
+  try {
+    startReview(repo);
+
+    expect(repo.inspect().tasks[0]?.attempts.find((attempt) => attempt.role === "implement"))
+      .toMatchObject({
+        modelProfile: "terra",
+        model: "terra",
+        gitCommit: implementOutput.commitSha,
+      });
+  } finally {
+    db.close();
+  }
+});
+
+test("policy-blocked attempts move active tasks to replanning without retry", () => {
+  const { db, repo } = setup();
+  try {
+    const attemptId = startScout(repo);
+    const event = {
+      type: "attempt.blocked_policy",
+      eventId: "scout:policy-blocked",
+      attemptId,
+      sequence: 1,
+      occurredAt: "2026-08-26T00:00:02.000Z",
+      code: "approval_required",
+      message: "Approval requests are disabled",
+    } as const;
+    repo.applyHarnessEvent(attemptId, "1", event);
+    repo.applyHarnessEvent(attemptId, "replayed", event);
+
+    expect(repo.inspectTask("T1")).toEqual({ id: "T1", status: "needs_replan" });
+    expect(db.query<{ status: string }, [string]>(
+      "SELECT status FROM attempts WHERE id = ?",
+    ).get(attemptId)?.status).toBe("blocked_policy");
+    expect(db.query<{ count: number }, []>(
+      "SELECT COUNT(*) AS count FROM events WHERE idempotency_key = 'scout:policy-blocked'",
+    ).get()?.count).toBe(1);
+    expect(db.query<{ count: number }, []>(
+      "SELECT COUNT(*) AS count FROM events WHERE task_id = 'T1' AND type = 'task.needs_replan'",
+    ).get()?.count).toBe(1);
+    expect(db.query<{ backend_cursor: string | null }, [string]>(
+      "SELECT backend_cursor FROM attempts WHERE id = ?",
+    ).get(attemptId)?.backend_cursor).toBe("replayed");
+    expect(repo.beginNextAttempt()).toBeUndefined();
   } finally {
     db.close();
   }

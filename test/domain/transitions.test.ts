@@ -13,6 +13,12 @@ describe("task transitions", () => {
     expect(canTransition("ready", "needs_replan")).toBe(true);
   });
 
+  test("permits every active task state to return for replanning", () => {
+    for (const status of ["claimed", "scouting", "implementing", "reviewing"] as const) {
+      expect(canTransition(status, "needs_replan")).toBe(true);
+    }
+  });
+
   test("never reopens terminal tasks", () => {
     for (const status of ["done", "rejected", "failed_infra"] as const) {
       expect(isTerminal(status)).toBe(true);

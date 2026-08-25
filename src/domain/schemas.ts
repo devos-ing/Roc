@@ -2,6 +2,8 @@ import { z } from "zod";
 
 const NonEmpty = z.string().trim().min(1);
 
+export const ModelProfileSchema = z.enum(["luna", "terra", "sol"]);
+
 export const TaskStatusSchema = z.enum([
   "draft",
   "needs_input",
@@ -62,6 +64,7 @@ export const StoredTaskSchema = TaskCreateSchema.extend({
 }).strict();
 
 export const ModelDecisionSchema = z.object({
+  modelProfile: ModelProfileSchema,
   model: NonEmpty,
   reasoningEffort: z.enum(["medium", "high", "xhigh"]),
   tokenBudget: z.number().int().positive(),
@@ -77,4 +80,5 @@ export type TicketSpec = z.infer<typeof TicketSpecSchema>;
 export type WeeklyPlan = z.infer<typeof WeeklyPlanSchema>;
 export type TaskCreate = z.infer<typeof TaskCreateSchema>;
 export type StoredTask = z.infer<typeof StoredTaskSchema>;
+export type ModelProfile = z.infer<typeof ModelProfileSchema>;
 export type ModelDecision = z.infer<typeof ModelDecisionSchema>;

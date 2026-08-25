@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ModelDecisionSchema,
+  ModelProfileSchema,
   TicketSpecSchema,
   WeeklyPlanSchema,
 } from "../../src/domain/schemas";
@@ -19,6 +20,13 @@ const ticket = {
 };
 
 describe("domain schemas", () => {
+  test("accepts only supported model profiles", () => {
+    for (const profile of ["luna", "terra", "sol"] as const) {
+      expect(ModelProfileSchema.parse(profile)).toBe(profile);
+    }
+    expect(() => ModelProfileSchema.parse("nova")).toThrow();
+  });
+
   test("accepts a complete ticket", () => {
     expect(TicketSpecSchema.parse(ticket)).toEqual(ticket);
   });
@@ -29,6 +37,7 @@ describe("domain schemas", () => {
 
   test("rejects low reasoning effort", () => {
     expect(() => ModelDecisionSchema.parse({
+      modelProfile: "terra",
       model: "gpt-5.6-terra",
       reasoningEffort: "low",
       tokenBudget: 20_000,

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ContextRefSchema, StoredTaskSchema } from "../domain/schemas";
+import { ContextRefSchema, ModelProfileSchema, StoredTaskSchema } from "../domain/schemas";
 
 const NonEmpty = z.string().trim().min(1);
 export const AgentRoleSchema = z.enum(["scout", "implement", "review"]);
@@ -40,6 +40,8 @@ export const HarnessEventSchema = z.discriminatedUnion("type", [
   EventBaseSchema.extend({
     type: z.literal("attempt.started"),
     threadId: NonEmpty.optional(),
+    turnId: NonEmpty.optional(),
+    baseCommit: NonEmpty.optional(),
   }).strict(),
   EventBaseSchema.extend({
     type: z.literal("attempt.output"),
@@ -63,6 +65,11 @@ export const HarnessEventSchema = z.discriminatedUnion("type", [
     message: NonEmpty,
     retryable: z.boolean(),
   }).strict(),
+  EventBaseSchema.extend({
+    type: z.literal("attempt.blocked_policy"),
+    code: NonEmpty,
+    message: NonEmpty,
+  }).strict(),
 ]);
 
 export const HarnessAttemptSchema = z.object({
@@ -70,6 +77,7 @@ export const HarnessAttemptSchema = z.object({
   taskId: NonEmpty,
   role: AgentRoleSchema,
   retryIndex: RetryIndexSchema,
+  modelProfile: ModelProfileSchema,
   model: NonEmpty,
   effort: ReasoningEffortSchema,
   contextRef: ContextRefSchema.optional(),
