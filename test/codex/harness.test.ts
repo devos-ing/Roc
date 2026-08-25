@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { CodexClientApi } from "../../src/codex/client";
 import { createCodexHarness } from "../../src/codex/harness";
 import {
-  ImplementOutputJsonSchema,
+  ImplementDraftOutputJsonSchema,
   ReviewOutputJsonSchema,
   ScoutOutputJsonSchema,
   implementPrompt,
@@ -234,6 +234,9 @@ function memoryWorktrees(): TaskWorktreeManager {
         baseCommit: "a".repeat(40),
       };
     },
+    async commitChanges() {
+      return "b".repeat(40);
+    },
     async assertCommit() {},
     async status() {
       return "";
@@ -380,12 +383,8 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     expect(scoutPrompt(scoutInput)).toContain(JSON.stringify(ticket, null, 2));
 
     await writeFile(join(workspace.path, "implementation.txt"), "implemented\n");
-    await git(["add", "implementation.txt"], workspace.path);
-    await git(["commit", "-m", "feat: implement ticket"], workspace.path);
-    const commitSha = await git(["rev-parse", "HEAD"], workspace.path);
-    const implementOutput = {
+    const implementDraft = {
       kind: "implement" as const,
-      commitSha,
       validation: ["bun test test/codex/harness.test.ts"],
       risks: [],
       limitations: [],
@@ -393,7 +392,7 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     client.enqueue(
       usage("thread-implement", "turn-implement"),
       usage("thread-implement", "turn-implement"),
-      completedItem("thread-implement", "turn-implement", "item-implement", implementOutput),
+      completedItem("thread-implement", "turn-implement", "item-implement", implementDraft),
       completedTurn("thread-implement", "turn-implement"),
     );
     const implementInput = {
@@ -416,6 +415,8 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     };
 
     const implement = await collect(harness, implementRequest);
+    const commitSha = await git(["rev-parse", "HEAD"], workspace.path);
+    const implementOutput = { ...implementDraft, commitSha };
     expect(observed(implement.events)).toEqual([
       { type: "attempt.started", threadId: "thread-implement", turnId: "turn-implement" },
       { type: "attempt.usage_delta", ...totals },
@@ -425,7 +426,13 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     expect(implement.events.filter((event) => event.type === "attempt.usage_delta")).toHaveLength(1);
     expect(implement.events.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
     await expect(worktrees.assertCommit(ticket.id, commitSha)).resolves.toBeUndefined();
-    expect(implementPrompt(implementInput)).toContain("Create exactly one Git commit");
+    expect(await git([
+      "rev-list",
+      "--count",
+      `${workspace.baseCommit}..refs/heads/${workspace.branch}`,
+    ], root)).toBe("1");
+    expect(implementPrompt(implementInput)).toContain("Do not run Git metadata commands");
+    expect(implementPrompt(implementInput)).toContain("trusted Harness will create the commit");
     expect(implementPrompt(implementInput)).toContain(JSON.stringify(implementInput.scout, null, 2));
 
     const reviewOutput = {
@@ -521,7 +528,7 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
             excludeTmpdirEnvVar: true,
             excludeSlashTmp: true,
           },
-          outputSchema: ImplementOutputJsonSchema,
+          outputSchema: ImplementDraftOutputJsonSchema,
         },
       },
       {
@@ -730,20 +737,18 @@ test("preserves the Review status baseline across start redispatch and reconcili
   });
 });
 
-test("rejects an Implement output until its reported commit is verified", async () => {
-  const commitSha = "b".repeat(40);
+test("rejects an Implement draft when the trusted commit cannot be created", async () => {
   const client = new RecordedCodexClient([
     completedItem("thread-scout", "turn-scout", "item-invalid-commit", {
       kind: "implement",
-      commitSha,
       validation: ["bun test"],
       risks: [],
       limitations: [],
     }),
   ]);
   const worktrees = memoryWorktrees();
-  worktrees.assertCommit = async () => {
-    throw new Error("Commit is not reachable from agile/T1");
+  worktrees.commitChanges = async () => {
+    throw new Error("Task worktree has no uncommitted changes");
   };
   const harness = createCodexHarness({
     client,
@@ -1040,6 +1045,78 @@ test("reconciles authoritative structured output and terminal completion", async
   expect(resumedClient.requests).toEqual(client.requests);
 });
 
+test("reconciles an Implement draft to the stable normalized output", async () => {
+  const implementDraft = {
+    kind: "implement" as const,
+    validation: ["bun test"],
+    risks: [],
+    limitations: [],
+  };
+  const commitSha = "c".repeat(40);
+  let commitCalls = 0;
+  const worktrees = memoryWorktrees();
+  worktrees.commitChanges = async (taskId) => {
+    expect(taskId).toBe("T1");
+    commitCalls += 1;
+    return commitSha;
+  };
+  const history = {
+    thread: {
+      id: "thread-implement",
+      turns: [{
+        id: "turn-implement",
+        status: "completed",
+        error: null,
+        completedAt: 1_777_000_000,
+        items: [{
+          type: "agentMessage",
+          id: "item-implement-recovered",
+          text: JSON.stringify(implementDraft),
+          phase: "final_answer",
+        }],
+      }],
+    },
+  };
+  const request: HarnessStepRequest = {
+    ...makeImplementRequest("attempt-implement-reconcile"),
+    mode: "reconcile",
+    backendCursor: backendCursor("thread-implement", "turn-implement"),
+  };
+  const client = new RecordedCodexClient([], { threadReads: [history] });
+  const output = await createCodexHarness({
+    client,
+    worktrees,
+    now: () => "2026-08-26T00:00:00.000Z",
+  }).step(request);
+
+  expect(output).toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.output",
+      eventId: "attempt-implement-reconcile:item-implement-recovered:output",
+      output: { ...implementDraft, commitSha },
+    },
+  });
+  expect(commitCalls).toBe(1);
+
+  if (output.kind !== "event") throw new Error(`Unexpected ${output.kind} delivery`);
+  const resumedClient = new RecordedCodexClient([], { threadReads: [history] });
+  const completed = await createCodexHarness({
+    client: resumedClient,
+    worktrees,
+    now: () => "2026-08-26T00:00:00.000Z",
+  }).step({ ...request, backendCursor: output.nextCursor });
+
+  expect(completed).toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.completed",
+      eventId: "attempt-implement-reconcile:turn-implement:completed",
+    },
+  });
+  expect(commitCalls).toBe(2);
+});
+
 test("classifies reconciliation without persisted turn identity as orphaned", async () => {
   const client = new RecordedCodexClient([]);
   const harness = createCodexHarness({
@@ -1102,10 +1179,11 @@ for (const status of ["failed", "interrupted"] as const) {
 }
 
 test("does not infer Implement success from a commit without structured history", async () => {
-  let commitAssertions = 0;
+  let commitAttempts = 0;
   const worktrees = memoryWorktrees();
-  worktrees.assertCommit = async () => {
-    commitAssertions += 1;
+  worktrees.commitChanges = async () => {
+    commitAttempts += 1;
+    return "b".repeat(40);
   };
   const client = new RecordedCodexClient([], {
     threadReads: [{
@@ -1137,7 +1215,7 @@ test("does not infer Implement success from a commit without structured history"
       retryable: true,
     },
   });
-  expect(commitAssertions).toBe(0);
+  expect(commitAttempts).toBe(0);
 });
 
 test("interrupts an active turn and only treats terminal attempts as cancellation no-ops", async () => {

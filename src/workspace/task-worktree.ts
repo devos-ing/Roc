@@ -11,6 +11,7 @@ export type TaskWorkspace = {
 
 export type TaskWorktreeManager = {
   prepare(taskId: string): Promise<TaskWorkspace>;
+  commitChanges(taskId: string): Promise<string>;
   assertCommit(taskId: string, commitSha: string): Promise<void>;
   status(taskId: string): Promise<string>;
 };
@@ -176,6 +177,60 @@ export async function createTaskWorktreeManager(
     }
   }
 
+  async function taskCommitCount(candidate: TaskWorkspace): Promise<number> {
+    const branchRef = `refs/heads/${candidate.branch}`;
+    const encoded = (
+      await git(["rev-list", "--count", `${candidate.baseCommit}..${branchRef}`], canonicalRepo)
+    ).stdout.trim();
+    if (!/^\d+$/.test(encoded)) {
+      throw new Error(`Git returned an invalid task commit count for ${candidate.branch}`);
+    }
+    return Number(encoded);
+  }
+
+  async function porcelainStatus(candidate: TaskWorkspace): Promise<string> {
+    return (await git(["status", "--porcelain"], candidate.path)).stdout.trimEnd();
+  }
+
+  async function assertReachableCommit(
+    candidate: TaskWorkspace,
+    commitSha: string,
+  ): Promise<void> {
+    if (!/^[0-9a-f]{40}$/.test(commitSha)) {
+      throw new Error(`Invalid full commit SHA: ${commitSha}`);
+    }
+    await git(["cat-file", "-e", `${commitSha}^{commit}`], canonicalRepo);
+    const reachable = await spawnGit(
+      ["merge-base", "--is-ancestor", commitSha, `refs/heads/${candidate.branch}`],
+      canonicalRepo,
+    );
+    if (reachable.exitCode === 1) {
+      throw new Error(`Commit is not reachable from ${candidate.branch}: ${commitSha}`);
+    }
+    if (reachable.exitCode !== 0) {
+      throw new Error(`Could not verify commit reachability: ${reachable.stderr.trim()}`);
+    }
+  }
+
+  async function validatedSingleCommit(candidate: TaskWorkspace): Promise<string> {
+    await assertReusable(candidate);
+    const count = await taskCommitCount(candidate);
+    if (count !== 1) {
+      throw new Error(
+        `Task branch ${candidate.branch} must contain exactly one task commit; found ${count}`,
+      );
+    }
+    if ((await porcelainStatus(candidate)) !== "") {
+      throw new Error(`Task worktree must be clean when reusing ${candidate.branch}`);
+    }
+    const branchRef = `refs/heads/${candidate.branch}`;
+    const commitSha = (
+      await git(["rev-parse", "--verify", `${branchRef}^{commit}`], canonicalRepo)
+    ).stdout.trim();
+    await assertReachableCommit(candidate, commitSha);
+    return commitSha;
+  }
+
   await validateWorktreeRoot();
 
   return {
@@ -203,29 +258,44 @@ export async function createTaskWorktreeManager(
       return candidate;
     },
 
+    async commitChanges(taskId: string): Promise<string> {
+      const candidate = workspace(taskId);
+      await assertReusable(candidate);
+      const count = await taskCommitCount(candidate);
+
+      if (count === 0) {
+        if ((await porcelainStatus(candidate)) === "") {
+          throw new Error(`Task worktree has no uncommitted changes: ${candidate.path}`);
+        }
+        await git(["add", "-A"], candidate.path);
+        await git([
+          "-c",
+          "user.name=Agile Agents",
+          "-c",
+          "user.email=agile-agents@local",
+          "commit",
+          "-m",
+          `agile(${candidate.taskId}): implement ticket`,
+        ], candidate.path);
+      } else if (count !== 1) {
+        throw new Error(
+          `Task branch ${candidate.branch} must contain exactly one task commit; found ${count}`,
+        );
+      }
+
+      return validatedSingleCommit(candidate);
+    },
+
     async assertCommit(taskId: string, commitSha: string): Promise<void> {
       const candidate = workspace(taskId);
-      if (!/^[0-9a-f]{40}$/.test(commitSha)) {
-        throw new Error(`Invalid full commit SHA: ${commitSha}`);
-      }
       await assertReusable(candidate);
-      await git(["cat-file", "-e", `${commitSha}^{commit}`], canonicalRepo);
-      const reachable = await spawnGit(
-        ["merge-base", "--is-ancestor", commitSha, `refs/heads/${candidate.branch}`],
-        canonicalRepo,
-      );
-      if (reachable.exitCode === 1) {
-        throw new Error(`Commit is not reachable from ${candidate.branch}: ${commitSha}`);
-      }
-      if (reachable.exitCode !== 0) {
-        throw new Error(`Could not verify commit reachability: ${reachable.stderr.trim()}`);
-      }
+      await assertReachableCommit(candidate, commitSha);
     },
 
     async status(taskId: string): Promise<string> {
       const candidate = workspace(taskId);
       await assertReusable(candidate);
-      return (await git(["status", "--porcelain"], candidate.path)).stdout.trimEnd();
+      return porcelainStatus(candidate);
     },
   };
 }

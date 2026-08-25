@@ -70,6 +70,66 @@ test("prepares an isolated task branch and validates its committed result", asyn
   }
 });
 
+test("commits dirty task changes once and reuses the sole clean task commit", async () => {
+  const root = await createRepository();
+  try {
+    const manager = await createTaskWorktreeManager(root, "HEAD");
+    const workspace = await manager.prepare("T1");
+    await writeFile(join(workspace.path, "answer.txt"), "42\n");
+
+    const firstCommit = await manager.commitChanges("T1");
+
+    expect(firstCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(await manager.status("T1")).toBe("");
+    expect((await git([
+      "rev-list",
+      "--count",
+      `${workspace.baseCommit}..refs/heads/${workspace.branch}`,
+    ], root)).stdout.trim()).toBe("1");
+    expect((await git([
+      "show",
+      "-s",
+      "--format=%an <%ae>%n%s",
+      firstCommit,
+    ], root)).stdout.trim()).toBe(
+      "Agile Agents <agile-agents@local>\nagile(T1): implement ticket",
+    );
+
+    const replayedCommit = await manager.commitChanges("T1");
+
+    expect(replayedCommit).toBe(firstCommit);
+    expect((await git([
+      "rev-list",
+      "--count",
+      `${workspace.baseCommit}..refs/heads/${workspace.branch}`,
+    ], root)).stdout.trim()).toBe("1");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fails closed for zero clean task commits or more than one task commit", async () => {
+  const root = await createRepository();
+  try {
+    const manager = await createTaskWorktreeManager(root, "HEAD");
+    await manager.prepare("T1");
+    await expect(manager.commitChanges("T1")).rejects.toThrow(/no uncommitted changes/i);
+
+    const workspace = await manager.prepare("T2");
+    await writeFile(join(workspace.path, "first.txt"), "first\n");
+    await git(["add", "-A"], workspace.path);
+    await git(["commit", "-m", "test: first task commit"], workspace.path);
+    await writeFile(join(workspace.path, "second.txt"), "second\n");
+    await expect(manager.commitChanges("T2")).rejects.toThrow(/must be clean/i);
+    await git(["add", "-A"], workspace.path);
+    await git(["commit", "-m", "test: second task commit"], workspace.path);
+
+    await expect(manager.commitChanges("T2")).rejects.toThrow(/exactly one task commit/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("rejects reuse when the existing task branch has a different base identity", async () => {
   const root = await createRepository();
   try {

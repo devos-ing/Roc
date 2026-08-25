@@ -8,6 +8,8 @@ import {
 } from "../harness/contracts";
 
 export const ScoutOutputJsonSchema = z.toJSONSchema(ScoutOutputSchema);
+export const ImplementDraftOutputSchema = ImplementOutputSchema.omit({ commitSha: true });
+export const ImplementDraftOutputJsonSchema = z.toJSONSchema(ImplementDraftOutputSchema);
 export const ImplementOutputJsonSchema = z.toJSONSchema(ImplementOutputSchema);
 export const ReviewOutputJsonSchema = z.toJSONSchema(ReviewOutputSchema);
 
@@ -39,9 +41,10 @@ export function implementPrompt(
     "You are the Implement agent for an isolated software ticket.",
     "Implement only the validated ticket, using the Scout capsule as repository guidance.",
     "Run every validation listed in the ticket and report the validations actually completed.",
-    "Create exactly one Git commit containing the attempted change.",
-    "Return exactly one JSON object matching the supplied Implement output schema.",
-    "The commitSha field must be the full SHA of that commit. Do not claim success without it.",
+    "Do not run Git metadata commands or attempt to create a commit.",
+    "The trusted Harness will create the commit after it validates your final draft.",
+    "Return exactly one JSON object matching the supplied Implement draft output schema.",
+    "Do not include a commitSha field.",
     "",
     "Validated ticket:",
     JSON.stringify(validated.ticket, null, 2),

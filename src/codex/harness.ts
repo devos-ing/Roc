@@ -26,7 +26,8 @@ import {
   TurnStartResponseSchema,
 } from "./protocol";
 import {
-  ImplementOutputJsonSchema,
+  ImplementDraftOutputJsonSchema,
+  ImplementDraftOutputSchema,
   ReviewOutputJsonSchema,
   ScoutOutputJsonSchema,
   implementPrompt,
@@ -190,7 +191,7 @@ function prompt(request: SupportedRequest): string {
 
 function outputSchema(role: "scout" | "implement" | "review"): unknown {
   if (role === "scout") return ScoutOutputJsonSchema;
-  if (role === "implement") return ImplementOutputJsonSchema;
+  if (role === "implement") return ImplementDraftOutputJsonSchema;
   return ReviewOutputJsonSchema;
 }
 
@@ -644,29 +645,41 @@ export function createCodexHarness(input: {
           | z.infer<typeof ScoutOutputSchema>
           | z.infer<typeof ImplementOutputSchema>
           | z.infer<typeof ReviewOutputSchema>;
-        try {
-          output = active.role === "scout"
-            ? ScoutOutputSchema.parse(decoded)
-            : active.role === "implement"
-              ? ImplementOutputSchema.parse(decoded)
-              : ReviewOutputSchema.parse(decoded);
-        } catch (error) {
-          throw protocolError(
-            "invalid_structured_output",
-            "Codex returned invalid structured output",
-            request,
-            active.threadId,
-            error,
-          );
-        }
-
-        if (output.kind === "implement") {
+        if (active.role === "implement") {
+          let draft: z.infer<typeof ImplementDraftOutputSchema>;
           try {
-            await input.worktrees.assertCommit(active.taskId, output.commitSha);
+            draft = ImplementDraftOutputSchema.parse(decoded);
+          } catch (error) {
+            throw protocolError(
+              "invalid_structured_output",
+              "Codex returned invalid structured output",
+              request,
+              active.threadId,
+              error,
+            );
+          }
+          let commitSha: string;
+          try {
+            commitSha = await input.worktrees.commitChanges(active.taskId);
           } catch (error) {
             throw protocolError(
               "invalid_implementation_commit",
-              "Codex returned an invalid implementation commit",
+              "The trusted Harness could not create or reuse the implementation commit",
+              request,
+              active.threadId,
+              error,
+            );
+          }
+          output = ImplementOutputSchema.parse({ ...draft, commitSha });
+        } else {
+          try {
+            output = active.role === "scout"
+              ? ScoutOutputSchema.parse(decoded)
+              : ReviewOutputSchema.parse(decoded);
+          } catch (error) {
+            throw protocolError(
+              "invalid_structured_output",
+              "Codex returned invalid structured output",
               request,
               active.threadId,
               error,
@@ -838,22 +851,35 @@ export function createCodexHarness(input: {
       return orphaned("Completed Codex history contains invalid structured output");
     }
 
-    const parsedOutput = request.attempt.role === "scout"
-      ? ScoutOutputSchema.safeParse(decoded)
-      : request.attempt.role === "implement"
-        ? ImplementOutputSchema.safeParse(decoded)
-        : ReviewOutputSchema.safeParse(decoded);
-    if (!parsedOutput.success) {
-      return orphaned("Completed Codex history contains invalid structured output");
-    }
-    const output = parsedOutput.data;
-
-    if (output.kind === "implement") {
-      try {
-        await input.worktrees.assertCommit(recovered.taskId, output.commitSha);
-      } catch {
-        return orphaned("Completed Implement history does not prove a valid commit");
+    let output:
+      | z.infer<typeof ScoutOutputSchema>
+      | z.infer<typeof ImplementOutputSchema>
+      | z.infer<typeof ReviewOutputSchema>;
+    if (request.attempt.role === "implement") {
+      const draft = ImplementDraftOutputSchema.safeParse(decoded);
+      if (!draft.success) {
+        return orphaned("Completed Codex history contains invalid structured output");
       }
+      let commitSha: string;
+      try {
+        commitSha = await input.worktrees.commitChanges(recovered.taskId);
+      } catch {
+        return failedDelivery(
+          cursor,
+          recovered,
+          "invalid_implementation_commit",
+          "The trusted Harness could not create or reuse the implementation commit",
+        );
+      }
+      output = ImplementOutputSchema.parse({ ...draft.data, commitSha });
+    } else {
+      const parsedOutput = request.attempt.role === "scout"
+        ? ScoutOutputSchema.safeParse(decoded)
+        : ReviewOutputSchema.safeParse(decoded);
+      if (!parsedOutput.success) {
+        return orphaned("Completed Codex history contains invalid structured output");
+      }
+      output = parsedOutput.data;
     }
     if (output.kind === "review") {
       if (cursor.reviewStatusBefore === undefined) {
