@@ -154,6 +154,9 @@ export const FakeScenarioSchema = z.object({
 });
 
 export type HarnessEvent = z.infer<typeof HarnessEventSchema>;
+export type ScoutOutput = z.infer<typeof ScoutOutputSchema>;
+export type ImplementOutput = z.infer<typeof ImplementOutputSchema>;
+export type HarnessRoleInput = z.infer<typeof HarnessRoleInputSchema>;
 export type HarnessStepRequest = z.infer<typeof HarnessStepRequestSchema>;
 export type HarnessDelivery = z.infer<typeof HarnessDeliverySchema>;
 export type FakeScenario = z.infer<typeof FakeScenarioSchema>;
