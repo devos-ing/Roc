@@ -2,10 +2,11 @@ import type { z } from "zod";
 import type { ModelProfileSchema } from "../domain/schemas";
 
 export type ModelProfile = z.infer<typeof ModelProfileSchema>;
-export type CatalogModel = {
+export type CatalogModel = Readonly<{
   id: string;
-  supportedReasoningEfforts: string[];
-};
+  supportedReasoningEfforts: readonly string[];
+}>;
+export type ModelMapping = Readonly<Partial<Record<ModelProfile, string>>>;
 export type AdvisorInput = {
   role: "scout" | "implement" | "review";
   risk: "low" | "medium" | "high";
@@ -42,7 +43,8 @@ function routeProfiles(input: AdvisorInput): ModelProfile[] {
 }
 
 function profileForModel(id: string): ModelProfile | undefined {
-  return profileOrder.find((profile) => id.toLowerCase().includes(profile));
+  const normalized = id.toLowerCase();
+  return profileOrder.find((profile) => normalized === profile || normalized.endsWith(`-${profile}`));
 }
 
 function routeRationale(input: AdvisorInput, chosenProfile: ModelProfile): string[] {
@@ -51,14 +53,19 @@ function routeRationale(input: AdvisorInput, chosenProfile: ModelProfile): strin
 }
 
 export function createModelAdvisor(
-  catalog: CatalogModel[],
-  mapping: Partial<Record<ModelProfile, string>> = {},
+  catalog: readonly CatalogModel[],
+  mapping: ModelMapping = {},
 ): ModelAdvisor {
+  const catalogSnapshot = catalog.map((model) => ({
+    id: model.id,
+    supportedReasoningEfforts: [...model.supportedReasoningEfforts],
+  }));
+  const mappingSnapshot: ModelMapping = { ...mapping };
   const modelForProfile = (profile: ModelProfile, effort: Route["effort"]): string | undefined => {
-    const mapped = mapping[profile];
-    const configured = mapped === undefined ? undefined : catalog.find((model) => model.id === mapped);
+    const mapped = mappingSnapshot[profile];
+    const configured = mapped === undefined ? undefined : catalogSnapshot.find((model) => model.id === mapped);
     if (configured?.supportedReasoningEfforts.includes(effort)) return configured.id;
-    return catalog.find((model) =>
+    return catalogSnapshot.find((model) =>
       profileForModel(model.id) === profile && model.supportedReasoningEfforts.includes(effort),
     )?.id;
   };

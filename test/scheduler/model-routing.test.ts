@@ -40,7 +40,7 @@ test("returns undefined when no model supports the required effort", () => {
 
 test("honors exact profile mapping and catalog order for compatible fallbacks", () => {
   const advisor = createModelAdvisor([
-    { id: "gpt-5.6-terra-first", supportedReasoningEfforts: ["high"] },
+    { id: "gpt-5.6-first-terra", supportedReasoningEfforts: ["high"] },
     { id: "codex-model-2", supportedReasoningEfforts: ["high"] },
     { id: "codex-model-3", supportedReasoningEfforts: ["high"] },
   ], {
@@ -55,9 +55,47 @@ test("honors exact profile mapping and catalog order for compatible fallbacks", 
   });
 
   expect(createModelAdvisor([
-    { id: "gpt-5.6-terra-first", supportedReasoningEfforts: ["high"] },
-    { id: "gpt-5.6-terra-second", supportedReasoningEfforts: ["high"] },
+    { id: "gpt-5.6-first-terra", supportedReasoningEfforts: ["high"] },
+    { id: "gpt-5.6-second-terra", supportedReasoningEfforts: ["high"] },
   ]).decide({ role: "implement", risk: "medium", retryIndex: 0 })).toMatchObject({
-    model: "gpt-5.6-terra-first",
+    model: "gpt-5.6-first-terra",
+  });
+});
+
+test("recognizes only a terminal profile token", () => {
+  const advisor = createModelAdvisor([
+    { id: "gpt-5.6-luna-terra", supportedReasoningEfforts: ["high"] },
+    { id: "gpt-5.6-lunaish", supportedReasoningEfforts: ["high"] },
+    { id: "gpt-5.6-current-luna", supportedReasoningEfforts: ["high"] },
+  ]);
+
+  expect(advisor.decide({ role: "scout", risk: "medium", retryIndex: 0 })).toMatchObject({
+    profile: "luna",
+    model: "gpt-5.6-current-luna",
+  });
+  expect(advisor.decide({ role: "implement", risk: "medium", retryIndex: 0 })).toMatchObject({
+    profile: "terra",
+    model: "gpt-5.6-luna-terra",
+  });
+  expect(createModelAdvisor([
+    { id: "gpt-5.6-lunaish", supportedReasoningEfforts: ["high"] },
+  ]).decide({ role: "scout", risk: "medium", retryIndex: 0 })).toBeUndefined();
+});
+
+test("keeps an immutable snapshot of catalog and mapping inputs", () => {
+  const mutableCatalog = [
+    { id: "model-a", supportedReasoningEfforts: ["high"] },
+    { id: "model-b", supportedReasoningEfforts: ["high"] },
+  ];
+  const mapping = { luna: "model-a", terra: "model-b" };
+  const advisor = createModelAdvisor(mutableCatalog, mapping);
+
+  mutableCatalog[0]!.id = "model-a-mutated";
+  mutableCatalog[0]!.supportedReasoningEfforts.splice(0, 1);
+  mapping.luna = "model-b";
+
+  expect(advisor.decide({ role: "scout", risk: "medium", retryIndex: 0 })).toMatchObject({
+    profile: "luna",
+    model: "model-a",
   });
 });
