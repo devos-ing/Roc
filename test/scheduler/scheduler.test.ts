@@ -78,6 +78,27 @@ function roleDeliveries(
   ];
 }
 
+function infraFailureDelivery(
+  key: string,
+  attemptId: string,
+  code: string,
+  retryable: boolean,
+) {
+  return [{
+    nextCursor: "1",
+    event: {
+      type: "attempt.failed_infra" as const,
+      eventId: `${key}:failed`,
+      attemptId,
+      sequence: 1,
+      occurredAt: "2026-08-25T00:00:02.000Z",
+      code,
+      message: "Fake infrastructure failure",
+      retryable,
+    },
+  }];
+}
+
 function setupAcceptedTask() {
   const db = openDatabase(":memory:");
   const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
@@ -177,6 +198,69 @@ test("runs Scout, Implement, and isolated Review to done", async () => {
     });
     expect(requests.every((request) => request.attempt.contextRef?.sourceTaskId === "C")).toBe(true);
     expect(JSON.stringify(reviewRequest)).not.toContain("thread-implement");
+    expect(() => fake.assertComplete()).not.toThrow();
+  } finally {
+    db.close();
+  }
+});
+
+test("caps retryable Scout infrastructure failures and upgrades only the final retry", async () => {
+  const { db, repo } = setupAcceptedTask();
+  const fake = createFakeHarness({ attempts: [
+    { taskId: "T1", role: "scout", retryIndex: 0, expect: { model: "luna", effort: "high", contextRef: inheritedContext }, deliveries: infraFailureDelivery("scout-0", "attempt-1", "backend_unavailable", true) },
+    { taskId: "T1", role: "scout", retryIndex: 1, expect: { model: "luna", effort: "high", contextRef: inheritedContext }, deliveries: infraFailureDelivery("scout-1", "attempt-2", "backend_unavailable", true) },
+    { taskId: "T1", role: "scout", retryIndex: 2, expect: { model: "terra", effort: "high", contextRef: inheritedContext }, deliveries: infraFailureDelivery("scout-2", "attempt-3", "backend_unavailable", true) },
+  ] });
+  const scheduler = new Scheduler(repo, fake.harness);
+  try {
+    await scheduler.runUntilIdle(12);
+
+    expect(repo.listAttempts("T1")).toMatchObject([
+      { role: "scout", retryIndex: 0, model: "luna", status: "failed_infra" },
+      { role: "scout", retryIndex: 1, model: "luna", status: "failed_infra" },
+      { role: "scout", retryIndex: 2, model: "terra", status: "failed_infra" },
+    ]);
+    expect(repo.inspectTask("T1")).toMatchObject({ status: "failed_infra" });
+    expect(() => fake.assertComplete()).not.toThrow();
+  } finally {
+    db.close();
+  }
+});
+
+test("retries a model-unavailable Scout with Terra immediately", async () => {
+  const { db, repo } = setupAcceptedTask();
+  const fake = createFakeHarness({ attempts: [
+    { taskId: "T1", role: "scout", retryIndex: 0, expect: { model: "luna", effort: "high", contextRef: inheritedContext }, deliveries: infraFailureDelivery("scout-0", "attempt-1", "model_unavailable", true) },
+    { taskId: "T1", role: "scout", retryIndex: 1, expect: { model: "terra", effort: "high", contextRef: inheritedContext }, deliveries: infraFailureDelivery("scout-1", "attempt-2", "backend_unavailable", false) },
+  ] });
+  const scheduler = new Scheduler(repo, fake.harness);
+  try {
+    await scheduler.runUntilIdle(8);
+
+    expect(repo.listAttempts("T1")).toMatchObject([
+      { role: "scout", retryIndex: 0, model: "luna", status: "failed_infra" },
+      { role: "scout", retryIndex: 1, model: "terra", status: "failed_infra" },
+    ]);
+    expect(repo.inspectTask("T1")).toMatchObject({ status: "failed_infra" });
+    expect(() => fake.assertComplete()).not.toThrow();
+  } finally {
+    db.close();
+  }
+});
+
+test("terminalizes a non-retryable Scout infrastructure failure", async () => {
+  const { db, repo } = setupAcceptedTask();
+  const fake = createFakeHarness({ attempts: [
+    { taskId: "T1", role: "scout", retryIndex: 0, expect: { model: "luna", effort: "high", contextRef: inheritedContext }, deliveries: infraFailureDelivery("scout-0", "attempt-1", "backend_unavailable", false) },
+  ] });
+  const scheduler = new Scheduler(repo, fake.harness);
+  try {
+    await scheduler.runUntilIdle(6);
+
+    expect(repo.listAttempts("T1")).toMatchObject([
+      { role: "scout", retryIndex: 0, model: "luna", status: "failed_infra" },
+    ]);
+    expect(repo.inspectTask("T1")).toMatchObject({ status: "failed_infra" });
     expect(() => fake.assertComplete()).not.toThrow();
   } finally {
     db.close();

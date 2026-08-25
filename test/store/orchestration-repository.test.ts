@@ -268,21 +268,13 @@ test("rolls back completion when the attempt has no matching output", () => {
   }
 });
 
-for (const unsupportedEvent of [
-  {
-    type: "attempt.usage_delta" as const,
-    inputTokens: 10,
-    cachedInputTokens: 2,
-    outputTokens: 3,
-    reasoningOutputTokens: 1,
-  },
-  {
-    type: "attempt.failed_infra" as const,
-    code: "backend_unavailable",
-    message: "Backend unavailable",
-    retryable: true,
-  },
-]) {
+for (const unsupportedEvent of [{
+  type: "attempt.usage_delta" as const,
+  inputTokens: 10,
+  cachedInputTokens: 2,
+  outputTokens: 3,
+  reasoningOutputTokens: 1,
+}]) {
   test(`rolls back unsupported ${unsupportedEvent.type}`, () => {
     const { db, repo } = setup();
     try {
@@ -302,6 +294,36 @@ for (const unsupportedEvent of [
     }
   });
 }
+
+test("terminal infrastructure failure marks ready dependents for replanning", () => {
+  const { db, repo } = setup();
+  try {
+    db.exec("INSERT INTO task_deps(task_id, depends_on_task_id, kind) VALUES ('T2', 'T1', 'blocks')");
+    const attemptId = startScout(repo);
+
+    repo.applyHarnessEvent(attemptId, "cursor-failed", {
+      type: "attempt.failed_infra",
+      eventId: "scout:failed",
+      attemptId,
+      sequence: 1,
+      occurredAt: "2026-08-25T00:00:02.000Z",
+      code: "backend_unavailable",
+      message: "Backend unavailable",
+      retryable: false,
+    });
+
+    expect(repo.listAttempts("T1")).toMatchObject([
+      { role: "scout", retryIndex: 0, status: "failed_infra" },
+    ]);
+    expect(repo.inspectTask("T1")).toEqual({ id: "T1", status: "failed_infra" });
+    expect(repo.inspectTask("T2")).toEqual({ id: "T2", status: "needs_replan" });
+    expect(db.query<{ type: string }, []>(`
+      SELECT type FROM events WHERE task_id = 'T2' ORDER BY seq DESC LIMIT 1
+    `).get()?.type).toBe("task.needs_replan");
+  } finally {
+    db.close();
+  }
+});
 
 test("rejects a rejected Review completion and rolls back every completion effect", () => {
   const { db, repo } = setup();

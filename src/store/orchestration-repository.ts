@@ -10,7 +10,7 @@ import {
   type HarnessEvent,
   type HarnessStepRequest,
 } from "../harness/contracts";
-import { baselineRoute } from "../scheduler/model-routing";
+import { baselineRoute, retryRoute, type Route } from "../scheduler/model-routing";
 
 export type IdFactory = (kind: "attempt" | "decision" | "event" | "review" | "task") => string;
 
@@ -200,17 +200,51 @@ export class OrchestrationRepository {
         ORDER BY task.priority ASC, task.created_at ASC, task.id ASC
         LIMIT 1
       `).get();
-      if (!row || row.status === "reviewing") return undefined;
+      if (!row) return undefined;
 
       const ticket = storedTask(row);
       const from = TaskStatusSchema.parse(row.status);
-      const role: "scout" | "implement" | "review" =
-        from === "claimed" ? "scout" : from === "scouting" ? "implement" : "review";
+      const latestAttempt = this.db.query<{
+        id: string;
+        role: string;
+        model: string;
+        status: string;
+        retry_index: number;
+      }, [string]>(`
+        SELECT id, role, model, status, retry_index FROM attempts
+        WHERE task_id = ?
+        ORDER BY rowid DESC
+        LIMIT 1
+      `).get(row.id) ?? undefined;
+      const role: "scout" | "implement" | "review" = latestAttempt?.status === "failed_infra"
+        ? AgentRoleSchema.parse(latestAttempt.role)
+        : from === "claimed" ? "scout" : from === "scouting" ? "implement" : "review";
       const to = role === "scout" ? "scouting" : role === "implement" ? "implementing" : "reviewing";
       if (role === "implement") this.latestRoleOutput(row.id, "scout");
       if (role === "review") this.latestRoleOutput(row.id, "implement");
 
-      const route = baselineRoute(role, ticket.spec.risk);
+      let retryIndex: 0 | 1 | 2;
+      let route: Route;
+      if (latestAttempt?.status === "failed_infra") {
+        const failure = this.db.query<{ error_code: string }, [string]>(`
+          SELECT json_extract(payload_json, '$.code') AS error_code
+          FROM events
+          WHERE attempt_id = ? AND type = 'attempt.failed_infra'
+          ORDER BY seq DESC
+          LIMIT 1
+        `).get(latestAttempt.id);
+        if (!failure) throw new Error(`Missing infrastructure failure event for ${latestAttempt.id}`);
+        const nextRetryIndex = latestAttempt.retry_index === 0 ? 1 : latestAttempt.retry_index === 1 ? 2 : undefined;
+        if (nextRetryIndex === undefined) throw new Error(`Cannot retry exhausted ${role} attempt for task ${row.id}`);
+        retryIndex = nextRetryIndex;
+        if (latestAttempt.model !== "luna" && latestAttempt.model !== "terra" && latestAttempt.model !== "sol") {
+          throw new Error(`Invalid prior model for retry: ${latestAttempt.model}`);
+        }
+        route = retryRoute(role, ticket.spec.risk, retryIndex, latestAttempt.model, failure.error_code);
+      } else {
+        retryIndex = 0;
+        route = baselineRoute(role, ticket.spec.risk);
+      }
       const decisionId = this.id("decision");
       const attemptId = this.id("attempt");
       const now = this.now();
@@ -233,15 +267,17 @@ export class OrchestrationRepository {
       this.db.query(`
         INSERT INTO attempts(
           id, task_id, role, model, effort, status, retry_index, started_at
-        ) VALUES(?, ?, ?, ?, ?, 'running', 0, ?)
-      `).run(attemptId, row.id, role, route.model, route.effort, now);
+        ) VALUES(?, ?, ?, ?, ?, 'running', ?, ?)
+      `).run(attemptId, row.id, role, route.model, route.effort, retryIndex, now);
 
-      assertTransition(from, to);
-      this.db.query("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").run(to, now, row.id);
-      this.db.query(`
-        INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
-        VALUES(?, ?, 'task.status_changed', ?, ?)
-      `).run(this.id("event"), row.id, JSON.stringify({ from, to }), now);
+      if (from !== to) {
+        assertTransition(from, to);
+        this.db.query("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").run(to, now, row.id);
+        this.db.query(`
+          INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+          VALUES(?, ?, 'task.status_changed', ?, ?)
+        `).run(this.id("event"), row.id, JSON.stringify({ from, to }), now);
+      }
       this.db.query(`
         INSERT INTO events(idempotency_key, task_id, attempt_id, type, payload_json, occurred_at)
         VALUES(?, ?, ?, 'attempt.created', ?, ?)
@@ -249,7 +285,7 @@ export class OrchestrationRepository {
         this.id("event"),
         row.id,
         attemptId,
-        JSON.stringify({ role, model: route.model, effort: route.effort, retryIndex: 0, decisionId }),
+        JSON.stringify({ role, model: route.model, effort: route.effort, retryIndex, decisionId }),
         now,
       );
       return { attemptId, taskId: row.id, role };
@@ -262,8 +298,8 @@ export class OrchestrationRepository {
       if (event.attemptId !== attemptId) {
         throw new Error(`Harness event attempt mismatch: ${event.attemptId} !== ${attemptId}`);
       }
-      const attempt = this.db.query<{ task_id: string; role: string; status: string }, [string]>(
-        "SELECT task_id, role, status FROM attempts WHERE id = ?",
+      const attempt = this.db.query<{ task_id: string; role: string; status: string; retry_index: number }, [string]>(
+        "SELECT task_id, role, status, retry_index FROM attempts WHERE id = ?",
       ).get(attemptId);
       if (!attempt) throw new Error(`Attempt not found: ${attemptId}`);
       const duplicate = this.db.query<{ attempt_id: string | null; payload_json: string }, [string]>(
@@ -359,6 +395,55 @@ export class OrchestrationRepository {
             event.occurredAt,
           );
         }
+      } else if (event.type === "attempt.failed_infra") {
+        this.db.query(`
+          UPDATE attempts SET status = 'failed_infra', ended_at = ? WHERE id = ?
+        `).run(event.occurredAt, attemptId);
+
+        if (!event.retryable || attempt.retry_index === 2) {
+          const status = this.db.query<{ status: string }, [string]>(
+            "SELECT status FROM tasks WHERE id = ?",
+          ).get(attempt.task_id)?.status;
+          if (status === undefined) throw new Error(`Task not found: ${attempt.task_id}`);
+          const from = TaskStatusSchema.parse(status);
+          assertTransition(from, "failed_infra");
+          this.db.query("UPDATE tasks SET status = 'failed_infra', updated_at = ? WHERE id = ?").run(
+            event.occurredAt,
+            attempt.task_id,
+          );
+          this.db.query(`
+            INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+            VALUES(?, ?, 'task.status_changed', ?, ?)
+          `).run(
+            this.id("event"),
+            attempt.task_id,
+            JSON.stringify({ from, to: "failed_infra" }),
+            event.occurredAt,
+          );
+
+          const dependents = this.db.query<{ id: string }, [string]>(`
+            SELECT id FROM tasks
+            WHERE id IN (SELECT task_id FROM task_deps WHERE depends_on_task_id = ?)
+              AND status IN ('draft', 'ready')
+          `).all(attempt.task_id);
+          this.db.query(`
+            UPDATE tasks
+            SET status = 'needs_replan', updated_at = $now
+            WHERE id IN (SELECT task_id FROM task_deps WHERE depends_on_task_id = $failedTaskId)
+              AND status IN ('draft', 'ready')
+          `).run({ now: event.occurredAt, failedTaskId: attempt.task_id });
+          for (const dependent of dependents) {
+            this.db.query(`
+              INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+              VALUES(?, ?, 'task.needs_replan', ?, ?)
+            `).run(
+              this.id("event"),
+              dependent.id,
+              JSON.stringify({ failedTaskId: attempt.task_id }),
+              event.occurredAt,
+            );
+          }
+        }
       } else {
         throw new Error(`Unsupported harness event in happy-path repository: ${event.type}`);
       }
@@ -373,9 +458,9 @@ export class OrchestrationRepository {
     ).get(taskId) ?? undefined;
   }
 
-  listAttempts(taskId: string): Array<{ role: string; model: string; effort: string; status: string }> {
-    return this.db.query<{ role: string; model: string; effort: string; status: string }, [string]>(`
-      SELECT role, model, effort, status FROM attempts
+  listAttempts(taskId: string): Array<{ role: string; model: string; effort: string; status: string; retryIndex: number }> {
+    return this.db.query<{ role: string; model: string; effort: string; status: string; retryIndex: number }, [string]>(`
+      SELECT role, model, effort, status, retry_index AS retryIndex FROM attempts
       WHERE task_id = ? ORDER BY started_at ASC, id ASC
     `).all(taskId);
   }
