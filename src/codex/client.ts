@@ -118,12 +118,12 @@ export class CodexClient implements CodexClientApi {
   }
 
   nextServerMessage(): Promise<ServerMessage> {
+    if (this.terminalError) {
+      return Promise.reject(this.terminalError);
+    }
     const message = this.messages.shift();
     if (message) {
       return Promise.resolve(message);
-    }
-    if (this.terminalError) {
-      return Promise.reject(this.terminalError);
     }
     return new Promise((resolve, reject) => {
       this.messageWaiters.push({ resolve, reject });
@@ -348,6 +348,7 @@ export class CodexClient implements CodexClientApi {
       waiter.reject(error);
     }
     this.messageWaiters.length = 0;
+    this.messages.length = 0;
     if (killChild && this.process.exitCode === null) {
       this.process.kill();
     }
@@ -396,4 +397,3 @@ export class CodexClient implements CodexClientApi {
     });
   }
 }
-

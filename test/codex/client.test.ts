@@ -34,3 +34,29 @@ test("initializes the app server and correlates requests while preserving inboun
     await client.close();
   }
 });
+
+test("child exit rejects future message reads instead of exposing queued messages", async () => {
+  const fixturePath = join(import.meta.dir, "..", "fixtures", "scripted-app-server.ts");
+  const client = await CodexClient.start({
+    command: [process.execPath, fixturePath],
+    clientInfo: {
+      name: "agile_agents_test",
+      title: "Agile Agents Test",
+      version: "0.1.0",
+    },
+  });
+
+  try {
+    await client.request("fixture/exit", {});
+    await expect(client.request("model/list", {})).rejects.toMatchObject({
+      code: "CODEX_APP_SERVER_EXITED",
+      category: "infra",
+    });
+    await expect(client.nextServerMessage()).rejects.toMatchObject({
+      code: "CODEX_APP_SERVER_EXITED",
+      category: "infra",
+    });
+  } finally {
+    await client.close();
+  }
+});
