@@ -21,7 +21,7 @@ export class Scheduler {
     if (active) this.reconcile.add(active.descriptor.attemptId);
   }
 
-  async tick(): Promise<TickResult> {
+  async tick(leaseOwnerId?: string): Promise<TickResult> {
     const running = this.repo.getRunningAttempt();
     if (running) {
       const attemptId = running.descriptor.attemptId;
@@ -34,7 +34,7 @@ export class Scheduler {
       const delivery = await this.harness.step(request);
       if (delivery.kind === "idle") return { kind: "idle" };
       if (delivery.kind === "closed") throw new Error(`Harness closed before attempt completion: ${attemptId}`);
-      this.repo.applyHarnessEvent(attemptId, delivery.nextCursor, delivery.event);
+      this.repo.applyHarnessEvent(attemptId, delivery.nextCursor, delivery.event, leaseOwnerId);
       this.fault("after_delivery_commit");
       return { kind: "delivery", attemptId, eventId: delivery.event.eventId };
     }

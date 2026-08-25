@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
+import type { AgentHarness, HarnessDelivery } from "../../src/harness/contracts";
 import { SchedulerDaemon } from "../../src/scheduler/daemon";
+import { Scheduler } from "../../src/scheduler/scheduler";
 import { openDatabase } from "../../src/store/database";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
+import { PlanningRepository } from "../../src/store/planning-repository";
 
 type ControlledWait = {
   milliseconds: number;
@@ -238,6 +241,104 @@ test("surfaces lease loss during a pending tick without starting another tick", 
   } finally {
     stop = true;
     finishTick?.({ kind: "task_claimed", taskId: "T1" });
+    await running.catch(() => {});
+    repo.releaseLease("owner-2");
+    db.close();
+  }
+});
+
+test("rejects a stale pending delivery after lease takeover without writes", async () => {
+  const db = openDatabase(":memory:");
+  const epoch = Date.parse("2026-08-25T00:00:00.000Z");
+  let now = epoch;
+  let stop = false;
+  const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
+  planning.createWeek({
+    id: "2026-W35",
+    goal: "Fence stale scheduler writes",
+    nonGoals: [],
+    tokenBudget: 100_000,
+    ticketIds: ["T1"],
+  });
+  planning.createTask({
+    id: "T1",
+    weekId: "2026-W35",
+    title: "Fence stale scheduler writes",
+    spec: {
+      problem: "An expired scheduler can finish a pending delivery",
+      desiredOutcome: "Only the current lease owner may commit",
+      scope: ["scheduler"],
+      nonGoals: [],
+      acceptanceCriteria: ["stale events are rejected atomically"],
+      validation: ["bun test"],
+      dependencies: [],
+      risk: "medium",
+      contextCandidates: [],
+      tokenCeiling: 10_000,
+    },
+    priority: 0,
+    approvalRequired: false,
+    approved: true,
+  });
+  planning.transitionTask("T1", "ready", "T1:ready");
+  const counters: Record<string, number> = {};
+  const repo = new OrchestrationRepository(
+    db,
+    () => new Date(now).toISOString(),
+    (kind) => `${kind}-${counters[kind] = (counters[kind] ?? 0) + 1}`,
+  );
+  repo.claimNext();
+  repo.beginNextAttempt();
+
+  let finishDelivery: ((delivery: HarnessDelivery) => void) | undefined;
+  const harness: AgentHarness = {
+    step() {
+      return new Promise<HarnessDelivery>((resolve) => {
+        finishDelivery = resolve;
+      });
+    },
+    async cancel() {},
+  };
+  const heartbeatWaits = controlledHeartbeatWaits();
+  const scheduler = new Scheduler(repo, harness);
+  const daemon = new SchedulerDaemon(scheduler, repo, {
+    ownerId: "owner-1",
+    now: () => new Date(now),
+    sleep: heartbeatWaits.sleep,
+  });
+  const event = {
+    type: "attempt.started" as const,
+    eventId: "stale:started",
+    attemptId: "attempt-1",
+    sequence: 1,
+    occurredAt: "2026-08-25T00:00:11.000Z",
+    threadId: "thread-stale",
+  };
+  const running = daemon.run(() => stop);
+
+  try {
+    expect(heartbeatWaits.pending[0]?.milliseconds).toBe(3_000);
+    now = epoch + 11_000;
+    expect(repo.acquireLease(
+      "owner-2",
+      "2026-08-25T00:00:11.000Z",
+      "2026-08-25T00:00:21.000Z",
+    )).toBe(true);
+    finishDelivery?.({ kind: "event", nextCursor: "cursor-stale", event });
+
+    await expect(running).rejects.toThrow("Scheduler lease was lost");
+    expect(db.query<{ count: number }, [string]>(`
+      SELECT COUNT(*) AS count FROM events WHERE idempotency_key = ?
+    `).get(event.eventId)?.count).toBe(0);
+    expect(db.query<{ thread_id: string | null; backend_cursor: string | null }, [string]>(`
+      SELECT thread_id, backend_cursor FROM attempts WHERE id = ?
+    `).get(event.attemptId)).toEqual({
+      thread_id: null,
+      backend_cursor: null,
+    });
+  } finally {
+    stop = true;
+    finishDelivery?.({ kind: "event", nextCursor: "cursor-stale", event });
     await running.catch(() => {});
     repo.releaseLease("owner-2");
     db.close();

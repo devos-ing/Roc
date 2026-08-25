@@ -294,11 +294,23 @@ export class OrchestrationRepository {
     })();
   }
 
-  applyHarnessEvent(attemptId: string, nextCursor: string, rawEvent: HarnessEvent): void {
+  applyHarnessEvent(
+    attemptId: string,
+    nextCursor: string,
+    rawEvent: HarnessEvent,
+    leaseOwnerId?: string,
+  ): void {
     this.db.transaction(() => {
       const event = HarnessEventSchema.parse(rawEvent);
       if (event.attemptId !== attemptId) {
         throw new Error(`Harness event attempt mismatch: ${event.attemptId} !== ${attemptId}`);
+      }
+      if (leaseOwnerId !== undefined) {
+        const lease = this.db.query<{ owned: number }, [string, string]>(`
+          SELECT 1 AS owned FROM scheduler_lease
+          WHERE lease_key = 'scheduler' AND owner_id = ? AND expires_at > ?
+        `).get(leaseOwnerId, this.now());
+        if (!lease) throw new Error("Scheduler lease was lost");
       }
       const attempt = this.db.query<{ task_id: string; role: string; status: string; retry_index: number }, [string]>(
         "SELECT task_id, role, status, retry_index FROM attempts WHERE id = ?",

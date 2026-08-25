@@ -40,6 +40,7 @@ const implementOutput = {
 function setup(
   path = ":memory:",
   fault: (point: "after_event_insert" | "before_cursor_update") => void = () => {},
+  now: () => string = () => "2026-08-25T00:00:01.000Z",
 ) {
   const db = openDatabase(path);
   const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
@@ -65,7 +66,7 @@ function setup(
   const counters: Record<string, number> = {};
   const repo = new OrchestrationRepository(
     db,
-    () => "2026-08-25T00:00:01.000Z",
+    now,
     (kind) => `${kind}-${counters[kind] = (counters[kind] ?? 0) + 1}`,
     fault,
   );
@@ -188,6 +189,41 @@ test("rolls back a duplicate delivery cursor when the cursor fault fires", () =>
     expect(db.query<{ count: number }, [string]>(`
       SELECT COUNT(*) AS count FROM events WHERE idempotency_key = ?
     `).get(event.eventId)?.count).toBe(1);
+  } finally {
+    db.close();
+  }
+});
+
+test("rejects an event from the matching owner after its lease expires", () => {
+  const { db, repo } = setup(
+    ":memory:",
+    () => {},
+    () => "2026-08-25T00:00:11.000Z",
+  );
+  try {
+    const attemptId = startScout(repo);
+    expect(repo.acquireLease(
+      "owner-1",
+      "2026-08-25T00:00:00.000Z",
+      "2026-08-25T00:00:10.000Z",
+    )).toBe(true);
+
+    expect(() => repo.applyHarnessEvent(attemptId, "cursor-stale", {
+      type: "attempt.started",
+      eventId: "scout:stale-started",
+      attemptId,
+      sequence: 1,
+      occurredAt: "2026-08-25T00:00:11.000Z",
+      threadId: "thread-stale",
+    }, "owner-1")).toThrow("Scheduler lease was lost");
+    expectEventAbsent(db, "scout:stale-started");
+    expect(repo.getRunningAttempt()).toMatchObject({
+      backendCursor: undefined,
+      descriptor: { attemptId },
+    });
+    expect(db.query<{ thread_id: string | null }, [string]>(
+      "SELECT thread_id FROM attempts WHERE id = ?",
+    ).get(attemptId)?.thread_id).toBeNull();
   } finally {
     db.close();
   }

@@ -41,7 +41,7 @@ export class SchedulerDaemon {
       nextHeartbeat = times.timestamp + 3_000;
     };
     const tickWithHeartbeats = async (): Promise<TickResult> => {
-      const tick = this.scheduler.tick();
+      const tick = this.scheduler.tick(this.runtime.ownerId);
       let stopHeartbeats = false;
       let activeWait: AbortController | undefined;
       const heartbeats = (async () => {
@@ -61,7 +61,7 @@ export class SchedulerDaemon {
         }
       })();
       try {
-        // Lease loss stops the daemon, but the already-started durable tick has no cancellation contract.
+        // The Harness call cannot be cancelled; its eventual write is fenced by the lease owner ID.
         return await Promise.race([tick, heartbeats as Promise<never>]);
       } finally {
         stopHeartbeats = true;
