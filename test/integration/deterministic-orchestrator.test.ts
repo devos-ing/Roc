@@ -181,6 +181,27 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
       "SELECT COUNT(*) AS count FROM tasks WHERE discovered_from_review_id IS NOT NULL",
     ).get()?.count).toBe(1);
     expect(repo.inspectTask("T1-follow-up")).toEqual({ id: "T1-follow-up", status: "draft" });
+    expect(db.query<{
+      id: string;
+      status: string;
+      approved: number;
+      approval_required: number;
+      parent_task_id: string | null;
+      root_task_id: string | null;
+      discovered_from_review_id: string | null;
+    }, [string]>(`
+      SELECT id, status, approved, approval_required,
+             parent_task_id, root_task_id, discovered_from_review_id
+      FROM tasks WHERE id = ?
+    `).get("T1-follow-up")).toEqual({
+      id: "T1-follow-up",
+      status: "draft",
+      approved: 0,
+      approval_required: 1,
+      parent_task_id: "T1",
+      root_task_id: "T1",
+      discovered_from_review_id: expect.any(String),
+    });
 
     expect(await first.tick()).toEqual({ kind: "task_claimed", taskId: "T2" });
     expect(await first.tick()).toEqual({ kind: "attempt_started", attemptId: "attempt-4" });
