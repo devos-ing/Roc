@@ -121,14 +121,13 @@ realTest("completes one ticket through Scout, Implement, and detached Review", a
         title: "Return the accepted answer",
         spec: {
           problem: "answer.ts currently returns 0 while its committed Bun test expects 42",
-          desiredOutcome: "Change the return literal in answer.ts from 0 to 42, pass the committed test, and commit that one-file change exactly once",
+          desiredOutcome: "Change the return literal in answer.ts from 0 to 42 and pass the committed test; the trusted Harness records the implementation as exactly one task commit",
           scope: ["answer.ts"],
           nonGoals: ["change the test", "add dependencies", "change orchestration files"],
           acceptanceCriteria: [
             "answer() returns the number 42",
             "bun test passes",
-            "stage answer.ts and create exactly one Git commit after the test passes",
-            "after committing, use git rev-parse HEAD and report that exact 40-character lowercase SHA as commitSha",
+            "the completed system outcome contains exactly one trusted implementation commit",
           ],
           validation: ["bun test"],
           dependencies: [],
