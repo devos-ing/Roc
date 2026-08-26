@@ -1305,6 +1305,54 @@ for (const status of ["failed", "interrupted"] as const) {
   });
 }
 
+test("drains notifications from a reconcile-proven terminal turn before retry", async () => {
+  const client = new RecordedCodexClient([
+    usage("thread-old", "turn-old"),
+    completedItem("thread-old", "turn-old", "item-old", scoutOutput),
+    interruptedTurn("thread-old", "turn-old"),
+    completedItem("thread-retry", "turn-retry", "item-retry", scoutOutput),
+  ], {
+    threadIds: ["thread-retry"],
+    turnIds: ["turn-retry"],
+    threadReads: [{
+      thread: {
+        id: "thread-old",
+        turns: [{
+          id: "turn-old",
+          status: "interrupted",
+          error: null,
+          completedAt: 1_777_000_000,
+          items: [],
+        }],
+      },
+    }],
+  });
+  const harness = createCodexHarness({ client, branches: memoryBranches() });
+  const interrupted = await harness.step({
+    ...makeScoutRequest("attempt-old"),
+    mode: "reconcile",
+    backendCursor: backendCursor("thread-old", "turn-old"),
+  });
+  expect(interrupted).toMatchObject({
+    kind: "event",
+    event: { type: "attempt.failed_infra", code: "turn_interrupted" },
+  });
+
+  const retry = makeScoutRequest("attempt-retry");
+  const started = await harness.step(retry);
+  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+  const output = await harness.step({ ...retry, backendCursor: started.nextCursor });
+
+  expect(output).toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.output",
+      attemptId: "attempt-retry",
+      output: scoutOutput,
+    },
+  });
+});
+
 test("does not infer Implement success from a commit without structured history", async () => {
   let commitAttempts = 0;
   const branches = memoryBranches();

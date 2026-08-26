@@ -205,6 +205,7 @@ export function createCodexHarness(input: {
   const activeAttempts = new Map<string, ActiveAttempt>();
   const terminalAttempts = new Set<string>();
   const policyInterruptedTurns = new Set<string>();
+  const reconciledTerminalTurns = new Set<string>();
 
   function turnSource(threadId: string, turnId: string): string {
     return JSON.stringify([threadId, turnId]);
@@ -686,6 +687,10 @@ export function createCodexHarness(input: {
             error,
           );
         }
+        if (reconciledTerminalTurns.has(turnSource(
+          notification.params.threadId,
+          notification.params.turnId,
+        ))) continue;
         sameSource(notification.params.threadId, notification.params.turnId, active, request);
         const cumulative: Usage = {
           inputTokens: notification.params.tokenUsage.total.inputTokens,
@@ -732,6 +737,10 @@ export function createCodexHarness(input: {
             error,
           );
         }
+        if (reconciledTerminalTurns.has(turnSource(
+          notification.params.threadId,
+          notification.params.turnId,
+        ))) continue;
         sameSource(notification.params.threadId, notification.params.turnId, active, request);
         let itemId: string;
         let encodedOutput: string;
@@ -877,6 +886,7 @@ export function createCodexHarness(input: {
           notification.params.threadId,
           notification.params.turn.id,
         );
+        if (reconciledTerminalTurns.has(interruptedSource)) continue;
         if (
           notification.params.turn.status === "interrupted" &&
           policyInterruptedTurns.delete(interruptedSource)
@@ -955,6 +965,9 @@ export function createCodexHarness(input: {
     const turn = readResponse.data.thread.turns.find((candidate) => candidate.id === cursor.turnId);
     if (!turn) {
       return orphaned("Codex history does not contain the persisted turn");
+    }
+    if (turn.status !== "inProgress") {
+      reconciledTerminalTurns.add(turnSource(cursor.threadId, cursor.turnId));
     }
     if (turn.status === "failed" || turn.status === "interrupted") {
       return classifiedTurnFailure(
