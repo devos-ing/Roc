@@ -2,7 +2,7 @@
 
 Date: 2026-08-26
 
-Status: approved in brainstorming; pending written-spec review
+Status: approved
 
 ## 1. Goal
 
@@ -161,4 +161,3 @@ are outside this slice.
 - token budget enforcement or warnings;
 - custom themes, configurable colors, or alternative chart types;
 - a new direct dependency.
-
