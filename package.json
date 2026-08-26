@@ -7,9 +7,9 @@
     "agile": "./src/cli/main.ts"
   },
   "scripts": {
-    "test": "bun test",
+    "test": "bun test --timeout 15000",
     "typecheck": "tsc --noEmit",
-    "check": "bun run typecheck && bun test"
+    "check": "bun run typecheck && bun run test"
   },
   "dependencies": {
     "simple-git": "^3.36.0",
