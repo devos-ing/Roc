@@ -676,6 +676,31 @@ test("inspects a running Scout role with zero usage", () => {
   }
 });
 
+test("reads raw category usage for one requested week", () => {
+  const { db, repo } = setup();
+  try {
+    db.query(`
+      INSERT INTO usage(
+        id, week_id, task_id, category,
+        input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens
+      ) VALUES
+        ('usage-scout', '2026-W35', 'T1', 'scout', 100, 80, 20, 10),
+        ('usage-grill', '2026-W35', NULL, 'weekly_grilling', 40, 30, 5, 4)
+    `).run();
+
+    expect(repo.getWeekCategoryUsage("2026-W35")).toEqual({
+      weekId: "2026-W35",
+      categories: [
+        { category: "scout", inputTokens: 100, outputTokens: 20 },
+        { category: "weekly_grilling", inputTokens: 40, outputTokens: 5 },
+      ],
+    });
+    expect(repo.getWeekCategoryUsage("2026-W34")).toBeUndefined();
+  } finally {
+    db.close();
+  }
+});
+
 test("records each token delta once and inspects deterministic usage totals", () => {
   const { db, repo, attemptId } = setupInspect();
   try {

@@ -15,6 +15,7 @@ import { OrchestrationRepository } from "../store/orchestration-repository";
 import { PlanningRepository } from "../store/planning-repository";
 import { createTaskBranchManager } from "../workspace/task-branch";
 import { helpText } from "./help";
+import { currentIsoWeekId, formatTokenReport } from "./token-chart";
 
 export type CliIo = { out(text: string): void; err(text: string): void };
 export type SchedulerRunInput =
@@ -300,19 +301,28 @@ const defaultRuntime: CliRuntime = {
   },
 };
 
+type OperationalErrorFallback = {
+  code: string;
+  category: "startup" | "protocol" | "infra" | "policy" | "domain";
+  retryable: boolean;
+  component: string;
+  message: string;
+};
+
 async function reportOperationalError(
   error: unknown,
   io: CliIo,
   runtime: CliRuntime,
   input: { dbPath: string; repoPath?: string },
-): Promise<number> {
-  const safe = normalizeError(error, {
+  fallback: OperationalErrorFallback = {
     code: "SCHEDULER_RUN_FAILED",
     category: "infra",
     retryable: false,
     component: "cli",
     message: "Scheduler run failed",
-  });
+  },
+): Promise<number> {
+  const safe = normalizeError(error, fallback);
   try {
     await runtime.logError?.(safe, input);
   } catch {
@@ -367,6 +377,45 @@ export async function runCli(args: string[], io: CliIo, runtime: CliRuntime = de
     } catch (error) {
       io.err(errorMessage(error));
       return 1;
+    }
+  }
+
+  if (command === "tokens") {
+    if (subcommand !== undefined || parsed.positionals.length !== 1) {
+      io.err("tokens does not accept positional arguments");
+      return 2;
+    }
+    if (
+      parsed.values.backend !== undefined
+      || parsed.values.repo !== undefined
+      || parsed.values.base !== undefined
+      || parsed.values["fake-script"] !== undefined
+    ) {
+      io.err("tokens accepts only --db PATH");
+      return 2;
+    }
+    try {
+      const db = openDatabase(dbPath);
+      try {
+        const weekId = currentIsoWeekId();
+        const usage = new OrchestrationRepository(db).getWeekCategoryUsage(weekId);
+        if (usage === undefined) {
+          io.out(`No active week: ${weekId}`);
+          return 0;
+        }
+        io.out(formatTokenReport(weekId, usage.categories));
+        return 0;
+      } finally {
+        db.close();
+      }
+    } catch (error) {
+      return reportOperationalError(error, io, runtime, { dbPath }, {
+        code: "TOKEN_USAGE_READ_FAILED",
+        category: "infra",
+        retryable: false,
+        component: "cli",
+        message: "Could not read token usage",
+      });
     }
   }
 

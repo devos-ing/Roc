@@ -34,11 +34,21 @@ export type RunningAttempt = {
 };
 
 const NonEmpty = z.string().trim().min(1);
+const WeekIdSchema = z.string().regex(/^\d{4}-W\d{2}$/);
 const TokenTotalsSchema = z.object({
   inputTokens: z.number().int().nonnegative(),
   cachedInputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),
   reasoningOutputTokens: z.number().int().nonnegative(),
+}).strict();
+const CategoryTokenUsageSchema = z.object({
+  category: NonEmpty,
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+}).strict();
+const WeekCategoryUsageSchema = z.object({
+  weekId: WeekIdSchema,
+  categories: z.array(CategoryTokenUsageSchema),
 }).strict();
 const InspectionModelDecisionSchema = z.object({
   id: NonEmpty,
@@ -85,7 +95,7 @@ const InspectionSchedulerSchema = z.object({
   activeAttemptId: NonEmpty.optional(),
 }).strict();
 const InspectionWeekSchema = z.object({
-  id: z.string().regex(/^\d{4}-W\d{2}$/),
+  id: WeekIdSchema,
   tokenTarget: z.number().int().positive(),
   actual: TokenTotalsSchema,
 }).strict();
@@ -96,6 +106,8 @@ const InspectionSnapshotSchema = z.object({
 }).strict();
 
 export type TokenTotals = z.infer<typeof TokenTotalsSchema>;
+export type CategoryTokenUsage = z.infer<typeof CategoryTokenUsageSchema>;
+export type WeekCategoryUsage = z.infer<typeof WeekCategoryUsageSchema>;
 export type InspectionModelDecision = z.infer<typeof InspectionModelDecisionSchema>;
 export type InspectionRole = z.infer<typeof InspectionRoleSchema>;
 export type InspectionAttempt = z.infer<typeof InspectionAttemptSchema>;
@@ -810,6 +822,35 @@ export class OrchestrationRepository {
     return this.db.query<{ id: string; status: string }, [string]>(
       "SELECT id, status FROM tasks WHERE id = ?",
     ).get(taskId) ?? undefined;
+  }
+
+  getWeekCategoryUsage(weekId: string): WeekCategoryUsage | undefined {
+    const id = WeekIdSchema.parse(weekId);
+    const week = this.db.query<{ id: string }, [string]>(
+      "SELECT id FROM weeks WHERE id = ?",
+    ).get(id);
+    if (!week) return undefined;
+
+    const categories = this.db.query<{
+      category: string;
+      input_tokens: number;
+      output_tokens: number;
+    }, [string]>(`
+      SELECT
+        category,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens
+      FROM usage
+      WHERE week_id = ?
+      GROUP BY category
+      ORDER BY category ASC
+    `).all(id).map((row) => CategoryTokenUsageSchema.parse({
+      category: row.category,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
+    }));
+
+    return WeekCategoryUsageSchema.parse({ weekId: week.id, categories });
   }
 
   inspect(): InspectionSnapshot {
