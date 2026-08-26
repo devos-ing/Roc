@@ -212,6 +212,62 @@ test("rejects repo-local content filters before creating a trusted worktree", as
   }
 });
 
+test("rejects content filters loaded through repo-local config includes", async () => {
+  const root = await createRepository();
+  try {
+    const sentinel = join(root, "included-smudge-filter-ran.txt");
+    const filter = join(root, "included-smudge-filter.sh");
+    const includedConfig = join(root, "hostile-filter.config");
+    await writeFile(
+      filter,
+      `#!/bin/sh\ncat\nprintf 'ran\\n' > ${JSON.stringify(sentinel)}\n`,
+    );
+    await chmod(filter, 0o755);
+    await writeFile(join(root, ".gitattributes"), "README.md filter=hostile\n");
+    await git(["add", ".gitattributes"], root);
+    await git(["commit", "-m", "test: configure included checkout attribute"], root);
+    await writeFile(
+      includedConfig,
+      `[filter "hostile"]\n\tsmudge = ${filter}\n\trequired = true\n`,
+    );
+    await git(["config", "include.path", includedConfig], root);
+
+    const manager = await createTaskWorktreeManager(root, "HEAD");
+
+    await expect(manager.prepare("T1")).rejects.toThrow(/content filters/i);
+    expect(await Bun.file(sentinel).exists()).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects task-worktree content filters before trusted status or commit", async () => {
+  const root = await createRepository();
+  try {
+    await writeFile(join(root, ".gitattributes"), "*.txt filter=hostile\n");
+    await git(["add", ".gitattributes"], root);
+    await git(["commit", "-m", "test: configure task checkout attribute"], root);
+    const manager = await createTaskWorktreeManager(root, "HEAD");
+    const workspace = await manager.prepare("T1");
+    const sentinel = join(root, "worktree-clean-filter-ran.txt");
+    const filter = join(root, "worktree-clean-filter.sh");
+    await writeFile(
+      filter,
+      `#!/bin/sh\ncat\nprintf 'ran\\n' > ${JSON.stringify(sentinel)}\n`,
+    );
+    await chmod(filter, 0o755);
+    await git(["config", "extensions.worktreeConfig", "true"], root);
+    await git(["config", "--worktree", "filter.hostile.clean", filter], workspace.path);
+    await git(["config", "--worktree", "filter.hostile.required", "true"], workspace.path);
+    await writeFile(join(workspace.path, "implementation.txt"), "implemented\n");
+
+    await expect(manager.commitChanges("T1")).rejects.toThrow(/content filters/i);
+    expect(await Bun.file(sentinel).exists()).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("fails closed for zero clean task commits or more than one task commit", async () => {
   const root = await createRepository();
   try {
