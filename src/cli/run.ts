@@ -15,7 +15,7 @@ import { OrchestrationRepository } from "../store/orchestration-repository";
 import { PlanningRepository } from "../store/planning-repository";
 import { createTaskBranchManager } from "../workspace/task-branch";
 import { helpText } from "./help";
-import { currentIsoWeekId, formatTokenReport } from "./token-chart";
+import { currentIsoWeekId, renderTokenUsageChart } from "./token-chart";
 
 export type CliIo = { out(text: string): void; err(text: string): void };
 export type SchedulerRunInput =
@@ -41,6 +41,7 @@ function parseCliArgs(args: string[]) {
       repo: { type: "string" },
       base: { type: "string" },
       "fake-script": { type: "string" },
+      "no-color": { type: "boolean" },
     },
   });
 }
@@ -391,7 +392,7 @@ export async function runCli(args: string[], io: CliIo, runtime: CliRuntime = de
       || parsed.values.base !== undefined
       || parsed.values["fake-script"] !== undefined
     ) {
-      io.err("tokens accepts only --db PATH");
+      io.err("tokens accepts only --db PATH and --no-color");
       return 2;
     }
     try {
@@ -403,7 +404,10 @@ export async function runCli(args: string[], io: CliIo, runtime: CliRuntime = de
           io.out(`No active week: ${weekId}`);
           return 0;
         }
-        io.out(formatTokenReport(weekId, usage.categories));
+        io.out(renderTokenUsageChart(weekId, usage.categories, {
+          color: !parsed.values["no-color"],
+          width: process.stdout.columns ?? 80,
+        }));
         return 0;
       } finally {
         db.close();

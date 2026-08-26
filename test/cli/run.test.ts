@@ -85,13 +85,44 @@ test("tokens prints the current-week report", async () => {
       out: (text) => output.push(text),
       err: (text) => output.push(text),
     })).toBe(0);
-    expect(output).toEqual([[
-      `Token usage · ${weekId}`,
-      "",
-      "Implement  150 tokens  100%",
-      "",
-      "Total: 150 tokens",
-    ].join("\n")]);
+    expect(output).toHaveLength(1);
+    expect(output[0]!).toContain("\u001B[32m");
+    expect(output[0]!.replace(/\u001B\[[0-9;]*m/g, "")).toContain("Implement  150 tokens  100%  █");
+
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("tokens supports explicit plain output", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
+  const dbPath = join(root, "agile.db");
+  const weekId = currentIsoWeekId();
+  const db = openDatabase(dbPath);
+  new PlanningRepository(db).createWeek({
+    id: weekId,
+    goal: "See token usage",
+    nonGoals: [],
+    tokenBudget: 100_000,
+    ticketIds: [],
+  });
+  db.query(`
+    INSERT INTO usage(
+      id, week_id, category,
+      input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens
+    ) VALUES('cli-plain-usage', ?, 'implement', 100, 80, 50, 30)
+  `).run(weekId);
+  db.close();
+  const output: string[] = [];
+
+  try {
+    expect(await runCli(["tokens", "--db", dbPath, "--no-color"], {
+      out: (text) => output.push(text),
+      err: (text) => output.push(text),
+    })).toBe(0);
+    expect(output).toHaveLength(1);
+    expect(output[0]!).not.toContain("\u001B[");
+    expect(output[0]!).toContain("Implement  150 tokens  100%  █");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

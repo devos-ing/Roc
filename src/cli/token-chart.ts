@@ -8,6 +8,11 @@ type TokenUsageRow = {
   percent: number;
 };
 
+export type TokenUsageChartOptions = {
+  color?: boolean;
+  width?: number;
+};
+
 const knownOrder: DisplayCategory[] = ["Scout", "Implement", "Review", "Advisor", "Grilling"];
 
 function displayCategory(category: string): DisplayCategory {
@@ -59,13 +64,39 @@ function summarizeTokenUsage(categories: CategoryTokenUsage[]): {
   };
 }
 
-export function formatTokenReport(weekId: string, categories: CategoryTokenUsage[]): string {
+const categoryColors: Record<DisplayCategory, string> = {
+  Scout: "\u001B[36m",
+  Implement: "\u001B[32m",
+  Review: "\u001B[33m",
+  Advisor: "\u001B[35m",
+  Grilling: "\u001B[34m",
+  Other: "\u001B[90m",
+};
+
+const resetColor = "\u001B[0m";
+const minimumWidth = 40;
+const fallbackWidth = 80;
+
+export function renderTokenUsageChart(
+  weekId: string,
+  categories: CategoryTokenUsage[],
+  options: TokenUsageChartOptions = {},
+): string {
   const summary = summarizeTokenUsage(categories);
   const labelWidth = Math.max(...summary.rows.map((row) => row.category.length));
   const countWidth = Math.max(...summary.rows.map((row) => formatTokens(row.tokens).length));
-  const lines = summary.rows.map((row) =>
-    `${row.category.padEnd(labelWidth)}  ${formatTokens(row.tokens).padStart(countWidth)} tokens  ${`${row.percent}%`.padStart(4)}`,
-  );
+  const width = Math.max(minimumWidth, options.width ?? fallbackWidth);
+  const largestUsage = Math.max(...summary.rows.map((row) => row.tokens));
+  const linePrefix = (row: TokenUsageRow) =>
+    `${row.category.padEnd(labelWidth)}  ${formatTokens(row.tokens).padStart(countWidth)} tokens  ${`${row.percent}%`.padStart(4)}`;
+  const barWidth = Math.max(1, width - linePrefix(summary.rows[0]!).length - 2);
+  const lines = summary.rows.map((row) => {
+    if (row.tokens === 0) return linePrefix(row);
+    const blocks = Math.max(1, Math.round(row.tokens / largestUsage * barWidth));
+    const bar = "█".repeat(blocks);
+    const renderedBar = options.color === false ? bar : `${categoryColors[row.category]}${bar}${resetColor}`;
+    return `${linePrefix(row)}  ${renderedBar}`;
+  });
 
   return [
     `Token usage · ${weekId}`,
