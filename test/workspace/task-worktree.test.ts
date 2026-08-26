@@ -187,6 +187,31 @@ test("does not run hostile checkout hooks while creating a task worktree", async
   }
 });
 
+test("rejects repo-local content filters before creating a trusted worktree", async () => {
+  const root = await createRepository();
+  try {
+    const sentinel = join(root, "hostile-smudge-filter-ran.txt");
+    const filter = join(root, "hostile-smudge-filter.sh");
+    await writeFile(
+      filter,
+      `#!/bin/sh\ncat\nprintf 'ran\\n' > ${JSON.stringify(sentinel)}\n`,
+    );
+    await chmod(filter, 0o755);
+    await writeFile(join(root, ".gitattributes"), "README.md filter=hostile\n");
+    await git(["add", ".gitattributes"], root);
+    await git(["commit", "-m", "test: configure checkout attribute"], root);
+    await git(["config", "filter.hostile.smudge", filter], root);
+    await git(["config", "filter.hostile.required", "true"], root);
+
+    const manager = await createTaskWorktreeManager(root, "HEAD");
+
+    await expect(manager.prepare("T1")).rejects.toThrow(/content filters/i);
+    expect(await Bun.file(sentinel).exists()).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("fails closed for zero clean task commits or more than one task commit", async () => {
   const root = await createRepository();
   try {

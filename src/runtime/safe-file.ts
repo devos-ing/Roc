@@ -1,5 +1,5 @@
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, parse, relative, resolve, sep } from "node:path";
 
 function isMissing(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
@@ -15,8 +15,42 @@ function assertRealDirectory(path: string): void {
   }
 }
 
+function ensureRealDirectory(path: string): void {
+  try {
+    mkdirSync(path, { mode: 0o700 });
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) {
+      throw error;
+    }
+  }
+  assertRealDirectory(path);
+  if (realpathSync(path) !== path) {
+    throw new Error(`Runtime path component changed during validation: ${path}`);
+  }
+}
+
+function agileRuntimeParent(absolute: string): string | undefined {
+  const directory = dirname(absolute);
+  const root = parse(directory).root;
+  const components = relative(root, directory).split(sep).filter(Boolean);
+  const agileIndex = components.indexOf(".agile");
+  if (agileIndex < 0) return undefined;
+
+  const anchor = join(root, ...components.slice(0, agileIndex));
+  let safeParent = realpathSync(anchor);
+  for (const component of components.slice(agileIndex)) {
+    safeParent = join(safeParent, component);
+    ensureRealDirectory(safeParent);
+  }
+  return safeParent;
+}
+
 export function prepareSafeFilePath(inputPath: string): string {
   const absolute = resolve(inputPath);
+  const validatedAgileParent = agileRuntimeParent(absolute);
+  if (validatedAgileParent !== undefined) {
+    return validateTarget(join(validatedAgileParent, basename(absolute)));
+  }
   const missing: string[] = [];
   let existing = dirname(absolute);
   while (true) {
@@ -35,17 +69,13 @@ export function prepareSafeFilePath(inputPath: string): string {
   let safeParent = realpathSync(existing);
   for (const component of missing) {
     safeParent = join(safeParent, component);
-    try {
-      mkdirSync(safeParent, { mode: 0o700 });
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) {
-        throw error;
-      }
-    }
-    assertRealDirectory(safeParent);
+    ensureRealDirectory(safeParent);
   }
 
-  const safePath = join(safeParent, basename(absolute));
+  return validateTarget(join(safeParent, basename(absolute)));
+}
+
+function validateTarget(safePath: string): string {
   try {
     const target = lstatSync(safePath);
     if (target.isSymbolicLink()) {

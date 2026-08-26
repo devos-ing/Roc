@@ -8,6 +8,7 @@ type IncomingMessage = {
 
 let sawInitialize = false;
 let initializedCount = 0;
+let keepAlive: ReturnType<typeof setInterval> | undefined;
 
 function write(message: unknown, callback?: () => void): void {
   process.stdout.write(`${JSON.stringify(message)}\n`, callback);
@@ -73,6 +74,13 @@ function handleMessage(message: IncomingMessage): boolean {
         },
       });
       return true;
+    case "fixture/ignoreSigterm":
+      keepAlive = setInterval(() => {}, 1_000);
+      process.on("SIGTERM", () => {
+        setTimeout(() => process.exit(0), 2_000);
+      });
+      write({ id: requestId(message), result: {} });
+      return true;
     default:
       throw new Error("fixture received an unexpected method");
   }
@@ -96,6 +104,7 @@ async function main(): Promise<void> {
 }
 
 void main().catch(() => {
+  if (keepAlive) clearInterval(keepAlive);
   process.stderr.write("scripted app-server fixture failed\n");
   process.exit(1);
 });

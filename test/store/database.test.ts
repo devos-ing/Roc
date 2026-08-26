@@ -487,6 +487,23 @@ test("database rejects a symlinked runtime directory without creating external f
   }
 });
 
+test("database rejects a symlinked ancestor even when the runtime directory already exists", () => {
+  const root = mkdtempSync(join(tmpdir(), "agile-agents-db-ancestor-symlink-"));
+  const external = mkdtempSync(join(tmpdir(), "agile-agents-db-ancestor-external-"));
+  try {
+    mkdirSync(join(external, "runtime"));
+    symlinkSync(external, join(root, ".agile"), "dir");
+
+    expect(() => openDatabase(join(root, ".agile", "runtime", "state.sqlite"))).toThrow(
+      /symbolic link/i,
+    );
+    expect(readdirSync(join(external, "runtime"))).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(external, { recursive: true, force: true });
+  }
+});
+
 test("database rejects a symlinked database target without changing its referent", () => {
   const root = mkdtempSync(join(tmpdir(), "agile-agents-db-target-symlink-"));
   const runtime = join(root, ".agile", "runtime");

@@ -82,6 +82,24 @@ test("close immediately rejects a blocked server-message read and terminates pro
   expect(Date.now() - startedAt).toBeLessThan(2_500);
 });
 
+test("close force-terminates an app server that ignores graceful termination", async () => {
+  const fixturePath = join(import.meta.dir, "..", "fixtures", "scripted-app-server.ts");
+  const client = await CodexClient.start({
+    command: [process.execPath, fixturePath],
+    clientInfo: {
+      name: "agile_agents_test",
+      title: "Agile Agents Test",
+      version: "0.1.0",
+    },
+  });
+  await client.request("fixture/ignoreSigterm", {});
+  const startedAt = Date.now();
+
+  await client.close();
+
+  expect(Date.now() - startedAt).toBeLessThan(3_000);
+});
+
 test("classifies structured RPC failure data for scheduler fallback", async () => {
   const fixturePath = join(import.meta.dir, "..", "fixtures", "scripted-app-server.ts");
   const client = await CodexClient.start({

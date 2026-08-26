@@ -595,6 +595,34 @@ test("normalizes invalid structured output into a durable retryable failure", as
   });
 });
 
+test("normalizes an attempt/input role mismatch instead of rejecting the task step", async () => {
+  const client = new RecordedCodexClient([]);
+  const harness = createCodexHarness({
+    client,
+    worktrees: memoryWorktrees(),
+    now: () => "2026-08-26T00:00:00.000Z",
+  });
+  const scoutRequest = makeScoutRequest("attempt-role-mismatch");
+
+  const failed = await harness.step({
+    ...scoutRequest,
+    attempt: { ...scoutRequest.attempt, role: "implement" },
+  });
+
+  expect(failed).toMatchObject({
+    kind: "event",
+    nextCursor: expect.any(String),
+    event: {
+      type: "attempt.failed_infra",
+      code: "codex_role_mismatch",
+      retryable: true,
+      attemptId: "attempt-role-mismatch",
+      sequence: 1,
+    },
+  });
+  expect(client.requests).toEqual([]);
+});
+
 test("fails Review closed when the read-only turn mutates the worktree", async () => {
   const reviewOutput = {
     kind: "review" as const,

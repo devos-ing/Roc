@@ -150,6 +150,19 @@ export async function createTaskWorktreeManager(
   const agileDirectory = join(canonicalRepo, ".agile");
   const worktreesDirectory = join(agileDirectory, "worktrees");
 
+  async function assertNoExecutableContentFilters(): Promise<void> {
+    const configured = await spawnGit(
+      ["config", "--local", "--get-regexp", "^filter\\..*\\.(clean|smudge|process)$"],
+      canonicalRepo,
+    );
+    if (configured.exitCode === 0) {
+      throw new Error("Repository-local executable Git content filters are not allowed");
+    }
+    if (configured.exitCode !== 1) {
+      throw new Error("Could not inspect repository-local Git content filters");
+    }
+  }
+
   async function validateWorktreeRoot(): Promise<void> {
     await ensureRealDirectory(agileDirectory);
     await ensureRealDirectory(worktreesDirectory);
@@ -269,6 +282,7 @@ export async function createTaskWorktreeManager(
 
   return {
     async prepare(taskId: string, persistedBaseCommit?: string): Promise<TaskWorkspace> {
+      await assertNoExecutableContentFilters();
       const candidate = workspace(taskId, persistedBaseCommit);
       await validateWorktreeRoot();
       await git(["cat-file", "-e", `${candidate.baseCommit}^{commit}`], canonicalRepo);
@@ -294,6 +308,7 @@ export async function createTaskWorktreeManager(
     },
 
     async commitChanges(taskId: string, persistedBaseCommit?: string): Promise<string> {
+      await assertNoExecutableContentFilters();
       const candidate = workspace(taskId, persistedBaseCommit);
       await assertReusable(candidate);
       const count = await taskCommitCount(candidate);
@@ -325,6 +340,7 @@ export async function createTaskWorktreeManager(
       commitSha: string,
       persistedBaseCommit?: string,
     ): Promise<void> {
+      await assertNoExecutableContentFilters();
       const candidate = workspace(taskId, persistedBaseCommit);
       await assertReusable(candidate);
       await assertReachableCommit(candidate, commitSha);
@@ -335,6 +351,7 @@ export async function createTaskWorktreeManager(
       commitSha: string,
       persistedBaseCommit?: string,
     ): Promise<void> {
+      await assertNoExecutableContentFilters();
       const candidate = workspace(taskId, persistedBaseCommit);
       const branchCommit = await validatedSingleCommit(candidate);
       if (branchCommit !== commitSha) {
@@ -345,6 +362,7 @@ export async function createTaskWorktreeManager(
     },
 
     async status(taskId: string, persistedBaseCommit?: string): Promise<string> {
+      await assertNoExecutableContentFilters();
       const candidate = workspace(taskId, persistedBaseCommit);
       await assertReusable(candidate);
       return porcelainStatus(candidate);

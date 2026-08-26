@@ -100,6 +100,33 @@ test("logger rejects a symlinked runtime directory without writing outside the r
   }
 });
 
+test("logger rejects a symlinked ancestor even when the runtime directory already exists", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-log-ancestor-symlink-"));
+  const external = await mkdtemp(join(tmpdir(), "agile-log-ancestor-external-"));
+  try {
+    await mkdir(join(external, "runtime"));
+    await symlink(external, join(root, ".agile"), "dir");
+    const logger = createJsonlLogger({
+      path: join(root, ".agile", "runtime", "agile.log"),
+      err: () => {},
+    });
+
+    await expect(logger.write({
+      level: "info",
+      code: "TEST",
+      category: "domain",
+      component: "test",
+      retryable: false,
+      message: "must not escape through an ancestor",
+    })).rejects.toThrow(/symbolic link/i);
+
+    expect(await readdir(join(external, "runtime"))).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
+  }
+});
+
 test("logger rejects a symlinked log target without changing its referent", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-log-target-symlink-"));
   const external = join(root, "external.log");

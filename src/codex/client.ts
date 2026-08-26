@@ -391,11 +391,29 @@ export class CodexClient implements CodexClientApi {
 
     const exited = await this.waitForExit(2_000);
     if (!exited) {
-      this.process.kill();
-      await this.process.exited.catch(() => undefined);
+      this.process.kill("SIGKILL");
+      await this.waitForExit(1_000);
     }
-    await stdinEnd.catch(() => undefined);
-    await Promise.allSettled([this.stdoutTask, this.stderrTask, this.exitTask]);
+    await this.waitForCloseTasks(stdinEnd, 1_000);
+  }
+
+  private waitForCloseTasks(stdinEnd: Promise<unknown>, timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      void Promise.allSettled([
+        stdinEnd,
+        this.stdoutTask,
+        this.stderrTask,
+        this.exitTask,
+      ]).then(finish);
+    });
   }
 
   private waitForExit(timeoutMs: number): Promise<boolean> {

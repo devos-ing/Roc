@@ -1075,8 +1075,9 @@ export function createCodexHarness(input: {
 
   return {
     async step(rawRequest): Promise<HarnessDelivery> {
-      const request = supportedRequest(HarnessStepRequestSchema.parse(rawRequest));
+      const request = HarnessStepRequestSchema.parse(rawRequest);
       try {
+        supportedRequest(request);
         if (request.backendCursor === undefined) {
           if (request.mode === "reconcile") {
             terminalAttempts.add(request.attempt.attemptId);
