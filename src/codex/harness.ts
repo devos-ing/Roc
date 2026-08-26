@@ -205,7 +205,7 @@ export function createCodexHarness(input: {
   const activeAttempts = new Map<string, ActiveAttempt>();
   const terminalAttempts = new Set<string>();
   const policyInterruptedTurns = new Set<string>();
-  const reconciledTerminalTurns = new Set<string>();
+  const terminalTurnSources = new Set<string>();
 
   function turnSource(threadId: string, turnId: string): string {
     return JSON.stringify([threadId, turnId]);
@@ -214,6 +214,7 @@ export function createCodexHarness(input: {
   function terminalize(active: ActiveAttempt): void {
     activeAttempts.delete(active.attemptId);
     terminalAttempts.add(active.attemptId);
+    terminalTurnSources.add(turnSource(active.threadId, active.turnId));
   }
 
   function withoutTerminalMarkers(cursor: BackendCursor): BackendCursor {
@@ -687,7 +688,7 @@ export function createCodexHarness(input: {
             error,
           );
         }
-        if (reconciledTerminalTurns.has(turnSource(
+        if (terminalTurnSources.has(turnSource(
           notification.params.threadId,
           notification.params.turnId,
         ))) continue;
@@ -737,7 +738,7 @@ export function createCodexHarness(input: {
             error,
           );
         }
-        if (reconciledTerminalTurns.has(turnSource(
+        if (terminalTurnSources.has(turnSource(
           notification.params.threadId,
           notification.params.turnId,
         ))) continue;
@@ -886,7 +887,7 @@ export function createCodexHarness(input: {
           notification.params.threadId,
           notification.params.turn.id,
         );
-        if (reconciledTerminalTurns.has(interruptedSource)) continue;
+        if (terminalTurnSources.has(interruptedSource)) continue;
         if (
           notification.params.turn.status === "interrupted" &&
           policyInterruptedTurns.delete(interruptedSource)
@@ -967,7 +968,7 @@ export function createCodexHarness(input: {
       return orphaned("Codex history does not contain the persisted turn");
     }
     if (turn.status !== "inProgress") {
-      reconciledTerminalTurns.add(turnSource(cursor.threadId, cursor.turnId));
+      terminalTurnSources.add(turnSource(cursor.threadId, cursor.turnId));
     }
     if (turn.status === "failed" || turn.status === "interrupted") {
       return classifiedTurnFailure(

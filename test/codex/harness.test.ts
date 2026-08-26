@@ -1353,6 +1353,41 @@ test("drains notifications from a reconcile-proven terminal turn before retry", 
   });
 });
 
+test("drains late notifications from a live-completed turn before the next role", async () => {
+  const client = new RecordedCodexClient([
+    completedItem("thread-old", "turn-old", "item-old", scoutOutput),
+    completedTurn("thread-old", "turn-old"),
+    usage("thread-old", "turn-old"),
+    completedItem("thread-old", "turn-old", "item-old-late", scoutOutput),
+    completedTurn("thread-old", "turn-old"),
+    completedItem("thread-next", "turn-next", "item-next", scoutOutput),
+  ], {
+    threadIds: ["thread-old", "thread-next"],
+    turnIds: ["turn-old", "turn-next"],
+  });
+  const harness = createCodexHarness({ client, branches: memoryBranches() });
+
+  const first = await collect(harness, makeScoutRequest("attempt-old"));
+  expect(first.events.at(-1)).toMatchObject({
+    type: "attempt.completed",
+    attemptId: "attempt-old",
+  });
+
+  const next = makeScoutRequest("attempt-next");
+  const started = await harness.step(next);
+  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+  const output = await harness.step({ ...next, backendCursor: started.nextCursor });
+
+  expect(output).toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.output",
+      attemptId: "attempt-next",
+      output: scoutOutput,
+    },
+  });
+});
+
 test("does not infer Implement success from a commit without structured history", async () => {
   let commitAttempts = 0;
   const branches = memoryBranches();
