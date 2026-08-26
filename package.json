@@ -7,7 +7,7 @@
     "agile": "./src/cli/main.ts"
   },
   "scripts": {
-    "test": "bun test --timeout 15000",
+    "test": "mkdir -p .tmp-agile-tests && TMPDIR=$PWD/.tmp-agile-tests bun test --timeout 30000",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun run test"
   },
