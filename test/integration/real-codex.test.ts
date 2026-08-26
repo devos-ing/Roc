@@ -48,22 +48,25 @@ async function waitForDone(
     }
     const result = runtimeResult();
     if (result !== undefined) {
-      const branchHead = await git(["rev-parse", "--verify", "agile/T1"], repoRoot, true);
-      const commitCount = await git(["rev-list", "--count", `${baseCommit}..agile/T1`], repoRoot, true);
-      const worktreeStatus = await git(
-        ["status", "--porcelain"],
-        join(repoRoot, ".agile", "worktrees", "T1"),
+      const checkoutPath = `${repoRoot}.agile-checkout`;
+      const branchHead = await git(["rev-parse", "--verify", "agile/T1"], checkoutPath, true);
+      const commitCount = await git(
+        ["rev-list", "--count", `${baseCommit}..agile/T1`],
+        checkoutPath,
         true,
       );
+      const checkoutStatus = await git(["status", "--porcelain"], checkoutPath, true);
       throw new Error(
         `Real Codex runtime exited ${result.code} before T1 reached done (${lastState}; `
         + `branchHead=${branchHead || "none"}; commitCount=${commitCount || "none"}; `
-        + `worktreeClean=${worktreeStatus === ""}): ${errors.join(" | ")}`,
+        + `checkoutClean=${checkoutStatus === ""}): ${errors.join(" | ")}`,
       );
     }
     await Bun.sleep(500);
   }
-  throw new Error(`Timed out waiting for T1 to reach done: ${errors.join(" | ")}`);
+  throw new Error(
+    `Timed out waiting for T1 to reach done (${lastState}): ${errors.join(" | ")}`,
+  );
 }
 
 async function stopRuntime(running: Promise<number>): Promise<number> {
@@ -78,7 +81,7 @@ realTest("completes one ticket through Scout, Implement, and detached Review", a
   const root = await mkdtemp(join(tmpdir(), "agile-real-codex-"));
   const databasePath = join(root, ".agile", "runtime", "agile.db");
   const logFile = join(root, ".agile", "runtime", "agile.log");
-  const worktreePath = join(root, ".agile", "worktrees", "T1");
+  const checkoutPath = `${root}.agile-checkout`;
   const priorSecret = process.env.AGILE_TEST_SECRET;
   let running: Promise<number> | undefined;
   let runtimeSettled: { code: number } | undefined;
@@ -192,10 +195,10 @@ realTest("completes one ticket through Scout, Implement, and detached Review", a
     const implement = task?.attempts.find((attempt) => attempt.role === "implement");
     if (implement?.gitCommit === undefined) throw new Error("Implement did not record a Git commit");
     expect(implement.gitCommit).toMatch(/^[0-9a-f]{40}$/);
-    expect(await git(["rev-list", "--count", `${baseCommit}..agile/T1`], root)).toBe("1");
-    expect(await git(["rev-parse", "agile/T1"], root)).toBe(implement.gitCommit);
-    expect(await git(["status", "--porcelain"], worktreePath)).toBe("");
-    expect(await readFile(join(worktreePath, "answer.ts"), "utf8")).toContain("return 42");
+    expect(await git(["rev-list", "--count", `${baseCommit}..agile/T1`], checkoutPath)).toBe("1");
+    expect(await git(["rev-parse", "agile/T1"], checkoutPath)).toBe(implement.gitCommit);
+    expect(await git(["status", "--porcelain"], checkoutPath)).toBe("");
+    expect(await readFile(join(checkoutPath, "answer.ts"), "utf8")).toContain("return 42");
 
     const log = await readFile(logFile, "utf8");
     const lifecycle = log.trim().split("\n").map((line) => JSON.parse(line) as { code: string; runId?: string })
@@ -210,7 +213,7 @@ realTest("completes one ticket through Scout, Implement, and detached Review", a
     if (running !== undefined) {
       await stopRuntime(running).catch(() => undefined);
     }
-    await git(["worktree", "remove", "--force", worktreePath], root, true);
+    await rm(checkoutPath, { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });
   }
 }, 600_000);

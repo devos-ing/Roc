@@ -13,7 +13,7 @@ import { Scheduler } from "../scheduler/scheduler";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
 import { PlanningRepository } from "../store/planning-repository";
-import { createTaskWorktreeManager } from "../workspace/task-worktree";
+import { createTaskBranchManager } from "../workspace/task-branch";
 import { helpText } from "./help";
 
 export type CliIo = { out(text: string): void; err(text: string): void };
@@ -190,12 +190,12 @@ async function runFake(input: Extract<SchedulerRunInput, { backend: "fake" }>, r
 }
 
 async function runCodex(input: Extract<SchedulerRunInput, { backend: "codex" }>, runId: string): Promise<void> {
-  let worktrees: Awaited<ReturnType<typeof createTaskWorktreeManager>>;
+  let branches: Awaited<ReturnType<typeof createTaskBranchManager>>;
   try {
-    worktrees = await createTaskWorktreeManager(input.repoPath, input.baseRef);
+    branches = await createTaskBranchManager(input.repoPath, input.baseRef);
   } catch (error) {
     throw attachRunId(error, runId, {
-      code: "CODEX_WORKTREE_STARTUP_FAILED",
+      code: "CODEX_BRANCH_STARTUP_FAILED",
       category: "startup",
       retryable: false,
       component: "cli",
@@ -261,7 +261,7 @@ async function runCodex(input: Extract<SchedulerRunInput, { backend: "codex" }>,
       () => {},
       advisor,
     );
-    const harness = createCodexHarness({ client, worktrees });
+    const harness = createCodexHarness({ client, branches });
     await runDaemon({
       daemon: daemonFor(repo, harness, runId),
       repo,

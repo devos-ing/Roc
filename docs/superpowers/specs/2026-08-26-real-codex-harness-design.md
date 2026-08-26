@@ -2,6 +2,11 @@
 
 Date: 2026-08-26
 
+Status: the workspace-isolation portions of this historical Slice 3A design are
+superseded by [`Task Branch Manager`](../../specs/task-branch-manager.md). The
+Codex protocol, role, persistence, model-routing, and error-handling decisions
+remain current.
+
 ## 1. Goal
 
 Add the smallest production Codex backend that can run one accepted ticket through Scout, Implement, and detached Review while preserving the deterministic Orchestrator built in Slice 2.

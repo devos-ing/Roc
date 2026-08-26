@@ -18,9 +18,9 @@ import type {
   HarnessStepRequest,
 } from "../../src/harness/contracts";
 import {
-  createTaskWorktreeManager,
-  type TaskWorktreeManager,
-} from "../../src/workspace/task-worktree";
+  createTaskBranchManager,
+  type TaskBranchManager,
+} from "../../src/workspace/task-branch";
 
 type ServerMessage = Awaited<ReturnType<CodexClientApi["nextServerMessage"]>>;
 
@@ -224,7 +224,7 @@ function backendCursor(
   });
 }
 
-function memoryWorktrees(): TaskWorktreeManager {
+function memoryBranches(): TaskBranchManager {
   return {
     async prepare(taskId) {
       return {
@@ -343,8 +343,8 @@ function observed(events: HarnessEvent[]): unknown[] {
 test("dispatches fresh Scout, Implement, and detached Review with normalized usage", async () => {
   const root = await createRepository();
   try {
-    const worktrees = await createTaskWorktreeManager(root, "HEAD");
-    const workspace = await worktrees.prepare(ticket.id);
+    const branches = await createTaskBranchManager(root, "HEAD");
+    const workspace = await branches.prepare(ticket.id);
     const client = new RecordedCodexClient([
       usage("thread-scout", "turn-scout"),
       completedItem("thread-scout", "turn-scout", "item-scout", scoutOutput),
@@ -352,7 +352,7 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     ]);
     const harness = createCodexHarness({
       client,
-      worktrees,
+      branches,
       now: () => "2026-08-26T00:00:00.000Z",
     });
     const scoutInput = { role: "scout" as const, ticket };
@@ -426,12 +426,12 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     ]);
     expect(implement.events.filter((event) => event.type === "attempt.usage_delta")).toHaveLength(1);
     expect(implement.events.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
-    await expect(worktrees.assertCommit(ticket.id, commitSha)).resolves.toBeUndefined();
+    await expect(branches.assertCommit(ticket.id, commitSha)).resolves.toBeUndefined();
     expect(await git([
       "rev-list",
       "--count",
       `${workspace.baseCommit}..refs/heads/${workspace.branch}`,
-    ], root)).toBe("1");
+    ], workspace.path)).toBe("1");
     expect(implementPrompt(implementInput)).toContain("Do not run Git metadata commands");
     expect(implementPrompt(implementInput)).toContain("trusted Harness will create the commit");
     expect(implementPrompt(implementInput)).toContain(JSON.stringify(implementInput.scout, null, 2));
@@ -465,9 +465,9 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
       },
       input: reviewInput,
     };
-    const statusBeforeReview = await worktrees.status(ticket.id);
+    const statusBeforeReview = await branches.status(ticket.id);
     const review = await collect(harness, reviewRequest);
-    const statusAfterReview = await worktrees.status(ticket.id);
+    const statusAfterReview = await branches.status(ticket.id);
 
     expect(observed(review.events)).toEqual([
       { type: "attempt.started", threadId: "thread-review", turnId: "turn-review" },
@@ -560,6 +560,7 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     await harness.cancel("attempt-review");
     expect(client.requests).toHaveLength(requestCount);
   } finally {
+    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -573,7 +574,7 @@ test("normalizes invalid structured output into a durable retryable failure", as
   ]);
   const harness = createCodexHarness({
     client,
-    worktrees: memoryWorktrees(),
+    branches: memoryBranches(),
     now: () => "2026-08-26T00:00:00.000Z",
   });
   const request = makeScoutRequest("attempt-invalid-output");
@@ -599,7 +600,7 @@ test("normalizes an attempt/input role mismatch instead of rejecting the task st
   const client = new RecordedCodexClient([]);
   const harness = createCodexHarness({
     client,
-    worktrees: memoryWorktrees(),
+    branches: memoryBranches(),
     now: () => "2026-08-26T00:00:00.000Z",
   });
   const scoutRequest = makeScoutRequest("attempt-role-mismatch");
@@ -623,7 +624,7 @@ test("normalizes an attempt/input role mismatch instead of rejecting the task st
   expect(client.requests).toEqual([]);
 });
 
-test("fails Review closed when the read-only turn mutates the worktree", async () => {
+test("fails Review closed when the read-only turn mutates the checkout", async () => {
   const reviewOutput = {
     kind: "review" as const,
     decision: "accepted" as const,
@@ -635,12 +636,12 @@ test("fails Review closed when the read-only turn mutates the worktree", async (
   ], {
     threadIds: ["thread-review-anchor"],
   });
-  const worktrees = memoryWorktrees();
+  const branches = memoryBranches();
   const statuses = ["", " M src/codex/harness.ts"];
-  worktrees.status = async () => statuses.shift() ?? " M src/codex/harness.ts";
+  branches.status = async () => statuses.shift() ?? " M src/codex/harness.ts";
   const harness = createCodexHarness({
     client,
-    worktrees,
+    branches,
     now: () => "2026-08-26T00:00:00.000Z",
   });
   const request: HarnessStepRequest = {
@@ -691,14 +692,14 @@ test("preserves the clean Review status baseline across start redispatch and rec
     findings: [],
     remainingGaps: [],
   };
-  const worktrees = memoryWorktrees();
-  worktrees.status = async () => baseline;
+  const branches = memoryBranches();
+  branches.status = async () => baseline;
   const client = new RecordedCodexClient([], {
     threadIds: ["thread-review-anchor"],
   });
   const harness = createCodexHarness({
     client,
-    worktrees,
+    branches,
     now: () => "2026-08-26T00:00:00.000Z",
   });
   const request: HarnessStepRequest = {
@@ -755,7 +756,7 @@ test("preserves the clean Review status baseline across start redispatch and rec
   });
   const reconciled = await createCodexHarness({
     client: reconcileClient,
-    worktrees,
+    branches,
     now: () => "2026-08-26T00:00:00.000Z",
   }).step({
     ...request,
@@ -776,11 +777,11 @@ test("preserves the clean Review status baseline across start redispatch and rec
 test("fails Review dispatch and reconciliation before Codex when the commit invariant is invalid", async () => {
   for (const mode of ["dispatch", "reconcile"] as const) {
     const client = new RecordedCodexClient([]);
-    const worktrees = memoryWorktrees();
-    worktrees.assertReviewReady = async () => {
-      throw new Error("Task worktree must be clean");
+    const branches = memoryBranches();
+    branches.assertReviewReady = async () => {
+      throw new Error("Task branch must be clean");
     };
-    const harness = createCodexHarness({ client, worktrees });
+    const harness = createCodexHarness({ client, branches });
     const request: HarnessStepRequest = {
       mode,
       attempt: {
@@ -830,13 +831,13 @@ test("normalizes an invalid trusted Implement commit into task failure", async (
       limitations: [],
     }),
   ]);
-  const worktrees = memoryWorktrees();
-  worktrees.commitChanges = async () => {
-    throw new Error("Task worktree has no uncommitted changes");
+  const branches = memoryBranches();
+  branches.commitChanges = async () => {
+    throw new Error("Task branch has no uncommitted changes");
   };
   const harness = createCodexHarness({
     client,
-    worktrees,
+    branches,
     now: () => "2026-08-26T00:00:00.000Z",
   });
   const request: HarnessStepRequest = {
@@ -892,7 +893,7 @@ test("drains a policy-interrupted terminal before progressing the next fresh att
   });
   const harness = createCodexHarness({
     client,
-    worktrees: memoryWorktrees(),
+    branches: memoryBranches(),
     now: () => "2026-08-26T00:00:00.000Z",
   });
   const request = makeImplementRequest();
@@ -976,7 +977,7 @@ test("declines and drains a stale known server request without poisoning the act
     },
     completedItem("thread-scout", "turn-scout", "item-scout", scoutOutput),
   ]);
-  const harness = createCodexHarness({ client, worktrees: memoryWorktrees() });
+  const harness = createCodexHarness({ client, branches: memoryBranches() });
   const request = makeScoutRequest("attempt-stale-request");
   const started = await harness.step(request);
   if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
@@ -1054,7 +1055,7 @@ test("uses the exact fail-closed response for every supported server request", a
     });
     const harness = createCodexHarness({
       client,
-      worktrees: memoryWorktrees(),
+      branches: memoryBranches(),
       now: () => "2026-08-26T00:00:00.000Z",
     });
     const request = makeImplementRequest(`attempt-policy-${index}`);
@@ -1081,7 +1082,7 @@ test("rejects an unknown server request with method-not-found and still blocks",
   });
   const harness = createCodexHarness({
     client,
-    worktrees: memoryWorktrees(),
+    branches: memoryBranches(),
     now: () => "2026-08-26T00:00:00.000Z",
   });
   const request = makeImplementRequest("attempt-unknown-request");
@@ -1128,7 +1129,7 @@ test("reconciles authoritative structured output and terminal completion", async
   });
   const harness = createCodexHarness({
     client,
-    worktrees: memoryWorktrees(),
+    branches: memoryBranches(),
     now: () => "2026-08-26T00:00:00.000Z",
   });
   const request: HarnessStepRequest = {
@@ -1142,7 +1143,7 @@ test("reconciles authoritative structured output and terminal completion", async
   const resumedClient = new RecordedCodexClient([], { threadReads: [history] });
   const resumedHarness = createCodexHarness({
     client: resumedClient,
-    worktrees: memoryWorktrees(),
+    branches: memoryBranches(),
     now: () => "2026-08-26T00:00:00.000Z",
   });
   const completed = await resumedHarness.step({
@@ -1180,8 +1181,8 @@ test("reconciles an Implement draft to the stable normalized output", async () =
   };
   const commitSha = "c".repeat(40);
   let commitCalls = 0;
-  const worktrees = memoryWorktrees();
-  worktrees.commitChanges = async (taskId) => {
+  const branches = memoryBranches();
+  branches.commitChanges = async (taskId) => {
     expect(taskId).toBe("T1");
     commitCalls += 1;
     return commitSha;
@@ -1211,7 +1212,7 @@ test("reconciles an Implement draft to the stable normalized output", async () =
   const client = new RecordedCodexClient([], { threadReads: [history] });
   const output = await createCodexHarness({
     client,
-    worktrees,
+    branches,
     now: () => "2026-08-26T00:00:00.000Z",
   }).step(request);
 
@@ -1229,7 +1230,7 @@ test("reconciles an Implement draft to the stable normalized output", async () =
   const resumedClient = new RecordedCodexClient([], { threadReads: [history] });
   const completed = await createCodexHarness({
     client: resumedClient,
-    worktrees,
+    branches,
     now: () => "2026-08-26T00:00:00.000Z",
   }).step({ ...request, backendCursor: output.nextCursor });
 
@@ -1247,7 +1248,7 @@ test("classifies reconciliation without persisted turn identity as orphaned", as
   const client = new RecordedCodexClient([]);
   const harness = createCodexHarness({
     client,
-    worktrees: memoryWorktrees(),
+    branches: memoryBranches(),
     now: () => "2026-08-26T00:00:00.000Z",
   });
 
@@ -1285,7 +1286,7 @@ for (const status of ["failed", "interrupted"] as const) {
         },
       }],
     });
-    const harness = createCodexHarness({ client, worktrees: memoryWorktrees() });
+    const harness = createCodexHarness({ client, branches: memoryBranches() });
     const delivery = await harness.step({
       ...makeScoutRequest(`attempt-${status}`),
       mode: "reconcile",
@@ -1306,8 +1307,8 @@ for (const status of ["failed", "interrupted"] as const) {
 
 test("does not infer Implement success from a commit without structured history", async () => {
   let commitAttempts = 0;
-  const worktrees = memoryWorktrees();
-  worktrees.commitChanges = async () => {
+  const branches = memoryBranches();
+  branches.commitChanges = async () => {
     commitAttempts += 1;
     return "b".repeat(40);
   };
@@ -1325,7 +1326,7 @@ test("does not infer Implement success from a commit without structured history"
       },
     }],
   });
-  const harness = createCodexHarness({ client, worktrees });
+  const harness = createCodexHarness({ client, branches });
   const delivery = await harness.step({
     ...makeImplementRequest("attempt-orphaned"),
     mode: "reconcile",
@@ -1348,7 +1349,7 @@ test("interrupts an active turn and only treats terminal attempts as cancellatio
   const client = new RecordedCodexClient([]);
   const harness = createCodexHarness({
     client,
-    worktrees: memoryWorktrees(),
+    branches: memoryBranches(),
     now: () => "2026-08-26T00:00:00.000Z",
   });
   const request = makeScoutRequest("attempt-cancel");

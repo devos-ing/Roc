@@ -1,5 +1,5 @@
 .superpowers/
 .worktrees/
 .agile/runtime/
-.agile/worktrees/
+.scratch/deliver-code/*/
 node_modules/

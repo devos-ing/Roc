@@ -11,7 +11,7 @@ import {
   type HarnessStepRequest,
 } from "../harness/contracts";
 import { AgileError, normalizeError } from "../runtime/errors";
-import type { TaskWorkspace, TaskWorktreeManager } from "../workspace/task-worktree";
+import type { TaskWorkspace, TaskBranchManager } from "../workspace/task-branch";
 import type { CodexClientApi } from "./client";
 import {
   AgentMessageItemSchema,
@@ -198,7 +198,7 @@ function outputSchema(role: "scout" | "implement" | "review"): unknown {
 
 export function createCodexHarness(input: {
   client: CodexClientApi;
-  worktrees: TaskWorktreeManager;
+  branches: TaskBranchManager;
   now?: () => string;
 }): AgentHarness {
   const now = input.now ?? (() => new Date().toISOString());
@@ -359,7 +359,7 @@ export function createCodexHarness(input: {
       });
     }
     try {
-      await input.worktrees.assertReviewReady(
+      await input.branches.assertReviewReady(
         request.attempt.taskId,
         request.input.implementation.commitSha,
         baseCommit,
@@ -410,7 +410,7 @@ export function createCodexHarness(input: {
       });
     }
 
-    const workspace = await input.worktrees.prepare(
+    const workspace = await input.branches.prepare(
       request.attempt.taskId,
       request.input.ticket.baseCommit,
     );
@@ -418,7 +418,7 @@ export function createCodexHarness(input: {
     if (request.attempt.role === "review") {
       try {
         await assertReviewInvariant(request);
-        reviewStatusBefore = await input.worktrees.status(
+        reviewStatusBefore = await input.branches.status(
           request.attempt.taskId,
           workspace.baseCommit,
         );
@@ -802,7 +802,7 @@ export function createCodexHarness(input: {
           }
           let commitSha: string;
           try {
-            commitSha = await input.worktrees.commitChanges(active.taskId, active.baseCommit);
+            commitSha = await input.branches.commitChanges(active.taskId, active.baseCommit);
           } catch (error) {
             throw protocolError(
               "invalid_implementation_commit",
@@ -832,7 +832,7 @@ export function createCodexHarness(input: {
           await assertReviewInvariant(request);
           let statusAfter: string;
           try {
-            statusAfter = await input.worktrees.status(active.taskId, active.baseCommit);
+            statusAfter = await input.branches.status(active.taskId, active.baseCommit);
           } catch {
             return failedDelivery(
               cursor,
@@ -846,7 +846,7 @@ export function createCodexHarness(input: {
               cursor,
               active,
               "review_mutated_workspace",
-              "Review changed the task worktree",
+              "Review changed the scheduler checkout",
             );
           }
         }
@@ -1010,7 +1010,7 @@ export function createCodexHarness(input: {
       }
       let commitSha: string;
       try {
-        commitSha = await input.worktrees.commitChanges(
+        commitSha = await input.branches.commitChanges(
           recovered.taskId,
           recovered.baseCommit || undefined,
         );
@@ -1043,7 +1043,7 @@ export function createCodexHarness(input: {
       }
       let statusAfter: string;
       try {
-        statusAfter = await input.worktrees.status(recovered.taskId, recovered.baseCommit);
+        statusAfter = await input.branches.status(recovered.taskId, recovered.baseCommit);
       } catch {
         return orphaned("Recovered Review workspace status is unavailable");
       }
@@ -1052,7 +1052,7 @@ export function createCodexHarness(input: {
           cursor,
           recovered,
           "review_mutated_workspace",
-          "Review changed the task worktree",
+          "Review changed the scheduler checkout",
         );
       }
     }
