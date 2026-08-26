@@ -12,9 +12,13 @@ const raw = [
 test("normalizes, combines, ranks, and totals workflow categories with proportional colored bars", () => {
   const colored = renderTokenUsageChart("2026-W35", raw, { width: 80 });
   const plain = renderTokenUsageChart("2026-W35", raw, { width: 80, color: false });
+  const advisorColored = renderTokenUsageChart("2026-W35", [
+    { category: "advisor", inputTokens: 1, outputTokens: 0 },
+  ]);
 
   expect(colored).toContain("\u001B[32m" + "█".repeat(51) + "\u001B[0m");
-  expect(colored).toContain("\u001B[33m" + "█".repeat(26) + "\u001B[0m");
+  expect(colored).toContain("\u001B[35m" + "█".repeat(26) + "\u001B[0m");
+  expect(advisorColored).toContain("\u001B[33m" + "█".repeat(55) + "\u001B[0m");
   expect(colored).toContain("\u001B[34m" + "█".repeat(9) + "\u001B[0m");
   expect(colored).toContain("\u001B[90m" + "█".repeat(2) + "\u001B[0m");
   expect(colored.replace(/\u001B\[[0-9;]*m/g, "")).toBe(plain);

@@ -67,8 +67,8 @@ function summarizeTokenUsage(categories: CategoryTokenUsage[]): {
 const categoryColors: Record<DisplayCategory, string> = {
   Scout: "\u001B[36m",
   Implement: "\u001B[32m",
-  Review: "\u001B[33m",
-  Advisor: "\u001B[35m",
+  Review: "\u001B[35m",
+  Advisor: "\u001B[33m",
   Grilling: "\u001B[34m",
   Other: "\u001B[90m",
 };
