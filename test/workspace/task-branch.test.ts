@@ -37,6 +37,23 @@ async function removeRepository(root: string): Promise<void> {
   await rm(`${root}.agile-checkout`, { recursive: true, force: true });
 }
 
+test("project ignores Codex sandbox and test artifacts before task commits", async () => {
+  const artifacts = [
+    ".scratch/agile-codex-harness-example",
+    ".scratch/agile-codex-harness-example.agile-checkout",
+    ".tmp-agile-tests/agile-codex-harness-example",
+    ".tmp-agile-token-future.db-shm",
+    ".tmp-agile-token-future.db-wal",
+    "agile-codex-harness-example",
+    "agile-codex-harness-example.agile-checkout",
+    "agile-branch-repo-example",
+    "agile-branch-repo-example.agile-checkout",
+    "xcrun_db",
+  ];
+
+  expect((await git(["check-ignore", ...artifacts], process.cwd())).split("\n")).toEqual(artifacts);
+});
+
 test("switches retained task branches in a scheduler-owned checkout", async () => {
   const root = await createRepository();
   try {
