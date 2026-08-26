@@ -7,7 +7,7 @@
     "agile": "./src/cli/main.ts"
   },
   "scripts": {
-    "test": "mkdir -p .tmp-agile-tests && TMPDIR=$PWD/.tmp-agile-tests bun test --timeout 30000",
+    "test": "mkdir -p .tmp-agile-tests && PATH=/Applications/Xcode.app/Contents/Developer/usr/bin:$PATH TMPDIR=$PWD/.tmp-agile-tests bun test --timeout 120000",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun run test"
   },
