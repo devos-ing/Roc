@@ -138,8 +138,7 @@ roc-it help
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development, testing, and release
-instructions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and testing instructions.
 
 ## References
 
