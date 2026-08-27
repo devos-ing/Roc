@@ -4,8 +4,6 @@ Usage:
   roc-it init [--db PATH]
   roc-it task list [--db PATH]
   roc-it tokens [--db PATH] [--no-color]
-  roc-it scheduler run --backend fake --fake-script PATH [--db PATH]
   roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
-  roc-it scheduler inspect [--db PATH]
   roc-it help
 `;
