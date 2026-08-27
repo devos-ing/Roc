@@ -942,11 +942,12 @@ test("rejected Review creates one idempotent draft follow-up and replans depende
       risk: string;
       token_ceiling: number;
       approval_required: number;
+      base_commit: string | null;
       context_id: string | null;
       discovered_from_review_id: string | null;
     }, [string]>(`
       SELECT week_id, title, spec_json, priority, risk, token_ceiling,
-             approval_required, context_id, discovered_from_review_id
+             approval_required, base_commit, context_id, discovered_from_review_id
       FROM tasks WHERE id = ?
     `).get("task-1");
     expect(followUp).toMatchObject({
@@ -956,6 +957,7 @@ test("rejected Review creates one idempotent draft follow-up and replans depende
       risk: "medium",
       token_ceiling: 10_000,
       approval_required: 1,
+      base_commit: implementOutput.commitSha,
       context_id: "context-T1",
       discovered_from_review_id: "review-1",
     });

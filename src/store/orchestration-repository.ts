@@ -606,6 +606,16 @@ export class OrchestrationRepository {
           const reviewId = this.id("review");
           const followUpTaskId = this.id("task");
           const rootTaskId = original.root_task_id ?? original.id;
+          const implementCommit = this.db.query<{ git_commit: string }, [string]>(`
+            SELECT git_commit FROM attempts
+            WHERE task_id = ? AND role = 'implement' AND status = 'succeeded'
+              AND git_commit IS NOT NULL
+            ORDER BY rowid DESC
+            LIMIT 1
+          `).get(attempt.task_id)?.git_commit;
+          if (implementCommit === undefined) {
+            throw new Error(`Rejected task has no successful Implement commit: ${attempt.task_id}`);
+          }
 
           this.db.query(`
             INSERT INTO reviews(id, task_id, attempt_id, decision, findings_json)
@@ -630,10 +640,10 @@ export class OrchestrationRepository {
             INSERT INTO tasks(
               id, week_id, title, spec_json, status, priority, risk, token_ceiling,
               approval_required, approved, root_task_id, parent_task_id,
-              discovered_from_review_id, context_id, created_at, updated_at
+              discovered_from_review_id, context_id, base_commit, created_at, updated_at
             ) VALUES(
               $id, $weekId, $title, $specJson, 'draft', $priority, $risk, $tokenCeiling,
-              1, 0, $rootTaskId, $parentTaskId, $reviewId, $contextId, $now, $now
+              1, 0, $rootTaskId, $parentTaskId, $reviewId, $contextId, $baseCommit, $now, $now
             )
           `).run({
             id: followUpTaskId,
@@ -647,6 +657,7 @@ export class OrchestrationRepository {
             parentTaskId: original.id,
             reviewId,
             contextId: original.context_id,
+            baseCommit: implementCommit,
             now: event.occurredAt,
           });
 
@@ -678,7 +689,7 @@ export class OrchestrationRepository {
           `).run(
             this.id("event"),
             followUpTaskId,
-            JSON.stringify({ reviewId, parentTaskId: original.id, rootTaskId }),
+            JSON.stringify({ reviewId, parentTaskId: original.id, rootTaskId, baseCommit: implementCommit }),
             event.occurredAt,
           );
           for (const dependent of dependents) {

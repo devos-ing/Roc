@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import { CodexClient } from "../codex/client";
 import { createCodexHarness } from "../codex/harness";
 import { ModelListResponseSchema } from "../codex/protocol";
+import { loadDefaultSkillPolicy } from "../codex/skill-policy";
 import { FakeScenarioSchema, type AgentHarness } from "../harness/contracts";
 import { createFakeHarness } from "../harness/fake";
 import { AgileError, normalizeError } from "../runtime/errors";
@@ -263,7 +264,11 @@ async function runCodex(input: Extract<SchedulerRunInput, { backend: "codex" }>,
       () => {},
       advisor,
     );
-    const harness = createCodexHarness({ client, branches });
+    const harness = createCodexHarness({
+      client,
+      branches,
+      skillPolicy: await loadDefaultSkillPolicy(),
+    });
     await runDaemon({
       daemon: daemonFor(repo, harness, runId),
       repo,

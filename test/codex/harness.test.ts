@@ -63,6 +63,7 @@ class RecordedCodexClient implements CodexClientApi {
   private readonly threadIds: string[];
   private readonly turnIds: string[];
   private readonly threadReads: unknown[];
+  private readonly skillLists: unknown[];
 
   constructor(
     private readonly messages: ServerMessage[],
@@ -70,6 +71,7 @@ class RecordedCodexClient implements CodexClientApi {
       threadIds?: string[];
       turnIds?: string[];
       threadReads?: unknown[];
+      skillLists?: unknown[];
     } = {},
   ) {
     this.threadIds = options.threadIds ?? [
@@ -79,6 +81,7 @@ class RecordedCodexClient implements CodexClientApi {
     ];
     this.turnIds = options.turnIds ?? ["turn-scout", "turn-implement"];
     this.threadReads = options.threadReads ?? [];
+    this.skillLists = options.skillLists ?? [];
   }
 
   async request(method: string, params: unknown): Promise<unknown> {
@@ -105,6 +108,11 @@ class RecordedCodexClient implements CodexClientApi {
     if (method === "thread/read") {
       const response = this.threadReads.shift();
       if (!response) throw new Error("Unexpected thread/read");
+      return response;
+    }
+    if (method === "skills/list") {
+      const response = this.skillLists.shift();
+      if (!response) throw new Error("Unexpected skills/list");
       return response;
     }
     if (method === "turn/interrupt") return {};
@@ -339,6 +347,53 @@ function observed(events: HarnessEvent[]): unknown[] {
     }
   });
 }
+
+test("applies the default skill-source allowlist before starting a role thread", async () => {
+  const cwd = "/tmp/agile-harness-T1";
+  const skills = [
+    { name: "tdd", path: "/Users/test/.agents/skills/tdd/SKILL.md", enabled: true },
+    { name: "openai-docs", path: "/Users/test/.codex/skills/openai-docs/SKILL.md", enabled: true },
+  ];
+  const client = new RecordedCodexClient([], {
+    skillLists: [{ data: [{ cwd, skills, errors: [] }] }],
+  });
+  const harness = createCodexHarness({
+    client,
+    branches: memoryBranches(),
+    skillPolicy: {
+      agentsSkillsRoot: "/Users/test/.agents/skills",
+      allowedStandaloneSkillNames: new Set(["tdd"]),
+    },
+  });
+
+  await harness.step(makeScoutRequest());
+
+  expect(client.requests).toEqual([
+    { method: "skills/list", params: { cwds: [cwd] } },
+    {
+      method: "thread/start",
+      params: {
+        model: "gpt-5.6-luna",
+        cwd,
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        serviceName: "agile_agents",
+        config: {
+          skills: {
+            config: [
+              { path: skills[0]!.path, enabled: true },
+              { path: skills[1]!.path, enabled: false },
+            ],
+          },
+        },
+      },
+    },
+    {
+      method: "turn/start",
+      params: expect.anything(),
+    },
+  ]);
+});
 
 test("dispatches fresh Scout, Implement, and detached Review with normalized usage", async () => {
   const root = await createRepository();

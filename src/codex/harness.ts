@@ -35,6 +35,11 @@ import {
   reviewPrompt,
   scoutPrompt,
 } from "./prompts";
+import {
+  SkillListResponseSchema,
+  buildDefaultSkillConfig,
+  type DefaultSkillPolicy,
+} from "./skill-policy";
 
 const UsageSchema = z.object({
   inputTokens: z.number().int().nonnegative(),
@@ -199,6 +204,7 @@ function outputSchema(role: "scout" | "implement" | "review"): unknown {
 export function createCodexHarness(input: {
   client: CodexClientApi;
   branches: TaskBranchManager;
+  skillPolicy?: DefaultSkillPolicy;
   now?: () => string;
 }): AgentHarness {
   const now = input.now ?? (() => new Date().toISOString());
@@ -436,6 +442,35 @@ export function createCodexHarness(input: {
         });
       }
     }
+    let skillsConfig: { path: string; enabled: boolean }[] | undefined;
+    if (input.skillPolicy !== undefined) {
+      try {
+        const catalog = SkillListResponseSchema.parse(await input.client.request("skills/list", {
+          cwds: [workspace.path],
+        }));
+        const workspaceSkills = catalog.data.find((entry) => entry.cwd === workspace.path);
+        if (workspaceSkills === undefined || workspaceSkills.errors.length > 0) {
+          throw new Error("Codex did not return a complete workspace skill catalog");
+        }
+        skillsConfig = buildDefaultSkillConfig(workspaceSkills.skills, input.skillPolicy);
+      } catch (error) {
+        throw normalizeError(error, {
+          code: "codex_skill_catalog_failed",
+          category: "infra",
+          retryable: true,
+          component: "codex-harness",
+          message: "Could not apply the role skill allowlist",
+          taskId: request.attempt.taskId,
+          attemptId: request.attempt.attemptId,
+        });
+      }
+    }
+    const threadConfig = {
+      ...(request.attempt.role === "review"
+        ? { model_reasoning_effort: request.attempt.effort }
+        : {}),
+      ...(skillsConfig === undefined ? {} : { skills: { config: skillsConfig } }),
+    };
     let rawThreadResponse: unknown;
     try {
       rawThreadResponse = await input.client.request("thread/start", {
@@ -444,9 +479,7 @@ export function createCodexHarness(input: {
         approvalPolicy: "never",
         sandbox: threadSandbox(request.attempt.role),
         serviceName: "agile_agents",
-        ...(request.attempt.role === "review"
-          ? { config: { model_reasoning_effort: request.attempt.effort } }
-          : {}),
+        ...(Object.keys(threadConfig).length === 0 ? {} : { config: threadConfig }),
       });
     } catch (error) {
       throw normalizeError(error, {
