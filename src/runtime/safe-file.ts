@@ -1,5 +1,13 @@
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { basename, dirname, join, parse, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  join,
+  parse,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 
 function isMissing(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
@@ -19,13 +27,17 @@ function ensureRealDirectory(path: string): void {
   try {
     mkdirSync(path, { mode: 0o700 });
   } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) {
+    if (
+      !(error instanceof Error && "code" in error && error.code === "EEXIST")
+    ) {
       throw error;
     }
   }
   assertRealDirectory(path);
   if (realpathSync(path) !== path) {
-    throw new Error(`Runtime path component changed during validation: ${path}`);
+    throw new Error(
+      `Runtime path component changed during validation: ${path}`,
+    );
   }
 }
 

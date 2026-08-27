@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { assertTransition, canTransition, isTerminal } from "../../src/domain/transitions";
+import {
+  assertTransition,
+  canTransition,
+  isTerminal,
+} from "../../src/domain/transitions";
 
 describe("task transitions", () => {
   test("allows the happy path", () => {
@@ -14,7 +18,12 @@ describe("task transitions", () => {
   });
 
   test("permits every active task state to return for replanning", () => {
-    for (const status of ["claimed", "scouting", "implementing", "reviewing"] as const) {
+    for (const status of [
+      "claimed",
+      "scouting",
+      "implementing",
+      "reviewing",
+    ] as const) {
       expect(canTransition(status, "needs_replan")).toBe(true);
     }
   });

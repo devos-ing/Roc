@@ -1,11 +1,11 @@
-import { z } from "zod";
+import type { z } from "zod";
 import { AgileError, normalizeError } from "../runtime/errors";
 import {
+  classifyCodexTurnFailure,
   ResponseEnvelopeSchema,
   RpcErrorSchema,
   ServerMessageSchema,
   TurnErrorSchema,
-  classifyCodexTurnFailure,
 } from "./protocol";
 
 type ServerMessage = z.infer<typeof ServerMessageSchema>;
@@ -269,20 +269,24 @@ export class CodexClient implements CodexClientApi {
         const turnError = TurnErrorSchema.safeParse(rpcError.data);
         if (turnError.success) {
           const classified = classifyCodexTurnFailure("failed", turnError.data);
-          pending.reject(new AgileError({
-            ...classified,
-            component: "codex-client",
-            requestId: String(response.data.id),
-          }));
+          pending.reject(
+            new AgileError({
+              ...classified,
+              component: "codex-client",
+              requestId: String(response.data.id),
+            }),
+          );
         } else {
-          pending.reject(new AgileError({
-            code: "CODEX_APP_SERVER_RPC_ERROR",
-            category: "protocol",
-            retryable: false,
-            component: "codex-client",
-            message: "Codex app-server rejected the request",
-            requestId: String(response.data.id),
-          }));
+          pending.reject(
+            new AgileError({
+              code: "CODEX_APP_SERVER_RPC_ERROR",
+              category: "protocol",
+              retryable: false,
+              component: "codex-client",
+              message: "Codex app-server rejected the request",
+              requestId: String(response.data.id),
+            }),
+          );
         }
       } else {
         pending.resolve(response.data.result);
@@ -373,13 +377,15 @@ export class CodexClient implements CodexClientApi {
 
   private async performClose(): Promise<void> {
     this.closing = true;
-    const closedError = this.terminalError ?? new AgileError({
-      code: "CODEX_CLIENT_CLOSED",
-      category: "infra",
-      retryable: false,
-      component: "codex-client",
-      message: "Codex client closed",
-    });
+    const closedError =
+      this.terminalError ??
+      new AgileError({
+        code: "CODEX_CLIENT_CLOSED",
+        category: "infra",
+        retryable: false,
+        component: "codex-client",
+        message: "Codex client closed",
+      });
     this.fail(closedError, false);
 
     let stdinEnd: Promise<unknown>;
@@ -397,7 +403,10 @@ export class CodexClient implements CodexClientApi {
     await this.waitForCloseTasks(stdinEnd, 1_000);
   }
 
-  private waitForCloseTasks(stdinEnd: Promise<unknown>, timeoutMs: number): Promise<void> {
+  private waitForCloseTasks(
+    stdinEnd: Promise<unknown>,
+    timeoutMs: number,
+  ): Promise<void> {
     return new Promise((resolve) => {
       let settled = false;
       const finish = (): void => {
@@ -428,7 +437,10 @@ export class CodexClient implements CodexClientApi {
         resolve(result);
       };
       const timer = setTimeout(() => finish(false), timeoutMs);
-      void this.process.exited.then(() => finish(true), () => finish(true));
+      void this.process.exited.then(
+        () => finish(true),
+        () => finish(true),
+      );
     });
   }
 }

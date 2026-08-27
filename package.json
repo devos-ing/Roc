@@ -9,14 +9,20 @@
   "scripts": {
     "test": "mkdir -p .tmp-agile-tests && PATH=/Applications/Xcode.app/Contents/Developer/usr/bin:$PATH TMPDIR=$PWD/.tmp-agile-tests bun test --timeout 120000",
     "typecheck": "tsc --noEmit",
-    "check": "bun run typecheck && bun run test"
+    "prepare": "husky",
+    "format": "biome check --write .",
+    "lint": "biome ci .",
+    "check": "bun run lint && bun run typecheck && bun run test"
   },
   "dependencies": {
     "simple-git": "^3.36.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.6",
     "@types/bun": "latest",
+    "husky": "9.1.7",
+    "lint-staged": "17.0.5",
     "typescript": "latest"
   }
 }

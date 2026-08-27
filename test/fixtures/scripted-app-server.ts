@@ -27,7 +27,10 @@ function handleMessage(message: IncomingMessage): boolean {
       throw new Error("fixture expected initialize first");
     }
     sawInitialize = true;
-    write({ id: requestId(message), result: { serverInfo: { name: "scripted-fixture" } } });
+    write({
+      id: requestId(message),
+      result: { serverInfo: { name: "scripted-fixture" } },
+    });
     return true;
   }
 
@@ -37,7 +40,10 @@ function handleMessage(message: IncomingMessage): boolean {
       if (initializedCount !== 1) {
         throw new Error("fixture received initialized more than once");
       }
-      write({ method: "warning", params: { message: "scripted fixture warning" } });
+      write({
+        method: "warning",
+        params: { message: "scripted fixture warning" },
+      });
       return true;
     case "model/list":
       if (initializedCount !== 1) {
@@ -46,14 +52,18 @@ function handleMessage(message: IncomingMessage): boolean {
       write({
         id: requestId(message),
         result: {
-          data: [{
-            id: "gpt-5.6-terra",
-            hidden: false,
-            supportedReasoningEfforts: [{
-              reasoningEffort: "high",
-              description: "default",
-            }],
-          }],
+          data: [
+            {
+              id: "gpt-5.6-terra",
+              hidden: false,
+              supportedReasoningEfforts: [
+                {
+                  reasoningEffort: "high",
+                  description: "default",
+                },
+              ],
+            },
+          ],
           nextCursor: null,
         },
       });
@@ -95,7 +105,10 @@ async function main(): Promise<void> {
     while (newline >= 0) {
       const line = buffer.slice(0, newline).trim();
       buffer = buffer.slice(newline + 1);
-      if (line.length > 0 && !handleMessage(JSON.parse(line) as IncomingMessage)) {
+      if (
+        line.length > 0 &&
+        !handleMessage(JSON.parse(line) as IncomingMessage)
+      ) {
         return;
       }
       newline = buffer.indexOf("\n");

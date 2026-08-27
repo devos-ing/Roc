@@ -1,15 +1,19 @@
 import { z } from "zod";
 import {
   HarnessRoleInputSchema,
+  type HarnessStepRequest,
   ImplementOutputSchema,
   ReviewOutputSchema,
   ScoutOutputSchema,
-  type HarnessStepRequest,
 } from "../harness/contracts";
 
 export const ScoutOutputJsonSchema = z.toJSONSchema(ScoutOutputSchema);
-export const ImplementDraftOutputSchema = ImplementOutputSchema.omit({ commitSha: true });
-export const ImplementDraftOutputJsonSchema = z.toJSONSchema(ImplementDraftOutputSchema);
+export const ImplementDraftOutputSchema = ImplementOutputSchema.omit({
+  commitSha: true,
+});
+export const ImplementDraftOutputJsonSchema = z.toJSONSchema(
+  ImplementDraftOutputSchema,
+);
 export const ImplementOutputJsonSchema = z.toJSONSchema(ImplementOutputSchema);
 export const ReviewOutputJsonSchema = z.toJSONSchema(ReviewOutputSchema);
 
@@ -35,7 +39,8 @@ export function implementPrompt(
   input: Extract<HarnessStepRequest["input"], { role: "implement" }>,
 ): string {
   const validated = HarnessRoleInputSchema.parse(input);
-  if (validated.role !== "implement") throw new Error("Expected Implement input");
+  if (validated.role !== "implement")
+    throw new Error("Expected Implement input");
 
   return [
     "You are the Implement agent for an isolated software ticket.",
@@ -66,7 +71,7 @@ export function reviewPrompt(
     "Do not create, edit, rename, or delete files. Do not make commits.",
     "Return only one JSON object matching this exact Review output JSON schema:",
     JSON.stringify(ReviewOutputJsonSchema),
-    "Do not infer acceptance from prose. Use decision \"accepted\" only when the ticket is satisfied.",
+    'Do not infer acceptance from prose. Use decision "accepted" only when the ticket is satisfied.',
     "",
     "Validated ticket:",
     JSON.stringify(validated.ticket, null, 2),

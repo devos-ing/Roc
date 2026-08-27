@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-export const ErrorCategorySchema = z.enum(["startup", "protocol", "infra", "policy", "domain"]);
+export const ErrorCategorySchema = z.enum([
+  "startup",
+  "protocol",
+  "infra",
+  "policy",
+  "domain",
+]);
 export type ErrorCategory = z.infer<typeof ErrorCategorySchema>;
 
 export type AgileErrorInput = {
@@ -43,6 +49,11 @@ export class AgileError extends Error {
   }
 }
 
-export function normalizeError(error: unknown, fallback: Omit<AgileErrorInput, "cause">): AgileError {
-  return error instanceof AgileError ? error : new AgileError({ ...fallback, cause: error });
+export function normalizeError(
+  error: unknown,
+  fallback: Omit<AgileErrorInput, "cause">,
+): AgileError {
+  return error instanceof AgileError
+    ? error
+    : new AgileError({ ...fallback, cause: error });
 }

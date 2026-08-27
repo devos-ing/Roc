@@ -32,29 +32,35 @@ describe("domain schemas", () => {
   });
 
   test("rejects an empty acceptance list", () => {
-    expect(() => TicketSpecSchema.parse({ ...ticket, acceptanceCriteria: [] })).toThrow();
+    expect(() =>
+      TicketSpecSchema.parse({ ...ticket, acceptanceCriteria: [] }),
+    ).toThrow();
   });
 
   test("rejects low reasoning effort", () => {
-    expect(() => ModelDecisionSchema.parse({
-      modelProfile: "terra",
-      model: "gpt-5.6-terra",
-      reasoningEffort: "low",
-      tokenBudget: 20_000,
-      fallbackModels: [],
-      decidedBy: "rule",
-      confidence: 1,
-      rationale: ["bounded task"],
-    })).toThrow();
+    expect(() =>
+      ModelDecisionSchema.parse({
+        modelProfile: "terra",
+        model: "gpt-5.6-terra",
+        reasoningEffort: "low",
+        tokenBudget: 20_000,
+        fallbackModels: [],
+        decidedBy: "rule",
+        confidence: 1,
+        rationale: ["bounded task"],
+      }),
+    ).toThrow();
   });
 
   test("accepts an ISO week plan", () => {
-    expect(WeeklyPlanSchema.parse({
-      id: "2026-W35",
-      goal: "Ship the foundation slice",
-      nonGoals: ["Codex integration"],
-      tokenBudget: 500_000,
-      ticketIds: ["F1"],
-    }).id).toBe("2026-W35");
+    expect(
+      WeeklyPlanSchema.parse({
+        id: "2026-W35",
+        goal: "Ship the foundation slice",
+        nonGoals: ["Codex integration"],
+        tokenBudget: 500_000,
+        ticketIds: ["F1"],
+      }).id,
+    ).toBe("2026-W35");
   });
 });

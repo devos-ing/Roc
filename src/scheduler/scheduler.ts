@@ -33,14 +33,23 @@ export class Scheduler {
       };
       const delivery = await this.harness.step(request);
       if (delivery.kind === "idle") return { kind: "idle" };
-      if (delivery.kind === "closed") throw new Error(`Harness closed before attempt completion: ${attemptId}`);
-      this.repo.applyHarnessEvent(attemptId, delivery.nextCursor, delivery.event, leaseOwnerId);
+      if (delivery.kind === "closed")
+        throw new Error(
+          `Harness closed before attempt completion: ${attemptId}`,
+        );
+      this.repo.applyHarnessEvent(
+        attemptId,
+        delivery.nextCursor,
+        delivery.event,
+        leaseOwnerId,
+      );
       this.fault("after_delivery_commit");
       return { kind: "delivery", attemptId, eventId: delivery.event.eventId };
     }
 
     const started = this.repo.beginNextAttempt(leaseOwnerId);
-    if (started) return { kind: "attempt_started", attemptId: started.attemptId };
+    if (started)
+      return { kind: "attempt_started", attemptId: started.attemptId };
     const claimed = this.repo.claimNext(leaseOwnerId);
     if (claimed) return { kind: "task_claimed", taskId: claimed.taskId };
     return { kind: "idle" };

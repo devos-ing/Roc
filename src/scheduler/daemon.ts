@@ -29,13 +29,25 @@ export class SchedulerDaemon {
       };
     };
     let times = leaseTimes();
-    if (!this.leases.acquireLease(this.runtime.ownerId, times.now, times.expiresAt)) {
+    if (
+      !this.leases.acquireLease(
+        this.runtime.ownerId,
+        times.now,
+        times.expiresAt,
+      )
+    ) {
       throw new Error("Scheduler lease is already held");
     }
     let nextHeartbeat = times.timestamp + 3_000;
     const heartbeat = () => {
       times = leaseTimes();
-      if (!this.leases.heartbeatLease(this.runtime.ownerId, times.now, times.expiresAt)) {
+      if (
+        !this.leases.heartbeatLease(
+          this.runtime.ownerId,
+          times.now,
+          times.expiresAt,
+        )
+      ) {
         throw new Error("Scheduler lease was lost");
       }
       nextHeartbeat = times.timestamp + 3_000;
@@ -49,7 +61,10 @@ export class SchedulerDaemon {
           const controller = new AbortController();
           activeWait = controller;
           try {
-            const delay = Math.max(0, nextHeartbeat - this.runtime.now().getTime());
+            const delay = Math.max(
+              0,
+              nextHeartbeat - this.runtime.now().getTime(),
+            );
             await this.runtime.sleep(delay, controller.signal);
           } catch (error) {
             if (stopHeartbeats && controller.signal.aborted) return;

@@ -35,21 +35,39 @@ function profilesFrom(profile: ModelProfile): ModelProfile[] {
 
 function routeProfiles(input: AdvisorInput): ModelProfile[] {
   const baseline = baselineProfile(input.role);
-  if (input.retryIndex === 0 || input.priorProfile === undefined) return profilesFrom(baseline);
+  if (input.retryIndex === 0 || input.priorProfile === undefined)
+    return profilesFrom(baseline);
 
-  const shouldUpgrade = input.retryIndex === 2 || input.priorErrorCode === "model_unavailable";
+  const shouldUpgrade =
+    input.retryIndex === 2 || input.priorErrorCode === "model_unavailable";
   if (!shouldUpgrade) return profilesFrom(input.priorProfile);
-  return profilesFrom(profileOrder[Math.min(profileOrder.indexOf(input.priorProfile) + 1, profileOrder.length - 1)]!);
+  return profilesFrom(
+    profileOrder[
+      Math.min(
+        profileOrder.indexOf(input.priorProfile) + 1,
+        profileOrder.length - 1,
+      )
+    ]!,
+  );
 }
 
 function profileForModel(id: string): ModelProfile | undefined {
   const normalized = id.toLowerCase();
-  return profileOrder.find((profile) => normalized === profile || normalized.endsWith(`-${profile}`));
+  return profileOrder.find(
+    (profile) => normalized === profile || normalized.endsWith(`-${profile}`),
+  );
 }
 
-function routeRationale(input: AdvisorInput, chosenProfile: ModelProfile): string[] {
-  if (input.retryIndex === 0) return [`${input.role} baseline`, `${input.risk} risk`];
-  return [`${input.role} retry ${input.retryIndex}`, chosenProfile === input.priorProfile ? "model retained" : "model upgraded"];
+function routeRationale(
+  input: AdvisorInput,
+  chosenProfile: ModelProfile,
+): string[] {
+  if (input.retryIndex === 0)
+    return [`${input.role} baseline`, `${input.risk} risk`];
+  return [
+    `${input.role} retry ${input.retryIndex}`,
+    chosenProfile === input.priorProfile ? "model retained" : "model upgraded",
+  ];
 }
 
 export function createModelAdvisor(
@@ -61,12 +79,21 @@ export function createModelAdvisor(
     supportedReasoningEfforts: [...model.supportedReasoningEfforts],
   }));
   const mappingSnapshot: ModelMapping = { ...mapping };
-  const modelForProfile = (profile: ModelProfile, effort: Route["effort"]): string | undefined => {
+  const modelForProfile = (
+    profile: ModelProfile,
+    effort: Route["effort"],
+  ): string | undefined => {
     const mapped = mappingSnapshot[profile];
-    const configured = mapped === undefined ? undefined : catalogSnapshot.find((model) => model.id === mapped);
-    if (configured?.supportedReasoningEfforts.includes(effort)) return configured.id;
-    return catalogSnapshot.find((model) =>
-      profileForModel(model.id) === profile && model.supportedReasoningEfforts.includes(effort),
+    const configured =
+      mapped === undefined
+        ? undefined
+        : catalogSnapshot.find((model) => model.id === mapped);
+    if (configured?.supportedReasoningEfforts.includes(effort))
+      return configured.id;
+    return catalogSnapshot.find(
+      (model) =>
+        profileForModel(model.id) === profile &&
+        model.supportedReasoningEfforts.includes(effort),
     )?.id;
   };
 
@@ -93,7 +120,10 @@ export function createModelAdvisor(
 
 export function createStaticModelAdvisor(): ModelAdvisor {
   return createModelAdvisor(
-    profileOrder.map((id) => ({ id, supportedReasoningEfforts: ["high", "xhigh"] })),
+    profileOrder.map((id) => ({
+      id,
+      supportedReasoningEfforts: ["high", "xhigh"],
+    })),
     { luna: "luna", terra: "terra", sol: "sol" },
   );
 }
