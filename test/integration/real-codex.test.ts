@@ -8,30 +8,10 @@ import { ModelListResponseSchema } from "../../src/codex/protocol";
 import { openDatabase } from "../../src/store/database";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
+import { git } from "../helpers/git";
 
 const sentinel = "AGILE_SECRET_SENTINEL_DO_NOT_LOG";
 const realTest = process.env.AGILE_REAL_CODEX === "1" ? test : test.skip;
-
-async function git(
-  args: string[],
-  cwd: string,
-  allowFailure = false,
-): Promise<string> {
-  const child = Bun.spawn(["git", ...args], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  if (exitCode !== 0 && !allowFailure) {
-    throw new Error(`git ${args.join(" ")} failed: ${stderr.trim()}`);
-  }
-  return stdout.trim();
-}
 
 async function waitForDone(
   repoRoot: string,
