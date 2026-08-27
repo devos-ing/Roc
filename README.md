@@ -42,28 +42,28 @@ Prerequisites:
 Run without a global install (Roc still requires Bun at runtime):
 
 ```bash
-npx roc-it help
+npx roc-it@latest help
 ```
 
 You can also use `bunx` as Bun's package runner:
 
 ```bash
-bunx roc-it help
+bunx roc-it@latest help
 ```
 
 Or install the command globally:
 
 ```bash
-npm install -g roc-it
+npm install -g roc-it@latest
 roc-it help
 ```
 
 Create and inspect the local task database:
 
 ```bash
-npx roc-it init
-npx roc-it task list
-npx roc-it tokens
+npx roc-it@latest init
+npx roc-it@latest task list
+npx roc-it@latest tokens
 ```
 
 Roc does not yet have a public command for adding tickets, so the scheduler
@@ -72,7 +72,7 @@ needs a prepared backlog.
 Run that backlog with Codex:
 
 ```bash
-npx roc-it scheduler run --backend codex --repo /absolute/path/to/project
+npx roc-it@latest scheduler run --backend codex --repo /absolute/path/to/project
 ```
 
 Codex mode creates or reuses a work folder at `<project>.agile-checkout`. Roc
