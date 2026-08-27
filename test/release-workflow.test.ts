@@ -102,11 +102,26 @@ test("release workflow keeps the stable-tag, immutable-action, and ordered-relea
   );
   expect(JSON.stringify(workflow)).not.toContain("NPM_TOKEN");
 
+  const validation = stepRun(steps, "Validate tag and package version");
+  expect(validation).toContain(
+    'if [[ ! "$tag" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then',
+  );
+  expect(validation).toContain('if [[ "$tag" != "v$version" ]]; then');
+
   const registry = stepRun(steps, "Check npm publication state");
   expect(registry).toContain(
     'if published_integrity="$(npm view "roc-it@$VERSION" dist.integrity 2>"$error_file")"; then',
   );
   expect(registry).toContain('echo "publish=false" >> "$GITHUB_OUTPUT"');
+  const integrityMismatch = registry.indexOf(
+    'if [[ "$published_integrity" != "$EXPECTED_INTEGRITY" ]]; then',
+  );
+  const skipPublish = registry.indexOf(
+    'echo "publish=false" >> "$GITHUB_OUTPUT"',
+  );
+  expect(integrityMismatch).toBeGreaterThanOrEqual(0);
+  expect(registry.slice(integrityMismatch, skipPublish)).toContain("exit 1");
+  expect(integrityMismatch).toBeLessThan(skipPublish);
   expect(registry).toContain('elif grep -q "E404" "$error_file"; then');
   expect(registry).toContain('echo "publish=true" >> "$GITHUB_OUTPUT"');
   expect(registry).toContain('else\n  cat "$error_file" >&2\n  exit 1');
@@ -125,6 +140,14 @@ test("release workflow keeps the stable-tag, immutable-action, and ordered-relea
     release.indexOf('gh release create "$GITHUB_REF_NAME"'),
   );
   expect(release).toContain("--generate-notes");
+
+  const runScripts = steps.map((step) => step.run ?? "").join("\n");
+  expect(runScripts.match(/\bnpm publish\b/g)).toHaveLength(1);
+  expect(runScripts.match(/\bgh release create\b/g)).toHaveLength(1);
+  expect(stepRun(steps, "Publish package through npm OIDC")).toContain(
+    "npm publish --access public",
+  );
+  expect(release).toContain('gh release create "$GITHUB_REF_NAME"');
 });
 
 test("README leads with npx production commands and explains tagged releases", async () => {
