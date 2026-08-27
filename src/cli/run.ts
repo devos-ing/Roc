@@ -5,6 +5,11 @@ import { CodexClient } from "../codex/client";
 import { createCodexHarness } from "../codex/harness";
 import { ModelListResponseSchema } from "../codex/protocol";
 import { loadDefaultSkillPolicy } from "../codex/skill-policy";
+import {
+  type AgileCycleSetting,
+  AgileCycleSettingSchema,
+  activeAgileCycle,
+} from "../domain/agile-cycle";
 import { BacklogManifestSchema } from "../domain/schemas";
 import { safeTaskPathComponent } from "../domain/task-path";
 import { type AgentHarness, FakeScenarioSchema } from "../harness/contracts";
@@ -18,6 +23,7 @@ import {
   createStaticModelAdvisor,
 } from "../scheduler/model-routing";
 import { Scheduler } from "../scheduler/scheduler";
+import { saveRocSettings } from "../settings";
 import { installRocCreateTasksSkill } from "../skills/install";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
@@ -26,7 +32,11 @@ import { createTaskBranchManager } from "../workspace/task-branch";
 import { helpText } from "./help";
 import { currentIsoWeekId, renderTokenUsageChart } from "./token-chart";
 
-export type CliIo = { out(text: string): void; err(text: string): void };
+export type CliIo = {
+  out(text: string): void;
+  err(text: string): void;
+  ask?(question: string): Promise<string>;
+};
 export type SchedulerRunInput =
   | { backend: "fake"; dbPath: string; scenario: unknown }
   | { backend: "codex"; dbPath: string; repoPath: string; baseRef: string };
@@ -38,10 +48,31 @@ export type CliRuntime = {
   ): Promise<void>;
   projectRoot?: string;
   homeRoot?: string;
+  now?: () => Date;
 };
 
 const grillingInstallCommand =
   "npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor";
+
+/** Prompts for and validates one global Agile cycle setting. */
+async function promptCycleSetting(
+  io: CliIo,
+  now: Date,
+): Promise<AgileCycleSetting> {
+  if (!io.ask) throw new Error("Interactive input is required for onboard");
+  const choice = (
+    await io.ask("Agile cycle: 1) Daily 2) Weekly 3) Custom")
+  ).trim();
+  if (choice === "1") return { type: "daily" };
+  if (choice === "2") return { type: "weekly" };
+  if (choice !== "3") throw new Error("Choose Daily, Weekly, or Custom");
+  const days = Number((await io.ask("Custom cycle duration in days")).trim());
+  return AgileCycleSettingSchema.parse({
+    type: "custom",
+    days,
+    anchorDate: activeAgileCycle({ type: "daily" }, now).id,
+  });
+}
 
 /** Converts an unknown thrown value into a displayable error message. */
 function errorMessage(error: unknown): string {
@@ -475,10 +506,19 @@ export async function runCli(
           db.close();
         }
       }
+      const setting = await promptCycleSetting(
+        io,
+        runtime.now?.() ?? new Date(),
+      );
+      const settingsPath = await saveRocSettings(
+        { cycle: setting },
+        runtime.homeRoot ?? homedir(),
+      );
       io.out(
         [
           ...installed.created.map((path) => `Created ${path}`),
           ...installed.skipped.map((path) => `Skipped ${path}`),
+          `Saved ${settingsPath}`,
           "Install grilling:",
           grillingInstallCommand,
         ].join("\n"),

@@ -18,6 +18,21 @@ import { PlanningRepository } from "../../src/store/planning-repository";
 
 const ansiSgrPattern = "\\u001B\\[[0-9;]*m";
 
+/** Creates deterministic interactive CLI I/O from queued answers. */
+function interactiveIo(answers: string[]) {
+  const output: string[] = [];
+  const errors: string[] = [];
+  return {
+    io: {
+      out: (text: string) => output.push(text),
+      err: (text: string) => errors.push(text),
+      ask: async () => answers.shift() ?? "",
+    },
+    output,
+    errors,
+  };
+}
+
 test("onboard installs identical project skill copies without overwriting changes", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "agile.db");
@@ -25,6 +40,7 @@ test("onboard installs identical project skill copies without overwriting change
   const io = {
     out: (text: string) => output.push(text),
     err: (text: string) => output.push(text),
+    ask: async () => "2",
   };
 
   try {
@@ -90,7 +106,11 @@ test("global onboarding installs skills without creating a project database", as
     expect(
       await runCli(
         ["onboard", "--global"],
-        { out: (text) => output.push(text), err: (text) => output.push(text) },
+        {
+          out: (text) => output.push(text),
+          err: (text) => output.push(text),
+          ask: async () => "1",
+        },
         { runScheduler: async () => {}, projectRoot: root, homeRoot: home },
       ),
     ).toBe(0);
@@ -107,6 +127,102 @@ test("global onboarding installs skills without creating a project database", as
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("onboard saves each selected Agile cycle globally", async () => {
+  const cases = [
+    {
+      name: "Daily",
+      answers: ["1"],
+      expected: { cycle: { type: "daily" } },
+    },
+    {
+      name: "Weekly",
+      answers: ["2"],
+      expected: { cycle: { type: "weekly" } },
+    },
+    {
+      name: "Custom",
+      answers: ["3", "14"],
+      expected: {
+        cycle: { type: "custom", days: 14, anchorDate: "2026-08-28" },
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    const projectRoot = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
+    const homeRoot = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+    const { io, errors } = interactiveIo(scenario.answers);
+    try {
+      expect(
+        await runCli(["onboard", "--global"], io, {
+          runScheduler: async () => {},
+          projectRoot,
+          homeRoot,
+          now: () => new Date(2026, 7, 28, 12),
+        }),
+        scenario.name,
+      ).toBe(0);
+      expect(
+        JSON.parse(
+          await readFile(
+            join(homeRoot, ".config", "roc", "settings.json"),
+            "utf8",
+          ),
+        ),
+        scenario.name,
+      ).toEqual(scenario.expected);
+      expect(errors, scenario.name).toEqual([]);
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+      await rm(homeRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test("onboard rejects an invalid Custom duration without writing settings", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
+  const homeRoot = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const { io, errors } = interactiveIo(["3", "0"]);
+
+  try {
+    expect(
+      await runCli(["onboard", "--global"], io, {
+        runScheduler: async () => {},
+        projectRoot,
+        homeRoot,
+        now: () => new Date(2026, 7, 28, 12),
+      }),
+    ).toBe(1);
+    expect(errors).toHaveLength(1);
+    await expect(
+      lstat(join(homeRoot, ".config", "roc", "settings.json")),
+    ).rejects.toThrow();
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(homeRoot, { recursive: true, force: true });
+  }
+});
+
+test("onboard requires interactive input", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
+  const homeRoot = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const errors: string[] = [];
+
+  try {
+    expect(
+      await runCli(
+        ["onboard", "--global"],
+        { out: () => {}, err: (text) => errors.push(text) },
+        { runScheduler: async () => {}, projectRoot, homeRoot },
+      ),
+    ).toBe(1);
+    expect(errors).toEqual(["Interactive input is required for onboard"]);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(homeRoot, { recursive: true, force: true });
   }
 });
 
