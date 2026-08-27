@@ -205,6 +205,26 @@ Run that backlog with Codex:
 npx roc-it@latest scheduler run
 ```
 
+Or with ZCode (the Z.ai desktop app's headless `app-server`). The backend is
+experimental and production-gated — see below:
+
+```bash
+ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --backend zcode --repo /absolute/path/to/project
+```
+
+ZCode mode expects a signed-in Z.ai desktop app on the same machine: Roc reads
+the enabled provider from `~/.zcode/v2/config.json` and launches the bundled
+CLI through `ZCODE_BIN` (for example
+`/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs` on macOS). The
+ZCode CLI is undocumented and may change across app releases.
+
+The gate exists because ZCode has no protocol-level filesystem sandbox:
+unattended yolo sessions can write outside the task checkout, and requests to
+disable command sandboxing are auto-approved. Only run this backend inside an
+OS sandbox or container that exposes the task checkout, and set
+`ROC_ZCODE_EXPERIMENTAL=1` to acknowledge. Details in
+[docs/architecture.md](docs/architecture.md).
+
 Codex mode creates or reuses a work folder at `<project>.agile-checkout`. Roc
 never switches branches or makes commits in the current project's source
 folder.

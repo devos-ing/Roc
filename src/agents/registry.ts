@@ -1,4 +1,5 @@
 import { startCodexBackend } from "./codex/backend";
+import { startZcodeBackend } from "./zcode/backend";
 
 /**
  * The backend registry: adding a backend means one factory plus one entry
@@ -6,6 +7,7 @@ import { startCodexBackend } from "./codex/backend";
  */
 export const backends = {
   codex: startCodexBackend,
+  zcode: startZcodeBackend,
 } as const;
 
 export type RealBackendName = keyof typeof backends;
