@@ -63,25 +63,16 @@ never switches branches or makes commits in the source folder passed through
 
 ## How it works
 
+Roc picks one ready task and passes it through three agent roles.
+
 ```mermaid
 flowchart LR
-    B[(Ready backlog)] --> S[Scout]
-    S --> I[Implement]
-    I --> R[Independent Review]
-    R -->|accepted| D[Done]
-    R -->|rejected| X[Original task: Rejected]
-    X --> F[Linked draft follow-up]
-    F --> B
-    X --> N[Pick next ready task]
-    N --> B
-    I -. commit + context .-> F
-    S -. usage .-> U[(Token ledger)]
-    I -. usage .-> U
-    R -. usage .-> U
+    S["Scout<br/>Understand the task"] --> I["Implement<br/>Write and commit code"]
+    I --> R["Review<br/>Check the exact commit"]
 ```
 
-A Review rejection is a normal result, not a system failure. This lets Roc move
-to another task while keeping the code and feedback for later.
+If Review accepts the commit, the task is done. If Review rejects it, Roc
+creates a follow-up ticket and moves on to the next ready task.
 
 ## Commands
 
