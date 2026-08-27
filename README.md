@@ -2,32 +2,34 @@
   <img src="output/imagegen/roc-avatar-tech.png" alt="Roc project avatar" width="220" />
 </p>
 
-# Agile Agents
+# Roc
 
-Agile Agents is a local, sequential development orchestrator for Codex. It turns
-ready tickets into isolated **Scout → Implement → Review** attempts, persists
-task and token state in SQLite, and keeps the scheduler moving when a review
-fails.
+Roc is a local command-line tool that guides Codex agents through an agile
+software flow. Each task moves through three steps: **Scout → Implement →
+Review**.
 
-The key policy is simple: a semantic review rejection never loops the same task.
-The original task becomes terminal, a linked draft follow-up inherits the
-implementation commit and review findings, and the scheduler picks the next
-ready ticket. Infrastructure failures may retry within a small cap.
+Scout studies the task. Implement writes the code. Review checks the exact
+finished commit. Roc saves progress and token use in SQLite, so work can continue
+after a restart.
 
-The current foundation provides:
+If Review rejects the work, Roc closes the original task and creates a linked
+draft task with the code and feedback. It then returns to the ready backlog
+instead of repeating the same task forever.
 
-- deterministic model routing without `low` reasoning effort;
-- isolated task branches in a scheduler-owned sibling checkout;
-- detached, read-only review of the exact implementation commit;
-- durable attempts, events, recovery cursors, and per-role token accounting;
-- a terminal token-usage bar chart;
-- source-based skill allowlisting for Matt Pocock skills, i-have-adhd, and
-  Ponytail.
+Roc currently provides:
 
-This is a local CLI foundation. Weekly Grilling, ticket authoring/import, and the
-interactive TUI are planned product layers, not current commands. Version 1 is
-sequential and does not merge, push, delete task branches, run tasks in parallel,
-or enforce token budgets.
+- model settings that never use `low` thinking effort;
+- a separate Git branch for each task in a dedicated work folder;
+- a read-only Review of the exact commit made by Implement;
+- saved task progress and token use, with restart support;
+- a token-use chart in the terminal;
+- a list of skills that agents are allowed to use.
+
+Roc works on one task at a time. It does not merge or push code, delete task
+branches, run several tasks at once, or limit token use.
+
+Ticket import, weekly planning, and an interactive screen are planned but are
+not available yet.
 
 ## Run it
 
@@ -35,7 +37,7 @@ Prerequisites:
 
 - [Bun](https://bun.sh/)
 - Git
-- [Codex CLI](https://github.com/openai/codex) for the real Codex backend
+- [Codex CLI](https://github.com/openai/codex) for Codex mode
 
 From the repository root:
 
@@ -46,9 +48,8 @@ bun run src/cli/main.ts task list
 bun run src/cli/main.ts tokens
 ```
 
-The current CLI initializes and inspects the local scheduler database. Tickets
-are currently populated through the internal planning repository; a public
-Grilling/import command is not implemented yet.
+Roc can create and inspect its local task database. A public command for adding
+tickets is not ready, so Roc currently needs a prepared backlog.
 
 To run a prepared backlog with Codex:
 
@@ -56,11 +57,11 @@ To run a prepared backlog with Codex:
 bun run src/cli/main.ts scheduler run --backend codex --repo /absolute/path/to/project
 ```
 
-The Codex backend creates or reuses a sibling checkout at
-`<project>.agile-checkout`. It never switches or commits in the source checkout
-passed through `--repo`.
+Codex mode creates or reuses a work folder at `<project>.agile-checkout`. Roc
+never switches branches or makes commits in the source folder passed through
+`--repo`.
 
-## Core flow
+## How it works
 
 ```mermaid
 flowchart LR
@@ -79,9 +80,8 @@ flowchart LR
     R -. usage .-> U
 ```
 
-Review rejection is a successful review result, not an infrastructure error.
-That distinction prevents one difficult ticket from monopolizing the workflow
-while preserving its lineage for later work.
+A Review rejection is a normal result, not a system failure. This lets Roc move
+to another task while keeping the code and feedback for later.
 
 ## Commands
 
@@ -106,10 +106,10 @@ bun run test
 bun run check
 ```
 
-## Contributing and development
+## Development
 
-Agile Agents uses Bun, TypeScript, Zod, `bun:sqlite`, `simple-git`, and the Codex
-app-server protocol. Start with these documents:
+Roc uses Bun, TypeScript, Zod, `bun:sqlite`, `simple-git`, and the Codex
+app-server. Start with these documents:
 
 - [Architecture](docs/architecture.md)
 - [Domain language](CONTEXT.md)
@@ -118,10 +118,12 @@ app-server protocol. Start with these documents:
 - [Research](docs/research/)
 - [Testing policy](AGENTS.md)
 
-Keep changes small and preserve the core safety boundaries: the source checkout
-must remain untouched, Review must inspect the exact clean Implement commit,
-duplicate events must be idempotent, and review rejection must create one new
-draft follow-up without reopening the original task.
+Keep changes small and follow these safety rules:
+
+- never change the source work folder;
+- Review must check the exact clean commit from Implement;
+- receiving the same update twice must not repeat the change;
+- a rejected task must stay closed and create only one draft follow-up.
 
 Before submitting a change, run:
 
@@ -129,23 +131,22 @@ Before submitting a change, run:
 bun run check
 ```
 
-The project optimizes for confidence in core behavior rather than 100% coverage.
-Prefer one vertical integration test and focused boundary tests. Use the Fake
-Harness for deterministic retry, rejection, restart, and deduplication cases.
+Tests should prove the most important behavior. Full test coverage is not the
+goal. Use the Fake Harness to test retries, rejection, restart, and repeated
+events.
 
 ## References
 
-The design borrows focused patterns rather than embedding another orchestration
-framework:
+Roc learns from these projects without including their code:
 
-| Project | What informed Agile Agents |
+| Project | What Roc learned |
 | --- | --- |
-| [OpenAI Codex](https://github.com/openai/codex) | Agent execution, app-server threads, structured events, usage, and review isolation |
-| [OpenAI Symphony](https://github.com/openai/symphony) | Authoritative orchestration, issue claiming, isolated workspaces, and run-state visibility |
-| [Pi](https://github.com/earendil-works/pi) | Session trees, non-destructive context ancestry, compaction, and subprocess/RPC patterns |
-| [Beads](https://github.com/gastownhall/beads) | Ready-work queries, dependency edges, and discovered follow-up lineage |
-| [Gas Town](https://github.com/gastownhall/gastown) | Multi-role operations, stuck-work handling, review gates, and terminal workflow ideas |
-| [OpenSpec](https://github.com/Fission-AI/OpenSpec) | Human-readable proposal, specification, design, and task artifacts |
+| [OpenAI Codex](https://github.com/openai/codex) | Running agents, tracking token use, and keeping Review separate |
+| [OpenAI Symphony](https://github.com/openai/symphony) | Picking tasks, using separate work folders, and showing run progress |
+| [Pi](https://github.com/earendil-works/pi) | Saving session branches, shortening context, and running other tools |
+| [Beads](https://github.com/gastownhall/beads) | Finding ready tasks, linking tasks, and creating follow-up work |
+| [Gas Town](https://github.com/gastownhall/gastown) | Agent roles, stuck tasks, review steps, and terminal screen ideas |
+| [OpenSpec](https://github.com/Fission-AI/OpenSpec) | Clear plans, designs, and task lists |
 
-See [the orchestration landscape research](docs/research/agent-agile-orchestration-landscape.md)
-for the detailed comparison, trade-offs, and sources.
+See [the project research](docs/research/agent-agile-orchestration-landscape.md)
+for a full comparison and source list.
