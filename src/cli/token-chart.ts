@@ -148,19 +148,3 @@ export function renderTokenUsageChart(
     `Total: ${formatTokens(summary.totalTokens)} tokens`,
   ].join("\n");
 }
-
-/** Returns the ISO cycle identifier for a date in UTC. */
-export function currentIsoWeekId(date = new Date()): string {
-  const target = new Date(
-    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()),
-  );
-  const mondayBasedDay = (target.getUTCDay() + 6) % 7;
-  target.setUTCDate(target.getUTCDate() - mondayBasedDay + 3);
-  const isoYear = target.getUTCFullYear();
-  const firstThursday = new Date(Date.UTC(isoYear, 0, 4));
-  const firstDay = (firstThursday.getUTCDay() + 6) % 7;
-  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDay + 3);
-  const cycle =
-    1 + Math.round((target.getTime() - firstThursday.getTime()) / 604_800_000);
-  return `${isoYear}-W${String(cycle).padStart(2, "0")}`;
-}

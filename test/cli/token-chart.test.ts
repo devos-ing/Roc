@@ -1,8 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  currentIsoWeekId,
-  renderTokenUsageChart,
-} from "../../src/cli/token-chart";
+import { renderTokenUsageChart } from "../../src/cli/token-chart";
 
 const ansiSgrPattern = "\\u001B\\[[0-9;]*m";
 
@@ -69,9 +66,4 @@ test("uses the 40-column minimum when the requested width is smaller", () => {
   expect(clamped.split("\n").find((line) => line.startsWith("Implement"))).toBe(
     "Implement  120 tokens   59%  ███████████",
   );
-});
-
-test("computes local-calendar ISO cycle IDs across a year boundary", () => {
-  expect(currentIsoWeekId(new Date(2026, 7, 26))).toBe("2026-W35");
-  expect(currentIsoWeekId(new Date(2027, 0, 1))).toBe("2026-W53");
 });

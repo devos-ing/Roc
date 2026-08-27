@@ -23,14 +23,14 @@ import {
   createStaticModelAdvisor,
 } from "../scheduler/model-routing";
 import { Scheduler } from "../scheduler/scheduler";
-import { saveRocSettings } from "../settings";
+import { loadRocSettings, saveRocSettings } from "../settings";
 import { installRocCreateTasksSkill } from "../skills/install";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
 import { PlanningRepository } from "../store/planning-repository";
 import { createTaskBranchManager } from "../workspace/task-branch";
 import { helpText } from "./help";
-import { currentIsoWeekId, renderTokenUsageChart } from "./token-chart";
+import { renderTokenUsageChart } from "./token-chart";
 
 export type CliIo = {
   out(text: string): void;
@@ -85,9 +85,14 @@ function usesLegacyWeekId(value: unknown): boolean {
     value !== null &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    "weekId" in value &&
-    !("cycleId" in value)
+    "weekId" in value
   );
+}
+
+/** Loads settings and calculates the active Agile cycle for the CLI clock. */
+async function currentCycle(runtime: CliRuntime) {
+  const settings = await loadRocSettings(runtime.homeRoot ?? homedir());
+  return activeAgileCycle(settings.cycle, runtime.now?.() ?? new Date());
 }
 
 /** Parses supported CLI options and positional commands under strict validation. */
@@ -541,6 +546,31 @@ export async function runCli(
     }
   }
 
+  if (command === "cycle") {
+    if (subcommand !== "current" || parsed.positionals.length !== 2) {
+      io.err("cycle requires current");
+      return 2;
+    }
+    if (
+      parsed.values.db !== undefined ||
+      parsed.values.backend !== undefined ||
+      parsed.values.repo !== undefined ||
+      parsed.values.base !== undefined ||
+      parsed.values["fake-script"] !== undefined ||
+      parsed.values["no-color"] !== undefined
+    ) {
+      io.err("cycle current does not accept options");
+      return 2;
+    }
+    try {
+      io.out((await currentCycle(runtime)).id);
+      return 0;
+    } catch (error) {
+      io.err(errorMessage(error));
+      return 1;
+    }
+  }
+
   if (command === "task" && subcommand === "import") {
     const manifestPath = parsed.positionals.at(2);
     if (parsed.positionals.length !== 3 || manifestPath === undefined) {
@@ -618,18 +648,18 @@ export async function runCli(
       return 2;
     }
     try {
+      const cycle = await currentCycle(runtime);
       const db = openDatabase(dbPath);
       try {
-        const cycleId = currentIsoWeekId();
         const usage = new OrchestrationRepository(db).getCycleCategoryUsage(
-          cycleId,
+          cycle.id,
         );
         if (usage === undefined) {
-          io.out(`No active cycle: ${cycleId}`);
+          io.out(`No active cycle: ${cycle.id}`);
           return 0;
         }
         io.out(
-          renderTokenUsageChart(cycleId, usage.categories, {
+          renderTokenUsageChart(cycle.id, usage.categories, {
             color: !parsed.values["no-color"],
             width: process.stdout.columns ?? 80,
           }),

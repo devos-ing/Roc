@@ -1,10 +1,12 @@
 export const helpText = `roc-it - run Codex agents through an agile software flow
 
 Usage:
-  roc-it onboard [--global] [--db PATH]
-  roc-it task import FILE [--db PATH]
-  roc-it task list [--db PATH]
-  roc-it tokens [--db PATH] [--no-color]
-  roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
-  roc-it help
+  npx roc-it@latest onboard [--global] [--db PATH]
+  npx roc-it@latest cycle current
+      Show the active Agile cycle.
+  npx roc-it@latest task import FILE [--db PATH]
+  npx roc-it@latest task list [--db PATH]
+  npx roc-it@latest tokens [--db PATH] [--no-color]
+  npx roc-it@latest scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+  npx roc-it@latest help
 `;

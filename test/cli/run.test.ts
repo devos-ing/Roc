@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/run";
-import { currentIsoWeekId } from "../../src/cli/token-chart";
+import { saveRocSettings } from "../../src/settings";
 import { openDatabase } from "../../src/store/database";
 import { PlanningRepository } from "../../src/store/planning-repository";
 
@@ -359,7 +359,12 @@ test("task import validates before creating a database, explains weekId, and kee
 
     await writeFile(
       manifestPath,
-      JSON.stringify({ weekId: "2026-W35", goal: "Legacy", tasks: [{}] }),
+      JSON.stringify({
+        weekId: "2026-W35",
+        cycleId: "2026-W35",
+        goal: "Legacy",
+        tasks: [{}],
+      }),
     );
     expect(
       await runCli(["task", "import", manifestPath, "--db", dbPath], io),
@@ -418,10 +423,80 @@ test("argument and unknown-command errors keep exit code 2", async () => {
   expect(errors[1]).toBe("Unknown command: unknown");
 });
 
+test("cycle current prints the configured active cycle", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const output: string[] = [];
+  try {
+    await saveRocSettings(
+      {
+        cycle: { type: "custom", days: 14, anchorDate: "2026-08-28" },
+      },
+      homeRoot,
+    );
+    expect(
+      await runCli(
+        ["cycle", "current"],
+        {
+          out: (text) => output.push(text),
+          err: (text) => output.push(text),
+        },
+        {
+          runScheduler: async () => {},
+          homeRoot,
+          now: () => new Date(2026, 7, 28, 12),
+        },
+      ),
+    ).toBe(0);
+    expect(output).toEqual(["2026-08-28-P14D"]);
+    expect(
+      await runCli(
+        ["cycle"],
+        { out: () => {}, err: () => {} },
+        {
+          runScheduler: async () => {},
+          homeRoot,
+        },
+      ),
+    ).toBe(2);
+    expect(
+      await runCli(
+        ["cycle", "current", "--db", "other.db"],
+        { out: () => {}, err: () => {} },
+        { runScheduler: async () => {}, homeRoot },
+      ),
+    ).toBe(2);
+  } finally {
+    await rm(homeRoot, { recursive: true, force: true });
+  }
+});
+
+test("cycle current explains how to create missing settings", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const errors: string[] = [];
+  try {
+    expect(
+      await runCli(
+        ["cycle", "current"],
+        { out: () => {}, err: (text) => errors.push(text) },
+        { runScheduler: async () => {}, homeRoot },
+      ),
+    ).toBe(1);
+    expect(errors).toEqual([
+      "Run npx roc-it@latest onboard to configure an Agile cycle",
+    ]);
+  } finally {
+    await rm(homeRoot, { recursive: true, force: true });
+  }
+});
+
 test("tokens prints the current-cycle report", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "agile.db");
-  const cycleId = currentIsoWeekId();
+  const cycleId = "2026-08-28-P14D";
+  await saveRocSettings(
+    { cycle: { type: "custom", days: 14, anchorDate: "2026-08-28" } },
+    root,
+  );
   const db = openDatabase(dbPath);
   new PlanningRepository(db).createCycle({
     id: cycleId,
@@ -441,12 +516,21 @@ test("tokens prints the current-cycle report", async () => {
 
   try {
     expect(
-      await runCli(["tokens", "--db", dbPath], {
-        out: (text) => output.push(text),
-        err: (text) => output.push(text),
-      }),
+      await runCli(
+        ["tokens", "--db", dbPath],
+        {
+          out: (text) => output.push(text),
+          err: (text) => output.push(text),
+        },
+        {
+          runScheduler: async () => {},
+          homeRoot: root,
+          now: () => new Date(2026, 7, 28, 12),
+        },
+      ),
     ).toBe(0);
     expect(output).toHaveLength(1);
+    expect(output[0]).toContain("Token usage · 2026-08-28-P14D");
     expect(output[0]!).toContain("\u001B[32m");
     expect(output[0]!.replace(new RegExp(ansiSgrPattern, "g"), "")).toContain(
       "Implement  150 tokens  100%  █",
@@ -459,7 +543,11 @@ test("tokens prints the current-cycle report", async () => {
 test("tokens supports explicit plain output", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "agile.db");
-  const cycleId = currentIsoWeekId();
+  const cycleId = "2026-08-28-P14D";
+  await saveRocSettings(
+    { cycle: { type: "custom", days: 14, anchorDate: "2026-08-28" } },
+    root,
+  );
   const db = openDatabase(dbPath);
   new PlanningRepository(db).createCycle({
     id: cycleId,
@@ -479,10 +567,18 @@ test("tokens supports explicit plain output", async () => {
 
   try {
     expect(
-      await runCli(["tokens", "--db", dbPath, "--no-color"], {
-        out: (text) => output.push(text),
-        err: (text) => output.push(text),
-      }),
+      await runCli(
+        ["tokens", "--db", dbPath, "--no-color"],
+        {
+          out: (text) => output.push(text),
+          err: (text) => output.push(text),
+        },
+        {
+          runScheduler: async () => {},
+          homeRoot: root,
+          now: () => new Date(2026, 7, 28, 12),
+        },
+      ),
     ).toBe(0);
     expect(output).toHaveLength(1);
     expect(output[0]!).not.toContain("\u001B[");
@@ -498,13 +594,25 @@ test("tokens reports a missing current cycle as an empty state", async () => {
   const output: string[] = [];
 
   try {
+    await saveRocSettings(
+      { cycle: { type: "custom", days: 14, anchorDate: "2026-08-28" } },
+      root,
+    );
     expect(
-      await runCli(["tokens", "--db", dbPath], {
-        out: (text) => output.push(text),
-        err: (text) => output.push(text),
-      }),
+      await runCli(
+        ["tokens", "--db", dbPath],
+        {
+          out: (text) => output.push(text),
+          err: (text) => output.push(text),
+        },
+        {
+          runScheduler: async () => {},
+          homeRoot: root,
+          now: () => new Date(2026, 7, 28, 12),
+        },
+      ),
     ).toBe(0);
-    expect(output).toEqual([`No active cycle: ${currentIsoWeekId()}`]);
+    expect(output).toEqual(["No active cycle: 2026-08-28-P14D"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -533,6 +641,7 @@ test("tokens rejects scheduler-only options and reports read failures through th
 
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "future.db");
+  await saveRocSettings({ cycle: { type: "weekly" } }, root);
   const future = new Database(dbPath, { create: true });
   future.exec("PRAGMA user_version = 5");
   future.close();
@@ -544,7 +653,7 @@ test("tokens rejects scheduler-only options and reports read failures through th
           out: (text) => output.push(text),
           err: (text) => output.push(text),
         },
-        runtime,
+        { ...runtime, homeRoot: root, now: () => new Date(2026, 7, 28, 12) },
       ),
     ).toBe(1);
     expect(logged).toEqual(["TOKEN_USAGE_READ_FAILED"]);

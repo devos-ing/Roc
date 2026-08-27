@@ -75,6 +75,27 @@ npx roc-it@latest tokens
 Use `npx roc-it@latest onboard --global` to install the skill under your user
 account instead; global onboarding does not create a project database.
 
+### Agile cycle
+
+During onboarding, choose Daily, Weekly, or a custom number of days. Roc saves
+the choice for all projects in `~/.config/roc/settings.json`.
+
+```json
+{ "cycle": { "type": "weekly" } }
+```
+
+Show the active cycle at any time:
+
+```bash
+npx roc-it@latest cycle current
+```
+
+The task-creation skill uses that value in the backlog manifest. For example:
+
+```json
+{ "cycleId": "2026-08-28-P14D" }
+```
+
 Create a backlog from a requirement with the installed skill. In Claude Code or
 Cursor, use:
 
@@ -151,12 +172,13 @@ Roc is growing in small steps.
 ## Commands
 
 ```bash
-roc-it onboard [--global] [--db PATH]
-roc-it task import FILE [--db PATH]
-roc-it task list [--db PATH]
-roc-it tokens [--db PATH] [--no-color]
-roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
-roc-it help
+npx roc-it@latest onboard [--global] [--db PATH]
+npx roc-it@latest cycle current
+npx roc-it@latest task import FILE [--db PATH]
+npx roc-it@latest task list [--db PATH]
+npx roc-it@latest tokens [--db PATH] [--no-color]
+npx roc-it@latest scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+npx roc-it@latest help
 ```
 
 ## Contributing
