@@ -176,6 +176,8 @@ test("README explains the agile Scout, Implement, Review loop", async () => {
   const readme = await readProjectFile("README.md");
   const start = readme.indexOf("## How it works");
   const end = readme.indexOf("## Commands", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
   const howItWorks = readme.slice(start, end);
 
   expect(howItWorks).toContain("Roc follows a small agile loop");
@@ -183,16 +185,18 @@ test("README explains the agile Scout, Implement, Review loop", async () => {
   expect(howItWorks).toContain("S --> I[Implement]");
   expect(howItWorks).toContain("I --> R[Review]");
   expect(howItWorks).toContain("R -->|Accepted| D[Done]");
-  expect(howItWorks).toContain("R -->|Changes needed| F[Follow-up task]");
-  expect(howItWorks).toContain("- **Scout:** Understands the task");
-  expect(howItWorks).toContain("- **Implement:** Writes the code");
-  expect(howItWorks).toContain(
-    "- **Review:** Independently checks that exact commit",
+  expect(howItWorks).toContain("R -->|Changes needed| F[Draft follow-up]");
+  expect(howItWorks).toContain("F -->|Approved| B[Ready backlog]");
+  expect(howItWorks).toMatch(/\*\*Scout:\*\* Understands the task/);
+  expect(howItWorks).toMatch(
+    /\*\*Implement:\*\* Writes the code[\s\S]+trusted\s+Harness validates the result and saves it as a commit/,
+  );
+  expect(howItWorks).toMatch(
+    /\*\*Review:\*\* Independently checks that exact commit[\s\S]+unapproved draft follow-up/,
   );
   expect(howItWorks).toContain("Roc works on one small task at a time");
-  expect(howItWorks).toContain(
-    "saves progress so the flow can continue after a restart",
-  );
+  expect(howItWorks).toContain("ready backlog only after approval");
+  expect(howItWorks).toContain("Roc saves progress");
   expect(howItWorks).not.toContain("Token ledger");
   expect(howItWorks).not.toContain("GitHub Release");
 });

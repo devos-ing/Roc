@@ -4,7 +4,7 @@
 
 **Goal:** Replace the dense README diagram with a simple explanation of Roc’s agile Scout → Implement → Review loop.
 
-**Architecture:** Keep one small Mermaid flow for task movement and explain each agent in three plain-language bullets. Keep publishing, token accounting, and model-routing details outside this section so the core loop stays easy to scan.
+**Architecture:** Keep one small Mermaid flow for task movement and explain each agent in three plain-language bullets. Show that Review creates an unapproved draft follow-up and that approval is required before it returns to the ready backlog. Keep publishing, token accounting, and model-routing details outside this section so the core loop stays easy to scan.
 
 **Tech Stack:** Markdown, Mermaid, Bun test
 
@@ -73,18 +73,19 @@ flowchart LR
     S --> I[Implement]
     I --> R[Review]
     R -->|Accepted| D[Done]
-    R -->|Changes needed| F[Follow-up task]
-    F --> B
+    R -->|Changes needed| F[Draft follow-up]
+    F -->|Approved| B[Ready backlog]
 ```
 
 - **Scout:** Understands the task, checks the code, and prepares a plan.
-- **Implement:** Writes the code in a separate work folder and creates a commit.
+- **Implement:** Writes the code in a separate work folder. Roc's trusted Harness validates the result and saves it as a commit.
 - **Review:** Independently checks that exact commit. It accepts the work or
-  creates a follow-up task with clear feedback.
+  creates an unapproved draft follow-up task with clear feedback.
 
 Roc works on one small task at a time. When Review asks for changes, Roc sends
-the feedback back to the ready backlog instead of repeating the finished
-attempt. Roc saves progress so the flow can continue after a restart.
+the feedback to an unapproved draft follow-up. That follow-up returns to the
+ready backlog only after approval. Roc saves progress so the flow can continue
+after a restart.
 
 ````
 
