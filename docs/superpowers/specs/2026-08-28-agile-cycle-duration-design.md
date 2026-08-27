@@ -108,6 +108,10 @@ with a clear message and does not write settings.
 Running onboarding again replaces the global cycle setting with the newly
 confirmed choice. It does not change existing task or usage records.
 
+`roc-it cycle current` loads the global setting and prints the active cycle
+identifier. This small command is the shared production boundary for tools and
+agent skills that need the current cycle without duplicating calendar logic.
+
 ## Public task manifest
 
 The backlog manifest replaces its top-level `weekId` field with
@@ -116,8 +120,8 @@ shape.
 
 `cycleId` is a non-empty validated string because migrated weekly identifiers
 and all three new identifier formats are legitimate cycle identifiers. The task
-creation skill reads the global setting, calculates the active cycle, previews
-it, and writes `cycleId` only after the user approves the backlog.
+creation skill runs `npx roc-it@latest cycle current`, previews that cycle, and
+writes `cycleId` only after the user approves the backlog.
 
 Strict validation rejects a manifest containing `weekId`. The CLI reports that
 the manifest must use `cycleId`.
