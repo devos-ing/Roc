@@ -254,7 +254,7 @@ bun run check
 Expected: Biome CI, TypeScript, and 146 existing tests pass; the real-Codex
 integration test remains skipped.
 
-### Task 3: Prove partial staging and commit the tooling
+#### Commit and smoke-test the tooling
 
 **Files:**
 - Stage: `.husky/pre-commit`
@@ -265,7 +265,7 @@ integration test remains skipped.
 - Stage if Biome changed them: `src/**/*.ts`, `test/**/*.ts`
 - Do not stage: `README.md`, `LICENSE`, `output/`
 
-- [ ] **Step 1: Stage all unambiguous tooling paths**
+- [ ] **Step 9: Stage all unambiguous tooling paths**
 
 Run:
 
@@ -278,7 +278,7 @@ In the interactive package staging, stage the Husky/Biome scripts and
 devDependencies, and decline the standalone `"license": "Apache-2.0"` hunk.
 Split the hunk with `s` if Git groups it with tooling changes.
 
-- [ ] **Step 2: Verify protected changes are outside the index**
+- [ ] **Step 10: Verify protected changes are outside the index**
 
 Run:
 
@@ -292,7 +292,7 @@ git status --short
 Expected: the staged name list excludes `README.md`, `LICENSE`, and `output/`.
 The unstaged package diff still contains the Apache-2.0 license field.
 
-- [ ] **Step 3: Commit through the new hook**
+- [ ] **Step 11: Commit through the new hook**
 
 Run:
 
@@ -303,7 +303,7 @@ git commit -m "chore: add Biome pre-commit checks"
 Expected: lint-staged runs Biome, then typecheck and the full test suite pass;
 the commit succeeds without absorbing the protected unstaged changes.
 
-- [ ] **Step 4: Verify final state**
+- [ ] **Step 12: Verify final state**
 
 Run:
 
