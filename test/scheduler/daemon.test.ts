@@ -313,7 +313,7 @@ test("rejects a stale pending delivery after lease takeover without writes", asy
   let now = epoch;
   let stop = false;
   const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
-  planning.createWeek({
+  planning.createCycle({
     id: "2026-W35",
     goal: "Fence stale scheduler writes",
     nonGoals: [],
@@ -322,7 +322,7 @@ test("rejects a stale pending delivery after lease takeover without writes", asy
   });
   planning.createTask({
     id: "T1",
-    weekId: "2026-W35",
+    cycleId: "2026-W35",
     title: "Fence stale scheduler writes",
     spec: {
       problem: "An expired scheduler can finish a pending delivery",

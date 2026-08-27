@@ -72,7 +72,7 @@ export function renderTicketArtifact(input: TaskCreate): string {
   return (
     [
       `# ${task.id} — ${task.title}`,
-      `Week: ${task.weekId}\nRisk: ${task.spec.risk}\nToken ceiling: ${task.spec.tokenCeiling}`,
+      `Cycle: ${task.cycleId}\nRisk: ${task.spec.risk}\nToken ceiling: ${task.spec.tokenCeiling}`,
       "## Problem",
       task.spec.problem,
       "## Desired outcome",

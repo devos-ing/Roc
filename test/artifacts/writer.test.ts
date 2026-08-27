@@ -16,7 +16,7 @@ import { writeTicketArtifact } from "../../src/artifacts/writer";
 
 const task = {
   id: "F6",
-  weekId: "2026-W35",
+  cycleId: "2026-W35",
   title: "Artifact writer",
   priority: 0,
   approvalRequired: false,
@@ -66,7 +66,7 @@ test("writes exact deterministic Markdown and returns the hash of its bytes", as
     const expected = [
       "# F6 — Artifact writer",
       "",
-      "Week: 2026-W35",
+      "Cycle: 2026-W35",
       "Risk: low",
       "Token ceiling: 10000",
       "",

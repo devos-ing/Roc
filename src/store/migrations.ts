@@ -190,14 +190,21 @@ DROP TABLE model_decisions;
 ALTER TABLE model_decisions_v3 RENAME TO model_decisions;
 `;
 
+const migration4 = `
+ALTER TABLE weeks RENAME TO cycles;
+ALTER TABLE tasks RENAME COLUMN week_id TO cycle_id;
+ALTER TABLE usage RENAME COLUMN week_id TO cycle_id;
+UPDATE usage SET category = 'cycle_grilling' WHERE category = 'weekly_grilling';
+`;
+
 /** Migrates a database transactionally through every supported schema version. */
 export function migrate(db: Database): void {
   let version =
     db.query<{ user_version: number }, []>("PRAGMA user_version").get()
       ?.user_version ?? 0;
-  if (version > 3)
+  if (version > 4)
     throw new Error(
-      `Database version ${version} is newer than supported version 3`,
+      `Database version ${version} is newer than supported version 4`,
     );
   if (version === 0) {
     db.transaction(() => {
@@ -262,5 +269,28 @@ export function migrate(db: Database): void {
           : "PRAGMA foreign_keys = ON",
       );
     }
+    version = 3;
+  }
+  if (version === 3) {
+    db.transaction(() => {
+      db.exec(migration4);
+      const violation = db
+        .query<
+          {
+            table: string;
+            rowid: number | null;
+            parent: string;
+            fkid: number;
+          },
+          []
+        >("PRAGMA foreign_key_check")
+        .get();
+      if (violation) {
+        throw new Error(
+          `Foreign key check failed during migration 4: ${violation.table} row ${violation.rowid ?? "unknown"}`,
+        );
+      }
+      db.exec("PRAGMA user_version = 4");
+    })();
   }
 }

@@ -278,7 +278,7 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
     spec: { ...firstTask.spec, dependencies: ["cli-import-01"] },
   };
   const manifest = {
-    weekId: "2026-W35",
+    cycleId: "2026-W35",
     goal: "Import tasks from the CLI",
     tasks: [firstTask, secondTask],
   };
@@ -340,7 +340,7 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
   }
 });
 
-test("task import validates before creating a database and --global is onboard-only", async () => {
+test("task import validates before creating a database, explains weekId, and keeps --global onboard-only", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const manifestPath = join(root, "invalid-backlog.json");
   const dbPath = join(root, "agile.db");
@@ -350,11 +350,21 @@ test("task import validates before creating a database and --global is onboard-o
   try {
     await writeFile(
       manifestPath,
-      JSON.stringify({ weekId: "2026-W35", goal: "Invalid", tasks: [] }),
+      JSON.stringify({ cycleId: "2026-W35", goal: "Invalid", tasks: [] }),
     );
     expect(
       await runCli(["task", "import", manifestPath, "--db", dbPath], io),
     ).toBe(1);
+    await expect(lstat(dbPath)).rejects.toThrow();
+
+    await writeFile(
+      manifestPath,
+      JSON.stringify({ weekId: "2026-W35", goal: "Legacy", tasks: [{}] }),
+    );
+    expect(
+      await runCli(["task", "import", manifestPath, "--db", dbPath], io),
+    ).toBe(1);
+    expect(errors.at(-1)).toBe("Manifest uses weekId; replace it with cycleId");
     await expect(lstat(dbPath)).rejects.toThrow();
 
     expect(await runCli(["tokens", "--global"], io)).toBe(2);
@@ -368,7 +378,7 @@ test("operational database failures report an error, return 1, and close the dat
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "future.db");
   const future = new Database(dbPath, { create: true });
-  future.exec("PRAGMA user_version = 4");
+  future.exec("PRAGMA user_version = 5");
   future.close();
   const output: string[] = [];
   const errors: string[] = [];
@@ -383,7 +393,7 @@ test("operational database failures report an error, return 1, and close the dat
     ).toBe(1);
     expect(output).toEqual([]);
     expect(errors).toEqual([
-      "Database version 4 is newer than supported version 3",
+      "Database version 5 is newer than supported version 4",
     ]);
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
@@ -408,13 +418,13 @@ test("argument and unknown-command errors keep exit code 2", async () => {
   expect(errors[1]).toBe("Unknown command: unknown");
 });
 
-test("tokens prints the current-week report", async () => {
+test("tokens prints the current-cycle report", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "agile.db");
-  const weekId = currentIsoWeekId();
+  const cycleId = currentIsoWeekId();
   const db = openDatabase(dbPath);
-  new PlanningRepository(db).createWeek({
-    id: weekId,
+  new PlanningRepository(db).createCycle({
+    id: cycleId,
     goal: "See token usage",
     nonGoals: [],
     tokenBudget: 100_000,
@@ -422,10 +432,10 @@ test("tokens prints the current-week report", async () => {
   });
   db.query(`
     INSERT INTO usage(
-      id, week_id, category,
+      id, cycle_id, category,
       input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens
     ) VALUES('cli-usage', ?, 'implement', 100, 80, 50, 30)
-  `).run(weekId);
+  `).run(cycleId);
   db.close();
   const output: string[] = [];
 
@@ -449,10 +459,10 @@ test("tokens prints the current-week report", async () => {
 test("tokens supports explicit plain output", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "agile.db");
-  const weekId = currentIsoWeekId();
+  const cycleId = currentIsoWeekId();
   const db = openDatabase(dbPath);
-  new PlanningRepository(db).createWeek({
-    id: weekId,
+  new PlanningRepository(db).createCycle({
+    id: cycleId,
     goal: "See token usage",
     nonGoals: [],
     tokenBudget: 100_000,
@@ -460,10 +470,10 @@ test("tokens supports explicit plain output", async () => {
   });
   db.query(`
     INSERT INTO usage(
-      id, week_id, category,
+      id, cycle_id, category,
       input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens
     ) VALUES('cli-plain-usage', ?, 'implement', 100, 80, 50, 30)
-  `).run(weekId);
+  `).run(cycleId);
   db.close();
   const output: string[] = [];
 
@@ -482,7 +492,7 @@ test("tokens supports explicit plain output", async () => {
   }
 });
 
-test("tokens reports a missing current week as an empty state", async () => {
+test("tokens reports a missing current cycle as an empty state", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "agile.db");
   const output: string[] = [];
@@ -494,7 +504,7 @@ test("tokens reports a missing current week as an empty state", async () => {
         err: (text) => output.push(text),
       }),
     ).toBe(0);
-    expect(output).toEqual([`No active week: ${currentIsoWeekId()}`]);
+    expect(output).toEqual([`No active cycle: ${currentIsoWeekId()}`]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -524,7 +534,7 @@ test("tokens rejects scheduler-only options and reports read failures through th
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "future.db");
   const future = new Database(dbPath, { create: true });
-  future.exec("PRAGMA user_version = 4");
+  future.exec("PRAGMA user_version = 5");
   future.close();
   try {
     expect(

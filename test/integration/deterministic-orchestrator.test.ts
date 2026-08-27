@@ -169,7 +169,7 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
       db,
       () => "2026-08-25T00:00:00.000Z",
     );
-    planning.createWeek({
+    planning.createCycle({
       id: "2026-W35",
       goal: "Prove deterministic orchestration",
       nonGoals: [],
@@ -179,7 +179,7 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
     for (const id of ["T1", "T2", "T3"]) {
       planning.createTask({
         id,
-        weekId: "2026-W35",
+        cycleId: "2026-W35",
         title: `Task ${id}`,
         spec: {
           problem: `Complete ${id}`,
@@ -324,7 +324,7 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
         },
       },
     ]);
-    expect(snapshot.weeks[0]?.actual).toEqual({
+    expect(snapshot.cycles[0]?.actual).toEqual({
       inputTokens: 60,
       cachedInputTokens: 12,
       outputTokens: 24,

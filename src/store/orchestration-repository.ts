@@ -38,7 +38,7 @@ export type RunningAttempt = {
 };
 
 const NonEmpty = z.string().trim().min(1);
-const WeekIdSchema = z.string().regex(/^\d{4}-W\d{2}$/);
+const CycleIdSchema = NonEmpty;
 const TokenTotalsSchema = z
   .object({
     inputTokens: z.number().int().nonnegative(),
@@ -54,9 +54,9 @@ const CategoryTokenUsageSchema = z
     outputTokens: z.number().int().nonnegative(),
   })
   .strict();
-const WeekCategoryUsageSchema = z
+const CycleCategoryUsageSchema = z
   .object({
-    weekId: WeekIdSchema,
+    cycleId: CycleIdSchema,
     categories: z.array(CategoryTokenUsageSchema),
   })
   .strict();
@@ -114,9 +114,9 @@ const InspectionSchedulerSchema = z
     activeAttemptId: NonEmpty.optional(),
   })
   .strict();
-const InspectionWeekSchema = z
+const InspectionCycleSchema = z
   .object({
-    id: WeekIdSchema,
+    id: CycleIdSchema,
     tokenTarget: z.number().int().positive(),
     actual: TokenTotalsSchema,
   })
@@ -124,14 +124,14 @@ const InspectionWeekSchema = z
 const InspectionSnapshotSchema = z
   .object({
     scheduler: InspectionSchedulerSchema,
-    weeks: z.array(InspectionWeekSchema),
+    cycles: z.array(InspectionCycleSchema),
     tasks: z.array(InspectionTaskSchema),
   })
   .strict();
 
 export type TokenTotals = z.infer<typeof TokenTotalsSchema>;
 export type CategoryTokenUsage = z.infer<typeof CategoryTokenUsageSchema>;
-export type WeekCategoryUsage = z.infer<typeof WeekCategoryUsageSchema>;
+export type CycleCategoryUsage = z.infer<typeof CycleCategoryUsageSchema>;
 export type InspectionModelDecision = z.infer<
   typeof InspectionModelDecisionSchema
 >;
@@ -139,12 +139,12 @@ export type InspectionRole = z.infer<typeof InspectionRoleSchema>;
 export type InspectionAttempt = z.infer<typeof InspectionAttemptSchema>;
 export type InspectionTask = z.infer<typeof InspectionTaskSchema>;
 export type InspectionScheduler = z.infer<typeof InspectionSchedulerSchema>;
-export type InspectionWeek = z.infer<typeof InspectionWeekSchema>;
+export type InspectionCycle = z.infer<typeof InspectionCycleSchema>;
 export type InspectionSnapshot = z.infer<typeof InspectionSnapshotSchema>;
 
 type TaskRow = {
   id: string;
-  week_id: string;
+  cycle_id: string;
   title: string;
   spec_json: string;
   spec_path: string | null;
@@ -176,7 +176,7 @@ type RunningAttemptRow = TaskRow & {
 function storedTask(row: TaskRow) {
   return StoredTaskSchema.parse({
     id: row.id,
-    weekId: row.week_id,
+    cycleId: row.cycle_id,
     title: row.title,
     spec: JSON.parse(row.spec_json),
     status: row.status,
@@ -256,7 +256,7 @@ export class OrchestrationRepository {
         attempt.retry_index,
         attempt.backend_cursor,
         task.id,
-        task.week_id,
+        task.cycle_id,
         task.title,
         task.spec_json,
         task.spec_path,
@@ -342,7 +342,7 @@ export class OrchestrationRepository {
       this.assertLeaseOwner(leaseOwnerId);
       const row = this.db
         .query<TaskRow, []>(`
-        SELECT id, week_id, title, spec_json, spec_path, spec_hash, base_commit, status,
+        SELECT id, cycle_id, title, spec_json, spec_path, spec_hash, base_commit, status,
                priority, approval_required, approved, context_id
         FROM tasks AS task
         WHERE task.status IN ('claimed', 'scouting', 'implementing', 'reviewing')
@@ -658,11 +658,11 @@ export class OrchestrationRepository {
         const inserted = this.db
           .query(`
           INSERT INTO usage(
-            id, week_id, task_id, attempt_id, category,
+            id, cycle_id, task_id, attempt_id, category,
             input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens
           )
           SELECT
-            $eventId, task.week_id, task.id, attempt.id, attempt.role,
+            $eventId, task.cycle_id, task.id, attempt.id, attempt.role,
             $inputTokens, $cachedInputTokens, $outputTokens, $reasoningOutputTokens
           FROM attempts AS attempt
           JOIN tasks AS task ON task.id = attempt.task_id
@@ -755,7 +755,7 @@ export class OrchestrationRepository {
             .query<
               {
                 id: string;
-                week_id: string;
+                cycle_id: string;
                 title: string;
                 spec_json: string;
                 status: string;
@@ -766,7 +766,7 @@ export class OrchestrationRepository {
               },
               [string]
             >(`
-            SELECT id, week_id, title, spec_json, status, priority, token_ceiling,
+            SELECT id, cycle_id, title, spec_json, status, priority, token_ceiling,
                    root_task_id, context_id
             FROM tasks WHERE id = ?
           `)
@@ -833,17 +833,17 @@ export class OrchestrationRepository {
           this.db
             .query(`
             INSERT INTO tasks(
-              id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+              id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
               approval_required, approved, root_task_id, parent_task_id,
               discovered_from_review_id, context_id, base_commit, created_at, updated_at
             ) VALUES(
-              $id, $weekId, $title, $specJson, 'draft', $priority, $risk, $tokenCeiling,
+              $id, $cycleId, $title, $specJson, 'draft', $priority, $risk, $tokenCeiling,
               1, 0, $rootTaskId, $parentTaskId, $reviewId, $contextId, $baseCommit, $now, $now
             )
           `)
             .run({
               id: followUpTaskId,
-              weekId: original.week_id,
+              cycleId: original.cycle_id,
               title: original.title,
               specJson: JSON.stringify(followUpSpec),
               priority: original.priority,
@@ -1101,13 +1101,13 @@ export class OrchestrationRepository {
     );
   }
 
-  /** Aggregates a week's persisted token usage by normalized category. */
-  getWeekCategoryUsage(weekId: string): WeekCategoryUsage | undefined {
-    const id = WeekIdSchema.parse(weekId);
-    const week = this.db
-      .query<{ id: string }, [string]>("SELECT id FROM weeks WHERE id = ?")
+  /** Aggregates a cycle's persisted token usage by normalized category. */
+  getCycleCategoryUsage(cycleId: string): CycleCategoryUsage | undefined {
+    const id = CycleIdSchema.parse(cycleId);
+    const cycle = this.db
+      .query<{ id: string }, [string]>("SELECT id FROM cycles WHERE id = ?")
       .get(id);
-    if (!week) return undefined;
+    if (!cycle) return undefined;
 
     const categories = this.db
       .query<
@@ -1123,7 +1123,7 @@ export class OrchestrationRepository {
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
         COALESCE(SUM(output_tokens), 0) AS output_tokens
       FROM usage
-      WHERE week_id = ?
+      WHERE cycle_id = ?
       GROUP BY category
       ORDER BY category ASC
     `)
@@ -1136,12 +1136,12 @@ export class OrchestrationRepository {
         }),
       );
 
-    return WeekCategoryUsageSchema.parse({ weekId: week.id, categories });
+    return CycleCategoryUsageSchema.parse({ cycleId: cycle.id, categories });
   }
 
-  /** Builds a validated scheduler, week, task, decision, attempt, and usage snapshot. */
+  /** Builds a validated scheduler, cycle, task, decision, attempt, and usage snapshot. */
   inspect(): InspectionSnapshot {
-    const weeks = this.db
+    const cycles = this.db
       .query<
         {
           id: string;
@@ -1154,16 +1154,16 @@ export class OrchestrationRepository {
         []
       >(`
       SELECT
-        week.id,
-        week.token_budget AS token_target,
+        cycle.id,
+        cycle.token_budget AS token_target,
         COALESCE(SUM(usage.input_tokens), 0) AS input_tokens,
         COALESCE(SUM(usage.cached_input_tokens), 0) AS cached_input_tokens,
         COALESCE(SUM(usage.output_tokens), 0) AS output_tokens,
         COALESCE(SUM(usage.reasoning_output_tokens), 0) AS reasoning_output_tokens
-      FROM weeks AS week
-      LEFT JOIN usage ON usage.week_id = week.id
-      GROUP BY week.id, week.token_budget
-      ORDER BY week.id ASC
+      FROM cycles AS cycle
+      LEFT JOIN usage ON usage.cycle_id = cycle.id
+      GROUP BY cycle.id, cycle.token_budget
+      ORDER BY cycle.id ASC
     `)
       .all()
       .map((row) => ({
@@ -1382,7 +1382,7 @@ export class OrchestrationRepository {
         ...(activeTask == null ? {} : { activeTaskId: activeTask.id }),
         ...(activeAttempt == null ? {} : { activeAttemptId: activeAttempt.id }),
       },
-      weeks,
+      cycles,
       tasks: tasks.map((row) =>
         InspectionTaskSchema.parse({
           id: row.id,

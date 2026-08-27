@@ -128,7 +128,7 @@ class RecordedCodexClient implements CodexClientApi {
 
 const ticket = {
   id: "T1",
-  weekId: "2026-W35",
+  cycleId: "2026-W35",
   title: "Add a real Codex harness",
   spec: {
     problem: "The scheduler only has a fake provider",

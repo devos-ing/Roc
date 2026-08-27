@@ -33,7 +33,7 @@ function displayCategory(category: string): DisplayCategory {
   if (category === "implement") return "Implement";
   if (category === "review") return "Review";
   if (category === "advisor") return "Advisor";
-  if (category === "weekly_grilling" || category === "ticket_grilling")
+  if (category === "cycle_grilling" || category === "ticket_grilling")
     return "Grilling";
   return "Other";
 }
@@ -107,9 +107,9 @@ const resetColor = "\u001B[0m";
 const minimumWidth = 40;
 const fallbackWidth = 80;
 
-/** Renders the current week's token usage as a width-aware text chart. */
+/** Renders the current cycle's token usage as a width-aware text chart. */
 export function renderTokenUsageChart(
-  weekId: string,
+  cycleId: string,
   categories: CategoryTokenUsage[],
   options: TokenUsageChartOptions = {},
 ): string {
@@ -141,7 +141,7 @@ export function renderTokenUsageChart(
   });
 
   return [
-    `Token usage · ${weekId}`,
+    `Token usage · ${cycleId}`,
     "",
     ...lines,
     "",
@@ -149,7 +149,7 @@ export function renderTokenUsageChart(
   ].join("\n");
 }
 
-/** Returns the ISO week identifier for a date in UTC. */
+/** Returns the ISO cycle identifier for a date in UTC. */
 export function currentIsoWeekId(date = new Date()): string {
   const target = new Date(
     Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()),
@@ -160,7 +160,7 @@ export function currentIsoWeekId(date = new Date()): string {
   const firstThursday = new Date(Date.UTC(isoYear, 0, 4));
   const firstDay = (firstThursday.getUTCDay() + 6) % 7;
   firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDay + 3);
-  const week =
+  const cycle =
     1 + Math.round((target.getTime() - firstThursday.getTime()) / 604_800_000);
-  return `${isoYear}-W${String(week).padStart(2, "0")}`;
+  return `${isoYear}-W${String(cycle).padStart(2, "0")}`;
 }

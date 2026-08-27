@@ -79,6 +79,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Returns whether a backlog manifest still uses the removed weekId field. */
+function usesLegacyWeekId(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "weekId" in value &&
+    !("cycleId" in value)
+  );
+}
+
 /** Parses supported CLI options and positional commands under strict validation. */
 function parseCliArgs(args: string[]) {
   return parseArgs({
@@ -548,9 +559,11 @@ export async function runCli(
       return 2;
     }
     try {
-      const manifest = BacklogManifestSchema.parse(
-        await Bun.file(resolve(manifestPath)).json(),
-      );
+      const input: unknown = await Bun.file(resolve(manifestPath)).json();
+      if (usesLegacyWeekId(input)) {
+        throw new Error("Manifest uses weekId; replace it with cycleId");
+      }
+      const manifest = BacklogManifestSchema.parse(input);
       for (const task of manifest.tasks) safeTaskPathComponent(task.id);
       const db = openDatabase(dbPath);
       try {
@@ -607,16 +620,16 @@ export async function runCli(
     try {
       const db = openDatabase(dbPath);
       try {
-        const weekId = currentIsoWeekId();
-        const usage = new OrchestrationRepository(db).getWeekCategoryUsage(
-          weekId,
+        const cycleId = currentIsoWeekId();
+        const usage = new OrchestrationRepository(db).getCycleCategoryUsage(
+          cycleId,
         );
         if (usage === undefined) {
-          io.out(`No active week: ${weekId}`);
+          io.out(`No active cycle: ${cycleId}`);
           return 0;
         }
         io.out(
-          renderTokenUsageChart(weekId, usage.categories, {
+          renderTokenUsageChart(cycleId, usage.categories, {
             color: !parsed.values["no-color"],
             width: process.stdout.columns ?? 80,
           }),

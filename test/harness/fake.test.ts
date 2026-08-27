@@ -55,7 +55,7 @@ const scenario = {
 
 const ticket = {
   id: "T1",
-  weekId: "2026-W35",
+  cycleId: "2026-W35",
   title: "Test task",
   spec: {
     problem: "Need a scripted agent",

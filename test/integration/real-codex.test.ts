@@ -130,7 +130,7 @@ realTest(
       const db = openDatabase(databasePath);
       try {
         const planning = new PlanningRepository(db);
-        planning.createWeek({
+        planning.createCycle({
           id: "2026-W35",
           goal: "Prove the real Codex vertical integration",
           nonGoals: [],
@@ -139,7 +139,7 @@ realTest(
         });
         planning.createTask({
           id: "T1",
-          weekId: "2026-W35",
+          cycleId: "2026-W35",
           title: "Return the accepted answer",
           spec: {
             problem:
