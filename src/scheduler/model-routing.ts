@@ -25,14 +25,17 @@ export type ModelAdvisor = { decide(input: AdvisorInput): Route | undefined };
 
 const profileOrder: ModelProfile[] = ["luna", "terra", "sol"];
 
+/** Selects the baseline model profile for an agent role. */
 function baselineProfile(role: AdvisorInput["role"]): ModelProfile {
   return role === "scout" ? "luna" : role === "implement" ? "terra" : "sol";
 }
 
+/** Returns a profile and every progressively stronger fallback after it. */
 function profilesFrom(profile: ModelProfile): ModelProfile[] {
   return profileOrder.slice(profileOrder.indexOf(profile));
 }
 
+/** Selects the eligible profile sequence for an initial attempt or retry. */
 function routeProfiles(input: AdvisorInput): ModelProfile[] {
   const baseline = baselineProfile(input.role);
   if (input.retryIndex === 0 || input.priorProfile === undefined)
@@ -51,6 +54,7 @@ function routeProfiles(input: AdvisorInput): ModelProfile[] {
   );
 }
 
+/** Infers a known model profile from a catalog model identifier. */
 function profileForModel(id: string): ModelProfile | undefined {
   const normalized = id.toLowerCase();
   return profileOrder.find(
@@ -58,6 +62,7 @@ function profileForModel(id: string): ModelProfile | undefined {
   );
 }
 
+/** Explains the baseline or retry decision for a chosen model profile. */
 function routeRationale(
   input: AdvisorInput,
   chosenProfile: ModelProfile,
@@ -70,6 +75,7 @@ function routeRationale(
   ];
 }
 
+/** Creates a model advisor from a stable catalog snapshot and optional mappings. */
 export function createModelAdvisor(
   catalog: readonly CatalogModel[],
   mapping: ModelMapping = {},
@@ -79,6 +85,7 @@ export function createModelAdvisor(
     supportedReasoningEfforts: [...model.supportedReasoningEfforts],
   }));
   const mappingSnapshot: ModelMapping = { ...mapping };
+  /** Finds the configured or inferred catalog model supporting a profile and effort. */
   const modelForProfile = (
     profile: ModelProfile,
     effort: Route["effort"],
@@ -98,6 +105,7 @@ export function createModelAdvisor(
   };
 
   return {
+    /** Chooses the first compatible routed model and records its fallbacks and rationale. */
     decide(input) {
       const effort: Route["effort"] = input.risk === "high" ? "xhigh" : "high";
       const choices = routeProfiles(input).flatMap((profile) => {
@@ -118,6 +126,7 @@ export function createModelAdvisor(
   };
 }
 
+/** Creates the deterministic built-in advisor for the three standard profiles. */
 export function createStaticModelAdvisor(): ModelAdvisor {
   return createModelAdvisor(
     profileOrder.map((id) => ({

@@ -31,6 +31,7 @@ type StatusChangedEventRow = {
   payload_json: string;
 };
 
+/** Parses a strict task-status change payload or returns undefined when invalid. */
 function parseStatusChangePayload(
   payloadJson: string,
 ): { from: TaskStatus; to: TaskStatus } | undefined {
@@ -52,11 +53,13 @@ function parseStatusChangePayload(
 }
 
 export class PlanningRepository {
+  /** Creates a planning repository with an injectable clock. */
   constructor(
     private readonly db: Database,
     private readonly now: () => string = () => new Date().toISOString(),
   ) {}
 
+  /** Validates and persists a new weekly plan in draft status. */
   createWeek(input: WeeklyPlan): void {
     const plan = WeeklyPlanSchema.parse(input);
     this.db
@@ -72,6 +75,7 @@ export class PlanningRepository {
       });
   }
 
+  /** Validates and persists a new task in draft status. */
   createTask(input: TaskCreate): void {
     const task = TaskCreateSchema.parse(input);
     const now = this.now();
@@ -99,6 +103,7 @@ export class PlanningRepository {
       });
   }
 
+  /** Lists stored tasks in deterministic priority and identifier order. */
   listTasks(): StoredTask[] {
     const rows = this.db
       .query<TaskRow, []>(`
@@ -124,6 +129,7 @@ export class PlanningRepository {
     );
   }
 
+  /** Applies an idempotent validated task-status transition and records its event. */
   transitionTask(id: string, to: TaskStatus, idempotencyKey: string): void {
     const taskId = TaskCreateSchema.shape.id.parse(id);
     const target = TaskStatusSchema.parse(to);

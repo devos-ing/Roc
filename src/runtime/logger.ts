@@ -27,12 +27,15 @@ export type Logger = {
   error(error: AgileError): Promise<void>;
 };
 
+/** Creates a safe JSON Lines logger that emits structured operational errors. */
 export function createJsonlLogger(input: {
   path: string;
   err(line: string): void;
   now?: () => string;
 }): Logger {
+  /** Returns the current timestamp through the injected or system clock. */
   const now = input.now ?? (() => new Date().toISOString());
+  /** Validates and appends one log record to the configured safe file. */
   const write = async (recordInput: LogInput): Promise<void> => {
     const record = LogRecordSchema.parse({ timestamp: now(), ...recordInput });
     const path = prepareSafeFilePath(input.path);
@@ -52,6 +55,7 @@ export function createJsonlLogger(input: {
   };
   return {
     write,
+    /** Persists a sanitized structured error and emits its safe summary. */
     async error(error) {
       await write({
         level: "error",

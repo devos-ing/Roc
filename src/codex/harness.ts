@@ -95,6 +95,7 @@ const zeroUsage: Usage = {
   reasoningOutputTokens: 0,
 };
 
+/** Creates a task-scoped protocol error with optional turn context and cause. */
 function protocolError(
   code: string,
   message: string,
@@ -115,10 +116,12 @@ function protocolError(
   });
 }
 
+/** Validates and serializes a durable backend cursor. */
 function serializeCursor(cursor: BackendCursor): string {
   return JSON.stringify(BackendCursorSchema.parse(cursor));
 }
 
+/** Parses a durable backend cursor or raises a task-scoped protocol error. */
 function parseCursor(raw: string, request: HarnessStepRequest): BackendCursor {
   try {
     return BackendCursorSchema.parse(JSON.parse(raw));
@@ -133,6 +136,7 @@ function parseCursor(raw: string, request: HarnessStepRequest): BackendCursor {
   }
 }
 
+/** Hashes cumulative token usage in a stable canonical field order. */
 function cumulativeHash(usage: Usage): string {
   const canonical = JSON.stringify({
     inputTokens: usage.inputTokens,
@@ -143,6 +147,7 @@ function cumulativeHash(usage: Usage): string {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
+/** Wraps an event with its next sequence and advances the serialized cursor. */
 function delivery(
   cursor: BackendCursor,
   event: EventWithoutSequence,
@@ -155,6 +160,7 @@ function delivery(
   };
 }
 
+/** Verifies that a notification source matches the active attempt's turn. */
 function sameSource(
   threadId: string,
   turnId: string,
@@ -171,6 +177,7 @@ function sameSource(
   }
 }
 
+/** Verifies role agreement between an attempt descriptor and its input. */
 function supportedRequest(request: HarnessStepRequest): SupportedRequest {
   if (request.attempt.role !== request.input.role) {
     throw protocolError(
@@ -182,12 +189,14 @@ function supportedRequest(request: HarnessStepRequest): SupportedRequest {
   return request as SupportedRequest;
 }
 
+/** Selects the thread-level sandbox mode for an agent role. */
 function threadSandbox(
   role: "scout" | "implement" | "review",
 ): "read-only" | "workspace-write" {
   return role === "implement" ? "workspace-write" : "read-only";
 }
 
+/** Builds the turn-level sandbox policy for Scout or Implement execution. */
 function turnSandbox(
   role: "scout" | "implement",
   workspace: TaskWorkspace,
@@ -202,40 +211,47 @@ function turnSandbox(
   };
 }
 
+/** Builds the role-specific prompt for a validated harness request. */
 function prompt(request: SupportedRequest): string {
   if (request.input.role === "scout") return scoutPrompt(request.input);
   if (request.input.role === "implement") return implementPrompt(request.input);
   return reviewPrompt(request.input);
 }
 
+/** Selects the structured output schema for an agent role. */
 function outputSchema(role: "scout" | "implement" | "review"): unknown {
   if (role === "scout") return ScoutOutputJsonSchema;
   if (role === "implement") return ImplementDraftOutputJsonSchema;
   return ReviewOutputJsonSchema;
 }
 
+/** Creates a Codex-backed harness with durable cursors, recovery, and workspace safeguards. */
 export function createCodexHarness(input: {
   client: CodexClientApi;
   branches: TaskBranchManager;
   skillPolicy?: DefaultSkillPolicy;
   now?: () => string;
 }): AgentHarness {
+  /** Returns the current timestamp through the injected or system clock. */
   const now = input.now ?? (() => new Date().toISOString());
   const activeAttempts = new Map<string, ActiveAttempt>();
   const terminalAttempts = new Set<string>();
   const policyInterruptedTurns = new Set<string>();
   const terminalTurnSources = new Set<string>();
 
+  /** Encodes a thread and turn pair as a stable terminal-source key. */
   function turnSource(threadId: string, turnId: string): string {
     return JSON.stringify([threadId, turnId]);
   }
 
+  /** Marks an attempt and its turn source terminal and removes active state. */
   function terminalize(active: ActiveAttempt): void {
     activeAttempts.delete(active.attemptId);
     terminalAttempts.add(active.attemptId);
     terminalTurnSources.add(turnSource(active.threadId, active.turnId));
   }
 
+  /** Removes transient completion markers from a terminal cursor. */
   function withoutTerminalMarkers(cursor: BackendCursor): BackendCursor {
     const result = { ...cursor };
     delete result.outputDelivered;
@@ -243,6 +259,7 @@ export function createCodexHarness(input: {
     return result;
   }
 
+  /** Terminalizes an attempt and emits a structured infrastructure-failure delivery. */
   function failedDelivery(
     cursor: BackendCursor,
     active: ActiveAttempt,
@@ -262,6 +279,7 @@ export function createCodexHarness(input: {
     });
   }
 
+  /** Converts task-scoped operational failures into policy or infrastructure deliveries. */
   function taskFailure(
     request: SupportedRequest,
     error: unknown,
@@ -325,6 +343,7 @@ export function createCodexHarness(input: {
     );
   }
 
+  /** Terminalizes an attempt and emits its completion delivery. */
   function completedDelivery(
     cursor: BackendCursor,
     active: ActiveAttempt,
@@ -338,6 +357,7 @@ export function createCodexHarness(input: {
     });
   }
 
+  /** Classifies a failed turn and emits the corresponding terminal delivery. */
   function classifiedTurnFailure(
     cursor: BackendCursor,
     active: ActiveAttempt,
@@ -365,6 +385,7 @@ export function createCodexHarness(input: {
     );
   }
 
+  /** Verifies that Review targets the exact clean implementation commit. */
   async function assertReviewInvariant(
     request: SupportedRequest,
   ): Promise<void> {
@@ -401,6 +422,7 @@ export function createCodexHarness(input: {
     }
   }
 
+  /** Starts or resumes role execution and emits the attempt-started delivery. */
   async function dispatch(request: SupportedRequest): Promise<HarnessDelivery> {
     const existing = activeAttempts.get(request.attempt.attemptId);
     if (existing) {
@@ -655,6 +677,7 @@ export function createCodexHarness(input: {
     });
   }
 
+  /** Consumes app-server messages until the next normalized harness delivery is available. */
   async function nextDelivery(
     request: SupportedRequest,
     initialCursor: BackendCursor,
@@ -1033,6 +1056,7 @@ export function createCodexHarness(input: {
     }
   }
 
+  /** Reconstructs authoritative attempt state and output from persisted Codex history. */
   async function reconcile(
     request: SupportedRequest,
     cursor: BackendCursor,
@@ -1048,6 +1072,7 @@ export function createCodexHarness(input: {
       startedAt: now(),
       reviewStatusBefore: cursor.reviewStatusBefore,
     };
+    /** Emits a retryable failure when persisted history cannot prove the turn outcome. */
     const orphaned = (message: string): HarnessDelivery =>
       failedDelivery(cursor, recovered, "orphaned_turn", message);
 
@@ -1222,6 +1247,7 @@ export function createCodexHarness(input: {
   }
 
   return {
+    /** Dispatches, advances, or reconciles one validated harness attempt. */
     async step(rawRequest): Promise<HarnessDelivery> {
       const request = HarnessStepRequestSchema.parse(rawRequest);
       try {
@@ -1282,6 +1308,7 @@ export function createCodexHarness(input: {
       }
     },
 
+    /** Interrupts an active nonterminal Codex turn. */
     async cancel(attemptId): Promise<void> {
       if (terminalAttempts.has(attemptId)) return;
       const active = activeAttempts.get(attemptId);

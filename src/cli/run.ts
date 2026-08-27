@@ -34,10 +34,12 @@ export type CliRuntime = {
   ): Promise<void>;
 };
 
+/** Converts an unknown thrown value into a displayable error message. */
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Parses supported CLI options and positional commands under strict validation. */
 function parseCliArgs(args: string[]) {
   return parseArgs({
     args,
@@ -54,12 +56,14 @@ function parseCliArgs(args: string[]) {
   });
 }
 
+/** Sleeps until the requested delay elapses or an optional abort signal fires. */
 export function schedulerSleep(
   milliseconds: number,
   signal?: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
+    /** Removes the abort listener after the sleep promise settles. */
     const cleanup = () => signal?.removeEventListener("abort", onAbort);
     const timer = setTimeout(() => {
       if (settled) return;
@@ -67,6 +71,7 @@ export function schedulerSleep(
       cleanup();
       resolve();
     }, milliseconds);
+    /** Cancels the timer and rejects the sleep promise exactly once. */
     const onAbort = () => {
       if (settled) return;
       settled = true;
@@ -82,16 +87,19 @@ export function schedulerSleep(
   });
 }
 
+/** Selects the runtime log path from the database and optional repository paths. */
 function logPath(input: { dbPath: string; repoPath?: string }): string {
   return input.repoPath === undefined
     ? join(dirname(input.dbPath), "agile.log")
     : join(input.repoPath, ".agile", "runtime", "agile.log");
 }
 
+/** Creates the CLI's silent-console structured logger for a runtime location. */
 function loggerFor(input: { dbPath: string; repoPath?: string }): Logger {
   return createJsonlLogger({ path: logPath(input), err: () => {} });
 }
 
+/** Normalizes an operational error while ensuring it carries the current run identifier. */
 function attachRunId(
   error: unknown,
   runId: string,
@@ -126,6 +134,7 @@ function attachRunId(
   });
 }
 
+/** Runs the scheduler daemon with signal-driven cancellation, logging, and backend cleanup. */
 export async function runDaemon(input: {
   daemon: Pick<SchedulerDaemon, "run">;
   repo: Pick<OrchestrationRepository, "getRunningAttempt">;
@@ -137,6 +146,7 @@ export async function runDaemon(input: {
 }): Promise<void> {
   const stop = new AbortController();
   let shutdown: Promise<void> | undefined;
+  /** Starts idempotent shutdown and bounds cancellation before closing the backend. */
   const onSignal = () => {
     stop.abort();
     shutdown ??= (async () => {
@@ -187,6 +197,7 @@ export async function runDaemon(input: {
   }
 }
 
+/** Composes a scheduler daemon with production timing and ownership dependencies. */
 function daemonFor(
   repo: OrchestrationRepository,
   harness: AgentHarness,
@@ -199,6 +210,7 @@ function daemonFor(
   });
 }
 
+/** Runs a scheduler session against the deterministic fake harness. */
 async function runFake(
   input: Extract<SchedulerRunInput, { backend: "fake" }>,
   runId: string,
@@ -225,6 +237,7 @@ async function runFake(
   }
 }
 
+/** Runs a scheduler session against Codex with validated models and isolated branches. */
 async function runCodex(
   input: Extract<SchedulerRunInput, { backend: "codex" }>,
   runId: string,
@@ -328,6 +341,7 @@ async function runCodex(
 }
 
 const defaultRuntime: CliRuntime = {
+  /** Runs the selected scheduler backend under a fresh structured run identifier. */
   async runScheduler(input) {
     const runId = crypto.randomUUID();
     try {
@@ -343,6 +357,7 @@ const defaultRuntime: CliRuntime = {
       });
     }
   },
+  /** Writes an operational error through the logger associated with its runtime paths. */
   async logError(error, input) {
     await loggerFor(input).error(error);
   },
@@ -356,6 +371,7 @@ type OperationalErrorFallback = {
   message: string;
 };
 
+/** Safely reports an operational failure to structured logging and standard error. */
 async function reportOperationalError(
   error: unknown,
   io: CliIo,
@@ -379,6 +395,7 @@ async function reportOperationalError(
   return 1;
 }
 
+/** Executes a CLI command and returns its process exit code. */
 export async function runCli(
   args: string[],
   io: CliIo,

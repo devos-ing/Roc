@@ -29,6 +29,7 @@ export type TaskBranchManager = {
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const TASK_BRANCH_PREFIX = "agile/";
 
+/** Creates an isolated SimpleGit client with deterministic noninteractive configuration. */
 function gitAt(baseDir: string): SimpleGit {
   return simpleGit({
     baseDir,
@@ -59,6 +60,7 @@ function gitAt(baseDir: string): SimpleGit {
   });
 }
 
+/** Classifies a path as missing, a real directory, or an unsafe other entry. */
 async function pathKind(
   path: string,
 ): Promise<"missing" | "directory" | "other"> {
@@ -72,6 +74,7 @@ async function pathKind(
   }
 }
 
+/** Resolves a Git ref to a validated full commit SHA. */
 async function fullCommit(git: SimpleGit, ref: string): Promise<string> {
   const commit = (await git.revparse(["--verify", `${ref}^{commit}`])).trim();
   if (!FULL_SHA.test(commit)) {
@@ -80,14 +83,17 @@ async function fullCommit(git: SimpleGit, ref: string): Promise<string> {
   return commit;
 }
 
+/** Builds the trusted final commit subject for a task. */
 function finalMessage(taskId: string): string {
   return `agile(${taskId}): implement ticket`;
 }
 
+/** Builds the temporary checkpoint commit subject for a task. */
 function checkpointMessage(taskId: string): string {
   return `agile(${taskId}): WIP checkpoint`;
 }
 
+/** Creates a branch manager backed by a dedicated validated scheduler checkout. */
 export async function createTaskBranchManager(
   repoPath: string,
   baseRef: string,
@@ -140,6 +146,7 @@ export async function createTaskBranchManager(
   }
   await checkoutGit.raw(["cat-file", "-e", `${baseCommit}^{commit}`]);
 
+  /** Builds and validates the workspace identity for a task branch. */
   function workspace(
     taskId: string,
     persistedBaseCommit?: string,
@@ -157,18 +164,22 @@ export async function createTaskBranchManager(
     };
   }
 
+  /** Reports whether a local task branch already exists. */
   async function branchExists(branch: string): Promise<boolean> {
     return (await checkoutGit.branchLocal()).all.includes(branch);
   }
 
+  /** Returns the checkout's raw porcelain status without trailing whitespace. */
   async function porcelainStatus(): Promise<string> {
     return (await checkoutGit.raw(["status", "--porcelain"])).trimEnd();
   }
 
+  /** Returns the subject line for a commit reference. */
   async function subject(ref = "HEAD"): Promise<string> {
     return (await checkoutGit.raw(["show", "-s", "--format=%s", ref])).trim();
   }
 
+  /** Verifies that a task branch descends from its persisted base commit. */
   async function assertBase(candidate: TaskWorkspace): Promise<void> {
     await checkoutGit.raw([
       "cat-file",
@@ -189,6 +200,7 @@ export async function createTaskBranchManager(
     }
   }
 
+  /** Verifies that a task branch is active and still based on its expected commit. */
   async function assertActive(candidate: TaskWorkspace): Promise<void> {
     const current = (await checkoutGit.status()).current;
     if (current !== candidate.branch) {
@@ -199,6 +211,7 @@ export async function createTaskBranchManager(
     await assertBase(candidate);
   }
 
+  /** Counts commits introduced by a task branch after its base commit. */
   async function taskCommitCount(candidate: TaskWorkspace): Promise<number> {
     const encoded = (
       await checkoutGit.raw([
@@ -215,6 +228,7 @@ export async function createTaskBranchManager(
     return Number(encoded);
   }
 
+  /** Checkpoints dirty work on the active task branch before switching branches. */
   async function checkpointBeforeSwitch(nextBranch: string): Promise<void> {
     const status = await checkoutGit.status();
     if (status.current === nextBranch || status.isClean()) return;
@@ -241,6 +255,7 @@ export async function createTaskBranchManager(
     }
   }
 
+  /** Verifies that a full commit SHA is reachable from the expected task branch. */
   async function assertReachableCommit(
     candidate: TaskWorkspace,
     commitSha: string,
@@ -267,6 +282,7 @@ export async function createTaskBranchManager(
     }
   }
 
+  /** Returns the trusted final commit after validating branch history and cleanliness. */
   async function validatedSingleCommit(
     candidate: TaskWorkspace,
   ): Promise<string> {
@@ -297,6 +313,7 @@ export async function createTaskBranchManager(
   }
 
   return {
+    /** Activates or creates the isolated branch for a task workspace. */
     async prepare(
       taskId: string,
       persistedBaseCommit?: string,
@@ -322,6 +339,7 @@ export async function createTaskBranchManager(
       return candidate;
     },
 
+    /** Converts task changes or a checkpoint into the single trusted final commit. */
     async commitChanges(
       taskId: string,
       persistedBaseCommit?: string,
@@ -361,6 +379,7 @@ export async function createTaskBranchManager(
       return validatedSingleCommit(candidate);
     },
 
+    /** Verifies that a reported implementation commit belongs to the active task branch. */
     async assertCommit(
       taskId: string,
       commitSha: string,
@@ -371,6 +390,7 @@ export async function createTaskBranchManager(
       await assertReachableCommit(candidate, commitSha);
     },
 
+    /** Verifies that review targets the exact trusted final task commit. */
     async assertReviewReady(
       taskId: string,
       commitSha: string,
@@ -385,6 +405,7 @@ export async function createTaskBranchManager(
       }
     },
 
+    /** Returns the porcelain status for an active validated task workspace. */
     async status(
       taskId: string,
       persistedBaseCommit?: string,

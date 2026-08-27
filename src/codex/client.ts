@@ -45,6 +45,7 @@ export class CodexClient implements CodexClientApi {
   private initializedSent = false;
   private closePromise: Promise<void> | undefined;
 
+  /** Creates a client around a spawned app-server process and starts its I/O watchers. */
   private constructor(process: AppServerProcess) {
     this.process = process;
     this.stdoutTask = this.watchStdout();
@@ -52,6 +53,7 @@ export class CodexClient implements CodexClientApi {
     this.exitTask = this.watchExit();
   }
 
+  /** Starts and initializes a Codex app-server client. */
   static async start(input?: {
     command?: string[];
     clientInfo?: { name: string; title: string; version: string };
@@ -97,6 +99,7 @@ export class CodexClient implements CodexClientApi {
     }
   }
 
+  /** Sends an RPC request and resolves it from the matching response envelope. */
   request(method: string, params: unknown): Promise<unknown> {
     if (this.terminalError) {
       return Promise.reject(this.terminalError);
@@ -111,18 +114,22 @@ export class CodexClient implements CodexClientApi {
     });
   }
 
+  /** Sends a fire-and-forget RPC notification. */
   notify(method: string, params: unknown): void {
     this.sendWithoutResponse({ method, params });
   }
 
+  /** Sends a successful response to an app-server request. */
   respond(id: string | number, result: unknown): void {
     this.sendWithoutResponse({ id, result });
   }
 
+  /** Sends an error response to an app-server request. */
   respondError(id: string | number, code: number, message: string): void {
     this.sendWithoutResponse({ id, error: { code, message } });
   }
 
+  /** Returns the next queued server message or waits until one arrives. */
   nextServerMessage(): Promise<ServerMessage> {
     if (this.terminalError) {
       return Promise.reject(this.terminalError);
@@ -136,11 +143,13 @@ export class CodexClient implements CodexClientApi {
     });
   }
 
+  /** Idempotently closes the client and its child process resources. */
   close(): Promise<void> {
     this.closePromise ??= this.performClose();
     return this.closePromise;
   }
 
+  /** Sends the initialization-complete notification exactly once. */
   private async sendInitialized(): Promise<void> {
     if (this.initializedSent) {
       return;
@@ -155,6 +164,7 @@ export class CodexClient implements CodexClientApi {
     }
   }
 
+  /** Queues a message whose write failures terminate the client without a response promise. */
   private sendWithoutResponse(message: unknown): void {
     if (this.terminalError) {
       return;
@@ -164,6 +174,7 @@ export class CodexClient implements CodexClientApi {
     });
   }
 
+  /** Serializes one message behind prior writes and flushes it to app-server stdin. */
   private enqueueWrite(message: unknown): Promise<void> {
     const operation = this.writeTail.then(async () => {
       if (this.terminalError) {
@@ -194,6 +205,7 @@ export class CodexClient implements CodexClientApi {
     return operation;
   }
 
+  /** Reads stdout, frames complete lines, and dispatches each protocol message. */
   private async watchStdout(): Promise<void> {
     const decoder = new TextDecoder();
     const reader = this.process.stdout.getReader();
@@ -227,6 +239,7 @@ export class CodexClient implements CodexClientApi {
     }
   }
 
+  /** Dispatches every complete line in a buffer and returns its trailing partial line. */
   private consumeCompleteLines(buffer: string): string {
     let newline = buffer.indexOf("\n");
     while (newline >= 0) {
@@ -243,6 +256,7 @@ export class CodexClient implements CodexClientApi {
     return buffer;
   }
 
+  /** Parses and routes one response or server message from the app-server. */
   private handleLine(line: string): void {
     let decoded: unknown;
     try {
@@ -312,6 +326,7 @@ export class CodexClient implements CodexClientApi {
     }
   }
 
+  /** Drains child stderr without retaining potentially unsafe text. */
   private async drainStderr(): Promise<void> {
     const reader = this.process.stderr.getReader();
     try {
@@ -325,6 +340,7 @@ export class CodexClient implements CodexClientApi {
     }
   }
 
+  /** Converts an unexpected child exit into terminal client failure. */
   private async watchExit(): Promise<void> {
     await this.process.exited;
     await this.stdoutTask;
@@ -333,6 +349,7 @@ export class CodexClient implements CodexClientApi {
     }
   }
 
+  /** Normalizes a write failure, preferring an observed app-server exit. */
   private normalizeWriteFailure(error: unknown): AgileError {
     if (this.process.exitCode !== null) {
       return this.appServerExitedError();
@@ -346,6 +363,7 @@ export class CodexClient implements CodexClientApi {
     });
   }
 
+  /** Creates the stable operational error for an exited app-server process. */
   private appServerExitedError(): AgileError {
     return new AgileError({
       code: "CODEX_APP_SERVER_EXITED",
@@ -356,6 +374,7 @@ export class CodexClient implements CodexClientApi {
     });
   }
 
+  /** Transitions the client to terminal failure and rejects all pending consumers. */
   private fail(error: AgileError, killChild: boolean): void {
     if (this.terminalError) {
       return;
@@ -375,6 +394,7 @@ export class CodexClient implements CodexClientApi {
     }
   }
 
+  /** Performs bounded graceful shutdown before force-killing and draining client tasks. */
   private async performClose(): Promise<void> {
     this.closing = true;
     const closedError =
@@ -403,12 +423,14 @@ export class CodexClient implements CodexClientApi {
     await this.waitForCloseTasks(stdinEnd, 1_000);
   }
 
+  /** Waits for client I/O tasks to settle up to a fixed timeout. */
   private waitForCloseTasks(
     stdinEnd: Promise<unknown>,
     timeoutMs: number,
   ): Promise<void> {
     return new Promise((resolve) => {
       let settled = false;
+      /** Resolves the bounded wait exactly once and clears its timer. */
       const finish = (): void => {
         if (settled) return;
         settled = true;
@@ -425,9 +447,11 @@ export class CodexClient implements CodexClientApi {
     });
   }
 
+  /** Reports whether the app-server exits before a timeout. */
   private waitForExit(timeoutMs: number): Promise<boolean> {
     return new Promise((resolve) => {
       let settled = false;
+      /** Resolves the exit race exactly once with its observed result. */
       const finish = (result: boolean): void => {
         if (settled) {
           return;

@@ -7,12 +7,14 @@ import {
   HarnessStepRequestSchema,
 } from "./contracts";
 
+/** Builds the stable lookup key for one scripted fake attempt. */
 function keyOf(
   input: Pick<HarnessStepRequest["attempt"], "taskId" | "role" | "retryIndex">,
 ): string {
   return `${input.taskId}:${input.role}:${input.retryIndex}`;
 }
 
+/** Creates a deterministic harness backed by a validated scripted scenario. */
 export function createFakeHarness(input: unknown): {
   harness: AgentHarness;
   assertComplete(): void;
@@ -21,6 +23,7 @@ export function createFakeHarness(input: unknown): {
   const consumed = new Map<string, string>();
 
   const harness: AgentHarness = {
+    /** Returns the next scripted delivery after validating the attempt expectations. */
     async step(rawInput): Promise<HarnessDelivery> {
       const request = HarnessStepRequestSchema.parse(rawInput);
       const key = keyOf(request.attempt);
@@ -68,11 +71,13 @@ export function createFakeHarness(input: unknown): {
         event: { ...delivery.event, attemptId: request.attempt.attemptId },
       };
     },
+    /** Accepts cancellation without side effects for the in-memory fake harness. */
     async cancel(): Promise<void> {},
   };
 
   return {
     harness,
+    /** Verifies that every scripted attempt was consumed through its final delivery. */
     assertComplete(): void {
       for (const script of scenario.attempts) {
         const key = keyOf(script);

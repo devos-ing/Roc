@@ -172,6 +172,7 @@ type RunningAttemptRow = TaskRow & {
   context_summary_artifact: string | null;
 };
 
+/** Converts a database task row into its validated stored-task representation. */
 function storedTask(row: TaskRow) {
   return StoredTaskSchema.parse({
     id: row.id,
@@ -189,6 +190,7 @@ function storedTask(row: TaskRow) {
 }
 
 export class OrchestrationRepository {
+  /** Creates an orchestration repository with injectable time, IDs, faults, and routing. */
   constructor(
     private readonly db: Database,
     private readonly now: () => string = () => new Date().toISOString(),
@@ -197,6 +199,7 @@ export class OrchestrationRepository {
     private readonly advisor: ModelAdvisor = createStaticModelAdvisor(),
   ) {}
 
+  /** Atomically claims the next approved dependency-ready task under the scheduler lease. */
   claimNext(leaseOwnerId?: string): { taskId: string } | undefined {
     return this.db.transaction(() => {
       this.assertLeaseOwner(leaseOwnerId);
@@ -240,6 +243,7 @@ export class OrchestrationRepository {
     })();
   }
 
+  /** Reconstructs the earliest running attempt and its validated role input. */
   getRunningAttempt(): RunningAttempt | undefined {
     const row = this.db
       .query<RunningAttemptRow, []>(`
@@ -326,6 +330,7 @@ export class OrchestrationRepository {
     };
   }
 
+  /** Atomically selects, routes, and starts the next role attempt for an active task. */
   beginNextAttempt(leaseOwnerId?: string):
     | {
         attemptId: string;
@@ -524,6 +529,7 @@ export class OrchestrationRepository {
     })();
   }
 
+  /** Atomically applies one ordered idempotent harness event and advances its cursor. */
   applyHarnessEvent(
     attemptId: string,
     nextCursor: string,
@@ -1024,6 +1030,7 @@ export class OrchestrationRepository {
     })();
   }
 
+  /** Verifies that an optional scheduler lease owner still holds an unexpired lease. */
   private assertLeaseOwner(leaseOwnerId?: string): void {
     if (leaseOwnerId === undefined) return;
     const lease = this.db
@@ -1035,6 +1042,7 @@ export class OrchestrationRepository {
     if (!lease) throw new Error("Scheduler lease was lost");
   }
 
+  /** Acquires or renews the scheduler lease when it is available to the owner. */
   acquireLease(ownerId: string, now: string, expiresAt: string): boolean {
     return this.db.transaction(() => {
       this.db
@@ -1059,6 +1067,7 @@ export class OrchestrationRepository {
     })();
   }
 
+  /** Extends an unexpired scheduler lease held by the specified owner. */
   heartbeatLease(ownerId: string, now: string, expiresAt: string): boolean {
     return (
       this.db
@@ -1070,6 +1079,7 @@ export class OrchestrationRepository {
     );
   }
 
+  /** Releases the scheduler lease when it belongs to the specified owner. */
   releaseLease(ownerId: string): boolean {
     return (
       this.db
@@ -1080,6 +1090,7 @@ export class OrchestrationRepository {
     );
   }
 
+  /** Returns the minimal identity and status snapshot for one task. */
   inspectTask(taskId: string): { id: string; status: string } | undefined {
     return (
       this.db
@@ -1090,6 +1101,7 @@ export class OrchestrationRepository {
     );
   }
 
+  /** Aggregates a week's persisted token usage by normalized category. */
   getWeekCategoryUsage(weekId: string): WeekCategoryUsage | undefined {
     const id = WeekIdSchema.parse(weekId);
     const week = this.db
@@ -1127,6 +1139,7 @@ export class OrchestrationRepository {
     return WeekCategoryUsageSchema.parse({ weekId: week.id, categories });
   }
 
+  /** Builds a validated scheduler, week, task, decision, attempt, and usage snapshot. */
   inspect(): InspectionSnapshot {
     const weeks = this.db
       .query<
@@ -1396,6 +1409,7 @@ export class OrchestrationRepository {
     });
   }
 
+  /** Lists a root task and its descendants in deterministic creation order. */
   listTasksByRoot(rootTaskId: string): Array<{
     id: string;
     status: string;
@@ -1436,6 +1450,7 @@ export class OrchestrationRepository {
     }));
   }
 
+  /** Lists a task's attempts in deterministic start order. */
   listAttempts(taskId: string): Array<{
     role: string;
     model: string;
@@ -1460,6 +1475,7 @@ export class OrchestrationRepository {
       .all(taskId);
   }
 
+  /** Lists a task's persisted review decisions and findings. */
   listReviews(taskId: string): Array<{ decision: string; findings: string[] }> {
     return this.db
       .query<{ decision: string; findings_json: string }, [string]>(`
@@ -1472,6 +1488,7 @@ export class OrchestrationRepository {
       }));
   }
 
+  /** Returns the latest validated successful output for a prerequisite role. */
   private latestRoleOutput(taskId: string, role: "scout" | "implement") {
     const row = this.db
       .query<{ payload_json: string }, [string, string]>(`
@@ -1496,6 +1513,7 @@ export class OrchestrationRepository {
   }
 }
 
+/** Converts database token columns into a validated token-total value. */
 function tokenTotals(row: {
   input_tokens: number;
   cached_input_tokens: number;

@@ -5,10 +5,12 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type TaskCreate, TaskCreateSchema } from "../domain/schemas";
 import { safeTaskPathComponent } from "../domain/task-path";
 
+/** Reports whether an error represents a missing filesystem entry. */
 function isMissingFileError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
+/** Verifies that a path exists as a real directory rather than a symbolic link. */
 async function assertRealDirectory(path: string): Promise<void> {
   const stats = await lstat(path);
   if (stats.isSymbolicLink())
@@ -17,6 +19,7 @@ async function assertRealDirectory(path: string): Promise<void> {
     throw new Error(`Artifact path component is not a directory: ${path}`);
 }
 
+/** Creates a directory when absent and verifies that the result is a real directory. */
 async function ensureRealDirectory(path: string): Promise<void> {
   try {
     await mkdir(path);
@@ -27,6 +30,7 @@ async function ensureRealDirectory(path: string): Promise<void> {
   await assertRealDirectory(path);
 }
 
+/** Rejects candidate paths that do not resolve strictly beneath the supplied root. */
 function assertContained(root: string, candidate: string): void {
   const candidateRelative = relative(root, candidate);
   if (
@@ -41,6 +45,7 @@ function assertContained(root: string, candidate: string): void {
   }
 }
 
+/** Rejects an existing artifact destination when it is a symbolic link. */
 async function rejectDestinationSymlink(path: string): Promise<void> {
   try {
     if ((await lstat(path)).isSymbolicLink()) {
@@ -51,8 +56,10 @@ async function rejectDestinationSymlink(path: string): Promise<void> {
   }
 }
 
+/** Renders a validated task as its canonical Markdown ticket artifact. */
 export function renderTicketArtifact(input: TaskCreate): string {
   const task = TaskCreateSchema.parse(input);
+  /** Renders a string collection as Markdown bullets with an explicit empty value. */
   const bullets = (values: string[]) =>
     values.length ? values.map((v) => `- ${v}`).join("\n") : "- None";
   const contexts = task.spec.contextCandidates.length
@@ -86,6 +93,7 @@ export function renderTicketArtifact(input: TaskCreate): string {
   );
 }
 
+/** Safely persists a validated ticket artifact and returns its path and content hash. */
 export async function writeTicketArtifact(
   projectRoot: string,
   input: TaskCreate,

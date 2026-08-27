@@ -27,6 +27,7 @@ const knownOrder: DisplayCategory[] = [
   "Grilling",
 ];
 
+/** Maps a stored token category to its user-facing chart category. */
 function displayCategory(category: string): DisplayCategory {
   if (category === "scout") return "Scout";
   if (category === "implement") return "Implement";
@@ -37,14 +38,17 @@ function displayCategory(category: string): DisplayCategory {
   return "Other";
 }
 
+/** Compares two strings with deterministic ascending lexical ordering. */
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+/** Formats an integer token count with thousands separators. */
 function formatTokens(value: number): string {
   return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+/** Aggregates raw category usage into sorted chart rows and a total. */
 function summarizeTokenUsage(categories: CategoryTokenUsage[]): {
   totalTokens: number;
   rows: TokenUsageRow[];
@@ -103,6 +107,7 @@ const resetColor = "\u001B[0m";
 const minimumWidth = 40;
 const fallbackWidth = 80;
 
+/** Renders the current week's token usage as a width-aware text chart. */
 export function renderTokenUsageChart(
   weekId: string,
   categories: CategoryTokenUsage[],
@@ -117,6 +122,7 @@ export function renderTokenUsageChart(
   );
   const width = Math.max(minimumWidth, options.width ?? fallbackWidth);
   const largestUsage = Math.max(...summary.rows.map((row) => row.tokens));
+  /** Renders the fixed label, token count, and percentage prefix for a chart row. */
   const linePrefix = (row: TokenUsageRow) =>
     `${row.category.padEnd(labelWidth)}  ${formatTokens(row.tokens).padStart(countWidth)} tokens  ${`${row.percent}%`.padStart(4)}`;
   const barWidth = Math.max(1, width - linePrefix(summary.rows[0]!).length - 2);
@@ -143,6 +149,7 @@ export function renderTokenUsageChart(
   ].join("\n");
 }
 
+/** Returns the ISO week identifier for a date in UTC. */
 export function currentIsoWeekId(date = new Date()): string {
   const target = new Date(
     Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()),

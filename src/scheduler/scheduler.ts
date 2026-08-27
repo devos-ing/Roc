@@ -12,6 +12,7 @@ export type SchedulerFaultPoint = "after_delivery_commit";
 export class Scheduler {
   private readonly reconcile = new Set<string>();
 
+  /** Creates a scheduler and marks any recovered running attempt for reconciliation. */
   constructor(
     private readonly repo: OrchestrationRepository,
     private readonly harness: AgentHarness,
@@ -21,6 +22,7 @@ export class Scheduler {
     if (active) this.reconcile.add(active.descriptor.attemptId);
   }
 
+  /** Advances orchestration by one delivery, attempt start, task claim, or idle result. */
   async tick(leaseOwnerId?: string): Promise<TickResult> {
     const running = this.repo.getRunningAttempt();
     if (running) {
@@ -55,6 +57,7 @@ export class Scheduler {
     return { kind: "idle" };
   }
 
+  /** Repeatedly advances orchestration until idle or the tick limit is exceeded. */
   async runUntilIdle(maxTicks: number): Promise<void> {
     for (let tick = 0; tick < maxTicks; tick += 1) {
       if ((await this.tick()).kind === "idle") return;

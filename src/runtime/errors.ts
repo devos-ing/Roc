@@ -34,6 +34,7 @@ export class AgileError extends Error {
   readonly threadId?: string;
   readonly requestId?: string;
 
+  /** Creates a validated operational error with structured diagnostic context. */
   constructor(input: AgileErrorInput) {
     super(input.message, { cause: input.cause });
     this.name = "AgileError";
@@ -49,6 +50,7 @@ export class AgileError extends Error {
   }
 }
 
+/** Preserves an AgileError or wraps an unknown value with structured fallback metadata. */
 export function normalizeError(
   error: unknown,
   fallback: Omit<AgileErrorInput, "cause">,

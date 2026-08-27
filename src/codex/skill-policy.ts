@@ -44,6 +44,7 @@ export type DefaultSkillPolicy = {
   allowedStandaloneSkillNames: Set<string>;
 };
 
+/** Loads the local allowlist policy for standalone agent skills. */
 export async function loadDefaultSkillPolicy(
   home = homedir(),
 ): Promise<DefaultSkillPolicy> {
@@ -66,6 +67,7 @@ export async function loadDefaultSkillPolicy(
   };
 }
 
+/** Converts discovered skills into the default enabled configuration permitted by policy. */
 export function buildDefaultSkillConfig(
   skills: DiscoveredSkill[],
   input: DefaultSkillPolicy,

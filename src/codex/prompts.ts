@@ -17,6 +17,7 @@ export const ImplementDraftOutputJsonSchema = z.toJSONSchema(
 export const ImplementOutputJsonSchema = z.toJSONSchema(ImplementOutputSchema);
 export const ReviewOutputJsonSchema = z.toJSONSchema(ReviewOutputSchema);
 
+/** Builds the constrained repository-inspection prompt for a Scout request. */
 export function scoutPrompt(
   input: Extract<HarnessStepRequest["input"], { role: "scout" }>,
 ): string {
@@ -35,6 +36,7 @@ export function scoutPrompt(
   ].join("\n");
 }
 
+/** Builds the constrained ticket-implementation prompt from validated Scout context. */
 export function implementPrompt(
   input: Extract<HarnessStepRequest["input"], { role: "implement" }>,
 ): string {
@@ -59,6 +61,7 @@ export function implementPrompt(
   ].join("\n");
 }
 
+/** Builds the read-only review prompt for an exact Implement commit. */
 export function reviewPrompt(
   input: Extract<HarnessStepRequest["input"], { role: "review" }>,
 ): string {

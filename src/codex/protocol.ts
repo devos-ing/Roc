@@ -352,6 +352,7 @@ export type CodexTurnFailure = {
   message: string;
 };
 
+/** Classifies a failed or interrupted Codex turn into a stable operational failure. */
 export function classifyCodexTurnFailure(
   status: "failed" | "interrupted",
   error: unknown,

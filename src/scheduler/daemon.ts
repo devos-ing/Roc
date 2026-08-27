@@ -13,13 +13,16 @@ type Runtime = {
 };
 
 export class SchedulerDaemon {
+  /** Creates a daemon from scheduler, lease-store, and runtime dependencies. */
   constructor(
     private readonly scheduler: Pick<Scheduler, "tick">,
     private readonly leases: LeaseStore,
     private readonly runtime: Runtime,
   ) {}
 
+  /** Runs scheduler ticks while holding and heartbeating the exclusive scheduler lease. */
   async run(shouldStop: () => boolean): Promise<void> {
+    /** Captures consistent lease timestamps from the runtime clock. */
     const leaseTimes = () => {
       const now = this.runtime.now();
       return {
@@ -39,6 +42,7 @@ export class SchedulerDaemon {
       throw new Error("Scheduler lease is already held");
     }
     let nextHeartbeat = times.timestamp + 3_000;
+    /** Renews the scheduler lease and advances the next heartbeat deadline. */
     const heartbeat = () => {
       times = leaseTimes();
       if (
@@ -52,6 +56,7 @@ export class SchedulerDaemon {
       }
       nextHeartbeat = times.timestamp + 3_000;
     };
+    /** Executes one scheduler tick while maintaining lease heartbeats in parallel. */
     const tickWithHeartbeats = async (): Promise<TickResult> => {
       const tick = this.scheduler.tick(this.runtime.ownerId);
       let stopHeartbeats = false;

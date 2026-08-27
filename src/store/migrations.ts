@@ -190,6 +190,7 @@ DROP TABLE model_decisions;
 ALTER TABLE model_decisions_v3 RENAME TO model_decisions;
 `;
 
+/** Migrates a database transactionally through every supported schema version. */
 export function migrate(db: Database): void {
   let version =
     db.query<{ user_version: number }, []>("PRAGMA user_version").get()
