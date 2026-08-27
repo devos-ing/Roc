@@ -65,6 +65,36 @@ export const TaskCreateSchema = z
   })
   .strict();
 
+export const BacklogTaskSchema = z
+  .object({
+    id: NonEmpty,
+    title: NonEmpty,
+    priority: z.number().int().min(0),
+    spec: TicketSpecSchema,
+  })
+  .strict();
+
+export const BacklogManifestSchema = z
+  .object({
+    weekId: WeeklyPlanSchema.shape.id,
+    goal: NonEmpty,
+    tasks: z.array(BacklogTaskSchema).min(1),
+  })
+  .strict()
+  .superRefine((manifest, context) => {
+    const seen = new Set<string>();
+    for (const task of manifest.tasks) {
+      if (seen.has(task.id)) {
+        context.addIssue({
+          code: "custom",
+          message: `Duplicate task ID: ${task.id}`,
+          path: ["tasks"],
+        });
+      }
+      seen.add(task.id);
+    }
+  });
+
 export const StoredTaskSchema = TaskCreateSchema.extend({
   status: TaskStatusSchema,
   specPath: NonEmpty.optional(),
@@ -93,6 +123,7 @@ export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 export type TicketSpec = z.infer<typeof TicketSpecSchema>;
 export type WeeklyPlan = z.infer<typeof WeeklyPlanSchema>;
 export type TaskCreate = z.infer<typeof TaskCreateSchema>;
+export type BacklogManifest = z.infer<typeof BacklogManifestSchema>;
 export type StoredTask = z.infer<typeof StoredTaskSchema>;
 export type ModelProfile = z.infer<typeof ModelProfileSchema>;
 export type ModelDecision = z.infer<typeof ModelDecisionSchema>;

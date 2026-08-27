@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {
+  type BacklogManifest,
+  BacklogManifestSchema,
   type StoredTask,
   StoredTaskSchema,
   type TaskCreate,
@@ -9,6 +11,7 @@ import {
   type WeeklyPlan,
   WeeklyPlanSchema,
 } from "../domain/schemas";
+import { safeTaskPathComponent } from "../domain/task-path";
 import { assertTransition, canTransition } from "../domain/transitions";
 
 type TaskRow = {
@@ -30,6 +33,34 @@ type StatusChangedEventRow = {
   type: string;
   payload_json: string;
 };
+
+type ImportedTaskRow = {
+  id: string;
+  week_id: string;
+  title: string;
+  spec_json: string;
+  priority: number;
+  approval_required: number;
+  approved: number;
+};
+
+export type BacklogImportResult = {
+  created: number;
+  skipped: number;
+  total: number;
+};
+
+/** Compares the immutable input fields of an imported task. */
+function isSameImportedTask(existing: TaskCreate, task: TaskCreate): boolean {
+  return (
+    existing.weekId === task.weekId &&
+    existing.title === task.title &&
+    existing.priority === task.priority &&
+    existing.approvalRequired === task.approvalRequired &&
+    existing.approved === task.approved &&
+    JSON.stringify(existing.spec) === JSON.stringify(task.spec)
+  );
+}
 
 /** Parses a strict task-status change payload or returns undefined when invalid. */
 function parseStatusChangePayload(
@@ -101,6 +132,96 @@ export class PlanningRepository {
         approved: Number(task.approved),
         now,
       });
+  }
+
+  /** Atomically imports approved backlog tasks and their blocking dependencies. */
+  importBacklog(input: BacklogManifest): BacklogImportResult {
+    const manifest = BacklogManifestSchema.parse(input);
+    for (const task of manifest.tasks) safeTaskPathComponent(task.id);
+    const tasks = manifest.tasks.map((task) =>
+      TaskCreateSchema.parse({
+        ...task,
+        weekId: manifest.weekId,
+        approvalRequired: true,
+        approved: true,
+      }),
+    );
+    const tokenBudget = tasks.reduce(
+      (total, task) => total + task.spec.tokenCeiling,
+      0,
+    );
+
+    return this.db.transaction(() => {
+      const referencedIds = [
+        ...new Set(
+          tasks.flatMap((task) => [task.id, ...task.spec.dependencies]),
+        ),
+      ];
+      const placeholders = referencedIds.map(() => "?").join(", ");
+      const rows = this.db
+        .query<ImportedTaskRow, string[]>(`
+          SELECT id, week_id, title, spec_json, priority, approval_required, approved
+          FROM tasks WHERE id IN (${placeholders})
+        `)
+        .all(...referencedIds);
+      const existingById = new Map(rows.map((row) => [row.id, row]));
+      const batchIds = new Set(tasks.map((task) => task.id));
+
+      for (const task of tasks) {
+        for (const dependency of task.spec.dependencies) {
+          if (!batchIds.has(dependency) && !existingById.has(dependency)) {
+            throw new Error(`Missing task dependency: ${dependency}`);
+          }
+        }
+        const existing = existingById.get(task.id);
+        if (!existing) continue;
+        const existingTask = TaskCreateSchema.parse({
+          id: existing.id,
+          weekId: existing.week_id,
+          title: existing.title,
+          spec: JSON.parse(existing.spec_json),
+          priority: existing.priority,
+          approvalRequired: Boolean(existing.approval_required),
+          approved: Boolean(existing.approved),
+        });
+        if (!isSameImportedTask(existingTask, task)) {
+          throw new Error(`Task conflict: ${task.id}`);
+        }
+      }
+
+      const week = this.db
+        .query<{ id: string }, [string]>("SELECT id FROM weeks WHERE id = ?")
+        .get(manifest.weekId);
+      if (!week) {
+        this.createWeek({
+          id: manifest.weekId,
+          goal: manifest.goal,
+          nonGoals: [],
+          tokenBudget,
+          ticketIds: tasks.map((task) => task.id),
+        });
+      }
+
+      const created = tasks.filter((task) => !existingById.has(task.id));
+      for (const task of created) this.createTask(task);
+      for (const task of created) {
+        for (const dependency of task.spec.dependencies) {
+          this.db
+            .query(
+              "INSERT INTO task_deps(task_id, depends_on_task_id, kind) VALUES(?, ?, 'blocks')",
+            )
+            .run(task.id, dependency);
+        }
+      }
+      for (const task of created) {
+        this.transitionTask(task.id, "ready", `task-import:${task.id}:ready`);
+      }
+      return {
+        created: created.length,
+        skipped: tasks.length - created.length,
+        total: tasks.length,
+      };
+    })();
   }
 
   /** Lists stored tasks in deterministic priority and identifier order. */

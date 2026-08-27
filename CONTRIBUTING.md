@@ -23,6 +23,21 @@ Run Roc directly from source:
 
 ```bash
 bun run src/cli/main.ts help
+bun src/cli/main.ts onboard
+```
+
+To check the packaged task-creation skill, run:
+
+```bash
+python3 /Users/roy/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/roc-create-tasks
+```
+
+You can test an import with a temporary strict JSON manifest, then inspect its
+ready tasks locally:
+
+```bash
+bun src/cli/main.ts task import /absolute/path/to/backlog.json --db .agile/runtime/agile.db
+bun src/cli/main.ts task list --db .agile/runtime/agile.db
 ```
 
 Run the checks that match your change:

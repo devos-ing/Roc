@@ -9,6 +9,7 @@
   },
   "files": [
     "src",
+    "skills",
     "README.md",
     "README.zh-HK.md",
     "LICENSE"

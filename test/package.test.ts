@@ -38,6 +38,7 @@ test("package metadata exposes roc-it as a public Bun CLI", async () => {
   expect(manifest.bin).toEqual({ "roc-it": "./src/cli/main.ts" });
   expect(manifest.files).toEqual([
     "src",
+    "skills",
     "README.md",
     "README.zh-HK.md",
     "LICENSE",
@@ -77,7 +78,10 @@ test("npm archive contains only runtime files", async () => {
     "package.json",
   ]);
   const unexpected = paths.filter(
-    (path) => !allowedRootFiles.has(path) && !path.startsWith("src/"),
+    (path) =>
+      !allowedRootFiles.has(path) &&
+      !path.startsWith("src/") &&
+      !path.startsWith("skills/"),
   );
 
   expect(unexpected).toEqual([]);
@@ -87,4 +91,5 @@ test("npm archive contains only runtime files", async () => {
   expect(paths).not.toContain("CONTRIBUTING.md");
   expect(paths).toContain("package.json");
   expect(paths).toContain("src/cli/main.ts");
+  expect(paths).toContain("skills/roc-create-tasks/SKILL.md");
 });

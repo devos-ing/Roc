@@ -38,6 +38,11 @@ Roc 目前一次只處理一個任務。它不會合併或 push 程式碼、刪�
 - [Bun](https://bun.sh/) 1.3.0 或以上版本
 - Git
 - 使用 Codex mode 時需要 [Codex CLI](https://github.com/openai/codex)
+- 建立 backlog 時需要 `grilling` skill：
+
+```bash
+npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor
+```
 
 不用全域安裝也可以執行（Roc 執行時仍然需要 Bun）：
 
@@ -55,19 +60,34 @@ bunx roc-it@latest help
 
 ```bash
 npm install -g roc-it@latest
-roc-it help
 ```
 
-建立並查看本機任務資料庫：
+在單一專案中啟用 Roc。這會建立本機資料庫，並為 Codex、Claude Code 和
+Cursor 安裝建立任務的 skill：
 
 ```bash
-npx roc-it@latest init
+npx roc-it@latest onboard
 npx roc-it@latest task list
 npx roc-it@latest tokens
 ```
 
-Roc 暫時沒有新增 ticket 的公開指令，因此 scheduler 需要一個已準備好的
-backlog。
+使用 `npx roc-it@latest onboard --global` 可改為在使用者帳戶下安裝 skill；
+全域啟用不會建立專案資料庫。
+
+使用已安裝的 skill，從需求建立 backlog。在 Claude Code 或 Cursor 中使用：
+
+```text
+/roc-create-tasks Add team invitations
+```
+
+在 Codex 中使用：
+
+```text
+$roc-create-tasks Add team invitations
+```
+
+這個 skill 會使用 `grilling` 釐清需求、預覽完整任務清單和相依關係、等待你的
+明確批准，然後把 JSON backlog 儲存在 `.agile/backlog` 並匯入 Roc。
 
 使用 Codex 執行 backlog：
 
@@ -125,7 +145,8 @@ Roc 正在逐步成長。
 ## 指令
 
 ```bash
-roc-it init [--db PATH]
+roc-it onboard [--global] [--db PATH]
+roc-it task import FILE [--db PATH]
 roc-it task list [--db PATH]
 roc-it tokens [--db PATH] [--no-color]
 roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]

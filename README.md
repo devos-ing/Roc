@@ -39,6 +39,11 @@ Prerequisites:
 - [Bun](https://bun.sh/) 1.3.0 or later
 - Git
 - [Codex CLI](https://github.com/openai/codex) for Codex mode
+- The `grilling` skill for creating a backlog:
+
+```bash
+npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor
+```
 
 Run without a global install (Roc still requires Bun at runtime):
 
@@ -56,19 +61,36 @@ Or install the command globally:
 
 ```bash
 npm install -g roc-it@latest
-roc-it help
 ```
 
-Create and inspect the local task database:
+Onboard Roc in one project. This creates the local database and installs the
+task-creation skill for Codex, Claude Code, and Cursor:
 
 ```bash
-npx roc-it@latest init
+npx roc-it@latest onboard
 npx roc-it@latest task list
 npx roc-it@latest tokens
 ```
 
-Roc does not yet have a public command for adding tickets, so the scheduler
-needs a prepared backlog.
+Use `npx roc-it@latest onboard --global` to install the skill under your user
+account instead; global onboarding does not create a project database.
+
+Create a backlog from a requirement with the installed skill. In Claude Code or
+Cursor, use:
+
+```text
+/roc-create-tasks Add team invitations
+```
+
+In Codex, use:
+
+```text
+$roc-create-tasks Add team invitations
+```
+
+The skill uses `grilling` to agree on the requirement, previews the full task
+list and dependencies, waits for your explicit approval, saves a JSON backlog
+under `.agile/backlog`, and imports it into Roc.
 
 Run that backlog with Codex:
 
@@ -129,7 +151,8 @@ Roc is growing in small steps.
 ## Commands
 
 ```bash
-roc-it init [--db PATH]
+roc-it onboard [--global] [--db PATH]
+roc-it task import FILE [--db PATH]
 roc-it task list [--db PATH]
 roc-it tokens [--db PATH] [--no-color]
 roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]

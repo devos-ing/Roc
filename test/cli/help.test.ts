@@ -18,7 +18,8 @@ test("help prints only production roc-it commands", async () => {
   expect(help).toContain(
     "roc-it - run Codex agents through an agile software flow",
   );
-  expect(help).toContain("roc-it init [--db PATH]");
+  expect(help).toContain("roc-it onboard [--global] [--db PATH]");
+  expect(help).toContain("roc-it task import FILE [--db PATH]");
   expect(help).toContain("roc-it task list [--db PATH]");
   expect(help).toContain("roc-it tokens [--db PATH] [--no-color]");
   expect(help).toContain(
@@ -28,6 +29,7 @@ test("help prints only production roc-it commands", async () => {
   expect(help).not.toContain("--backend fake");
   expect(help).not.toContain("--fake-script");
   expect(help).not.toContain("scheduler inspect");
+  expect(help).not.toContain("roc-it init");
   expect(help).not.toMatch(/^\s*agile(?:\s|$)/m);
   expect(help).not.toContain("--low");
 });

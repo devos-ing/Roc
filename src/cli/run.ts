@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CodexClient } from "../codex/client";
@@ -15,6 +16,7 @@ import {
   createStaticModelAdvisor,
 } from "../scheduler/model-routing";
 import { Scheduler } from "../scheduler/scheduler";
+import { installRocCreateTasksSkill } from "../skills/install";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
 import { PlanningRepository } from "../store/planning-repository";
@@ -32,7 +34,12 @@ export type CliRuntime = {
     error: AgileError,
     input: { dbPath: string; repoPath?: string },
   ): Promise<void>;
+  projectRoot?: string;
+  homeRoot?: string;
 };
+
+const grillingInstallCommand =
+  "npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor";
 
 /** Converts an unknown thrown value into a displayable error message. */
 function errorMessage(error: unknown): string {
@@ -52,6 +59,7 @@ function parseCliArgs(args: string[]) {
       base: { type: "string" },
       "fake-script": { type: "string" },
       "no-color": { type: "boolean" },
+      global: { type: "boolean" },
     },
   });
 }
@@ -415,13 +423,92 @@ export async function runCli(
     return 0;
   }
 
+  const projectRoot = runtime.projectRoot ?? process.cwd();
   const requestedDb = parsed.values.db ?? ".agile/runtime/agile.db";
-  const dbPath = requestedDb === ":memory:" ? ":memory:" : resolve(requestedDb);
-  if (command === "init") {
+  const dbPath =
+    requestedDb === ":memory:" ? ":memory:" : resolve(projectRoot, requestedDb);
+  if (command === "onboard") {
+    if (subcommand !== undefined || parsed.positionals.length !== 1) {
+      io.err("onboard does not accept positional arguments");
+      return 2;
+    }
+    if (
+      parsed.values.backend !== undefined ||
+      parsed.values.repo !== undefined ||
+      parsed.values.base !== undefined ||
+      parsed.values["fake-script"] !== undefined ||
+      parsed.values["no-color"] !== undefined
+    ) {
+      io.err("onboard accepts only --global and --db PATH");
+      return 2;
+    }
+    if (parsed.values.global && parsed.values.db !== undefined) {
+      io.err("onboard --global does not accept --db PATH");
+      return 2;
+    }
+    const sourcePath = resolve(
+      import.meta.dir,
+      "..",
+      "..",
+      "skills",
+      "roc-create-tasks",
+      "SKILL.md",
+    );
     try {
+      const root = parsed.values.global
+        ? (runtime.homeRoot ?? homedir())
+        : projectRoot;
+      let installed: Awaited<ReturnType<typeof installRocCreateTasksSkill>>;
+      if (parsed.values.global) {
+        installed = await installRocCreateTasksSkill({ sourcePath, root });
+      } else {
+        const db = openDatabase(dbPath);
+        try {
+          installed = await installRocCreateTasksSkill({ sourcePath, root });
+        } finally {
+          db.close();
+        }
+      }
+      io.out(
+        [
+          ...installed.created.map((path) => `Created ${path}`),
+          ...installed.skipped.map((path) => `Skipped ${path}`),
+          "Install grilling:",
+          grillingInstallCommand,
+        ].join("\n"),
+      );
+      return 0;
+    } catch (error) {
+      io.err(errorMessage(error));
+      return 1;
+    }
+  }
+
+  if (command === "task" && subcommand === "import") {
+    const manifestPath = parsed.positionals.at(2);
+    if (parsed.positionals.length !== 3 || manifestPath === undefined) {
+      io.err("task import requires FILE");
+      return 2;
+    }
+    if (
+      parsed.values.backend !== undefined ||
+      parsed.values.repo !== undefined ||
+      parsed.values.base !== undefined ||
+      parsed.values["fake-script"] !== undefined ||
+      parsed.values["no-color"] !== undefined ||
+      parsed.values.global !== undefined
+    ) {
+      io.err("task import accepts only FILE and --db PATH");
+      return 2;
+    }
+    try {
+      const manifest = await Bun.file(resolve(manifestPath)).json();
       const db = openDatabase(dbPath);
       try {
-        io.out(`Initialized ${dbPath}`);
+        const result = new PlanningRepository(db).importBacklog(manifest);
+        io.out(
+          `Created ${result.created}, skipped ${result.skipped}, total ${result.total}.`,
+        );
         return 0;
       } finally {
         db.close();
