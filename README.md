@@ -28,9 +28,6 @@ Roc currently provides:
 Roc works on one task at a time. It does not merge or push code, delete task
 branches, run several tasks at once, or limit token use.
 
-Ticket import, weekly planning, and an interactive screen are planned but are
-not available yet.
-
 ## Quick Start
 
 Prerequisites:
@@ -103,6 +100,21 @@ Roc works on one small task at a time. When Review asks for changes, Roc sends
 the feedback to an unapproved draft follow-up. That follow-up returns to the
 ready backlog only after approval. Roc saves progress so the flow can continue
 after a restart.
+
+## Milestones
+
+Roc is growing in small steps. These features are planned:
+
+1. **GitHub Issues backlog** — Bring approved GitHub Issues into Roc's ready
+   backlog and keep their status linked.
+2. **Visible task board** — Use a terminal UI to see queued, active, blocked,
+   reviewing, and completed tasks.
+3. **Parallel task runs** — Run independent tasks at the same time in separate
+   work folders.
+4. **Remote approvals** — Review and approve waiting work without staying at
+   the local terminal.
+5. **Notifications** — Get an update when work finishes, fails, or needs
+   approval.
 
 ## Commands
 
