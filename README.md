@@ -8,8 +8,6 @@ Roc is a local command-line tool that guides Codex agents through an agile
 software flow. Each task moves through three steps: **Scout → Implement →
 Review**.
 
-**Supported agent:** [OpenAI Codex](https://github.com/openai/codex) only.
-
 Scout studies the task. Implement writes the code. Review checks the exact
 finished commit. Roc saves progress and token use in SQLite, so work can continue
 after a restart.
@@ -105,18 +103,24 @@ after a restart.
 
 ## Milestones
 
-Roc is growing in small steps. These features are planned:
+Roc is growing in small steps.
 
-1. **GitHub Issues backlog** — Bring approved GitHub Issues into Roc's ready
-   backlog and keep their status linked.
-2. **Visible task board** — Use a terminal UI to see queued, active, blocked,
-   reviewing, and completed tasks.
-3. **Parallel task runs** — Run independent tasks at the same time in separate
-   work folders.
-4. **Remote approvals** — Review and approve waiting work without staying at
-   the local terminal.
-5. **Notifications** — Get an update when work finishes, fails, or needs
-   approval.
+### Product
+
+- [ ] **GitHub Issues backlog** — Bring approved GitHub Issues into Roc's ready
+  backlog.
+- [ ] **Visible task board** — See task progress in a terminal UI.
+- [ ] **Parallel task runs** — Run independent tasks at the same time.
+- [ ] **Remote approvals** — Review and approve waiting work remotely.
+- [ ] **Notifications** — Get updates when work finishes, fails, or needs
+  approval.
+
+### Agent support
+
+- [x] **OpenAI Codex** — Available today.
+- [ ] **Pi agents** — Run Roc tasks with Pi.
+- [ ] **Claude Code** — Run Roc tasks with Claude Code.
+- [ ] **Cursor** — Run Roc tasks with Cursor agents.
 
 ## Commands
 
