@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish npm package and GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v6
+
+      - name: Set up Node and npm registry
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install trusted-publishing npm CLI
+        run: npm install --global npm@12.0.2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - name: Validate tag and package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="$(node -p 'require("./package.json").version')"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a stable vX.Y.Z tag, received: $tag" >&2
+            exit 1
+          fi
+          if [[ "$tag" != "v$version" ]]; then
+            echo "Tag $tag does not match package.json version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run release checks
+        run: bun run check
+
+      - name: Pack tagged source
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_json="$(npm pack --json --ignore-scripts)"
+          archive="$(jq -r '.[0].filename' <<<"$pack_json")"
+          integrity="$(jq -r '.[0].integrity' <<<"$pack_json")"
+          if [[ ! -f "$archive" || "$integrity" != sha512-* ]]; then
+            echo "npm pack did not produce a valid archive and integrity" >&2
+            exit 1
+          fi
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "integrity=$integrity" >> "$GITHUB_OUTPUT"
+
+      - name: Check npm publication state
+        id: registry
+        shell: bash
+        env:
+          EXPECTED_INTEGRITY: ${{ steps.pack.outputs.integrity }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          error_file="$(mktemp)"
+          trap 'rm -f "$error_file"' EXIT
+          if published_integrity="$(npm view "roc-it@$VERSION" dist.integrity 2>"$error_file")"; then
+            if [[ "$published_integrity" != "$EXPECTED_INTEGRITY" ]]; then
+              echo "roc-it@$VERSION exists with different bytes" >&2
+              exit 1
+            fi
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif grep -q "E404" "$error_file"; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            cat "$error_file" >&2
+            exit 1
+          fi
+
+      - name: Publish package through npm OIDC
+        if: steps.registry.outputs.publish == 'true'
+        run: npm publish --access public
+
+      - name: Verify published package integrity
+        shell: bash
+        env:
+          EXPECTED_INTEGRITY: ${{ steps.pack.outputs.integrity }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            if published_integrity="$(npm view "roc-it@$VERSION" dist.integrity 2>/dev/null)"; then
+              if [[ "$published_integrity" != "$EXPECTED_INTEGRITY" ]]; then
+                echo "Published roc-it@$VERSION does not match the tagged archive" >&2
+                exit 1
+              fi
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "roc-it@$VERSION did not become visible in the npm registry" >&2
+          exit 1
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release $GITHUB_REF_NAME already exists"
+            exit 0
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
