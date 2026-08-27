@@ -39,13 +39,13 @@ Prerequisites:
 - Git
 - [Codex CLI](https://github.com/openai/codex) for Codex mode
 
-Run the production package without installing it:
+Run without a global install (Roc still requires Bun at runtime):
 
 ```bash
 npx roc-it help
 ```
 
-You can also use Bun:
+You can also use `bunx` as Bun's package runner:
 
 ```bash
 bunx roc-it help
@@ -117,8 +117,15 @@ roc-it help
 
 See every published version and its notes on [GitHub Releases](https://github.com/devos-ing/Roc/releases).
 
-To publish a stable version, a maintainer updates `package.json` and `bun.lock`,
-merges that version, then tags the exact release commit:
+To publish a stable version, a maintainer bumps `package.json`, runs the locked
+Bun install and full check, and commits `bun.lock` only if Bun changes it:
+
+```bash
+bun install --frozen-lockfile
+bun run check
+```
+
+Then merge that version and tag the exact release commit:
 
 ```bash
 git tag vX.Y.Z

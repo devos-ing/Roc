@@ -4,49 +4,127 @@ import { resolve } from "node:path";
 
 const projectRoot = resolve(import.meta.dir, "..");
 
+type WorkflowStep = {
+  id?: string;
+  if?: string;
+  name?: string;
+  run?: string;
+  uses?: string;
+};
+
+type ReleaseJob = {
+  permissions?: unknown;
+  steps?: WorkflowStep[];
+};
+
+type ReleaseWorkflow = {
+  jobs?: Record<string, ReleaseJob>;
+  on?: { push?: { tags?: string[] } };
+  permissions?: Record<string, string>;
+};
+
 /** Reads a repository file relative to the project root. */
 async function readProjectFile(path: string): Promise<string> {
   return readFile(resolve(projectRoot, path), "utf8");
 }
 
-/** Asserts that each supplied fragment occurs after the previous fragment. */
-function expectInOrder(source: string, parts: string[]): void {
-  let cursor = -1;
-  for (const part of parts) {
-    const next = source.indexOf(part, cursor + 1);
-    expect(next).toBeGreaterThan(cursor);
-    cursor = next;
-  }
+/** Parses the release workflow at its YAML boundary. */
+function parseReleaseWorkflow(source: string): ReleaseWorkflow {
+  return Bun.YAML.parse(source) as ReleaseWorkflow;
 }
 
-test("stable tags publish with OIDC before creating a generated GitHub Release", async () => {
-  const workflow = await readProjectFile(".github/workflows/release.yml");
+/** Returns the one release job, failing clearly if its required steps are absent. */
+function releaseSteps(workflow: ReleaseWorkflow): WorkflowStep[] {
+  const steps = workflow.jobs?.release?.steps;
+  if (!steps) {
+    throw new Error("Release workflow must define release job steps");
+  }
+  return steps;
+}
 
-  expect(workflow).toContain('      - "v*.*.*"');
-  expect(workflow).toContain(
-    "permissions:\n  contents: write\n  id-token: write\n\nconcurrency:",
-  );
-  expect(workflow).not.toContain("NPM_TOKEN");
-  expect(workflow).toContain("^v[0-9]+\\.[0-9]+\\.[0-9]+$");
-  expect(workflow).toContain('if [[ "$tag" != "v$version" ]]; then');
-  expect(workflow).toContain("bun install --frozen-lockfile");
-  expect(workflow).toContain('npm view "roc-it@$VERSION" dist.integrity');
-  expect(workflow).toContain("roc-it@$VERSION exists with different bytes");
-  expect(workflow).toContain('echo "publish=false" >> "$GITHUB_OUTPUT"');
-  expect(workflow).toContain('grep -q "E404" "$error_file"');
-  expect(workflow).toContain("npm publish --access public");
-  expect(workflow).toContain('gh release view "$GITHUB_REF_NAME"');
-  expect(workflow).toContain("--generate-notes");
+/** Finds a release step by its stable name. */
+function stepNamed(steps: WorkflowStep[], name: string): WorkflowStep {
+  const step = steps.find((candidate) => candidate.name === name);
+  if (!step) {
+    throw new Error(`Release workflow is missing step: ${name}`);
+  }
+  return step;
+}
 
-  expectInOrder(workflow, [
+/** Returns a named step's required shell script. */
+function stepRun(steps: WorkflowStep[], name: string): string {
+  const run = stepNamed(steps, name).run;
+  if (!run) {
+    throw new Error(`Release workflow step has no run script: ${name}`);
+  }
+  return run;
+}
+
+test("release workflow keeps the stable-tag, immutable-action, and ordered-release contract", async () => {
+  const source = await readProjectFile(".github/workflows/release.yml");
+  const workflow = parseReleaseWorkflow(source);
+  const steps = releaseSteps(workflow);
+
+  expect(workflow.on).toEqual({ push: { tags: ["v*.*.*"] } });
+  expect(workflow.permissions).toEqual({
+    contents: "write",
+    "id-token": "write",
+  });
+  expect(
+    Object.values(workflow.jobs ?? {}).every((job) => !job.permissions),
+  ).toBe(true);
+  expect(steps.map((step) => step.name)).toEqual([
+    "Check out tagged source",
+    "Set up Node and npm registry",
+    "Install trusted-publishing npm CLI",
+    "Set up Bun",
     "Validate tag and package version",
-    "bun install --frozen-lockfile",
-    "bun run check",
-    "npm pack --json --ignore-scripts",
-    "npm publish --access public",
+    "Install locked dependencies",
+    "Run release checks",
+    "Pack tagged source",
+    "Check npm publication state",
+    "Publish package through npm OIDC",
     "Verify published package integrity",
-    'gh release create "$GITHUB_REF_NAME"',
+    "Create GitHub Release",
   ]);
+  expect(steps.filter((step) => step.uses).map((step) => step.uses)).toEqual([
+    "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+    "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+    "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+  ]);
+  expect(
+    steps
+      .filter((step) => step.uses)
+      .every((step) => step.uses?.match(/^[^@]+@[0-9a-f]{40}$/)),
+  ).toBe(true);
+  expect(stepNamed(steps, "Publish package through npm OIDC").if).toBe(
+    "steps.registry.outputs.publish == 'true'",
+  );
+  expect(JSON.stringify(workflow)).not.toContain("NPM_TOKEN");
+
+  const registry = stepRun(steps, "Check npm publication state");
+  expect(registry).toContain(
+    'if published_integrity="$(npm view "roc-it@$VERSION" dist.integrity 2>"$error_file")"; then',
+  );
+  expect(registry).toContain('echo "publish=false" >> "$GITHUB_OUTPUT"');
+  expect(registry).toContain('elif grep -q "E404" "$error_file"; then');
+  expect(registry).toContain('echo "publish=true" >> "$GITHUB_OUTPUT"');
+  expect(registry).toContain('else\n  cat "$error_file" >&2\n  exit 1');
+
+  const verification = stepRun(steps, "Verify published package integrity");
+  expect(verification).toContain('error_file="$(mktemp)"');
+  expect(verification).toContain('2>"$error_file"');
+  expect(verification).toContain("grep -Eq '\\bE(401|403)\\b' \"$error_file\"");
+  expect(verification).toContain('cat "$error_file" >&2');
+  expect(
+    verification.indexOf("does not match the tagged archive"),
+  ).toBeLessThan(verification.indexOf("sleep 5"));
+
+  const release = stepRun(steps, "Create GitHub Release");
+  expect(release.indexOf('gh release view "$GITHUB_REF_NAME"')).toBeLessThan(
+    release.indexOf('gh release create "$GITHUB_REF_NAME"'),
+  );
+  expect(release).toContain("--generate-notes");
 });
 
 test("README leads with npx production commands and explains tagged releases", async () => {
@@ -61,7 +139,12 @@ test("README leads with npx production commands and explains tagged releases", a
   expect(readme).toContain(
     "npx roc-it scheduler run --backend codex --repo /absolute/path/to/project",
   );
+  expect(readme).toContain(
+    "Run without a global install (Roc still requires Bun at runtime):",
+  );
+  expect(readme).toContain("`bunx` as Bun's package runner");
   expect(readme).toContain("https://github.com/devos-ing/Roc/releases");
+  expect(readme).toContain("commits `bun.lock` only if Bun changes it");
   expect(readme).toContain("git tag vX.Y.Z");
   expect(readme).toContain("git push origin vX.Y.Z");
 });
