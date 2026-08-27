@@ -36,7 +36,12 @@ test("package metadata exposes roc-it as a public Bun CLI", async () => {
   expect(manifest.private).toBeUndefined();
   expect(manifest.license).toBe("Apache-2.0");
   expect(manifest.bin).toEqual({ "roc-it": "./src/cli/main.ts" });
-  expect(manifest.files).toEqual(["src", "README.md", "LICENSE"]);
+  expect(manifest.files).toEqual([
+    "src",
+    "README.md",
+    "README.zh-HK.md",
+    "LICENSE",
+  ]);
   expect(manifest.engines).toEqual({ bun: ">=1.3.0" });
   expect(manifest.publishConfig).toEqual({ access: "public" });
   expect(manifest.scripts?.prepublishOnly).toBe("bun run check");
@@ -65,7 +70,12 @@ test("npm archive contains only runtime files", async () => {
   expect(results).toHaveLength(1);
 
   const paths = results[0]!.files.map((file) => file.path).sort();
-  const allowedRootFiles = new Set(["LICENSE", "README.md", "package.json"]);
+  const allowedRootFiles = new Set([
+    "LICENSE",
+    "README.md",
+    "README.zh-HK.md",
+    "package.json",
+  ]);
   const unexpected = paths.filter(
     (path) => !allowedRootFiles.has(path) && !path.startsWith("src/"),
   );
@@ -73,6 +83,8 @@ test("npm archive contains only runtime files", async () => {
   expect(unexpected).toEqual([]);
   expect(paths).toContain("LICENSE");
   expect(paths).toContain("README.md");
+  expect(paths).toContain("README.zh-HK.md");
+  expect(paths).not.toContain("CONTRIBUTING.md");
   expect(paths).toContain("package.json");
   expect(paths).toContain("src/cli/main.ts");
 });
