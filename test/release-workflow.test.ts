@@ -171,3 +171,28 @@ test("README leads with npx production commands and explains tagged releases", a
   expect(readme).toContain("git tag vX.Y.Z");
   expect(readme).toContain("git push origin vX.Y.Z");
 });
+
+test("README explains the agile Scout, Implement, Review loop", async () => {
+  const readme = await readProjectFile("README.md");
+  const start = readme.indexOf("## How it works");
+  const end = readme.indexOf("## Commands", start);
+  const howItWorks = readme.slice(start, end);
+
+  expect(howItWorks).toContain("Roc follows a small agile loop");
+  expect(howItWorks).toContain("B[Ready backlog] --> S[Scout]");
+  expect(howItWorks).toContain("S --> I[Implement]");
+  expect(howItWorks).toContain("I --> R[Review]");
+  expect(howItWorks).toContain("R -->|Accepted| D[Done]");
+  expect(howItWorks).toContain("R -->|Changes needed| F[Follow-up task]");
+  expect(howItWorks).toContain("- **Scout:** Understands the task");
+  expect(howItWorks).toContain("- **Implement:** Writes the code");
+  expect(howItWorks).toContain(
+    "- **Review:** Independently checks that exact commit",
+  );
+  expect(howItWorks).toContain("Roc works on one small task at a time");
+  expect(howItWorks).toContain(
+    "saves progress so the flow can continue after a restart",
+  );
+  expect(howItWorks).not.toContain("Token ledger");
+  expect(howItWorks).not.toContain("GitHub Release");
+});

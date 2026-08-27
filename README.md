@@ -81,25 +81,26 @@ never switches branches or makes commits in the source folder passed through
 
 ## How it works
 
+Roc follows a small agile loop. It moves each task through three focused agents:
+
 ```mermaid
 flowchart LR
-    B[(Ready backlog)] --> S[Scout]
+    B[Ready backlog] --> S[Scout]
     S --> I[Implement]
-    I --> R[Independent Review]
-    R -->|accepted| D[Done]
-    R -->|rejected| X[Original task: Rejected]
-    X --> F[Linked draft follow-up]
+    I --> R[Review]
+    R -->|Accepted| D[Done]
+    R -->|Changes needed| F[Follow-up task]
     F --> B
-    X --> N[Pick next ready task]
-    N --> B
-    I -. commit + context .-> F
-    S -. usage .-> U[(Token ledger)]
-    I -. usage .-> U
-    R -. usage .-> U
 ```
 
-A Review rejection is a normal result, not a system failure. This lets Roc move
-to another task while keeping the code and feedback for later.
+- **Scout:** Understands the task, checks the code, and prepares a plan.
+- **Implement:** Writes the code in a separate work folder and creates a commit.
+- **Review:** Independently checks that exact commit. It accepts the work or
+  creates a follow-up task with clear feedback.
+
+Roc works on one small task at a time. When Review asks for changes, Roc sends
+the feedback back to the ready backlog instead of repeating the finished
+attempt. Roc saves progress so the flow can continue after a restart.
 
 ## Commands
 
