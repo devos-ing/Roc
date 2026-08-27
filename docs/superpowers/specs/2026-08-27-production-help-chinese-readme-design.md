@@ -62,20 +62,18 @@ instructions.
 
 ## Tests
 
-Update the smallest tests that protect the new boundary:
+Use one behavior test at the real CLI boundary: call `runCli(["help"], io)` and
+assert the user-visible output contains every production command but not fake,
+`--fake-script`, or `scheduler inspect`. Existing CLI and scheduler tests will
+continue proving the hidden commands work; their dispatch will not change.
 
-- CLI help tests assert all production commands are present and fake,
-  `--fake-script`, and `scheduler inspect` are absent.
-- Existing CLI and scheduler tests continue proving the hidden commands still
-  work; their command dispatch will not change.
-- Documentation tests assert production `@latest` examples remain in both
-  READMEs, contributor-only commands and release instructions live in
-  `CONTRIBUTING.md`, and the English README no longer contains the removed
-  sections.
-- Documentation tests also check that the two language links and main public
-  sections exist, without enforcing a brittle line-by-line translation.
+README and contributor prose will not gain text-matching tests. Verify their
+language links, public sections, `@latest` examples, production command lists,
+and contributor-only content directly while implementing them. Remove the old
+README release-prose test because release instructions no longer belong there.
 
-Run the focused CLI help and documentation tests, then `bun run check`.
+Run the focused CLI tests, the remaining release-workflow tests, and then
+`bun run check`.
 
 ## Non-goals
 

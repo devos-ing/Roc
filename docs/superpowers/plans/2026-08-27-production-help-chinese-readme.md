@@ -24,11 +24,12 @@
 ## File structure
 
 - Modify `src/cli/help.ts`: list production commands only.
-- Modify `test/cli/help.test.ts`: protect the public-help boundary.
+- Modify `test/cli/help.test.ts`: protect user-visible production help through
+  the real CLI entry point.
 - Modify `README.md`: add language navigation and remove contributor-only content.
 - Create `README.zh-HK.md`: provide the complete public README in Traditional Chinese.
 - Create `CONTRIBUTING.md`: own development, testing, hidden commands, safety, and release instructions.
-- Modify `test/release-workflow.test.ts`: protect production documentation, language navigation, and contributor guidance.
+- Modify `test/release-workflow.test.ts`: remove the obsolete README release-prose test while preserving release-workflow coverage.
 
 ### Task 1: Hide development commands from public CLI help
 
@@ -37,30 +38,48 @@
 - Modify: `src/cli/help.ts`
 
 **Interfaces:**
-- Consumes: `helpText: string`, printed by `runCli` for no command or `help`.
-- Produces: the same exported `helpText` constant with only production commands.
+- Consumes: `runCli(args: string[], io: CliIo): Promise<number>` and its
+  user-visible output for the `help` command.
+- Produces: the same exported `helpText` constant with only production commands,
+  observed through `runCli`.
 
 - [ ] **Step 1: Replace the help contract test**
 
-Replace the existing test in `test/cli/help.test.ts` with:
+Replace `test/cli/help.test.ts` with:
 
 ```typescript
-test("help lists only production roc-it commands", () => {
-  expect(helpText).toContain(
+import { expect, test } from "bun:test";
+import { runCli } from "../../src/cli/run";
+
+test("help prints only production roc-it commands", async () => {
+  const output: string[] = [];
+  const errors: string[] = [];
+
+  expect(
+    await runCli(["help"], {
+      out: (text) => output.push(text),
+      err: (text) => errors.push(text),
+    }),
+  ).toBe(0);
+  expect(errors).toEqual([]);
+  expect(output).toHaveLength(1);
+
+  const help = output[0]!;
+  expect(help).toContain(
     "roc-it - run Codex agents through an agile software flow",
   );
-  expect(helpText).toContain("roc-it init [--db PATH]");
-  expect(helpText).toContain("roc-it task list [--db PATH]");
-  expect(helpText).toContain("roc-it tokens [--db PATH] [--no-color]");
-  expect(helpText).toContain(
+  expect(help).toContain("roc-it init [--db PATH]");
+  expect(help).toContain("roc-it task list [--db PATH]");
+  expect(help).toContain("roc-it tokens [--db PATH] [--no-color]");
+  expect(help).toContain(
     "roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]",
   );
-  expect(helpText).toContain("roc-it help");
-  expect(helpText).not.toContain("--backend fake");
-  expect(helpText).not.toContain("--fake-script");
-  expect(helpText).not.toContain("scheduler inspect");
-  expect(helpText).not.toMatch(/^\s*agile(?:\s|$)/m);
-  expect(helpText).not.toContain("--low");
+  expect(help).toContain("roc-it help");
+  expect(help).not.toContain("--backend fake");
+  expect(help).not.toContain("--fake-script");
+  expect(help).not.toContain("scheduler inspect");
+  expect(help).not.toMatch(/^\s*agile(?:\s|$)/m);
+  expect(help).not.toContain("--low");
 });
 ```
 
@@ -129,80 +148,14 @@ Expected: one commit containing only the help text and its contract test.
 - Produces: a public `README.md` that links to `CONTRIBUTING.md`, plus one
   contributor guide that owns all non-production instructions.
 
-- [ ] **Step 1: Replace the English README/release documentation test**
+- [ ] **Step 1: Remove the obsolete README release-prose test**
 
-In `test/release-workflow.test.ts`, replace the test named
-`README leads with npx production commands and explains tagged releases` with
-these two tests:
+Delete only the test named
+`README leads with npx production commands and explains tagged releases` from
+`test/release-workflow.test.ts`. Human-facing prose will be reviewed directly;
+the release workflow behavior test and the existing agile-flow test remain.
 
-```typescript
-test("English README stays production-focused", async () => {
-  const readme = await readProjectFile("README.md");
-
-  expect(readme.indexOf("npx roc-it@latest help")).toBeLessThan(
-    readme.indexOf("bunx roc-it@latest help"),
-  );
-  expect(readme).toContain("npx roc-it@latest init");
-  expect(readme).toContain("npx roc-it@latest task list");
-  expect(readme).toContain("npx roc-it@latest tokens");
-  expect(readme).toContain(
-    "npx roc-it@latest scheduler run --backend codex --repo /absolute/path/to/project",
-  );
-  expect(readme).toContain("npm install -g roc-it@latest");
-  const packageRunnerCommands =
-    readme.match(/^(?:npx|bunx) roc-it(?:@\S+)?(?: .*)?$/gm) ?? [];
-  expect(packageRunnerCommands.length).toBeGreaterThan(0);
-  expect(
-    packageRunnerCommands.every((command) =>
-      /^(?:npx|bunx) roc-it@latest(?: |$)/.test(command),
-    ),
-  ).toBe(true);
-  expect(readme).toContain(
-    "Run without a global install (Roc still requires Bun at runtime):",
-  );
-  expect(readme).toContain("`bunx` as Bun's package runner");
-  expect(readme).toContain(
-    '<strong>English</strong> · <a href="README.zh-HK.md">繁體中文</a>',
-  );
-  expect(readme).toContain("[CONTRIBUTING.md](CONTRIBUTING.md)");
-  expect(readme).not.toContain("--backend fake");
-  expect(readme).not.toContain("--fake-script");
-  expect(readme).not.toContain("scheduler inspect");
-  expect(readme).not.toContain("## Releases");
-  expect(readme).not.toContain("## Development");
-  expect(readme).not.toContain("git tag vX.Y.Z");
-});
-
-test("CONTRIBUTING owns development and release instructions", async () => {
-  const contributing = await readProjectFile("CONTRIBUTING.md");
-
-  expect(contributing).toContain("bun install --frozen-lockfile");
-  expect(contributing).toContain("bun run typecheck");
-  expect(contributing).toContain("bun run test");
-  expect(contributing).toContain("bun run check");
-  expect(contributing).toContain(
-    "scheduler run --backend fake --fake-script /absolute/path/to/scenario.json",
-  );
-  expect(contributing).toContain("scheduler inspect");
-  expect(contributing).toContain("https://github.com/devos-ing/Roc/releases");
-  expect(contributing).toContain("commit `bun.lock` only if Bun changes it");
-  expect(contributing).toContain("git tag vX.Y.Z");
-  expect(contributing).toContain("git push origin vX.Y.Z");
-});
-```
-
-- [ ] **Step 2: Run the documentation test and confirm it fails**
-
-Run:
-
-```bash
-rtk bun test test/release-workflow.test.ts
-```
-
-Expected: FAIL because `README.md` still exposes development and release
-content and `CONTRIBUTING.md` does not exist.
-
-- [ ] **Step 3: Add language navigation to the English README**
+- [ ] **Step 2: Add language navigation to the English README**
 
 Immediately after the centered image block at the top of `README.md`, add:
 
@@ -212,7 +165,7 @@ Immediately after the centered image block at the top of `README.md`, add:
 </p>
 ```
 
-- [ ] **Step 4: Keep only production commands in the English README**
+- [ ] **Step 3: Keep only production commands in the English README**
 
 Replace the `## Commands` code block with:
 
@@ -228,7 +181,7 @@ roc-it help
 ```
 ````
 
-- [ ] **Step 5: Replace Releases and Development with one contributor link**
+- [ ] **Step 4: Replace Releases and Development with one contributor link**
 
 Delete everything from `## Releases` through the end of the Development
 section, stopping immediately before `## References`. Insert this block in its
@@ -241,7 +194,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development, testing, and release
 instructions.
 ```
 
-- [ ] **Step 6: Create the contributor guide**
+- [ ] **Step 5: Create the contributor guide**
 
 Create `CONTRIBUTING.md` with this exact content:
 
@@ -353,7 +306,25 @@ installs locked dependencies, runs the full check, publishes the package to npm,
 and creates the GitHub Release.
 ````
 
-- [ ] **Step 7: Run the English documentation contract**
+- [ ] **Step 6: Verify the English public/contributor split directly**
+
+Run:
+
+```bash
+rtk zsh -lc 'set -euo pipefail
+rg -q "<strong>English</strong> · <a href=\"README.zh-HK.md\">繁體中文</a>" README.md
+rg -q "\[CONTRIBUTING.md\]\(CONTRIBUTING.md\)" README.md
+! rg -q -- "--backend fake|--fake-script|scheduler inspect|^## Releases$|^## Development$|git tag vX.Y.Z" README.md
+rg -q -- "--backend fake" CONTRIBUTING.md
+rg -q "scheduler inspect" CONTRIBUTING.md
+rg -q "^## Releases$" CONTRIBUTING.md
+rg -q "git tag vX.Y.Z" CONTRIBUTING.md'
+```
+
+Expected: exit code 0. The English README contains only public guidance, while
+`CONTRIBUTING.md` owns development and release instructions.
+
+- [ ] **Step 7: Run the remaining release and README tests**
 
 Run:
 
@@ -361,7 +332,7 @@ Run:
 rtk bun test test/release-workflow.test.ts
 ```
 
-Expected: all tests in the file pass.
+Expected: the release-workflow and existing agile-flow tests pass.
 
 - [ ] **Step 8: Commit the public/contributor documentation split**
 
@@ -378,7 +349,6 @@ tests.
 ### Task 3: Add the Traditional Chinese README
 
 **Files:**
-- Modify: `test/release-workflow.test.ts`
 - Create: `README.zh-HK.md`
 
 **Interfaces:**
@@ -387,51 +357,7 @@ tests.
 - Produces: a complete Traditional Chinese public README linked from the English
   README.
 
-- [ ] **Step 1: Add the Chinese README contract test**
-
-Add this test to `test/release-workflow.test.ts` after the English README test:
-
-```typescript
-test("Traditional Chinese README mirrors the public product surface", async () => {
-  const readme = await readProjectFile("README.zh-HK.md");
-
-  expect(readme).toContain(
-    '<a href="README.md">English</a> · <strong>繁體中文</strong>',
-  );
-  expect(readme).toContain("# Roc");
-  expect(readme).toContain("## 快速開始");
-  expect(readme).toContain("## 運作方式");
-  expect(readme).toContain("## 里程碑");
-  expect(readme).toContain("## 指令");
-  expect(readme).toContain("## 參與貢獻");
-  expect(readme).toContain("## 參考項目");
-  expect(readme).toContain("## 授權條款");
-  expect(readme).toContain("npx roc-it@latest help");
-  expect(readme).toContain("bunx roc-it@latest help");
-  expect(readme).toContain("npm install -g roc-it@latest");
-  expect(readme).toContain(
-    "npx roc-it@latest scheduler run --backend codex --repo /absolute/path/to/project",
-  );
-  expect(readme).toContain("B[Ready backlog] --> S[Scout]");
-  expect(readme).toContain("[CONTRIBUTING.md](CONTRIBUTING.md)");
-  expect(readme).not.toContain("--backend fake");
-  expect(readme).not.toContain("--fake-script");
-  expect(readme).not.toContain("scheduler inspect");
-  expect(readme).not.toContain("git tag vX.Y.Z");
-});
-```
-
-- [ ] **Step 2: Run the Chinese README test and confirm it fails**
-
-Run:
-
-```bash
-rtk bun test test/release-workflow.test.ts
-```
-
-Expected: FAIL because `README.zh-HK.md` does not exist.
-
-- [ ] **Step 3: Create the Traditional Chinese README**
+- [ ] **Step 1: Create the Traditional Chinese README**
 
 Create `README.zh-HK.md` with this exact content:
 
@@ -596,7 +522,31 @@ Roc 使用 [Apache License 2.0](LICENSE)。只要遵守授權條款，你可以�
 分享 Roc，也可以用於商業用途。
 ````
 
-- [ ] **Step 4: Run the full documentation contract**
+- [ ] **Step 2: Verify the Chinese public README directly**
+
+Run:
+
+```bash
+rtk zsh -lc 'set -euo pipefail
+rg -q "<a href=\"README.md\">English</a> · <strong>繁體中文</strong>" README.zh-HK.md
+rg -q "^## 快速開始$" README.zh-HK.md
+rg -q "^## 運作方式$" README.zh-HK.md
+rg -q "^## 里程碑$" README.zh-HK.md
+rg -q "^## 指令$" README.zh-HK.md
+rg -q "^## 參與貢獻$" README.zh-HK.md
+rg -q "^## 參考項目$" README.zh-HK.md
+rg -q "^## 授權條款$" README.zh-HK.md
+rg -q "npx roc-it@latest help" README.zh-HK.md
+rg -q "bunx roc-it@latest help" README.zh-HK.md
+rg -q "B\[Ready backlog\] --> S\[Scout\]" README.zh-HK.md
+rg -q "\[CONTRIBUTING.md\]\(CONTRIBUTING.md\)" README.zh-HK.md
+! rg -q -- "--backend fake|--fake-script|scheduler inspect|git tag vX.Y.Z" README.zh-HK.md'
+```
+
+Expected: exit code 0. The Traditional Chinese README contains every public
+section and no contributor-only command or release procedure.
+
+- [ ] **Step 3: Run the remaining release and README tests**
 
 Run:
 
@@ -604,18 +554,18 @@ Run:
 rtk bun test test/release-workflow.test.ts
 ```
 
-Expected: all workflow and English/Chinese documentation tests pass.
+Expected: the release-workflow and existing agile-flow tests pass.
 
-- [ ] **Step 5: Commit the Traditional Chinese README**
+- [ ] **Step 4: Commit the Traditional Chinese README**
 
 Run:
 
 ```bash
-rtk git add README.zh-HK.md test/release-workflow.test.ts
+rtk git add README.zh-HK.md
 rtk env HUSKY=0 git commit -m "docs: add Traditional Chinese README"
 ```
 
-Expected: one commit containing the Chinese README and its contract test.
+Expected: one commit containing the complete Traditional Chinese README.
 
 ### Task 4: Verify the complete public/contributor boundary
 
@@ -636,25 +586,28 @@ Expected: one commit containing the Chinese README and its contract test.
 Run:
 
 ```bash
-rtk bun test test/cli/help.test.ts test/release-workflow.test.ts
+rtk bun test test/cli/help.test.ts test/cli/scheduler.test.ts test/cli/run.test.ts test/release-workflow.test.ts
 ```
 
-Expected: all focused tests pass.
+Expected: all focused tests pass, including fake scheduling and scheduler
+inspection behavior.
 
-- [ ] **Step 2: Verify the hidden commands remain implemented**
+- [ ] **Step 2: Review the final documentation boundary directly**
 
 Run:
 
 ```bash
 rtk zsh -lc 'set -euo pipefail
-rg -q "command === \"scheduler\" && subcommand === \"inspect\"" src/cli/run.ts
-rg -q "backend !== \"fake\" && backend !== \"codex\"" src/cli/run.ts
-! rg -q -- "--backend fake" src/cli/help.ts
-! rg -q "scheduler inspect" src/cli/help.ts'
+rg -q "README.zh-HK.md" README.md
+rg -q "README.md" README.zh-HK.md
+! rg -q -- "--backend fake|--fake-script|scheduler inspect|git tag vX.Y.Z" README.md README.zh-HK.md
+rg -q -- "--backend fake" CONTRIBUTING.md
+rg -q "scheduler inspect" CONTRIBUTING.md
+rg -q "git tag vX.Y.Z" CONTRIBUTING.md'
 ```
 
-Expected: exit code 0, proving implementation remains while help hides both
-development commands.
+Expected: exit code 0, proving the public READMEs link to each other and keep
+contributor-only commands and release steps in `CONTRIBUTING.md`.
 
 - [ ] **Step 3: Run the full project check**
 
@@ -678,5 +631,6 @@ rtk git status --short
 rtk git log --oneline main..HEAD
 ```
 
-Expected: no whitespace errors, a clean worktree, and five commits: the design
-spec, this implementation plan, and one commit for each implementation task.
+Expected: no whitespace errors, a clean worktree, and six commits: the design
+spec, the implementation plan, the approved test-strategy revision, and one
+commit for each implementation task.
