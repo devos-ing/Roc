@@ -39,16 +39,16 @@ Prerequisites:
 - Git
 - [Codex CLI](https://github.com/openai/codex) for Codex mode
 
-Run Roc without installing it:
-
-```bash
-bunx roc-it help
-```
-
-You can also use npm:
+Run the production package without installing it:
 
 ```bash
 npx roc-it help
+```
+
+You can also use Bun:
+
+```bash
+bunx roc-it help
 ```
 
 Or install the command globally:
@@ -61,9 +61,9 @@ roc-it help
 Create and inspect the local task database:
 
 ```bash
-bunx roc-it init
-bunx roc-it task list
-bunx roc-it tokens
+npx roc-it init
+npx roc-it task list
+npx roc-it tokens
 ```
 
 Roc does not yet have a public command for adding tickets, so the scheduler
@@ -72,7 +72,7 @@ needs a prepared backlog.
 Run that backlog with Codex:
 
 ```bash
-bunx roc-it scheduler run --backend codex --repo /absolute/path/to/project
+npx roc-it scheduler run --backend codex --repo /absolute/path/to/project
 ```
 
 Codex mode creates or reuses a work folder at `<project>.agile-checkout`. Roc
@@ -112,6 +112,21 @@ roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
 roc-it scheduler inspect [--db PATH]
 roc-it help
 ```
+
+## Releases
+
+See every published version and its notes on [GitHub Releases](https://github.com/devos-ing/Roc/releases).
+
+To publish a stable version, a maintainer updates `package.json` and `bun.lock`,
+merges that version, then tags the exact release commit:
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+The tag must match the version in `package.json`. GitHub Actions runs the checks,
+publishes the package to npm, and creates the GitHub Release.
 
 ## Development
 
