@@ -4,8 +4,9 @@
 
 # Roc
 
-Roc runs agents through a simple agile software flow. Each task moves through
-three steps: **Scout → Implement → Review**.
+Roc is a local command-line tool that guides Codex agents through an agile
+software flow. Each task moves through three steps: **Scout → Implement →
+Review**.
 
 Scout studies the task. Implement writes the code. Review checks the exact
 finished commit. Roc saves progress and token use in SQLite, so work can continue
