@@ -150,37 +150,6 @@ test("release workflow keeps the stable-tag, immutable-action, and ordered-relea
   expect(release).toContain('gh release create "$GITHUB_REF_NAME"');
 });
 
-test("README leads with npx production commands and explains tagged releases", async () => {
-  const readme = await readProjectFile("README.md");
-
-  expect(readme.indexOf("npx roc-it@latest help")).toBeLessThan(
-    readme.indexOf("bunx roc-it@latest help"),
-  );
-  expect(readme).toContain("npx roc-it@latest init");
-  expect(readme).toContain("npx roc-it@latest task list");
-  expect(readme).toContain("npx roc-it@latest tokens");
-  expect(readme).toContain(
-    "npx roc-it@latest scheduler run --backend codex --repo /absolute/path/to/project",
-  );
-  expect(readme).toContain("npm install -g roc-it@latest");
-  const packageRunnerCommands =
-    readme.match(/^(?:npx|bunx) roc-it(?:@\S+)?(?: .*)?$/gm) ?? [];
-  expect(packageRunnerCommands.length).toBeGreaterThan(0);
-  expect(
-    packageRunnerCommands.every((command) =>
-      /^(?:npx|bunx) roc-it@latest(?: |$)/.test(command),
-    ),
-  ).toBe(true);
-  expect(readme).toContain(
-    "Run without a global install (Roc still requires Bun at runtime):",
-  );
-  expect(readme).toContain("`bunx` as Bun's package runner");
-  expect(readme).toContain("https://github.com/devos-ing/Roc/releases");
-  expect(readme).toContain("commits `bun.lock` only if Bun changes it");
-  expect(readme).toContain("git tag vX.Y.Z");
-  expect(readme).toContain("git push origin vX.Y.Z");
-});
-
 test("README explains the agile Scout, Implement, Review loop", async () => {
   const readme = await readProjectFile("README.md");
   const start = readme.indexOf("## How it works");

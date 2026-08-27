@@ -2,6 +2,10 @@
   <img src="https://raw.githubusercontent.com/devos-ing/Roc/main/output/imagegen/roc-avatar-tech.png" alt="Roc project avatar" width="220" />
 </p>
 
+<p align="center">
+  <strong>English</strong> · <a href="README.zh-HK.md">繁體中文</a>
+</p>
+
 # Roc
 
 Roc is a local command-line tool that guides Codex agents through an agile
@@ -128,74 +132,14 @@ Roc is growing in small steps.
 roc-it init [--db PATH]
 roc-it task list [--db PATH]
 roc-it tokens [--db PATH] [--no-color]
-roc-it scheduler run --backend fake --fake-script PATH [--db PATH]
 roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
-roc-it scheduler inspect [--db PATH]
 roc-it help
 ```
 
-## Releases
+## Contributing
 
-See every published version and its notes on [GitHub Releases](https://github.com/devos-ing/Roc/releases).
-
-To publish a stable version, a maintainer bumps `package.json`, runs the locked
-Bun install and full check, and commits `bun.lock` only if Bun changes it:
-
-```bash
-bun install --frozen-lockfile
-bun run check
-```
-
-Then merge that version and tag the exact release commit:
-
-```bash
-git tag vX.Y.Z
-git push origin vX.Y.Z
-```
-
-The tag must match the version in `package.json`. GitHub Actions runs the checks,
-publishes the package to npm, and creates the GitHub Release.
-
-## Development
-
-Roc uses Bun, TypeScript, Zod, `bun:sqlite`, `simple-git`, and the Codex
-app-server.
-
-From a source checkout:
-
-```bash
-bun install
-bun run src/cli/main.ts help
-bun run typecheck
-bun run test
-bun run check
-```
-
-Start with these documents:
-
-- [Architecture](docs/architecture.md)
-- [Domain language](CONTEXT.md)
-- [Approved specifications](docs/specs/)
-- [Durable decisions](docs/adr/)
-- [Research](docs/research/)
-- [Testing policy](AGENTS.md)
-
-Keep changes small and follow these safety rules:
-
-- never change the source work folder;
-- Review must check the exact clean commit from Implement;
-- receiving the same update twice must not repeat the change;
-- a rejected task must stay closed and create only one draft follow-up.
-
-Before submitting a change, run:
-
-```bash
-bun run check
-```
-
-Tests should prove the most important behavior. Full test coverage is not the
-goal. Use the Fake Harness to test retries, rejection, restart, and repeated
-events.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development, testing, and release
+instructions.
 
 ## References
 
