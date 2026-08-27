@@ -190,9 +190,15 @@ DROP TABLE model_decisions;
 ALTER TABLE model_decisions_v3 RENAME TO model_decisions;
 `;
 
+/** Migrates a database transactionally through every supported schema version. */
 export function migrate(db: Database): void {
-  let version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
-  if (version > 3) throw new Error(`Database version ${version} is newer than supported version 3`);
+  let version =
+    db.query<{ user_version: number }, []>("PRAGMA user_version").get()
+      ?.user_version ?? 0;
+  if (version > 3)
+    throw new Error(
+      `Database version ${version} is newer than supported version 3`,
+    );
   if (version === 0) {
     db.transaction(() => {
       db.exec(migration1);
@@ -208,7 +214,8 @@ export function migrate(db: Database): void {
     version = 2;
   }
   if (version === 2) {
-    const legacy = db.query<{ model: string }, []>(`
+    const legacy = db
+      .query<{ model: string }, []>(`
       SELECT model
       FROM (
         SELECT model, 0 AS source FROM attempts
@@ -218,22 +225,29 @@ export function migrate(db: Database): void {
       WHERE model NOT IN ('luna', 'terra', 'sol')
       ORDER BY source, model
       LIMIT 1
-    `).get();
-    if (legacy) throw new Error(`Cannot map legacy model profile: ${legacy.model}`);
+    `)
+      .get();
+    if (legacy)
+      throw new Error(`Cannot map legacy model profile: ${legacy.model}`);
 
-    const foreignKeys = db.query<{ foreign_keys: number }, []>(
-      "PRAGMA foreign_keys",
-    ).get()?.foreign_keys ?? 0;
+    const foreignKeys =
+      db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()
+        ?.foreign_keys ?? 0;
     db.exec("PRAGMA foreign_keys = OFF");
     try {
       db.transaction(() => {
         db.exec(migration3);
-        const violation = db.query<{
-          table: string;
-          rowid: number | null;
-          parent: string;
-          fkid: number;
-        }, []>("PRAGMA foreign_key_check").get();
+        const violation = db
+          .query<
+            {
+              table: string;
+              rowid: number | null;
+              parent: string;
+              fkid: number;
+            },
+            []
+          >("PRAGMA foreign_key_check")
+          .get();
         if (violation) {
           throw new Error(
             `Foreign key check failed during migration 3: ${violation.table} row ${violation.rowid ?? "unknown"}`,
@@ -242,7 +256,11 @@ export function migrate(db: Database): void {
         db.exec("PRAGMA user_version = 3");
       })();
     } finally {
-      db.exec(foreignKeys === 0 ? "PRAGMA foreign_keys = OFF" : "PRAGMA foreign_keys = ON");
+      db.exec(
+        foreignKeys === 0
+          ? "PRAGMA foreign_keys = OFF"
+          : "PRAGMA foreign_keys = ON",
+      );
     }
   }
 }

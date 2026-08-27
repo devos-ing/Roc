@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import type { AgentHarness, HarnessDelivery } from "../../src/harness/contracts";
+import type {
+  AgentHarness,
+  HarnessDelivery,
+} from "../../src/harness/contracts";
 import { SchedulerDaemon } from "../../src/scheduler/daemon";
 import { Scheduler } from "../../src/scheduler/scheduler";
 import { openDatabase } from "../../src/store/database";
@@ -51,10 +54,34 @@ test("allows one lease owner and takeover only after expiry", () => {
   const db = openDatabase(":memory:");
   const repo = new OrchestrationRepository(db);
   try {
-    expect(repo.acquireLease("owner-1", "2026-08-25T00:00:00.000Z", "2026-08-25T00:00:10.000Z")).toBe(true);
-    expect(repo.acquireLease("owner-2", "2026-08-25T00:00:05.000Z", "2026-08-25T00:00:15.000Z")).toBe(false);
-    expect(repo.heartbeatLease("owner-1", "2026-08-25T00:00:11.000Z", "2026-08-25T00:00:21.000Z")).toBe(false);
-    expect(repo.acquireLease("owner-2", "2026-08-25T00:00:11.000Z", "2026-08-25T00:00:21.000Z")).toBe(true);
+    expect(
+      repo.acquireLease(
+        "owner-1",
+        "2026-08-25T00:00:00.000Z",
+        "2026-08-25T00:00:10.000Z",
+      ),
+    ).toBe(true);
+    expect(
+      repo.acquireLease(
+        "owner-2",
+        "2026-08-25T00:00:05.000Z",
+        "2026-08-25T00:00:15.000Z",
+      ),
+    ).toBe(false);
+    expect(
+      repo.heartbeatLease(
+        "owner-1",
+        "2026-08-25T00:00:11.000Z",
+        "2026-08-25T00:00:21.000Z",
+      ),
+    ).toBe(false);
+    expect(
+      repo.acquireLease(
+        "owner-2",
+        "2026-08-25T00:00:11.000Z",
+        "2026-08-25T00:00:21.000Z",
+      ),
+    ).toBe(true);
     expect(repo.releaseLease("owner-1")).toBe(false);
     expect(repo.releaseLease("owner-2")).toBe(true);
   } finally {
@@ -73,9 +100,18 @@ test("polls after idle and releases its lease on stop", async () => {
     },
   };
   const lease = {
-    acquireLease() { calls.push("acquire"); return true; },
-    heartbeatLease() { calls.push("heartbeat"); return true; },
-    releaseLease() { calls.push("release"); return true; },
+    acquireLease() {
+      calls.push("acquire");
+      return true;
+    },
+    heartbeatLease() {
+      calls.push("heartbeat");
+      return true;
+    },
+    releaseLease() {
+      calls.push("release");
+      return true;
+    },
   };
   const daemon = new SchedulerDaemon(scheduler, lease, {
     ownerId: "owner-1",
@@ -125,7 +161,10 @@ test("heartbeats every three seconds with a ten-second lease", async () => {
       stop = true;
       return true;
     },
-    releaseLease() { calls.push("release"); return true; },
+    releaseLease() {
+      calls.push("release");
+      return true;
+    },
   };
   const daemon = new SchedulerDaemon(scheduler, lease, {
     ownerId: "owner-1",
@@ -135,7 +174,14 @@ test("heartbeats every three seconds with a ten-second lease", async () => {
 
   await daemon.run(() => stop);
 
-  expect(calls).toEqual(["acquire", "tick", "tick", "tick", "heartbeat", "release"]);
+  expect(calls).toEqual([
+    "acquire",
+    "tick",
+    "tick",
+    "tick",
+    "heartbeat",
+    "release",
+  ]);
   expect(heartbeatWaits.pending).toHaveLength(0);
 });
 
@@ -147,13 +193,17 @@ test("heartbeats while a tick is pending and prevents lease takeover", async () 
   let now = epoch;
   let stop = false;
   let tickCount = 0;
-  let finishTick: ((result: { kind: "task_claimed"; taskId: string }) => void) | undefined;
+  let finishTick:
+    | ((result: { kind: "task_claimed"; taskId: string }) => void)
+    | undefined;
   const scheduler = {
     tick() {
       tickCount += 1;
-      return new Promise<{ kind: "task_claimed"; taskId: string }>((resolve) => {
-        finishTick = resolve;
-      });
+      return new Promise<{ kind: "task_claimed"; taskId: string }>(
+        (resolve) => {
+          finishTick = resolve;
+        },
+      );
     },
   };
   const daemon = new SchedulerDaemon(scheduler, repo, {
@@ -175,22 +225,26 @@ test("heartbeats while a tick is pending and prevents lease takeover", async () 
     }
 
     now = epoch + 11_000;
-    expect(repo.acquireLease(
-      "owner-2",
-      "2026-08-25T00:00:11.000Z",
-      "2026-08-25T00:00:21.000Z",
-    )).toBe(false);
+    expect(
+      repo.acquireLease(
+        "owner-2",
+        "2026-08-25T00:00:11.000Z",
+        "2026-08-25T00:00:21.000Z",
+      ),
+    ).toBe(false);
 
     stop = true;
     finishTick?.({ kind: "task_claimed", taskId: "T1" });
     await running;
     expect(tickCount).toBe(1);
     expect(heartbeatWaits.pending).toHaveLength(0);
-    expect(repo.acquireLease(
-      "owner-2",
-      "2026-08-25T00:00:11.000Z",
-      "2026-08-25T00:00:21.000Z",
-    )).toBe(true);
+    expect(
+      repo.acquireLease(
+        "owner-2",
+        "2026-08-25T00:00:11.000Z",
+        "2026-08-25T00:00:21.000Z",
+      ),
+    ).toBe(true);
   } finally {
     stop = true;
     finishTick?.({ kind: "task_claimed", taskId: "T1" });
@@ -208,13 +262,17 @@ test("surfaces lease loss during a pending tick without starting another tick", 
   let now = epoch;
   let stop = false;
   let tickCount = 0;
-  let finishTick: ((result: { kind: "task_claimed"; taskId: string }) => void) | undefined;
+  let finishTick:
+    | ((result: { kind: "task_claimed"; taskId: string }) => void)
+    | undefined;
   const scheduler = {
     tick() {
       tickCount += 1;
-      return new Promise<{ kind: "task_claimed"; taskId: string }>((resolve) => {
-        finishTick = resolve;
-      });
+      return new Promise<{ kind: "task_claimed"; taskId: string }>(
+        (resolve) => {
+          finishTick = resolve;
+        },
+      );
     },
   };
   const daemon = new SchedulerDaemon(scheduler, repo, {
@@ -228,11 +286,13 @@ test("surfaces lease loss during a pending tick without starting another tick", 
     expect(tickCount).toBe(1);
     expect(heartbeatWaits.pending[0]?.milliseconds).toBe(3_000);
     now = epoch + 11_000;
-    expect(repo.acquireLease(
-      "owner-2",
-      "2026-08-25T00:00:11.000Z",
-      "2026-08-25T00:00:21.000Z",
-    )).toBe(true);
+    expect(
+      repo.acquireLease(
+        "owner-2",
+        "2026-08-25T00:00:11.000Z",
+        "2026-08-25T00:00:21.000Z",
+      ),
+    ).toBe(true);
     heartbeatWaits.pending[0]?.wake();
 
     await expect(running).rejects.toThrow("Scheduler lease was lost");
@@ -285,7 +345,11 @@ test("rejects a stale pending delivery after lease takeover without writes", asy
   const repo = new OrchestrationRepository(
     db,
     () => new Date(now).toISOString(),
-    (kind) => `${kind}-${counters[kind] = (counters[kind] ?? 0) + 1}`,
+    (kind) => {
+      const count = (counters[kind] ?? 0) + 1;
+      counters[kind] = count;
+      return `${kind}-${count}`;
+    },
   );
   repo.claimNext();
   repo.beginNextAttempt();
@@ -319,20 +383,33 @@ test("rejects a stale pending delivery after lease takeover without writes", asy
   try {
     expect(heartbeatWaits.pending[0]?.milliseconds).toBe(3_000);
     now = epoch + 11_000;
-    expect(repo.acquireLease(
-      "owner-2",
-      "2026-08-25T00:00:11.000Z",
-      "2026-08-25T00:00:21.000Z",
-    )).toBe(true);
+    expect(
+      repo.acquireLease(
+        "owner-2",
+        "2026-08-25T00:00:11.000Z",
+        "2026-08-25T00:00:21.000Z",
+      ),
+    ).toBe(true);
     finishDelivery?.({ kind: "event", nextCursor: "cursor-stale", event });
 
     await expect(running).rejects.toThrow("Scheduler lease was lost");
-    expect(db.query<{ count: number }, [string]>(`
+    expect(
+      db
+        .query<{ count: number }, [string]>(`
       SELECT COUNT(*) AS count FROM events WHERE idempotency_key = ?
-    `).get(event.eventId)?.count).toBe(0);
-    expect(db.query<{ thread_id: string | null; backend_cursor: string | null }, [string]>(`
+    `)
+        .get(event.eventId)?.count,
+    ).toBe(0);
+    expect(
+      db
+        .query<
+          { thread_id: string | null; backend_cursor: string | null },
+          [string]
+        >(`
       SELECT thread_id, backend_cursor FROM attempts WHERE id = ?
-    `).get(event.attemptId)).toEqual({
+    `)
+        .get(event.attemptId),
+    ).toEqual({
       thread_id: null,
       backend_cursor: null,
     });

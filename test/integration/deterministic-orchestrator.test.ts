@@ -6,7 +6,10 @@ import type { HarnessEvent } from "../../src/harness/contracts";
 import { createFakeHarness } from "../../src/harness/fake";
 import { Scheduler } from "../../src/scheduler/scheduler";
 import { openDatabase } from "../../src/store/database";
-import { OrchestrationRepository, type IdFactory } from "../../src/store/orchestration-repository";
+import {
+  type IdFactory,
+  OrchestrationRepository,
+} from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
 
 const usage = {
@@ -19,20 +22,22 @@ const usage = {
 function deliveries(
   key: string,
   attemptId: string,
-  output: Extract<HarnessEvent, { type: "attempt.output" }> ["output"],
+  output: Extract<HarnessEvent, { type: "attempt.output" }>["output"],
   includesUsage: boolean,
 ) {
-  const events: Array<{ nextCursor: string; event: HarnessEvent }> = [{
-    nextCursor: "1",
-    event: {
-      type: "attempt.started" as const,
-      eventId: `${key}:started`,
-      attemptId,
-      sequence: 1,
-      occurredAt: "2026-08-25T00:00:01.000Z",
-      threadId: `thread-${key}`,
+  const events: Array<{ nextCursor: string; event: HarnessEvent }> = [
+    {
+      nextCursor: "1",
+      event: {
+        type: "attempt.started" as const,
+        eventId: `${key}:started`,
+        attemptId,
+        sequence: 1,
+        occurredAt: "2026-08-25T00:00:01.000Z",
+        threadId: `thread-${key}`,
+      },
     },
-  }];
+  ];
   if (includesUsage) {
     events.push({
       nextCursor: "2",
@@ -77,50 +82,71 @@ function scenario() {
     role: "scout" as const,
     retryIndex: 0 as const,
     expect: { model: "luna", effort: "high" as const },
-    deliveries: deliveries(`${taskId}:scout`, attemptId, {
-      kind: "scout" as const,
-      summary: `${taskId} scout capsule`,
-      files: ["src/scheduler/scheduler.ts"],
-      tests: ["bun test"],
-      risks: [],
-    }, true),
+    deliveries: deliveries(
+      `${taskId}:scout`,
+      attemptId,
+      {
+        kind: "scout" as const,
+        summary: `${taskId} scout capsule`,
+        files: ["src/scheduler/scheduler.ts"],
+        tests: ["bun test"],
+        risks: [],
+      },
+      true,
+    ),
   });
   const implement = (taskId: string, attemptId: string) => ({
     taskId,
     role: "implement" as const,
     retryIndex: 0 as const,
     expect: { model: "terra", effort: "high" as const },
-    deliveries: deliveries(`${taskId}:implement`, attemptId, {
-      kind: "implement" as const,
-      commitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      validation: ["bun test"],
-      risks: [],
-      limitations: [],
-    }, true),
+    deliveries: deliveries(
+      `${taskId}:implement`,
+      attemptId,
+      {
+        kind: "implement" as const,
+        commitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        validation: ["bun test"],
+        risks: [],
+        limitations: [],
+      },
+      true,
+    ),
   });
-  const review = (taskId: string, attemptId: string, decision: "accepted" | "rejected") => ({
+  const review = (
+    taskId: string,
+    attemptId: string,
+    decision: "accepted" | "rejected",
+  ) => ({
     taskId,
     role: "review" as const,
     retryIndex: 0 as const,
     expect: { model: "sol", effort: "high" as const },
-    deliveries: deliveries(`${taskId}:review`, attemptId, {
-      kind: "review" as const,
-      decision,
-      findings: decision === "rejected" ? ["validation failed"] : [],
-      remainingGaps: decision === "rejected" ? ["fix validation"] : [],
-    }, false),
+    deliveries: deliveries(
+      `${taskId}:review`,
+      attemptId,
+      {
+        kind: "review" as const,
+        decision,
+        findings: decision === "rejected" ? ["validation failed"] : [],
+        remainingGaps: decision === "rejected" ? ["fix validation"] : [],
+      },
+      false,
+    ),
   });
-  return { attempts: [
-    scout("T1", "attempt-1"),
-    implement("T1", "attempt-2"),
-    review("T1", "attempt-3", "rejected"),
-    scout("T2", "attempt-4"),
-    implement("T2", "attempt-5"),
-    review("T2", "attempt-6", "accepted"),
-    scout("T3", "attempt-7"),
-    implement("T3", "attempt-8"),
-    review("T3", "attempt-9", "accepted"),
-  ] };
+  return {
+    attempts: [
+      scout("T1", "attempt-1"),
+      implement("T1", "attempt-2"),
+      review("T1", "attempt-3", "rejected"),
+      scout("T2", "attempt-4"),
+      implement("T2", "attempt-5"),
+      review("T2", "attempt-6", "accepted"),
+      scout("T3", "attempt-7"),
+      implement("T3", "attempt-8"),
+      review("T3", "attempt-9", "accepted"),
+    ],
+  };
 }
 
 function createIds(): IdFactory {
@@ -139,7 +165,10 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
   const fake = createFakeHarness(scenario());
   let db = openDatabase(databasePath);
   try {
-    const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
+    const planning = new PlanningRepository(
+      db,
+      () => "2026-08-25T00:00:00.000Z",
+    );
     planning.createWeek({
       id: "2026-W35",
       goal: "Prove deterministic orchestration",
@@ -171,29 +200,51 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
       planning.transitionTask(id, "ready", `${id}:ready`);
     }
 
-    const repo = new OrchestrationRepository(db, () => "2026-08-25T00:00:05.000Z", ids);
+    const repo = new OrchestrationRepository(
+      db,
+      () => "2026-08-25T00:00:05.000Z",
+      ids,
+    );
     const first = new Scheduler(repo, fake.harness);
-    for (let tick = 0; repo.inspectTask("T1")?.status !== "rejected" && tick < 40; tick += 1) {
+    for (
+      let tick = 0;
+      repo.inspectTask("T1")?.status !== "rejected" && tick < 40;
+      tick += 1
+    ) {
       await first.tick();
     }
     expect(repo.inspectTask("T1")).toEqual({ id: "T1", status: "rejected" });
-    expect(db.query<{ count: number }, []>(
-      "SELECT COUNT(*) AS count FROM tasks WHERE discovered_from_review_id IS NOT NULL",
-    ).get()?.count).toBe(1);
-    expect(repo.inspectTask("T1-follow-up")).toEqual({ id: "T1-follow-up", status: "draft" });
-    expect(db.query<{
-      id: string;
-      status: string;
-      approved: number;
-      approval_required: number;
-      parent_task_id: string | null;
-      root_task_id: string | null;
-      discovered_from_review_id: string | null;
-    }, [string]>(`
+    expect(
+      db
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM tasks WHERE discovered_from_review_id IS NOT NULL",
+        )
+        .get()?.count,
+    ).toBe(1);
+    expect(repo.inspectTask("T1-follow-up")).toEqual({
+      id: "T1-follow-up",
+      status: "draft",
+    });
+    expect(
+      db
+        .query<
+          {
+            id: string;
+            status: string;
+            approved: number;
+            approval_required: number;
+            parent_task_id: string | null;
+            root_task_id: string | null;
+            discovered_from_review_id: string | null;
+          },
+          [string]
+        >(`
       SELECT id, status, approved, approval_required,
              parent_task_id, root_task_id, discovered_from_review_id
       FROM tasks WHERE id = ?
-    `).get("T1-follow-up")).toEqual({
+    `)
+        .get("T1-follow-up"),
+    ).toEqual({
       id: "T1-follow-up",
       status: "draft",
       approved: 0,
@@ -204,7 +255,10 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
     });
 
     expect(await first.tick()).toEqual({ kind: "task_claimed", taskId: "T2" });
-    expect(await first.tick()).toEqual({ kind: "attempt_started", attemptId: "attempt-4" });
+    expect(await first.tick()).toEqual({
+      kind: "attempt_started",
+      attemptId: "attempt-4",
+    });
     let crashed = false;
     const crashing = new Scheduler(repo, fake.harness, (point) => {
       if (point === "after_delivery_commit" && !crashed) {
@@ -212,12 +266,18 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
         throw new Error("simulated post-commit crash");
       }
     });
-    await expect(crashing.tick()).rejects.toThrow("simulated post-commit crash");
+    await expect(crashing.tick()).rejects.toThrow(
+      "simulated post-commit crash",
+    );
     expect(crashed).toBe(true);
     db.close();
 
     db = openDatabase(databasePath);
-    const resumedRepo = new OrchestrationRepository(db, () => "2026-08-25T00:00:05.000Z", ids);
+    const resumedRepo = new OrchestrationRepository(
+      db,
+      () => "2026-08-25T00:00:05.000Z",
+      ids,
+    );
     const resumed = new Scheduler(resumedRepo, fake.harness);
     await resumed.runUntilIdle(100);
 
@@ -228,13 +288,41 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
       { id: "T2", status: "done" },
       { id: "T3", status: "done" },
     ]);
-    expect(snapshot.tasks.filter((task) => ["T1", "T2", "T3"].includes(task.id)).map((task) => ({
-      id: task.id,
-      actual: task.actual,
-    }))).toEqual([
-      { id: "T1", actual: { inputTokens: 20, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 } },
-      { id: "T2", actual: { inputTokens: 20, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 } },
-      { id: "T3", actual: { inputTokens: 20, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 } },
+    expect(
+      snapshot.tasks
+        .filter((task) => ["T1", "T2", "T3"].includes(task.id))
+        .map((task) => ({
+          id: task.id,
+          actual: task.actual,
+        })),
+    ).toEqual([
+      {
+        id: "T1",
+        actual: {
+          inputTokens: 20,
+          cachedInputTokens: 4,
+          outputTokens: 8,
+          reasoningOutputTokens: 2,
+        },
+      },
+      {
+        id: "T2",
+        actual: {
+          inputTokens: 20,
+          cachedInputTokens: 4,
+          outputTokens: 8,
+          reasoningOutputTokens: 2,
+        },
+      },
+      {
+        id: "T3",
+        actual: {
+          inputTokens: 20,
+          cachedInputTokens: 4,
+          outputTokens: 8,
+          reasoningOutputTokens: 2,
+        },
+      },
     ]);
     expect(snapshot.weeks[0]?.actual).toEqual({
       inputTokens: 60,
@@ -242,12 +330,20 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
       outputTokens: 24,
       reasoningOutputTokens: 6,
     });
-    expect(db.query<{ count: number }, []>(
-      "SELECT COUNT(*) AS count FROM tasks WHERE discovered_from_review_id IS NOT NULL",
-    ).get()?.count).toBe(1);
-    expect(db.query<{ count: number }, []>(
-      "SELECT COUNT(*) AS count FROM events GROUP BY idempotency_key HAVING COUNT(*) > 1",
-    ).all()).toEqual([]);
+    expect(
+      db
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM tasks WHERE discovered_from_review_id IS NOT NULL",
+        )
+        .get()?.count,
+    ).toBe(1);
+    expect(
+      db
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM events GROUP BY idempotency_key HAVING COUNT(*) > 1",
+        )
+        .all(),
+    ).toEqual([]);
     expect(() => fake.assertComplete()).not.toThrow();
   } finally {
     db.close();

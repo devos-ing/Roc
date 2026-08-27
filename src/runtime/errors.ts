@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-export const ErrorCategorySchema = z.enum(["startup", "protocol", "infra", "policy", "domain"]);
+export const ErrorCategorySchema = z.enum([
+  "startup",
+  "protocol",
+  "infra",
+  "policy",
+  "domain",
+]);
 export type ErrorCategory = z.infer<typeof ErrorCategorySchema>;
 
 export type AgileErrorInput = {
@@ -28,6 +34,7 @@ export class AgileError extends Error {
   readonly threadId?: string;
   readonly requestId?: string;
 
+  /** Creates a validated operational error with structured diagnostic context. */
   constructor(input: AgileErrorInput) {
     super(input.message, { cause: input.cause });
     this.name = "AgileError";
@@ -43,6 +50,12 @@ export class AgileError extends Error {
   }
 }
 
-export function normalizeError(error: unknown, fallback: Omit<AgileErrorInput, "cause">): AgileError {
-  return error instanceof AgileError ? error : new AgileError({ ...fallback, cause: error });
+/** Preserves an AgileError or wraps an unknown value with structured fallback metadata. */
+export function normalizeError(
+  error: unknown,
+  fallback: Omit<AgileErrorInput, "cause">,
+): AgileError {
+  return error instanceof AgileError
+    ? error
+    : new AgileError({ ...fallback, cause: error });
 }

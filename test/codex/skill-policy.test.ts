@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,20 +11,27 @@ test("loads allowed standalone skill identities from the installed skill lock", 
   const home = await mkdtemp(join(tmpdir(), "agile-skill-policy-"));
   try {
     await mkdir(join(home, ".agents"));
-    await writeFile(join(home, ".agents", ".skill-lock.json"), JSON.stringify({
-      version: 3,
-      skills: {
-        tdd: { source: "mattpocock/skills" },
-        "i-have-adhd": { source: "ayghri/i-have-adhd" },
-        ponytail: { source: "DietrichGebert/ponytail" },
-        animate: { source: "emilkowalski/skills" },
-      },
-    }));
+    await writeFile(
+      join(home, ".agents", ".skill-lock.json"),
+      JSON.stringify({
+        version: 3,
+        skills: {
+          tdd: { source: "mattpocock/skills" },
+          "i-have-adhd": { source: "ayghri/i-have-adhd" },
+          ponytail: { source: "DietrichGebert/ponytail" },
+          animate: { source: "emilkowalski/skills" },
+        },
+      }),
+    );
 
     const policy = await loadDefaultSkillPolicy(home);
 
     expect(policy.agentsSkillsRoot).toBe(join(home, ".agents", "skills"));
-    expect([...policy.allowedStandaloneSkillNames]).toEqual(["tdd", "i-have-adhd", "ponytail"]);
+    expect([...policy.allowedStandaloneSkillNames]).toEqual([
+      "tdd",
+      "i-have-adhd",
+      "ponytail",
+    ]);
   } finally {
     await rm(home, { recursive: true, force: true });
   }
@@ -69,10 +76,12 @@ test("default policy only enables installed Matt Pocock, i-have-adhd, and Ponyta
     },
   ];
 
-  expect(buildDefaultSkillConfig(skills, {
-    agentsSkillsRoot: "/Users/test/.agents/skills",
-    allowedStandaloneSkillNames: new Set(["tdd", "i-have-adhd"]),
-  })).toEqual([
+  expect(
+    buildDefaultSkillConfig(skills, {
+      agentsSkillsRoot: "/Users/test/.agents/skills",
+      allowedStandaloneSkillNames: new Set(["tdd", "i-have-adhd"]),
+    }),
+  ).toEqual([
     { path: skills[0]!.path, enabled: true },
     { path: skills[1]!.path, enabled: false },
     { path: skills[2]!.path, enabled: true },

@@ -1,8 +1,17 @@
-import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { expect, test } from "bun:test";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { writeTicketArtifact } from "../../src/artifacts/writer";
 
 const task = {
@@ -43,13 +52,15 @@ test("writes exact deterministic Markdown and returns the hash of its bytes", as
       spec: {
         ...task.spec,
         dependencies: ["F2 schemas", "filesystem"],
-        contextCandidates: [{
-          threadId: "thread-1",
-          anchorId: "anchor-1",
-          sourceTaskId: "F1",
-          gitCommit: "abc123",
-          summaryArtifact: ".agile/evidence/F1.md",
-        }],
+        contextCandidates: [
+          {
+            threadId: "thread-1",
+            anchorId: "anchor-1",
+            sourceTaskId: "F1",
+            gitCommit: "abc123",
+            summaryArtifact: ".agile/evidence/F1.md",
+          },
+        ],
       },
     };
     const expected = [
@@ -117,12 +128,14 @@ test("changes content and hash when dependencies or contexts change", async () =
       spec: {
         ...task.spec,
         dependencies: ["new dependency"],
-        contextCandidates: [{
-          threadId: "thread-2",
-          anchorId: "anchor-2",
-          sourceTaskId: "F2",
-          gitCommit: "def456",
-        }],
+        contextCandidates: [
+          {
+            threadId: "thread-2",
+            anchorId: "anchor-2",
+            sourceTaskId: "F2",
+            gitCommit: "def456",
+          },
+        ],
       },
     });
     const secondContent = await readFile(second.path, "utf8");
@@ -138,10 +151,12 @@ test("changes content and hash when dependencies or contexts change", async () =
 test("rejects invalid Zod input without creating a partial artifact", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-artifact-"));
   try {
-    await expect(writeTicketArtifact(root, {
-      ...task,
-      spec: { ...task.spec, acceptanceCriteria: [] },
-    })).rejects.toThrow();
+    await expect(
+      writeTicketArtifact(root, {
+        ...task,
+        spec: { ...task.spec, acceptanceCriteria: [] },
+      }),
+    ).rejects.toThrow();
     expect(await pathExists(join(root, ".agile"))).toBe(false);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -149,7 +164,13 @@ test("rejects invalid Zod input without creating a partial artifact", async () =
 });
 
 test("rejects traversal and unsafe task IDs before creating artifact directories", async () => {
-  for (const id of ["../escaped", "nested/F6", "F6.md", "F6 with spaces", "F6\\nested"]) {
+  for (const id of [
+    "../escaped",
+    "nested/F6",
+    "F6.md",
+    "F6 with spaces",
+    "F6\\nested",
+  ]) {
     const root = await mkdtemp(join(tmpdir(), "agile-artifact-"));
     try {
       await expect(writeTicketArtifact(root, { ...task, id })).rejects.toThrow(
@@ -171,9 +192,13 @@ test("rejects a symlinked ticket directory without writing outside the project",
     await writeFile(join(external, "sentinel.txt"), "unchanged");
     await symlink(external, join(root, ".agile", "tickets"), "dir");
 
-    await expect(writeTicketArtifact(root, task)).rejects.toThrow(/symbolic link/);
+    await expect(writeTicketArtifact(root, task)).rejects.toThrow(
+      /symbolic link/,
+    );
 
-    expect(await readFile(join(external, "sentinel.txt"), "utf8")).toBe("unchanged");
+    expect(await readFile(join(external, "sentinel.txt"), "utf8")).toBe(
+      "unchanged",
+    );
     expect(await pathExists(join(external, "F6.md"))).toBe(false);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -191,7 +216,9 @@ test("rejects a symlinked destination without changing its external target", asy
     await writeFile(externalTarget, "unchanged");
     await symlink(externalTarget, join(tickets, "F6.md"), "file");
 
-    await expect(writeTicketArtifact(root, task)).rejects.toThrow(/symbolic link/);
+    await expect(writeTicketArtifact(root, task)).rejects.toThrow(
+      /symbolic link/,
+    );
 
     expect(await readFile(externalTarget, "utf8")).toBe("unchanged");
     expect(await readdir(tickets)).toEqual(["F6.md"]);

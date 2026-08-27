@@ -6,10 +6,10 @@ import type { CodexClientApi } from "../../src/codex/client";
 import { createCodexHarness } from "../../src/codex/harness";
 import {
   ImplementDraftOutputJsonSchema,
-  ReviewOutputJsonSchema,
-  ScoutOutputJsonSchema,
   implementPrompt,
+  ReviewOutputJsonSchema,
   reviewPrompt,
+  ScoutOutputJsonSchema,
   scoutPrompt,
 } from "../../src/codex/prompts";
 import type {
@@ -42,7 +42,9 @@ async function git(args: string[], cwd: string): Promise<string> {
 }
 
 async function createRepository(): Promise<string> {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "agile-codex-harness-")));
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), "agile-codex-harness-")),
+  );
   await git(["init"], root);
   await git(["config", "user.name", "Agile Tests"], root);
   await git(["config", "user.email", "agile@example.test"], root);
@@ -193,7 +195,9 @@ function makeScoutRequest(attemptId = "attempt-scout"): HarnessStepRequest {
   };
 }
 
-function makeImplementRequest(attemptId = "attempt-implement"): HarnessStepRequest {
+function makeImplementRequest(
+  attemptId = "attempt-implement",
+): HarnessStepRequest {
   return {
     mode: "dispatch",
     attempt: {
@@ -301,7 +305,11 @@ function completedReviewItem(
     params: {
       threadId,
       turnId,
-      item: { type: "exitedReviewMode", id: itemId, review: JSON.stringify(output) },
+      item: {
+        type: "exitedReviewMode",
+        id: itemId,
+        review: JSON.stringify(output),
+      },
     },
   };
 }
@@ -315,7 +323,8 @@ async function collect(
   let backendCursor: string | undefined;
   while (events.at(-1)?.type !== "attempt.completed") {
     const delivery = await harness.step({ ...request, backendCursor });
-    if (delivery.kind !== "event") throw new Error(`Unexpected ${delivery.kind} delivery`);
+    if (delivery.kind !== "event")
+      throw new Error(`Unexpected ${delivery.kind} delivery`);
     events.push(delivery.event);
     cursors.push(delivery.nextCursor);
     backendCursor = delivery.nextCursor;
@@ -351,8 +360,16 @@ function observed(events: HarnessEvent[]): unknown[] {
 test("applies the default skill-source allowlist before starting a role thread", async () => {
   const cwd = "/tmp/agile-harness-T1";
   const skills = [
-    { name: "tdd", path: "/Users/test/.agents/skills/tdd/SKILL.md", enabled: true },
-    { name: "openai-docs", path: "/Users/test/.codex/skills/openai-docs/SKILL.md", enabled: true },
+    {
+      name: "tdd",
+      path: "/Users/test/.agents/skills/tdd/SKILL.md",
+      enabled: true,
+    },
+    {
+      name: "openai-docs",
+      path: "/Users/test/.codex/skills/openai-docs/SKILL.md",
+      enabled: true,
+    },
   ];
   const client = new RecordedCodexClient([], {
     skillLists: [{ data: [{ cwd, skills, errors: [] }] }],
@@ -415,12 +432,19 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
 
     const scout = await collect(harness, scoutRequest);
     expect(observed(scout.events)).toEqual([
-      { type: "attempt.started", threadId: "thread-scout", turnId: "turn-scout" },
+      {
+        type: "attempt.started",
+        threadId: "thread-scout",
+        turnId: "turn-scout",
+      },
       { type: "attempt.usage_delta", ...totals },
       { type: "attempt.output", output: scoutOutput },
       { type: "attempt.completed" },
     ]);
-    expect(scout.events[0]).toMatchObject({ baseCommit: workspace.baseCommit, sequence: 1 });
+    expect(scout.events[0]).toMatchObject({
+      baseCommit: workspace.baseCommit,
+      sequence: 1,
+    });
     expect(scout.events.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
     expect(scout.events.map((event) => event.eventId)).toEqual([
       "attempt-scout:turn-scout:started",
@@ -435,10 +459,15 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
       turnId: "turn-scout",
       usage: totals,
     });
-    expect(scoutPrompt(scoutInput)).toContain("Do not create, edit, rename, or delete files");
+    expect(scoutPrompt(scoutInput)).toContain(
+      "Do not create, edit, rename, or delete files",
+    );
     expect(scoutPrompt(scoutInput)).toContain(JSON.stringify(ticket, null, 2));
 
-    await writeFile(join(workspace.path, "implementation.txt"), "implemented\n");
+    await writeFile(
+      join(workspace.path, "implementation.txt"),
+      "implemented\n",
+    );
     const implementDraft = {
       kind: "implement" as const,
       validation: ["bun test test/codex/harness.test.ts"],
@@ -448,7 +477,12 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     client.enqueue(
       usage("thread-implement", "turn-implement"),
       usage("thread-implement", "turn-implement"),
-      completedItem("thread-implement", "turn-implement", "item-implement", implementDraft),
+      completedItem(
+        "thread-implement",
+        "turn-implement",
+        "item-implement",
+        implementDraft,
+      ),
       completedTurn("thread-implement", "turn-implement"),
     );
     const implementInput = {
@@ -474,22 +508,43 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     const commitSha = await git(["rev-parse", "HEAD"], workspace.path);
     const implementOutput = { ...implementDraft, commitSha };
     expect(observed(implement.events)).toEqual([
-      { type: "attempt.started", threadId: "thread-implement", turnId: "turn-implement" },
+      {
+        type: "attempt.started",
+        threadId: "thread-implement",
+        turnId: "turn-implement",
+      },
       { type: "attempt.usage_delta", ...totals },
       { type: "attempt.output", output: implementOutput },
       { type: "attempt.completed" },
     ]);
-    expect(implement.events.filter((event) => event.type === "attempt.usage_delta")).toHaveLength(1);
-    expect(implement.events.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
-    await expect(branches.assertCommit(ticket.id, commitSha)).resolves.toBeUndefined();
-    expect(await git([
-      "rev-list",
-      "--count",
-      `${workspace.baseCommit}..refs/heads/${workspace.branch}`,
-    ], workspace.path)).toBe("1");
-    expect(implementPrompt(implementInput)).toContain("Do not run Git metadata commands");
-    expect(implementPrompt(implementInput)).toContain("trusted Harness will create the commit");
-    expect(implementPrompt(implementInput)).toContain(JSON.stringify(implementInput.scout, null, 2));
+    expect(
+      implement.events.filter((event) => event.type === "attempt.usage_delta"),
+    ).toHaveLength(1);
+    expect(implement.events.map((event) => event.sequence)).toEqual([
+      1, 2, 3, 4,
+    ]);
+    await expect(
+      branches.assertCommit(ticket.id, commitSha),
+    ).resolves.toBeUndefined();
+    expect(
+      await git(
+        [
+          "rev-list",
+          "--count",
+          `${workspace.baseCommit}..refs/heads/${workspace.branch}`,
+        ],
+        workspace.path,
+      ),
+    ).toBe("1");
+    expect(implementPrompt(implementInput)).toContain(
+      "Do not run Git metadata commands",
+    );
+    expect(implementPrompt(implementInput)).toContain(
+      "trusted Harness will create the commit",
+    );
+    expect(implementPrompt(implementInput)).toContain(
+      JSON.stringify(implementInput.scout, null, 2),
+    );
 
     const reviewOutput = {
       kind: "review" as const,
@@ -498,12 +553,21 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
       remainingGaps: [],
     };
     client.enqueue(
-      completedReviewItem("thread-review", "turn-review", "item-review", reviewOutput),
+      completedReviewItem(
+        "thread-review",
+        "turn-review",
+        "item-review",
+        reviewOutput,
+      ),
       completedTurn("thread-review", "turn-review"),
     );
     const reviewInput = {
       role: "review" as const,
-      ticket: { ...ticket, status: "reviewing" as const, baseCommit: workspace.baseCommit },
+      ticket: {
+        ...ticket,
+        status: "reviewing" as const,
+        baseCommit: workspace.baseCommit,
+      },
       scout: scoutOutput,
       implementation: implementOutput,
     };
@@ -525,7 +589,11 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     const statusAfterReview = await branches.status(ticket.id);
 
     expect(observed(review.events)).toEqual([
-      { type: "attempt.started", threadId: "thread-review", turnId: "turn-review" },
+      {
+        type: "attempt.started",
+        threadId: "thread-review",
+        turnId: "turn-review",
+      },
       { type: "attempt.output", output: reviewOutput },
       { type: "attempt.completed" },
     ]);
@@ -536,7 +604,9 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     ]);
     expect(statusAfterReview).toBe(statusBeforeReview);
     expect(reviewPrompt(reviewInput)).toContain(commitSha);
-    expect(reviewPrompt(reviewInput)).toContain(JSON.stringify(ReviewOutputJsonSchema));
+    expect(reviewPrompt(reviewInput)).toContain(
+      JSON.stringify(ReviewOutputJsonSchema),
+    );
 
     expect(client.requests).toEqual([
       {
@@ -610,7 +680,9 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     const reviewStart = client.requests.at(-1);
     expect(JSON.stringify(reviewStart)).not.toContain("thread-implement");
     expect(reviewStart?.params).not.toHaveProperty("history");
-    expect(client.requests.filter((request) => request.method === "turn/start")).toHaveLength(2);
+    expect(
+      client.requests.filter((request) => request.method === "turn/start"),
+    ).toHaveLength(2);
     const requestCount = client.requests.length;
     await harness.cancel("attempt-review");
     expect(client.requests).toHaveLength(requestCount);
@@ -634,9 +706,13 @@ test("normalizes invalid structured output into a durable retryable failure", as
   });
   const request = makeScoutRequest("attempt-invalid-output");
   const started = await harness.step(request);
-  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+  if (started.kind !== "event")
+    throw new Error(`Unexpected ${started.kind} delivery`);
 
-  const failed = await harness.step({ ...request, backendCursor: started.nextCursor });
+  const failed = await harness.step({
+    ...request,
+    backendCursor: started.nextCursor,
+  });
 
   expect(failed).toMatchObject({
     kind: "event",
@@ -686,11 +762,19 @@ test("fails Review closed when the read-only turn mutates the checkout", async (
     findings: [],
     remainingGaps: [],
   };
-  const client = new RecordedCodexClient([
-    completedReviewItem("thread-review", "turn-review", "item-review", reviewOutput),
-  ], {
-    threadIds: ["thread-review-anchor"],
-  });
+  const client = new RecordedCodexClient(
+    [
+      completedReviewItem(
+        "thread-review",
+        "turn-review",
+        "item-review",
+        reviewOutput,
+      ),
+    ],
+    {
+      threadIds: ["thread-review-anchor"],
+    },
+  );
   const branches = memoryBranches();
   const statuses = ["", " M src/codex/harness.ts"];
   branches.status = async () => statuses.shift() ?? " M src/codex/harness.ts";
@@ -724,9 +808,13 @@ test("fails Review closed when the read-only turn mutates the checkout", async (
     },
   };
   const started = await harness.step(request);
-  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+  if (started.kind !== "event")
+    throw new Error(`Unexpected ${started.kind} delivery`);
 
-  const failed = await harness.step({ ...request, backendCursor: started.nextCursor });
+  const failed = await harness.step({
+    ...request,
+    backendCursor: started.nextCursor,
+  });
 
   expect(failed).toMatchObject({
     kind: "event",
@@ -788,26 +876,36 @@ test("preserves the clean Review status baseline across start redispatch and rec
     throw new Error("Expected Review start deliveries");
   }
 
-  expect(JSON.parse(first.nextCursor)).toMatchObject({ reviewStatusBefore: baseline });
-  expect(JSON.parse(redispatched.nextCursor)).toMatchObject({ reviewStatusBefore: baseline });
+  expect(JSON.parse(first.nextCursor)).toMatchObject({
+    reviewStatusBefore: baseline,
+  });
+  expect(JSON.parse(redispatched.nextCursor)).toMatchObject({
+    reviewStatusBefore: baseline,
+  });
 
   const reconcileClient = new RecordedCodexClient([], {
-    threadReads: [{
-      thread: {
-        id: "thread-review",
-        turns: [{
-          id: "turn-review",
-          status: "completed",
-          error: null,
-          completedAt: 1_777_000_000,
-          items: [{
-            type: "exitedReviewMode",
-            id: "item-review-recovered",
-            review: JSON.stringify(reviewOutput),
-          }],
-        }],
+    threadReads: [
+      {
+        thread: {
+          id: "thread-review",
+          turns: [
+            {
+              id: "turn-review",
+              status: "completed",
+              error: null,
+              completedAt: 1_777_000_000,
+              items: [
+                {
+                  type: "exitedReviewMode",
+                  id: "item-review-recovered",
+                  review: JSON.stringify(reviewOutput),
+                },
+              ],
+            },
+          ],
+        },
       },
-    }],
+    ],
   });
   const reconciled = await createCodexHarness({
     client: reconcileClient,
@@ -913,9 +1011,12 @@ test("normalizes an invalid trusted Implement commit into task failure", async (
     },
   };
   const started = await harness.step(request);
-  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+  if (started.kind !== "event")
+    throw new Error(`Unexpected ${started.kind} delivery`);
 
-  await expect(harness.step({ ...request, backendCursor: started.nextCursor })).resolves.toMatchObject({
+  await expect(
+    harness.step({ ...request, backendCursor: started.nextCursor }),
+  ).resolves.toMatchObject({
     kind: "event",
     event: {
       type: "attempt.failed_infra",
@@ -927,25 +1028,37 @@ test("normalizes an invalid trusted Implement commit into task failure", async (
 });
 
 test("drains a policy-interrupted terminal before progressing the next fresh attempt", async () => {
-  const client = new RecordedCodexClient([
-    {
-      method: "item/commandExecution/requestApproval",
-      id: 91,
-      params: {
-        threadId: "thread-implement",
-        turnId: "turn-implement",
-        itemId: "command-1",
-        startedAtMs: 1_777_000_000_000,
-        environmentId: null,
+  const client = new RecordedCodexClient(
+    [
+      {
+        method: "item/commandExecution/requestApproval",
+        id: 91,
+        params: {
+          threadId: "thread-implement",
+          turnId: "turn-implement",
+          itemId: "command-1",
+          startedAtMs: 1_777_000_000_000,
+          environmentId: null,
+        },
       },
+      interruptedTurn("thread-implement", "turn-implement"),
+      completedItem(
+        "thread-scout-next",
+        "turn-scout-next",
+        "item-scout-next",
+        scoutOutput,
+      ),
+      completedTurn("thread-scout-next", "turn-scout-next"),
+    ],
+    {
+      threadIds: [
+        "thread-implement",
+        "thread-scout-next",
+        "thread-scout-third",
+      ],
+      turnIds: ["turn-implement", "turn-scout-next", "turn-scout-third"],
     },
-    interruptedTurn("thread-implement", "turn-implement"),
-    completedItem("thread-scout-next", "turn-scout-next", "item-scout-next", scoutOutput),
-    completedTurn("thread-scout-next", "turn-scout-next"),
-  ], {
-    threadIds: ["thread-implement", "thread-scout-next", "thread-scout-third"],
-    turnIds: ["turn-implement", "turn-scout-next", "turn-scout-third"],
-  });
+  );
   const harness = createCodexHarness({
     client,
     branches: memoryBranches(),
@@ -953,12 +1066,20 @@ test("drains a policy-interrupted terminal before progressing the next fresh att
   });
   const request = makeImplementRequest();
   const started = await harness.step(request);
-  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+  if (started.kind !== "event")
+    throw new Error(`Unexpected ${started.kind} delivery`);
 
-  const delivery = await harness.step({ ...request, backendCursor: started.nextCursor });
-  if (delivery.kind !== "event") throw new Error(`Unexpected ${delivery.kind} delivery`);
+  const delivery = await harness.step({
+    ...request,
+    backendCursor: started.nextCursor,
+  });
+  if (delivery.kind !== "event")
+    throw new Error(`Unexpected ${delivery.kind} delivery`);
 
-  expect(client.responses).toContainEqual({ id: 91, result: { decision: "decline" } });
+  expect(client.responses).toContainEqual({
+    id: 91,
+    result: { decision: "decline" },
+  });
   expect(client.requests).toContainEqual({
     method: "turn/interrupt",
     params: { threadId: "thread-implement", turnId: "turn-implement" },
@@ -982,7 +1103,8 @@ test("drains a policy-interrupted terminal before progressing the next fresh att
     ...nextRequest,
     backendCursor: nextStarted.nextCursor,
   });
-  if (nextOutput.kind !== "event") throw new Error(`Unexpected ${nextOutput.kind} delivery`);
+  if (nextOutput.kind !== "event")
+    throw new Error(`Unexpected ${nextOutput.kind} delivery`);
   const nextCompleted = await harness.step({
     ...nextRequest,
     backendCursor: nextOutput.nextCursor,
@@ -1004,10 +1126,12 @@ test("drains a policy-interrupted terminal before progressing the next fresh att
   if (thirdStarted.kind !== "event") {
     throw new Error(`Unexpected ${thirdStarted.kind} delivery`);
   }
-  await expect(harness.step({
-    ...thirdRequest,
-    backendCursor: thirdStarted.nextCursor,
-  })).resolves.toMatchObject({
+  await expect(
+    harness.step({
+      ...thirdRequest,
+      backendCursor: thirdStarted.nextCursor,
+    }),
+  ).resolves.toMatchObject({
     kind: "event",
     event: {
       type: "attempt.failed_infra",
@@ -1035,14 +1159,20 @@ test("declines and drains a stale known server request without poisoning the act
   const harness = createCodexHarness({ client, branches: memoryBranches() });
   const request = makeScoutRequest("attempt-stale-request");
   const started = await harness.step(request);
-  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+  if (started.kind !== "event")
+    throw new Error(`Unexpected ${started.kind} delivery`);
 
-  const output = await harness.step({ ...request, backendCursor: started.nextCursor });
+  const output = await harness.step({
+    ...request,
+    backendCursor: started.nextCursor,
+  });
 
-  expect(client.responses).toEqual([{
-    id: "stale-approval",
-    result: { decision: "decline" },
-  }]);
+  expect(client.responses).toEqual([
+    {
+      id: "stale-approval",
+      result: { decision: "decline" },
+    },
+  ]);
   expect(client.requests).not.toContainEqual({
     method: "turn/interrupt",
     params: { threadId: "thread-scout", turnId: "turn-scout" },
@@ -1096,18 +1226,23 @@ test("uses the exact fail-closed response for every supported server request", a
 
   for (const [index, item] of cases.entries()) {
     const id = 100 + index;
-    const client = new RecordedCodexClient([{
-      method: item.method,
-      id,
-      params: {
-        threadId: "thread-implement",
-        turnId: "turn-implement",
-        ...item.params,
+    const client = new RecordedCodexClient(
+      [
+        {
+          method: item.method,
+          id,
+          params: {
+            threadId: "thread-implement",
+            turnId: "turn-implement",
+            ...item.params,
+          },
+        },
+      ],
+      {
+        threadIds: ["thread-implement"],
+        turnIds: ["turn-implement"],
       },
-    }], {
-      threadIds: ["thread-implement"],
-      turnIds: ["turn-implement"],
-    });
+    );
     const harness = createCodexHarness({
       client,
       branches: memoryBranches(),
@@ -1115,8 +1250,12 @@ test("uses the exact fail-closed response for every supported server request", a
     });
     const request = makeImplementRequest(`attempt-policy-${index}`);
     const started = await harness.step(request);
-    if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
-    const blocked = await harness.step({ ...request, backendCursor: started.nextCursor });
+    if (started.kind !== "event")
+      throw new Error(`Unexpected ${started.kind} delivery`);
+    const blocked = await harness.step({
+      ...request,
+      backendCursor: started.nextCursor,
+    });
 
     expect(client.responses).toEqual([{ id, result: item.expected }]);
     expect(blocked).toMatchObject({
@@ -1127,14 +1266,19 @@ test("uses the exact fail-closed response for every supported server request", a
 });
 
 test("rejects an unknown server request with method-not-found and still blocks", async () => {
-  const client = new RecordedCodexClient([{
-    method: "plugin/unknownApproval",
-    id: "unknown-1",
-    params: { any: "payload" },
-  }], {
-    threadIds: ["thread-implement"],
-    turnIds: ["turn-implement"],
-  });
+  const client = new RecordedCodexClient(
+    [
+      {
+        method: "plugin/unknownApproval",
+        id: "unknown-1",
+        params: { any: "payload" },
+      },
+    ],
+    {
+      threadIds: ["thread-implement"],
+      turnIds: ["turn-implement"],
+    },
+  );
   const harness = createCodexHarness({
     client,
     branches: memoryBranches(),
@@ -1142,15 +1286,21 @@ test("rejects an unknown server request with method-not-found and still blocks",
   });
   const request = makeImplementRequest("attempt-unknown-request");
   const started = await harness.step(request);
-  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
+  if (started.kind !== "event")
+    throw new Error(`Unexpected ${started.kind} delivery`);
 
-  const blocked = await harness.step({ ...request, backendCursor: started.nextCursor });
+  const blocked = await harness.step({
+    ...request,
+    backendCursor: started.nextCursor,
+  });
 
-  expect(client.responseErrors).toEqual([{
-    id: "unknown-1",
-    code: -32601,
-    message: "Method not found",
-  }]);
+  expect(client.responseErrors).toEqual([
+    {
+      id: "unknown-1",
+      code: -32601,
+      message: "Method not found",
+    },
+  ]);
   expect(blocked).toMatchObject({
     kind: "event",
     event: { type: "attempt.blocked_policy", code: "approval_required" },
@@ -1165,18 +1315,22 @@ test("reconciles authoritative structured output and terminal completion", async
   const history = {
     thread: {
       id: "thread-scout",
-      turns: [{
-        id: "turn-scout",
-        status: "completed",
-        error: null,
-        completedAt: 1_777_000_000,
-        items: [{
-          type: "agentMessage",
-          id: "item-scout-recovered",
-          text: JSON.stringify(scoutOutput),
-          phase: "final_answer",
-        }],
-      }],
+      turns: [
+        {
+          id: "turn-scout",
+          status: "completed",
+          error: null,
+          completedAt: 1_777_000_000,
+          items: [
+            {
+              type: "agentMessage",
+              id: "item-scout-recovered",
+              text: JSON.stringify(scoutOutput),
+              phase: "final_answer",
+            },
+          ],
+        },
+      ],
     },
   };
   const client = new RecordedCodexClient([], {
@@ -1194,7 +1348,8 @@ test("reconciles authoritative structured output and terminal completion", async
   };
 
   const output = await harness.step(request);
-  if (output.kind !== "event") throw new Error(`Unexpected ${output.kind} delivery`);
+  if (output.kind !== "event")
+    throw new Error(`Unexpected ${output.kind} delivery`);
   const resumedClient = new RecordedCodexClient([], { threadReads: [history] });
   const resumedHarness = createCodexHarness({
     client: resumedClient,
@@ -1222,7 +1377,10 @@ test("reconciles authoritative structured output and terminal completion", async
   });
   expect(client.requests).toEqual([
     { method: "thread/resume", params: { threadId: "thread-scout" } },
-    { method: "thread/read", params: { threadId: "thread-scout", includeTurns: true } },
+    {
+      method: "thread/read",
+      params: { threadId: "thread-scout", includeTurns: true },
+    },
   ]);
   expect(resumedClient.requests).toEqual(client.requests);
 });
@@ -1245,18 +1403,22 @@ test("reconciles an Implement draft to the stable normalized output", async () =
   const history = {
     thread: {
       id: "thread-implement",
-      turns: [{
-        id: "turn-implement",
-        status: "completed",
-        error: null,
-        completedAt: 1_777_000_000,
-        items: [{
-          type: "agentMessage",
-          id: "item-implement-recovered",
-          text: JSON.stringify(implementDraft),
-          phase: "final_answer",
-        }],
-      }],
+      turns: [
+        {
+          id: "turn-implement",
+          status: "completed",
+          error: null,
+          completedAt: 1_777_000_000,
+          items: [
+            {
+              type: "agentMessage",
+              id: "item-implement-recovered",
+              text: JSON.stringify(implementDraft),
+              phase: "final_answer",
+            },
+          ],
+        },
+      ],
     },
   };
   const request: HarnessStepRequest = {
@@ -1281,7 +1443,8 @@ test("reconciles an Implement draft to the stable normalized output", async () =
   });
   expect(commitCalls).toBe(1);
 
-  if (output.kind !== "event") throw new Error(`Unexpected ${output.kind} delivery`);
+  if (output.kind !== "event")
+    throw new Error(`Unexpected ${output.kind} delivery`);
   const resumedClient = new RecordedCodexClient([], { threadReads: [history] });
   const completed = await createCodexHarness({
     client: resumedClient,
@@ -1328,18 +1491,23 @@ test("classifies reconciliation without persisted turn identity as orphaned", as
 for (const status of ["failed", "interrupted"] as const) {
   test(`reconciles a ${status} turn as retryable infrastructure failure`, async () => {
     const client = new RecordedCodexClient([], {
-      threadReads: [{
-        thread: {
-          id: "thread-scout",
-          turns: [{
-            id: "turn-scout",
-            status,
-            error: status === "failed" ? { message: "provider stopped" } : null,
-            completedAt: 1_777_000_000,
-            items: [],
-          }],
+      threadReads: [
+        {
+          thread: {
+            id: "thread-scout",
+            turns: [
+              {
+                id: "turn-scout",
+                status,
+                error:
+                  status === "failed" ? { message: "provider stopped" } : null,
+                completedAt: 1_777_000_000,
+                items: [],
+              },
+            ],
+          },
         },
-      }],
+      ],
     });
     const harness = createCodexHarness({ client, branches: memoryBranches() });
     const delivery = await harness.step({
@@ -1361,27 +1529,34 @@ for (const status of ["failed", "interrupted"] as const) {
 }
 
 test("drains notifications from a reconcile-proven terminal turn before retry", async () => {
-  const client = new RecordedCodexClient([
-    usage("thread-old", "turn-old"),
-    completedItem("thread-old", "turn-old", "item-old", scoutOutput),
-    interruptedTurn("thread-old", "turn-old"),
-    completedItem("thread-retry", "turn-retry", "item-retry", scoutOutput),
-  ], {
-    threadIds: ["thread-retry"],
-    turnIds: ["turn-retry"],
-    threadReads: [{
-      thread: {
-        id: "thread-old",
-        turns: [{
-          id: "turn-old",
-          status: "interrupted",
-          error: null,
-          completedAt: 1_777_000_000,
-          items: [],
-        }],
-      },
-    }],
-  });
+  const client = new RecordedCodexClient(
+    [
+      usage("thread-old", "turn-old"),
+      completedItem("thread-old", "turn-old", "item-old", scoutOutput),
+      interruptedTurn("thread-old", "turn-old"),
+      completedItem("thread-retry", "turn-retry", "item-retry", scoutOutput),
+    ],
+    {
+      threadIds: ["thread-retry"],
+      turnIds: ["turn-retry"],
+      threadReads: [
+        {
+          thread: {
+            id: "thread-old",
+            turns: [
+              {
+                id: "turn-old",
+                status: "interrupted",
+                error: null,
+                completedAt: 1_777_000_000,
+                items: [],
+              },
+            ],
+          },
+        },
+      ],
+    },
+  );
   const harness = createCodexHarness({ client, branches: memoryBranches() });
   const interrupted = await harness.step({
     ...makeScoutRequest("attempt-old"),
@@ -1395,8 +1570,12 @@ test("drains notifications from a reconcile-proven terminal turn before retry", 
 
   const retry = makeScoutRequest("attempt-retry");
   const started = await harness.step(retry);
-  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
-  const output = await harness.step({ ...retry, backendCursor: started.nextCursor });
+  if (started.kind !== "event")
+    throw new Error(`Unexpected ${started.kind} delivery`);
+  const output = await harness.step({
+    ...retry,
+    backendCursor: started.nextCursor,
+  });
 
   expect(output).toMatchObject({
     kind: "event",
@@ -1409,17 +1588,20 @@ test("drains notifications from a reconcile-proven terminal turn before retry", 
 });
 
 test("drains late notifications from a live-completed turn before the next role", async () => {
-  const client = new RecordedCodexClient([
-    completedItem("thread-old", "turn-old", "item-old", scoutOutput),
-    completedTurn("thread-old", "turn-old"),
-    usage("thread-old", "turn-old"),
-    completedItem("thread-old", "turn-old", "item-old-late", scoutOutput),
-    completedTurn("thread-old", "turn-old"),
-    completedItem("thread-next", "turn-next", "item-next", scoutOutput),
-  ], {
-    threadIds: ["thread-old", "thread-next"],
-    turnIds: ["turn-old", "turn-next"],
-  });
+  const client = new RecordedCodexClient(
+    [
+      completedItem("thread-old", "turn-old", "item-old", scoutOutput),
+      completedTurn("thread-old", "turn-old"),
+      usage("thread-old", "turn-old"),
+      completedItem("thread-old", "turn-old", "item-old-late", scoutOutput),
+      completedTurn("thread-old", "turn-old"),
+      completedItem("thread-next", "turn-next", "item-next", scoutOutput),
+    ],
+    {
+      threadIds: ["thread-old", "thread-next"],
+      turnIds: ["turn-old", "turn-next"],
+    },
+  );
   const harness = createCodexHarness({ client, branches: memoryBranches() });
 
   const first = await collect(harness, makeScoutRequest("attempt-old"));
@@ -1430,8 +1612,12 @@ test("drains late notifications from a live-completed turn before the next role"
 
   const next = makeScoutRequest("attempt-next");
   const started = await harness.step(next);
-  if (started.kind !== "event") throw new Error(`Unexpected ${started.kind} delivery`);
-  const output = await harness.step({ ...next, backendCursor: started.nextCursor });
+  if (started.kind !== "event")
+    throw new Error(`Unexpected ${started.kind} delivery`);
+  const output = await harness.step({
+    ...next,
+    backendCursor: started.nextCursor,
+  });
 
   expect(output).toMatchObject({
     kind: "event",
@@ -1451,18 +1637,22 @@ test("does not infer Implement success from a commit without structured history"
     return "b".repeat(40);
   };
   const client = new RecordedCodexClient([], {
-    threadReads: [{
-      thread: {
-        id: "thread-implement",
-        turns: [{
-          id: "turn-implement",
-          status: "completed",
-          error: null,
-          completedAt: 1_777_000_000,
-          items: [{ type: "commandExecution", id: "commit-command" }],
-        }],
+    threadReads: [
+      {
+        thread: {
+          id: "thread-implement",
+          turns: [
+            {
+              id: "turn-implement",
+              status: "completed",
+              error: null,
+              completedAt: 1_777_000_000,
+              items: [{ type: "commandExecution", id: "commit-command" }],
+            },
+          ],
+        },
       },
-    }],
+    ],
   });
   const harness = createCodexHarness({ client, branches });
   const delivery = await harness.step({

@@ -4,7 +4,12 @@ import { CodexClient } from "../../src/codex/client";
 import { ModelListResponseSchema } from "../../src/codex/protocol";
 
 test("initializes the app server and correlates requests while preserving inbound messages", async () => {
-  const fixturePath = join(import.meta.dir, "..", "fixtures", "scripted-app-server.ts");
+  const fixturePath = join(
+    import.meta.dir,
+    "..",
+    "fixtures",
+    "scripted-app-server.ts",
+  );
   const client = await CodexClient.start({
     command: [process.execPath, fixturePath],
     clientInfo: {
@@ -15,15 +20,19 @@ test("initializes the app server and correlates requests while preserving inboun
   });
 
   try {
-    const models = ModelListResponseSchema.parse(await client.request("model/list", {
-      limit: 100,
-      includeHidden: false,
-    }));
+    const models = ModelListResponseSchema.parse(
+      await client.request("model/list", {
+        limit: 100,
+        includeHidden: false,
+      }),
+    );
     expect(models.data[0]).toMatchObject({
       id: "gpt-5.6-terra",
       supportedReasoningEfforts: [{ reasoningEffort: "high" }],
     });
-    expect(await client.nextServerMessage()).toMatchObject({ method: "warning" });
+    expect(await client.nextServerMessage()).toMatchObject({
+      method: "warning",
+    });
 
     await client.request("fixture/exit", {});
     await expect(client.request("model/list", {})).rejects.toMatchObject({
@@ -36,7 +45,12 @@ test("initializes the app server and correlates requests while preserving inboun
 });
 
 test("child exit rejects future message reads instead of exposing queued messages", async () => {
-  const fixturePath = join(import.meta.dir, "..", "fixtures", "scripted-app-server.ts");
+  const fixturePath = join(
+    import.meta.dir,
+    "..",
+    "fixtures",
+    "scripted-app-server.ts",
+  );
   const client = await CodexClient.start({
     command: [process.execPath, fixturePath],
     clientInfo: {
@@ -62,7 +76,12 @@ test("child exit rejects future message reads instead of exposing queued message
 });
 
 test("close immediately rejects a blocked server-message read and terminates promptly", async () => {
-  const fixturePath = join(import.meta.dir, "..", "fixtures", "scripted-app-server.ts");
+  const fixturePath = join(
+    import.meta.dir,
+    "..",
+    "fixtures",
+    "scripted-app-server.ts",
+  );
   const client = await CodexClient.start({
     command: [process.execPath, fixturePath],
     clientInfo: {
@@ -83,7 +102,12 @@ test("close immediately rejects a blocked server-message read and terminates pro
 });
 
 test("close force-terminates an app server that ignores graceful termination", async () => {
-  const fixturePath = join(import.meta.dir, "..", "fixtures", "scripted-app-server.ts");
+  const fixturePath = join(
+    import.meta.dir,
+    "..",
+    "fixtures",
+    "scripted-app-server.ts",
+  );
   const client = await CodexClient.start({
     command: [process.execPath, fixturePath],
     clientInfo: {
@@ -101,7 +125,12 @@ test("close force-terminates an app server that ignores graceful termination", a
 });
 
 test("classifies structured RPC failure data for scheduler fallback", async () => {
-  const fixturePath = join(import.meta.dir, "..", "fixtures", "scripted-app-server.ts");
+  const fixturePath = join(
+    import.meta.dir,
+    "..",
+    "fixtures",
+    "scripted-app-server.ts",
+  );
   const client = await CodexClient.start({
     command: [process.execPath, fixturePath],
     clientInfo: {
@@ -111,7 +140,9 @@ test("classifies structured RPC failure data for scheduler fallback", async () =
     },
   });
   try {
-    await expect(client.request("fixture/modelUnavailable", {})).rejects.toMatchObject({
+    await expect(
+      client.request("fixture/modelUnavailable", {}),
+    ).rejects.toMatchObject({
       code: "model_unavailable",
       category: "infra",
       retryable: true,

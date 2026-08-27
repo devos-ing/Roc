@@ -1,18 +1,23 @@
-import { expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { currentIsoWeekId } from "../../src/cli/token-chart";
+import { join } from "node:path";
 import { runCli } from "../../src/cli/run";
+import { currentIsoWeekId } from "../../src/cli/token-chart";
 import { openDatabase } from "../../src/store/database";
 import { PlanningRepository } from "../../src/store/planning-repository";
+
+const ansiSgrPattern = "\\u001B\\[[0-9;]*m";
 
 test("init creates a database and task list reads it", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "agile.db");
   const output: string[] = [];
-  const io = { out: (text: string) => output.push(text), err: (text: string) => output.push(text) };
+  const io = {
+    out: (text: string) => output.push(text),
+    err: (text: string) => output.push(text),
+  };
 
   try {
     expect(await runCli(["init", "--db", dbPath], io)).toBe(0);
@@ -34,12 +39,16 @@ test("operational database failures report an error, return 1, and close the dat
   const close = spyOn(Database.prototype, "close");
 
   try {
-    expect(await runCli(["task", "list", "--db", dbPath], {
-      out: (text) => output.push(text),
-      err: (text) => errors.push(text),
-    })).toBe(1);
+    expect(
+      await runCli(["task", "list", "--db", dbPath], {
+        out: (text) => output.push(text),
+        err: (text) => errors.push(text),
+      }),
+    ).toBe(1);
     expect(output).toEqual([]);
-    expect(errors).toEqual(["Database version 4 is newer than supported version 3"]);
+    expect(errors).toEqual([
+      "Database version 4 is newer than supported version 3",
+    ]);
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
     close.mockRestore();
@@ -50,7 +59,10 @@ test("operational database failures report an error, return 1, and close the dat
 test("argument and unknown-command errors keep exit code 2", async () => {
   const output: string[] = [];
   const errors: string[] = [];
-  const io = { out: (text: string) => output.push(text), err: (text: string) => errors.push(text) };
+  const io = {
+    out: (text: string) => output.push(text),
+    err: (text: string) => errors.push(text),
+  };
 
   expect(await runCli(["--unknown-option"], io)).toBe(2);
   expect(await runCli(["unknown"], io)).toBe(2);
@@ -81,14 +93,17 @@ test("tokens prints the current-week report", async () => {
   const output: string[] = [];
 
   try {
-    expect(await runCli(["tokens", "--db", dbPath], {
-      out: (text) => output.push(text),
-      err: (text) => output.push(text),
-    })).toBe(0);
+    expect(
+      await runCli(["tokens", "--db", dbPath], {
+        out: (text) => output.push(text),
+        err: (text) => output.push(text),
+      }),
+    ).toBe(0);
     expect(output).toHaveLength(1);
     expect(output[0]!).toContain("\u001B[32m");
-    expect(output[0]!.replace(/\u001B\[[0-9;]*m/g, "")).toContain("Implement  150 tokens  100%  █");
-
+    expect(output[0]!.replace(new RegExp(ansiSgrPattern, "g"), "")).toContain(
+      "Implement  150 tokens  100%  █",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -116,10 +131,12 @@ test("tokens supports explicit plain output", async () => {
   const output: string[] = [];
 
   try {
-    expect(await runCli(["tokens", "--db", dbPath, "--no-color"], {
-      out: (text) => output.push(text),
-      err: (text) => output.push(text),
-    })).toBe(0);
+    expect(
+      await runCli(["tokens", "--db", dbPath, "--no-color"], {
+        out: (text) => output.push(text),
+        err: (text) => output.push(text),
+      }),
+    ).toBe(0);
     expect(output).toHaveLength(1);
     expect(output[0]!).not.toContain("\u001B[");
     expect(output[0]!).toContain("Implement  150 tokens  100%  █");
@@ -134,10 +151,12 @@ test("tokens reports a missing current week as an empty state", async () => {
   const output: string[] = [];
 
   try {
-    expect(await runCli(["tokens", "--db", dbPath], {
-      out: (text) => output.push(text),
-      err: (text) => output.push(text),
-    })).toBe(0);
+    expect(
+      await runCli(["tokens", "--db", dbPath], {
+        out: (text) => output.push(text),
+        err: (text) => output.push(text),
+      }),
+    ).toBe(0);
     expect(output).toEqual([`No active week: ${currentIsoWeekId()}`]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -149,13 +168,21 @@ test("tokens rejects scheduler-only options and reports read failures through th
   const logged: string[] = [];
   const runtime = {
     runScheduler: async () => {},
-    logError: async (error: { code: string }) => { logged.push(error.code); },
+    logError: async (error: { code: string }) => {
+      logged.push(error.code);
+    },
   };
 
-  expect(await runCli(["tokens", "--backend", "fake"], {
-    out: (text) => output.push(text),
-    err: (text) => output.push(text),
-  }, runtime)).toBe(2);
+  expect(
+    await runCli(
+      ["tokens", "--backend", "fake"],
+      {
+        out: (text) => output.push(text),
+        err: (text) => output.push(text),
+      },
+      runtime,
+    ),
+  ).toBe(2);
 
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "future.db");
@@ -163,12 +190,20 @@ test("tokens rejects scheduler-only options and reports read failures through th
   future.exec("PRAGMA user_version = 4");
   future.close();
   try {
-    expect(await runCli(["tokens", "--db", dbPath], {
-      out: (text) => output.push(text),
-      err: (text) => output.push(text),
-    }, runtime)).toBe(1);
+    expect(
+      await runCli(
+        ["tokens", "--db", dbPath],
+        {
+          out: (text) => output.push(text),
+          err: (text) => output.push(text),
+        },
+        runtime,
+      ),
+    ).toBe(1);
     expect(logged).toEqual(["TOKEN_USAGE_READ_FAILED"]);
-    expect(output.at(-1)).toBe("TOKEN_USAGE_READ_FAILED: Could not read token usage");
+    expect(output.at(-1)).toBe(
+      "TOKEN_USAGE_READ_FAILED: Could not read token usage",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

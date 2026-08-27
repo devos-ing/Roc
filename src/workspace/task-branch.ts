@@ -1,6 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { simpleGit, type SimpleGit } from "simple-git";
+import { type SimpleGit, simpleGit } from "simple-git";
 import { safeTaskPathComponent } from "../domain/task-path";
 
 export type TaskWorkspace = {
@@ -13,14 +13,23 @@ export type TaskWorkspace = {
 export type TaskBranchManager = {
   prepare(taskId: string, baseCommit?: string): Promise<TaskWorkspace>;
   commitChanges(taskId: string, baseCommit?: string): Promise<string>;
-  assertCommit(taskId: string, commitSha: string, baseCommit?: string): Promise<void>;
-  assertReviewReady(taskId: string, commitSha: string, baseCommit?: string): Promise<void>;
+  assertCommit(
+    taskId: string,
+    commitSha: string,
+    baseCommit?: string,
+  ): Promise<void>;
+  assertReviewReady(
+    taskId: string,
+    commitSha: string,
+    baseCommit?: string,
+  ): Promise<void>;
   status(taskId: string, baseCommit?: string): Promise<string>;
 };
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const TASK_BRANCH_PREFIX = "agile/";
 
+/** Creates an isolated SimpleGit client with deterministic noninteractive configuration. */
 function gitAt(baseDir: string): SimpleGit {
   return simpleGit({
     baseDir,
@@ -51,16 +60,21 @@ function gitAt(baseDir: string): SimpleGit {
   });
 }
 
-async function pathKind(path: string): Promise<"missing" | "directory" | "other"> {
+/** Classifies a path as missing, a real directory, or an unsafe other entry. */
+async function pathKind(
+  path: string,
+): Promise<"missing" | "directory" | "other"> {
   try {
     const stat = await lstat(path);
     return stat.isDirectory() && !stat.isSymbolicLink() ? "directory" : "other";
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return "missing";
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return "missing";
     throw error;
   }
 }
 
+/** Resolves a Git ref to a validated full commit SHA. */
 async function fullCommit(git: SimpleGit, ref: string): Promise<string> {
   const commit = (await git.revparse(["--verify", `${ref}^{commit}`])).trim();
   if (!FULL_SHA.test(commit)) {
@@ -69,14 +83,17 @@ async function fullCommit(git: SimpleGit, ref: string): Promise<string> {
   return commit;
 }
 
+/** Builds the trusted final commit subject for a task. */
 function finalMessage(taskId: string): string {
   return `agile(${taskId}): implement ticket`;
 }
 
+/** Builds the temporary checkpoint commit subject for a task. */
 function checkpointMessage(taskId: string): string {
   return `agile(${taskId}): WIP checkpoint`;
 }
 
+/** Creates a branch manager backed by a dedicated validated scheduler checkout. */
 export async function createTaskBranchManager(
   repoPath: string,
   baseRef: string,
@@ -85,14 +102,18 @@ export async function createTaskBranchManager(
   const sourceGit = gitAt(canonicalRepo);
   const reportedRoot = (await sourceGit.revparse("--show-toplevel")).trim();
   if (reportedRoot !== canonicalRepo) {
-    throw new Error(`Repository path is not the Git checkout root: ${canonicalRepo}`);
+    throw new Error(
+      `Repository path is not the Git checkout root: ${canonicalRepo}`,
+    );
   }
 
   const baseCommit = await fullCommit(sourceGit, baseRef);
   const checkoutPath = `${canonicalRepo}.agile-checkout`;
   const checkoutKind = await pathKind(checkoutPath);
   if (checkoutKind === "other") {
-    throw new Error(`Scheduler checkout path is not a real directory: ${checkoutPath}`);
+    throw new Error(
+      `Scheduler checkout path is not a real directory: ${checkoutPath}`,
+    );
   }
 
   if (checkoutKind === "missing") {
@@ -102,12 +123,20 @@ export async function createTaskBranchManager(
   const checkoutGit = gitAt(checkoutPath);
   const checkoutRoot = (await checkoutGit.revparse("--show-toplevel")).trim();
   if (checkoutRoot !== checkoutPath) {
-    throw new Error(`Scheduler checkout path is not its Git root: ${checkoutPath}`);
+    throw new Error(
+      `Scheduler checkout path is not its Git root: ${checkoutPath}`,
+    );
   }
-  const origin = (await checkoutGit.raw(["remote", "get-url", "origin"])).trim();
-  const canonicalOrigin = await realpath(resolve(dirname(checkoutPath), origin));
+  const origin = (
+    await checkoutGit.raw(["remote", "get-url", "origin"])
+  ).trim();
+  const canonicalOrigin = await realpath(
+    resolve(dirname(checkoutPath), origin),
+  );
   if (canonicalOrigin !== canonicalRepo) {
-    throw new Error(`Scheduler checkout belongs to a different repository: ${checkoutPath}`);
+    throw new Error(
+      `Scheduler checkout belongs to a different repository: ${checkoutPath}`,
+    );
   }
 
   if (checkoutKind === "missing") {
@@ -117,7 +146,11 @@ export async function createTaskBranchManager(
   }
   await checkoutGit.raw(["cat-file", "-e", `${baseCommit}^{commit}`]);
 
-  function workspace(taskId: string, persistedBaseCommit?: string): TaskWorkspace {
+  /** Builds and validates the workspace identity for a task branch. */
+  function workspace(
+    taskId: string,
+    persistedBaseCommit?: string,
+  ): TaskWorkspace {
     const safeTaskId = safeTaskPathComponent(taskId);
     const taskBaseCommit = persistedBaseCommit ?? baseCommit;
     if (!FULL_SHA.test(taskBaseCommit)) {
@@ -131,20 +164,28 @@ export async function createTaskBranchManager(
     };
   }
 
+  /** Reports whether a local task branch already exists. */
   async function branchExists(branch: string): Promise<boolean> {
     return (await checkoutGit.branchLocal()).all.includes(branch);
   }
 
+  /** Returns the checkout's raw porcelain status without trailing whitespace. */
   async function porcelainStatus(): Promise<string> {
     return (await checkoutGit.raw(["status", "--porcelain"])).trimEnd();
   }
 
+  /** Returns the subject line for a commit reference. */
   async function subject(ref = "HEAD"): Promise<string> {
     return (await checkoutGit.raw(["show", "-s", "--format=%s", ref])).trim();
   }
 
+  /** Verifies that a task branch descends from its persisted base commit. */
   async function assertBase(candidate: TaskWorkspace): Promise<void> {
-    await checkoutGit.raw(["cat-file", "-e", `${candidate.baseCommit}^{commit}`]);
+    await checkoutGit.raw([
+      "cat-file",
+      "-e",
+      `${candidate.baseCommit}^{commit}`,
+    ]);
     const mergeBase = (
       await checkoutGit.raw([
         "merge-base",
@@ -153,18 +194,24 @@ export async function createTaskBranchManager(
       ])
     ).trim();
     if (mergeBase !== candidate.baseCommit) {
-      throw new Error(`Task branch ${candidate.branch} does not descend from its base commit`);
+      throw new Error(
+        `Task branch ${candidate.branch} does not descend from its base commit`,
+      );
     }
   }
 
+  /** Verifies that a task branch is active and still based on its expected commit. */
   async function assertActive(candidate: TaskWorkspace): Promise<void> {
     const current = (await checkoutGit.status()).current;
     if (current !== candidate.branch) {
-      throw new Error(`Task branch ${candidate.branch} is not active in the scheduler checkout`);
+      throw new Error(
+        `Task branch ${candidate.branch} is not active in the scheduler checkout`,
+      );
     }
     await assertBase(candidate);
   }
 
+  /** Counts commits introduced by a task branch after its base commit. */
   async function taskCommitCount(candidate: TaskWorkspace): Promise<number> {
     const encoded = (
       await checkoutGit.raw([
@@ -174,19 +221,27 @@ export async function createTaskBranchManager(
       ])
     ).trim();
     if (!/^\d+$/.test(encoded)) {
-      throw new Error(`Git returned an invalid task commit count for ${candidate.branch}`);
+      throw new Error(
+        `Git returned an invalid task commit count for ${candidate.branch}`,
+      );
     }
     return Number(encoded);
   }
 
+  /** Checkpoints dirty work on the active task branch before switching branches. */
   async function checkpointBeforeSwitch(nextBranch: string): Promise<void> {
     const status = await checkoutGit.status();
     if (status.current === nextBranch || status.isClean()) return;
-    if (status.current === null || !status.current.startsWith(TASK_BRANCH_PREFIX)) {
+    if (
+      status.current === null ||
+      !status.current.startsWith(TASK_BRANCH_PREFIX)
+    ) {
       throw new Error("Scheduler checkout is dirty outside a task branch");
     }
 
-    const activeTaskId = safeTaskPathComponent(status.current.slice(TASK_BRANCH_PREFIX.length));
+    const activeTaskId = safeTaskPathComponent(
+      status.current.slice(TASK_BRANCH_PREFIX.length),
+    );
     const currentSubject = await subject();
     if (currentSubject === finalMessage(activeTaskId)) {
       throw new Error(`Completed task branch ${status.current} became dirty`);
@@ -200,6 +255,7 @@ export async function createTaskBranchManager(
     }
   }
 
+  /** Verifies that a full commit SHA is reachable from the expected task branch. */
   async function assertReachableCommit(
     candidate: TaskWorkspace,
     commitSha: string,
@@ -215,13 +271,21 @@ export async function createTaskBranchManager(
         "--contains",
         commitSha,
       ])
-    ).split("\n").map((branch) => branch.trim()).filter(Boolean);
+    )
+      .split("\n")
+      .map((branch) => branch.trim())
+      .filter(Boolean);
     if (!containing.includes(candidate.branch)) {
-      throw new Error(`Commit is not reachable from ${candidate.branch}: ${commitSha}`);
+      throw new Error(
+        `Commit is not reachable from ${candidate.branch}: ${commitSha}`,
+      );
     }
   }
 
-  async function validatedSingleCommit(candidate: TaskWorkspace): Promise<string> {
+  /** Returns the trusted final commit after validating branch history and cleanliness. */
+  async function validatedSingleCommit(
+    candidate: TaskWorkspace,
+  ): Promise<string> {
     await assertActive(candidate);
     const count = await taskCommitCount(candidate);
     if (count !== 1) {
@@ -232,31 +296,54 @@ export async function createTaskBranchManager(
     if ((await porcelainStatus()) !== "") {
       throw new Error(`Task branch ${candidate.branch} must be clean`);
     }
-    if ((await subject(`refs/heads/${candidate.branch}`)) !== finalMessage(candidate.taskId)) {
-      throw new Error(`Task branch ${candidate.branch} does not contain the trusted final commit`);
+    if (
+      (await subject(`refs/heads/${candidate.branch}`)) !==
+      finalMessage(candidate.taskId)
+    ) {
+      throw new Error(
+        `Task branch ${candidate.branch} does not contain the trusted final commit`,
+      );
     }
-    const commitSha = await fullCommit(checkoutGit, `refs/heads/${candidate.branch}`);
+    const commitSha = await fullCommit(
+      checkoutGit,
+      `refs/heads/${candidate.branch}`,
+    );
     await assertReachableCommit(candidate, commitSha);
     return commitSha;
   }
 
   return {
-    async prepare(taskId: string, persistedBaseCommit?: string): Promise<TaskWorkspace> {
+    /** Activates or creates the isolated branch for a task workspace. */
+    async prepare(
+      taskId: string,
+      persistedBaseCommit?: string,
+    ): Promise<TaskWorkspace> {
       const candidate = workspace(taskId, persistedBaseCommit);
-      await checkoutGit.raw(["cat-file", "-e", `${candidate.baseCommit}^{commit}`]);
+      await checkoutGit.raw([
+        "cat-file",
+        "-e",
+        `${candidate.baseCommit}^{commit}`,
+      ]);
       await checkpointBeforeSwitch(candidate.branch);
 
       if (await branchExists(candidate.branch)) {
         await assertBase(candidate);
         await checkoutGit.checkout(candidate.branch);
       } else {
-        await checkoutGit.checkoutBranch(candidate.branch, candidate.baseCommit);
+        await checkoutGit.checkoutBranch(
+          candidate.branch,
+          candidate.baseCommit,
+        );
       }
       await assertActive(candidate);
       return candidate;
     },
 
-    async commitChanges(taskId: string, persistedBaseCommit?: string): Promise<string> {
+    /** Converts task changes or a checkpoint into the single trusted final commit. */
+    async commitChanges(
+      taskId: string,
+      persistedBaseCommit?: string,
+    ): Promise<string> {
       const candidate = workspace(taskId, persistedBaseCommit);
       await assertActive(candidate);
       const count = await taskCommitCount(candidate);
@@ -264,13 +351,23 @@ export async function createTaskBranchManager(
 
       if (count === 0) {
         if (!dirty) {
-          throw new Error(`Task branch ${candidate.branch} has no uncommitted changes`);
+          throw new Error(
+            `Task branch ${candidate.branch} has no uncommitted changes`,
+          );
         }
         await checkoutGit.add("-A");
         await checkoutGit.commit(finalMessage(candidate.taskId));
-      } else if (count === 1 && (await subject()) === checkpointMessage(candidate.taskId)) {
+      } else if (
+        count === 1 &&
+        (await subject()) === checkpointMessage(candidate.taskId)
+      ) {
         if (dirty) await checkoutGit.add("-A");
-        await checkoutGit.raw(["commit", "--amend", "-m", finalMessage(candidate.taskId)]);
+        await checkoutGit.raw([
+          "commit",
+          "--amend",
+          "-m",
+          finalMessage(candidate.taskId),
+        ]);
       } else if (count !== 1) {
         throw new Error(
           `Task branch ${candidate.branch} must contain exactly one task commit; found ${count}`,
@@ -282,6 +379,7 @@ export async function createTaskBranchManager(
       return validatedSingleCommit(candidate);
     },
 
+    /** Verifies that a reported implementation commit belongs to the active task branch. */
     async assertCommit(
       taskId: string,
       commitSha: string,
@@ -292,6 +390,7 @@ export async function createTaskBranchManager(
       await assertReachableCommit(candidate, commitSha);
     },
 
+    /** Verifies that review targets the exact trusted final task commit. */
     async assertReviewReady(
       taskId: string,
       commitSha: string,
@@ -306,7 +405,11 @@ export async function createTaskBranchManager(
       }
     },
 
-    async status(taskId: string, persistedBaseCommit?: string): Promise<string> {
+    /** Returns the porcelain status for an active validated task workspace. */
+    async status(
+      taskId: string,
+      persistedBaseCommit?: string,
+    ): Promise<string> {
       const candidate = workspace(taskId, persistedBaseCommit);
       await assertActive(candidate);
       return porcelainStatus();

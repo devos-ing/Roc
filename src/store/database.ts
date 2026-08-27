@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { prepareSafeFilePath } from "../runtime/safe-file";
 import { migrate } from "./migrations";
 
+/** Opens a safely located SQLite database, configures it, and applies migrations. */
 export function openDatabase(path: string): Database {
   const safePath = path === ":memory:" ? path : prepareSafeFilePath(path);
   const db = new Database(safePath, { create: true, strict: true });

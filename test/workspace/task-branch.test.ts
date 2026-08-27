@@ -1,7 +1,7 @@
+import { expect, test } from "bun:test";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "bun:test";
 import { createTaskBranchManager } from "../../src/workspace/task-branch";
 
 async function git(args: string[], cwd: string): Promise<string> {
@@ -51,7 +51,9 @@ test("project ignores Codex sandbox and test artifacts before task commits", asy
     "xcrun_db",
   ];
 
-  expect((await git(["check-ignore", ...artifacts], process.cwd())).split("\n")).toEqual(artifacts);
+  expect(
+    (await git(["check-ignore", ...artifacts], process.cwd())).split("\n"),
+  ).toEqual(artifacts);
 });
 
 test("switches retained task branches in a scheduler-owned checkout", async () => {
@@ -69,19 +71,29 @@ test("switches retained task branches in a scheduler-owned checkout", async () =
 
     const second = await manager.prepare("T2");
     expect(second.path).toBe(first.path);
-    expect(await Bun.file(join(second.path, "answer.txt")).exists()).toBe(false);
-    expect(await git(["branch", "--show-current"], second.path)).toBe("agile/T2");
+    expect(await Bun.file(join(second.path, "answer.txt")).exists()).toBe(
+      false,
+    );
+    expect(await git(["branch", "--show-current"], second.path)).toBe(
+      "agile/T2",
+    );
 
     const restarted = await createTaskBranchManager(root, "HEAD");
     const reopened = await restarted.prepare("T1", first.baseCommit);
-    expect(await readFile(join(reopened.path, "answer.txt"), "utf8")).toBe("42\n");
-    await expect(restarted.assertCommit("T1", firstCommit, first.baseCommit)).resolves.toBeUndefined();
+    expect(await readFile(join(reopened.path, "answer.txt"), "utf8")).toBe(
+      "42\n",
+    );
+    await expect(
+      restarted.assertCommit("T1", firstCommit, first.baseCommit),
+    ).resolves.toBeUndefined();
 
     expect(await git(["branch", "--show-current"], root)).toBe(sourceBranch);
     expect(await git(["rev-parse", "HEAD"], root)).toBe(sourceHead);
     expect(await git(["status", "--porcelain"], root)).toBe("");
     expect(await Bun.file(join(root, "answer.txt")).exists()).toBe(false);
-    await expect(manager.prepare("../escape")).rejects.toThrow("Unsafe task path component");
+    await expect(manager.prepare("../escape")).rejects.toThrow(
+      "Unsafe task path component",
+    );
   } finally {
     await removeRepository(root);
   }
@@ -95,15 +107,20 @@ test("checkpoints interrupted work and folds it into one final task commit", asy
     await writeFile(join(first.path, "partial.txt"), "partial\n");
 
     await manager.prepare("T2");
-    expect(await git(["show", "-s", "--format=%s", "agile/T1"], first.path)).toBe(
-      "agile(T1): WIP checkpoint",
-    );
+    expect(
+      await git(["show", "-s", "--format=%s", "agile/T1"], first.path),
+    ).toBe("agile(T1): WIP checkpoint");
 
     await manager.prepare("T1", first.baseCommit);
     await writeFile(join(first.path, "final.txt"), "done\n");
     const commit = await manager.commitChanges("T1", first.baseCommit);
 
-    expect(await git(["rev-list", "--count", `${first.baseCommit}..agile/T1`], first.path)).toBe("1");
+    expect(
+      await git(
+        ["rev-list", "--count", `${first.baseCommit}..agile/T1`],
+        first.path,
+      ),
+    ).toBe("1");
     expect(await git(["show", "-s", "--format=%s", commit], first.path)).toBe(
       "agile(T1): implement ticket",
     );
@@ -118,7 +135,10 @@ test("requires Review to inspect the exact clean implementation commit", async (
   try {
     const manager = await createTaskBranchManager(root, "HEAD");
     const workspace = await manager.prepare("T1");
-    await writeFile(join(workspace.path, "implementation.txt"), "implemented\n");
+    await writeFile(
+      join(workspace.path, "implementation.txt"),
+      "implemented\n",
+    );
     const commit = await manager.commitChanges("T1", workspace.baseCommit);
 
     await expect(
@@ -145,8 +165,12 @@ test("rejects reuse of a task branch with a different base identity", async () =
     await git(["commit", "-m", "test: advance base"], root);
 
     const nextManager = await createTaskBranchManager(root, "HEAD");
-    await expect(nextManager.prepare("T1", first.baseCommit)).resolves.toEqual(first);
-    await expect(nextManager.prepare("T1")).rejects.toThrow(/does not descend from its base commit/i);
+    await expect(nextManager.prepare("T1", first.baseCommit)).resolves.toEqual(
+      first,
+    );
+    await expect(nextManager.prepare("T1")).rejects.toThrow(
+      /does not descend from its base commit/i,
+    );
   } finally {
     await removeRepository(root);
   }

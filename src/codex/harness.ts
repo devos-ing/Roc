@@ -1,20 +1,33 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
-  HarnessStepRequestSchema,
-  ImplementOutputSchema,
-  ReviewOutputSchema,
-  ScoutOutputSchema,
   type AgentHarness,
   type HarnessDelivery,
   type HarnessEvent,
   type HarnessStepRequest,
+  HarnessStepRequestSchema,
+  ImplementOutputSchema,
+  ReviewOutputSchema,
+  ScoutOutputSchema,
 } from "../harness/contracts";
 import { AgileError, normalizeError } from "../runtime/errors";
-import type { TaskWorkspace, TaskBranchManager } from "../workspace/task-branch";
+import type {
+  TaskBranchManager,
+  TaskWorkspace,
+} from "../workspace/task-branch";
 import type { CodexClientApi } from "./client";
 import {
+  ImplementDraftOutputJsonSchema,
+  ImplementDraftOutputSchema,
+  implementPrompt,
+  ReviewOutputJsonSchema,
+  reviewPrompt,
+  ScoutOutputJsonSchema,
+  scoutPrompt,
+} from "./prompts";
+import {
   AgentMessageItemSchema,
+  classifyCodexTurnFailure,
   ExitedReviewModeItemSchema,
   ItemCompletedNotificationSchema,
   KnownServerRequestSchema,
@@ -24,44 +37,41 @@ import {
   ThreadTokenUsageUpdatedNotificationSchema,
   TurnCompletedNotificationSchema,
   TurnStartResponseSchema,
-  classifyCodexTurnFailure,
 } from "./protocol";
 import {
-  ImplementDraftOutputJsonSchema,
-  ImplementDraftOutputSchema,
-  ReviewOutputJsonSchema,
-  ScoutOutputJsonSchema,
-  implementPrompt,
-  reviewPrompt,
-  scoutPrompt,
-} from "./prompts";
-import {
-  SkillListResponseSchema,
   buildDefaultSkillConfig,
   type DefaultSkillPolicy,
+  SkillListResponseSchema,
 } from "./skill-policy";
 
-const UsageSchema = z.object({
-  inputTokens: z.number().int().nonnegative(),
-  cachedInputTokens: z.number().int().nonnegative(),
-  outputTokens: z.number().int().nonnegative(),
-  reasoningOutputTokens: z.number().int().nonnegative(),
-}).strict();
+const UsageSchema = z
+  .object({
+    inputTokens: z.number().int().nonnegative(),
+    cachedInputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    reasoningOutputTokens: z.number().int().nonnegative(),
+  })
+  .strict();
 
-const BackendCursorSchema = z.object({
-  version: z.literal(1),
-  nextSequence: z.number().int().positive(),
-  threadId: z.string().min(1),
-  turnId: z.string().min(1),
-  usage: UsageSchema,
-  outputDelivered: z.literal(true).optional(),
-  reviewStatusBefore: z.string().optional(),
-}).strict();
+const BackendCursorSchema = z
+  .object({
+    version: z.literal(1),
+    nextSequence: z.number().int().positive(),
+    threadId: z.string().min(1),
+    turnId: z.string().min(1),
+    usage: UsageSchema,
+    outputDelivered: z.literal(true).optional(),
+    reviewStatusBefore: z.string().optional(),
+  })
+  .strict();
 
 type BackendCursor = z.infer<typeof BackendCursorSchema>;
 type Usage = BackendCursor["usage"];
 type EventWithoutSequence = {
-  [Type in HarnessEvent["type"]]: Omit<Extract<HarnessEvent, { type: Type }>, "sequence">;
+  [Type in HarnessEvent["type"]]: Omit<
+    Extract<HarnessEvent, { type: Type }>,
+    "sequence"
+  >;
 }[HarnessEvent["type"]];
 type SupportedRequest = HarnessStepRequest;
 
@@ -85,6 +95,7 @@ const zeroUsage: Usage = {
   reasoningOutputTokens: 0,
 };
 
+/** Creates a task-scoped protocol error with optional turn context and cause. */
 function protocolError(
   code: string,
   message: string,
@@ -105,10 +116,12 @@ function protocolError(
   });
 }
 
+/** Validates and serializes a durable backend cursor. */
 function serializeCursor(cursor: BackendCursor): string {
   return JSON.stringify(BackendCursorSchema.parse(cursor));
 }
 
+/** Parses a durable backend cursor or raises a task-scoped protocol error. */
 function parseCursor(raw: string, request: HarnessStepRequest): BackendCursor {
   try {
     return BackendCursorSchema.parse(JSON.parse(raw));
@@ -123,6 +136,7 @@ function parseCursor(raw: string, request: HarnessStepRequest): BackendCursor {
   }
 }
 
+/** Hashes cumulative token usage in a stable canonical field order. */
 function cumulativeHash(usage: Usage): string {
   const canonical = JSON.stringify({
     inputTokens: usage.inputTokens,
@@ -133,6 +147,7 @@ function cumulativeHash(usage: Usage): string {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
+/** Wraps an event with its next sequence and advances the serialized cursor. */
 function delivery(
   cursor: BackendCursor,
   event: EventWithoutSequence,
@@ -145,6 +160,7 @@ function delivery(
   };
 }
 
+/** Verifies that a notification source matches the active attempt's turn. */
 function sameSource(
   threadId: string,
   turnId: string,
@@ -161,6 +177,7 @@ function sameSource(
   }
 }
 
+/** Verifies role agreement between an attempt descriptor and its input. */
 function supportedRequest(request: HarnessStepRequest): SupportedRequest {
   if (request.attempt.role !== request.input.role) {
     throw protocolError(
@@ -172,13 +189,18 @@ function supportedRequest(request: HarnessStepRequest): SupportedRequest {
   return request as SupportedRequest;
 }
 
+/** Selects the thread-level sandbox mode for an agent role. */
 function threadSandbox(
   role: "scout" | "implement" | "review",
 ): "read-only" | "workspace-write" {
   return role === "implement" ? "workspace-write" : "read-only";
 }
 
-function turnSandbox(role: "scout" | "implement", workspace: TaskWorkspace): unknown {
+/** Builds the turn-level sandbox policy for Scout or Implement execution. */
+function turnSandbox(
+  role: "scout" | "implement",
+  workspace: TaskWorkspace,
+): unknown {
   if (role === "scout") return { type: "readOnly", networkAccess: false };
   return {
     type: "workspaceWrite",
@@ -189,40 +211,47 @@ function turnSandbox(role: "scout" | "implement", workspace: TaskWorkspace): unk
   };
 }
 
+/** Builds the role-specific prompt for a validated harness request. */
 function prompt(request: SupportedRequest): string {
   if (request.input.role === "scout") return scoutPrompt(request.input);
   if (request.input.role === "implement") return implementPrompt(request.input);
   return reviewPrompt(request.input);
 }
 
+/** Selects the structured output schema for an agent role. */
 function outputSchema(role: "scout" | "implement" | "review"): unknown {
   if (role === "scout") return ScoutOutputJsonSchema;
   if (role === "implement") return ImplementDraftOutputJsonSchema;
   return ReviewOutputJsonSchema;
 }
 
+/** Creates a Codex-backed harness with durable cursors, recovery, and workspace safeguards. */
 export function createCodexHarness(input: {
   client: CodexClientApi;
   branches: TaskBranchManager;
   skillPolicy?: DefaultSkillPolicy;
   now?: () => string;
 }): AgentHarness {
+  /** Returns the current timestamp through the injected or system clock. */
   const now = input.now ?? (() => new Date().toISOString());
   const activeAttempts = new Map<string, ActiveAttempt>();
   const terminalAttempts = new Set<string>();
   const policyInterruptedTurns = new Set<string>();
   const terminalTurnSources = new Set<string>();
 
+  /** Encodes a thread and turn pair as a stable terminal-source key. */
   function turnSource(threadId: string, turnId: string): string {
     return JSON.stringify([threadId, turnId]);
   }
 
+  /** Marks an attempt and its turn source terminal and removes active state. */
   function terminalize(active: ActiveAttempt): void {
     activeAttempts.delete(active.attemptId);
     terminalAttempts.add(active.attemptId);
     terminalTurnSources.add(turnSource(active.threadId, active.turnId));
   }
 
+  /** Removes transient completion markers from a terminal cursor. */
   function withoutTerminalMarkers(cursor: BackendCursor): BackendCursor {
     const result = { ...cursor };
     delete result.outputDelivered;
@@ -230,6 +259,7 @@ export function createCodexHarness(input: {
     return result;
   }
 
+  /** Terminalizes an attempt and emits a structured infrastructure-failure delivery. */
   function failedDelivery(
     cursor: BackendCursor,
     active: ActiveAttempt,
@@ -249,6 +279,7 @@ export function createCodexHarness(input: {
     });
   }
 
+  /** Converts task-scoped operational failures into policy or infrastructure deliveries. */
   function taskFailure(
     request: SupportedRequest,
     error: unknown,
@@ -312,6 +343,7 @@ export function createCodexHarness(input: {
     );
   }
 
+  /** Terminalizes an attempt and emits its completion delivery. */
   function completedDelivery(
     cursor: BackendCursor,
     active: ActiveAttempt,
@@ -325,6 +357,7 @@ export function createCodexHarness(input: {
     });
   }
 
+  /** Classifies a failed turn and emits the corresponding terminal delivery. */
   function classifiedTurnFailure(
     cursor: BackendCursor,
     active: ActiveAttempt,
@@ -352,7 +385,10 @@ export function createCodexHarness(input: {
     );
   }
 
-  async function assertReviewInvariant(request: SupportedRequest): Promise<void> {
+  /** Verifies that Review targets the exact clean implementation commit. */
+  async function assertReviewInvariant(
+    request: SupportedRequest,
+  ): Promise<void> {
     if (request.input.role !== "review") return;
     const baseCommit = request.input.ticket.baseCommit;
     if (baseCommit === undefined) {
@@ -386,10 +422,14 @@ export function createCodexHarness(input: {
     }
   }
 
+  /** Starts or resumes role execution and emits the attempt-started delivery. */
   async function dispatch(request: SupportedRequest): Promise<HarnessDelivery> {
     const existing = activeAttempts.get(request.attempt.attemptId);
     if (existing) {
-      if (existing.taskId !== request.attempt.taskId || existing.role !== request.attempt.role) {
+      if (
+        existing.taskId !== request.attempt.taskId ||
+        existing.role !== request.attempt.role
+      ) {
         throw protocolError(
           "codex_attempt_identity_mismatch",
           "Active Codex attempt identity does not match the dispatch request",
@@ -445,14 +485,26 @@ export function createCodexHarness(input: {
     let skillsConfig: { path: string; enabled: boolean }[] | undefined;
     if (input.skillPolicy !== undefined) {
       try {
-        const catalog = SkillListResponseSchema.parse(await input.client.request("skills/list", {
-          cwds: [workspace.path],
-        }));
-        const workspaceSkills = catalog.data.find((entry) => entry.cwd === workspace.path);
-        if (workspaceSkills === undefined || workspaceSkills.errors.length > 0) {
-          throw new Error("Codex did not return a complete workspace skill catalog");
+        const catalog = SkillListResponseSchema.parse(
+          await input.client.request("skills/list", {
+            cwds: [workspace.path],
+          }),
+        );
+        const workspaceSkills = catalog.data.find(
+          (entry) => entry.cwd === workspace.path,
+        );
+        if (
+          workspaceSkills === undefined ||
+          workspaceSkills.errors.length > 0
+        ) {
+          throw new Error(
+            "Codex did not return a complete workspace skill catalog",
+          );
         }
-        skillsConfig = buildDefaultSkillConfig(workspaceSkills.skills, input.skillPolicy);
+        skillsConfig = buildDefaultSkillConfig(
+          workspaceSkills.skills,
+          input.skillPolicy,
+        );
       } catch (error) {
         throw normalizeError(error, {
           code: "codex_skill_catalog_failed",
@@ -469,7 +521,9 @@ export function createCodexHarness(input: {
       ...(request.attempt.role === "review"
         ? { model_reasoning_effort: request.attempt.effort }
         : {}),
-      ...(skillsConfig === undefined ? {} : { skills: { config: skillsConfig } }),
+      ...(skillsConfig === undefined
+        ? {}
+        : { skills: { config: skillsConfig } }),
     };
     let rawThreadResponse: unknown;
     try {
@@ -479,7 +533,9 @@ export function createCodexHarness(input: {
         approvalPolicy: "never",
         sandbox: threadSandbox(request.attempt.role),
         serviceName: "agile_agents",
-        ...(Object.keys(threadConfig).length === 0 ? {} : { config: threadConfig }),
+        ...(Object.keys(threadConfig).length === 0
+          ? {}
+          : { config: threadConfig }),
       });
     } catch (error) {
       throw normalizeError(error, {
@@ -621,6 +677,7 @@ export function createCodexHarness(input: {
     });
   }
 
+  /** Consumes app-server messages until the next normalized harness delivery is available. */
   async function nextDelivery(
     request: SupportedRequest,
     initialCursor: BackendCursor,
@@ -652,7 +709,10 @@ export function createCodexHarness(input: {
               input.client.respond(known.data.id, { decision: "decline" });
               break;
             case "item/permissions/requestApproval":
-              input.client.respond(known.data.id, { permissions: {}, scope: "turn" });
+              input.client.respond(known.data.id, {
+                permissions: {},
+                scope: "turn",
+              });
               break;
             case "item/tool/requestUserInput":
               input.client.respond(known.data.id, { answers: {} });
@@ -679,7 +739,10 @@ export function createCodexHarness(input: {
             "item/tool/requestUserInput",
             "mcpServer/elicitation/request",
           ].includes(message.method);
-          if (typeof message.id === "string" || typeof message.id === "number") {
+          if (
+            typeof message.id === "string" ||
+            typeof message.id === "number"
+          ) {
             input.client.respondError(
               message.id,
               knownMethod ? -32602 : -32601,
@@ -699,19 +762,22 @@ export function createCodexHarness(input: {
         terminalize(active);
         return delivery(withoutTerminalMarkers(cursor), {
           type: "attempt.blocked_policy",
-          eventId:
-            `${active.attemptId}:${active.turnId}:blocked_policy:approval_required:${String(message.id)}`,
+          eventId: `${active.attemptId}:${active.turnId}:blocked_policy:approval_required:${String(message.id)}`,
           attemptId: active.attemptId,
           occurredAt: now(),
           code: "approval_required",
-          message: "Codex requested an interaction during an unattended role turn",
+          message:
+            "Codex requested an interaction during an unattended role turn",
         });
       }
 
       if (message.method === "thread/tokenUsage/updated") {
-        let notification: z.infer<typeof ThreadTokenUsageUpdatedNotificationSchema>;
+        let notification: z.infer<
+          typeof ThreadTokenUsageUpdatedNotificationSchema
+        >;
         try {
-          notification = ThreadTokenUsageUpdatedNotificationSchema.parse(message);
+          notification =
+            ThreadTokenUsageUpdatedNotificationSchema.parse(message);
         } catch (error) {
           throw protocolError(
             "invalid_token_usage",
@@ -721,23 +787,37 @@ export function createCodexHarness(input: {
             error,
           );
         }
-        if (terminalTurnSources.has(turnSource(
+        if (
+          terminalTurnSources.has(
+            turnSource(
+              notification.params.threadId,
+              notification.params.turnId,
+            ),
+          )
+        )
+          continue;
+        sameSource(
           notification.params.threadId,
           notification.params.turnId,
-        ))) continue;
-        sameSource(notification.params.threadId, notification.params.turnId, active, request);
+          active,
+          request,
+        );
         const cumulative: Usage = {
           inputTokens: notification.params.tokenUsage.total.inputTokens,
-          cachedInputTokens: notification.params.tokenUsage.total.cachedInputTokens,
+          cachedInputTokens:
+            notification.params.tokenUsage.total.cachedInputTokens,
           outputTokens: notification.params.tokenUsage.total.outputTokens,
-          reasoningOutputTokens: notification.params.tokenUsage.total.reasoningOutputTokens,
+          reasoningOutputTokens:
+            notification.params.tokenUsage.total.reasoningOutputTokens,
         };
         const delta: Usage = {
           inputTokens: cumulative.inputTokens - cursor.usage.inputTokens,
-          cachedInputTokens: cumulative.cachedInputTokens - cursor.usage.cachedInputTokens,
+          cachedInputTokens:
+            cumulative.cachedInputTokens - cursor.usage.cachedInputTokens,
           outputTokens: cumulative.outputTokens - cursor.usage.outputTokens,
           reasoningOutputTokens:
-            cumulative.reasoningOutputTokens - cursor.usage.reasoningOutputTokens,
+            cumulative.reasoningOutputTokens -
+            cursor.usage.reasoningOutputTokens,
         };
         if (Object.values(delta).some((value) => value < 0)) {
           throw protocolError(
@@ -771,11 +851,21 @@ export function createCodexHarness(input: {
             error,
           );
         }
-        if (terminalTurnSources.has(turnSource(
+        if (
+          terminalTurnSources.has(
+            turnSource(
+              notification.params.threadId,
+              notification.params.turnId,
+            ),
+          )
+        )
+          continue;
+        sameSource(
           notification.params.threadId,
           notification.params.turnId,
-        ))) continue;
-        sameSource(notification.params.threadId, notification.params.turnId, active, request);
+          active,
+          request,
+        );
         let itemId: string;
         let encodedOutput: string;
         if (active.role === "review") {
@@ -845,7 +935,10 @@ export function createCodexHarness(input: {
           }
           let commitSha: string;
           try {
-            commitSha = await input.branches.commitChanges(active.taskId, active.baseCommit);
+            commitSha = await input.branches.commitChanges(
+              active.taskId,
+              active.baseCommit,
+            );
           } catch (error) {
             throw protocolError(
               "invalid_implementation_commit",
@@ -858,9 +951,10 @@ export function createCodexHarness(input: {
           output = ImplementOutputSchema.parse({ ...draft, commitSha });
         } else {
           try {
-            output = active.role === "scout"
-              ? ScoutOutputSchema.parse(decoded)
-              : ReviewOutputSchema.parse(decoded);
+            output =
+              active.role === "scout"
+                ? ScoutOutputSchema.parse(decoded)
+                : ReviewOutputSchema.parse(decoded);
           } catch (error) {
             throw protocolError(
               "invalid_structured_output",
@@ -875,7 +969,10 @@ export function createCodexHarness(input: {
           await assertReviewInvariant(request);
           let statusAfter: string;
           try {
-            statusAfter = await input.branches.status(active.taskId, active.baseCommit);
+            statusAfter = await input.branches.status(
+              active.taskId,
+              active.baseCommit,
+            );
           } catch {
             return failedDelivery(
               cursor,
@@ -894,13 +991,16 @@ export function createCodexHarness(input: {
           }
         }
         active.outputDelivered = true;
-        return delivery({ ...cursor, outputDelivered: true }, {
-          type: "attempt.output",
-          eventId: `${active.attemptId}:${itemId}:output`,
-          attemptId: active.attemptId,
-          occurredAt: now(),
-          output,
-        });
+        return delivery(
+          { ...cursor, outputDelivered: true },
+          {
+            type: "attempt.output",
+            eventId: `${active.attemptId}:${itemId}:output`,
+            attemptId: active.attemptId,
+            occurredAt: now(),
+            output,
+          },
+        );
       }
 
       if (message.method === "turn/completed") {
@@ -927,7 +1027,12 @@ export function createCodexHarness(input: {
         ) {
           continue;
         }
-        sameSource(notification.params.threadId, notification.params.turn.id, active, request);
+        sameSource(
+          notification.params.threadId,
+          notification.params.turn.id,
+          active,
+          request,
+        );
         if (notification.params.turn.status !== "completed") {
           return classifiedTurnFailure(
             cursor,
@@ -951,6 +1056,7 @@ export function createCodexHarness(input: {
     }
   }
 
+  /** Reconstructs authoritative attempt state and output from persisted Codex history. */
   async function reconcile(
     request: SupportedRequest,
     cursor: BackendCursor,
@@ -966,12 +1072,9 @@ export function createCodexHarness(input: {
       startedAt: now(),
       reviewStatusBefore: cursor.reviewStatusBefore,
     };
-    const orphaned = (message: string): HarnessDelivery => failedDelivery(
-      cursor,
-      recovered,
-      "orphaned_turn",
-      message,
-    );
+    /** Emits a retryable failure when persisted history cannot prove the turn outcome. */
+    const orphaned = (message: string): HarnessDelivery =>
+      failedDelivery(cursor, recovered, "orphaned_turn", message);
 
     if (request.attempt.role === "review") {
       try {
@@ -983,7 +1086,9 @@ export function createCodexHarness(input: {
 
     let rawReadResponse: unknown;
     try {
-      await input.client.request("thread/resume", { threadId: cursor.threadId });
+      await input.client.request("thread/resume", {
+        threadId: cursor.threadId,
+      });
       rawReadResponse = await input.client.request("thread/read", {
         threadId: cursor.threadId,
         includeTurns: true,
@@ -993,10 +1098,15 @@ export function createCodexHarness(input: {
     }
 
     const readResponse = ThreadReadResponseSchema.safeParse(rawReadResponse);
-    if (!readResponse.success || readResponse.data.thread.id !== cursor.threadId) {
+    if (
+      !readResponse.success ||
+      readResponse.data.thread.id !== cursor.threadId
+    ) {
       return orphaned("Codex returned invalid authoritative turn history");
     }
-    const turn = readResponse.data.thread.turns.find((candidate) => candidate.id === cursor.turnId);
+    const turn = readResponse.data.thread.turns.find(
+      (candidate) => candidate.id === cursor.turnId,
+    );
     if (!turn) {
       return orphaned("Codex history does not contain the persisted turn");
     }
@@ -1004,15 +1114,12 @@ export function createCodexHarness(input: {
       terminalTurnSources.add(turnSource(cursor.threadId, cursor.turnId));
     }
     if (turn.status === "failed" || turn.status === "interrupted") {
-      return classifiedTurnFailure(
-        cursor,
-        recovered,
-        turn.status,
-        turn.error,
-      );
+      return classifiedTurnFailure(cursor, recovered, turn.status, turn.error);
     }
     if (turn.status !== "completed") {
-      return orphaned("Codex history cannot prove that the persisted turn completed");
+      return orphaned(
+        "Codex history cannot prove that the persisted turn completed",
+      );
     }
 
     let itemId: string;
@@ -1023,17 +1130,23 @@ export function createCodexHarness(input: {
         .find((item) => item.type === "exitedReviewMode");
       const item = ExitedReviewModeItemSchema.safeParse(candidate);
       if (!item.success) {
-        return orphaned("Completed Review history has no structured Review output");
+        return orphaned(
+          "Completed Review history has no structured Review output",
+        );
       }
       itemId = item.data.id;
       encodedOutput = item.data.review;
     } else {
       const candidate = [...turn.items]
         .reverse()
-        .find((item) => item.type === "agentMessage" && item.phase !== "commentary");
+        .find(
+          (item) => item.type === "agentMessage" && item.phase !== "commentary",
+        );
       const item = AgentMessageItemSchema.safeParse(candidate);
       if (!item.success) {
-        return orphaned("Completed Codex history has no structured role output");
+        return orphaned(
+          "Completed Codex history has no structured role output",
+        );
       }
       itemId = item.data.id;
       encodedOutput = item.data.text;
@@ -1043,7 +1156,9 @@ export function createCodexHarness(input: {
     try {
       decoded = JSON.parse(encodedOutput);
     } catch {
-      return orphaned("Completed Codex history contains invalid structured output");
+      return orphaned(
+        "Completed Codex history contains invalid structured output",
+      );
     }
 
     let output:
@@ -1053,7 +1168,9 @@ export function createCodexHarness(input: {
     if (request.attempt.role === "implement") {
       const draft = ImplementDraftOutputSchema.safeParse(decoded);
       if (!draft.success) {
-        return orphaned("Completed Codex history contains invalid structured output");
+        return orphaned(
+          "Completed Codex history contains invalid structured output",
+        );
       }
       let commitSha: string;
       try {
@@ -1071,11 +1188,14 @@ export function createCodexHarness(input: {
       }
       output = ImplementOutputSchema.parse({ ...draft.data, commitSha });
     } else {
-      const parsedOutput = request.attempt.role === "scout"
-        ? ScoutOutputSchema.safeParse(decoded)
-        : ReviewOutputSchema.safeParse(decoded);
+      const parsedOutput =
+        request.attempt.role === "scout"
+          ? ScoutOutputSchema.safeParse(decoded)
+          : ReviewOutputSchema.safeParse(decoded);
       if (!parsedOutput.success) {
-        return orphaned("Completed Codex history contains invalid structured output");
+        return orphaned(
+          "Completed Codex history contains invalid structured output",
+        );
       }
       output = parsedOutput.data;
     }
@@ -1090,7 +1210,10 @@ export function createCodexHarness(input: {
       }
       let statusAfter: string;
       try {
-        statusAfter = await input.branches.status(recovered.taskId, recovered.baseCommit);
+        statusAfter = await input.branches.status(
+          recovered.taskId,
+          recovered.baseCommit,
+        );
       } catch {
         return orphaned("Recovered Review workspace status is unavailable");
       }
@@ -1111,16 +1234,20 @@ export function createCodexHarness(input: {
     recovered.outputDelivered = true;
     recovered.reconciledCompletion = true;
     activeAttempts.set(recovered.attemptId, recovered);
-    return delivery({ ...cursor, outputDelivered: true }, {
-      type: "attempt.output",
-      eventId: `${recovered.attemptId}:${itemId}:output`,
-      attemptId: recovered.attemptId,
-      occurredAt: now(),
-      output,
-    });
+    return delivery(
+      { ...cursor, outputDelivered: true },
+      {
+        type: "attempt.output",
+        eventId: `${recovered.attemptId}:${itemId}:output`,
+        attemptId: recovered.attemptId,
+        occurredAt: now(),
+        output,
+      },
+    );
   }
 
   return {
+    /** Dispatches, advances, or reconciles one validated harness attempt. */
     async step(rawRequest): Promise<HarnessDelivery> {
       const request = HarnessStepRequestSchema.parse(rawRequest);
       try {
@@ -1137,12 +1264,12 @@ export function createCodexHarness(input: {
             };
             return delivery(unavailableCursor, {
               type: "attempt.failed_infra",
-              eventId:
-                `${request.attempt.attemptId}:reconcile:failed_infra:orphaned_turn`,
+              eventId: `${request.attempt.attemptId}:reconcile:failed_infra:orphaned_turn`,
               attemptId: request.attempt.attemptId,
               occurredAt: now(),
               code: "orphaned_turn",
-              message: "No persisted Codex turn identity is available for reconciliation",
+              message:
+                "No persisted Codex turn identity is available for reconciliation",
               retryable: true,
             });
           }
@@ -1150,7 +1277,8 @@ export function createCodexHarness(input: {
         }
 
         const cursor = parseCursor(request.backendCursor, request);
-        if (request.mode === "reconcile") return await reconcile(request, cursor);
+        if (request.mode === "reconcile")
+          return await reconcile(request, cursor);
         const active = activeAttempts.get(request.attempt.attemptId);
         if (!active) {
           throw protocolError(
@@ -1160,7 +1288,10 @@ export function createCodexHarness(input: {
             cursor.threadId,
           );
         }
-        if (active.taskId !== request.attempt.taskId || active.role !== request.attempt.role) {
+        if (
+          active.taskId !== request.attempt.taskId ||
+          active.role !== request.attempt.role
+        ) {
           throw protocolError(
             "codex_attempt_identity_mismatch",
             "Active Codex attempt identity does not match the delivery request",
@@ -1169,17 +1300,20 @@ export function createCodexHarness(input: {
           );
         }
         sameSource(cursor.threadId, cursor.turnId, active, request);
-        if (active.reconciledCompletion) return completedDelivery(cursor, active);
+        if (active.reconciledCompletion)
+          return completedDelivery(cursor, active);
         return await nextDelivery(request, cursor, active);
       } catch (error) {
         return taskFailure(request, error);
       }
     },
 
+    /** Interrupts an active nonterminal Codex turn. */
     async cancel(attemptId): Promise<void> {
       if (terminalAttempts.has(attemptId)) return;
       const active = activeAttempts.get(attemptId);
-      if (!active) throw new Error(`Unknown active Codex attempt: ${attemptId}`);
+      if (!active)
+        throw new Error(`Unknown active Codex attempt: ${attemptId}`);
       try {
         await input.client.request("turn/interrupt", {
           threadId: active.threadId,

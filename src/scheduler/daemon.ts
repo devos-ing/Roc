@@ -13,13 +13,16 @@ type Runtime = {
 };
 
 export class SchedulerDaemon {
+  /** Creates a daemon from scheduler, lease-store, and runtime dependencies. */
   constructor(
     private readonly scheduler: Pick<Scheduler, "tick">,
     private readonly leases: LeaseStore,
     private readonly runtime: Runtime,
   ) {}
 
+  /** Runs scheduler ticks while holding and heartbeating the exclusive scheduler lease. */
   async run(shouldStop: () => boolean): Promise<void> {
+    /** Captures consistent lease timestamps from the runtime clock. */
     const leaseTimes = () => {
       const now = this.runtime.now();
       return {
@@ -29,17 +32,31 @@ export class SchedulerDaemon {
       };
     };
     let times = leaseTimes();
-    if (!this.leases.acquireLease(this.runtime.ownerId, times.now, times.expiresAt)) {
+    if (
+      !this.leases.acquireLease(
+        this.runtime.ownerId,
+        times.now,
+        times.expiresAt,
+      )
+    ) {
       throw new Error("Scheduler lease is already held");
     }
     let nextHeartbeat = times.timestamp + 3_000;
+    /** Renews the scheduler lease and advances the next heartbeat deadline. */
     const heartbeat = () => {
       times = leaseTimes();
-      if (!this.leases.heartbeatLease(this.runtime.ownerId, times.now, times.expiresAt)) {
+      if (
+        !this.leases.heartbeatLease(
+          this.runtime.ownerId,
+          times.now,
+          times.expiresAt,
+        )
+      ) {
         throw new Error("Scheduler lease was lost");
       }
       nextHeartbeat = times.timestamp + 3_000;
     };
+    /** Executes one scheduler tick while maintaining lease heartbeats in parallel. */
     const tickWithHeartbeats = async (): Promise<TickResult> => {
       const tick = this.scheduler.tick(this.runtime.ownerId);
       let stopHeartbeats = false;
@@ -49,7 +66,10 @@ export class SchedulerDaemon {
           const controller = new AbortController();
           activeWait = controller;
           try {
-            const delay = Math.max(0, nextHeartbeat - this.runtime.now().getTime());
+            const delay = Math.max(
+              0,
+              nextHeartbeat - this.runtime.now().getTime(),
+            );
             await this.runtime.sleep(delay, controller.signal);
           } catch (error) {
             if (stopHeartbeats && controller.signal.aborted) return;

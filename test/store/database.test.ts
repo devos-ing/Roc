@@ -1,6 +1,15 @@
-import { expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { expect, spyOn, test } from "bun:test";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../../src/store/database";
@@ -52,33 +61,63 @@ function createV2Database(model = "luna"): Database {
 
 test("migration creates every approved table", () => {
   const db = openDatabase(":memory:");
-  const rows = db.query<{ name: string }, []>(
-    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-  ).all();
+  const rows = db
+    .query<{ name: string }, []>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+    )
+    .all();
   const names = rows.map((row) => row.name);
 
   for (const name of [
-    "attempts", "contexts", "events", "model_decisions", "reviews",
-    "scheduler_lease", "task_deps", "tasks", "usage", "weeks",
+    "attempts",
+    "contexts",
+    "events",
+    "model_decisions",
+    "reviews",
+    "scheduler_lease",
+    "task_deps",
+    "tasks",
+    "usage",
+    "weeks",
   ]) {
     expect(names).toContain(name);
   }
-  expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(3);
-  expect(db.query<{ name: string }, []>("PRAGMA table_info(tasks)").all().map((row) => row.name))
-    .toContain("base_commit");
-  expect(db.query<{ name: string }, []>("PRAGMA table_info(attempts)").all().map((row) => row.name))
-    .toEqual(expect.arrayContaining(["model_profile", "turn_id", "backend_cursor"]));
-  expect(db.query<{ name: string }, []>("PRAGMA table_info(model_decisions)").all().map((row) => row.name))
-    .toContain("model_profile");
-  const taskIndexes = db.query<{
-    seq: number;
-    name: string;
-    unique: number;
-    origin: string;
-    partial: number;
-  }, []>(
-    "PRAGMA index_list(tasks)",
-  ).all();
+  expect(
+    db.query<{ user_version: number }, []>("PRAGMA user_version").get()
+      ?.user_version,
+  ).toBe(3);
+  expect(
+    db
+      .query<{ name: string }, []>("PRAGMA table_info(tasks)")
+      .all()
+      .map((row) => row.name),
+  ).toContain("base_commit");
+  expect(
+    db
+      .query<{ name: string }, []>("PRAGMA table_info(attempts)")
+      .all()
+      .map((row) => row.name),
+  ).toEqual(
+    expect.arrayContaining(["model_profile", "turn_id", "backend_cursor"]),
+  );
+  expect(
+    db
+      .query<{ name: string }, []>("PRAGMA table_info(model_decisions)")
+      .all()
+      .map((row) => row.name),
+  ).toContain("model_profile");
+  const taskIndexes = db
+    .query<
+      {
+        seq: number;
+        name: string;
+        unique: number;
+        origin: string;
+        partial: number;
+      },
+      []
+    >("PRAGMA index_list(tasks)")
+    .all();
   expect(taskIndexes).toContainEqual({
     seq: expect.any(Number),
     name: "tasks_one_followup_per_review",
@@ -92,10 +131,19 @@ test("migration creates every approved table", () => {
 test("v3 migration rejects an unmappable legacy model profile", () => {
   const db = createV2Database("gpt-5.6-luna");
   try {
-    expect(() => migrate(db)).toThrow("Cannot map legacy model profile: gpt-5.6-luna");
-    expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(2);
-    expect(db.query<{ name: string }, []>("PRAGMA table_info(tasks)").all().map((row) => row.name))
-      .not.toContain("base_commit");
+    expect(() => migrate(db)).toThrow(
+      "Cannot map legacy model profile: gpt-5.6-luna",
+    );
+    expect(
+      db.query<{ user_version: number }, []>("PRAGMA user_version").get()
+        ?.user_version,
+    ).toBe(2);
+    expect(
+      db
+        .query<{ name: string }, []>("PRAGMA table_info(tasks)")
+        .all()
+        .map((row) => row.name),
+    ).not.toContain("base_commit");
   } finally {
     db.close();
   }
@@ -117,13 +165,35 @@ test("v3 migration backfills supported model profiles without losing runtime col
 
     migrate(db);
 
-    expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(3);
-    expect(db.query<{ model: string; model_profile: string; backend_cursor: string | null }, []>(`
+    expect(
+      db.query<{ user_version: number }, []>("PRAGMA user_version").get()
+        ?.user_version,
+    ).toBe(3);
+    expect(
+      db
+        .query<
+          {
+            model: string;
+            model_profile: string;
+            backend_cursor: string | null;
+          },
+          []
+        >(`
       SELECT model, model_profile, backend_cursor FROM attempts WHERE id = 'attempt-1'
-    `).get()).toEqual({ model: "luna", model_profile: "luna", backend_cursor: "cursor-v2" });
-    expect(db.query<{ model: string; model_profile: string }, []>(`
+    `)
+        .get(),
+    ).toEqual({
+      model: "luna",
+      model_profile: "luna",
+      backend_cursor: "cursor-v2",
+    });
+    expect(
+      db
+        .query<{ model: string; model_profile: string }, []>(`
       SELECT model, model_profile FROM model_decisions WHERE id = 'decision-1'
-    `).get()).toEqual({ model: "terra", model_profile: "terra" });
+    `)
+        .get(),
+    ).toEqual({ model: "terra", model_profile: "terra" });
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally {
     db.close();
@@ -145,13 +215,29 @@ test("v3 migration rolls back atomically and restores foreign keys when validati
       PRAGMA foreign_keys = ON;
     `);
 
-    expect(() => migrate(db)).toThrow("Foreign key check failed during migration 3");
-    expect(db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys).toBe(1);
-    expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(2);
-    expect(db.query<{ name: string }, []>("PRAGMA table_info(tasks)").all().map((row) => row.name))
-      .not.toContain("base_commit");
-    expect(db.query<{ name: string }, []>("PRAGMA table_info(attempts)").all().map((row) => row.name))
-      .not.toContain("model_profile");
+    expect(() => migrate(db)).toThrow(
+      "Foreign key check failed during migration 3",
+    );
+    expect(
+      db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()
+        ?.foreign_keys,
+    ).toBe(1);
+    expect(
+      db.query<{ user_version: number }, []>("PRAGMA user_version").get()
+        ?.user_version,
+    ).toBe(2);
+    expect(
+      db
+        .query<{ name: string }, []>("PRAGMA table_info(tasks)")
+        .all()
+        .map((row) => row.name),
+    ).not.toContain("base_commit");
+    expect(
+      db
+        .query<{ name: string }, []>("PRAGMA table_info(attempts)")
+        .all()
+        .map((row) => row.name),
+    ).not.toContain("model_profile");
   } finally {
     db.close();
   }
@@ -233,7 +319,8 @@ test("lineage and context references reject nonexistent records", () => {
       expect(() => db.exec(sql)).toThrow();
     }
 
-    expect(() => db.exec(`
+    expect(() =>
+      db.exec(`
       INSERT INTO tasks (
         id, week_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
@@ -248,7 +335,8 @@ test("lineage and context references reject nonexistent records", () => {
         'decision-null-context', 'task-1', 'scout', 'gpt-5', 'luna', 'high', 1, '[]',
         'rule', 1, '[]'
       );
-    `)).not.toThrow();
+    `),
+    ).not.toThrow();
   } finally {
     db.close();
   }
@@ -269,15 +357,22 @@ test("persisted domain enums accept approved values and reject unknown values", 
       );
     `);
 
-    for (const status of ["running", "succeeded", "failed_infra", "blocked_policy"]) {
-      expect(() => db.exec(`
+    for (const status of [
+      "running",
+      "succeeded",
+      "failed_infra",
+      "blocked_policy",
+    ]) {
+      expect(() =>
+        db.exec(`
         INSERT INTO attempts (
           id, task_id, role, model, model_profile, effort, status, retry_index, started_at
         ) VALUES (
           'attempt-${status}', 'task-1', 'scout', 'gpt-5', 'luna', 'high', '${status}', 0,
           '2026-08-24T00:00:00Z'
         )
-      `)).not.toThrow();
+      `),
+      ).not.toThrow();
     }
 
     for (const sql of [
@@ -343,7 +438,8 @@ test("reviews and usage preserve task and week attribution", () => {
       expect(() => db.exec(sql)).toThrow();
     }
 
-    expect(() => db.exec(`
+    expect(() =>
+      db.exec(`
       INSERT INTO reviews (id, task_id, attempt_id, decision, findings_json)
       VALUES ('review-valid', 'task-1', 'attempt-1', 'accepted', '[]');
       INSERT INTO usage (
@@ -362,7 +458,8 @@ test("reviews and usage preserve task and week attribution", () => {
         id, week_id, task_id, model_decision_id, category, input_tokens,
         cached_input_tokens, output_tokens, reasoning_output_tokens
       ) VALUES ('usage-decision', 'week-1', 'task-1', 'decision-1', 'advisor', 0, 0, 0, 0);
-    `)).not.toThrow();
+    `),
+    ).not.toThrow();
   } finally {
     db.close();
   }
@@ -411,15 +508,21 @@ test("events permit global, task-only, and correctly attributed attempt events",
       ) VALUES ('attempt-1', 'task-1', 'scout', 'gpt-5', 'luna', 'high', 'running', 0, 'now');
     `);
 
-    expect(() => db.exec(`
+    expect(() =>
+      db.exec(`
       INSERT INTO events (idempotency_key, type, payload_json, occurred_at)
       VALUES ('event-global', 'week.started', '{}', 'now');
       INSERT INTO events (idempotency_key, task_id, type, payload_json, occurred_at)
       VALUES ('event-task', 'task-1', 'task.created', '{}', 'now');
       INSERT INTO events (idempotency_key, task_id, attempt_id, type, payload_json, occurred_at)
       VALUES ('event-attempt', 'task-1', 'attempt-1', 'attempt.started', '{}', 'now');
-    `)).not.toThrow();
-    expect(db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM events").get()?.count).toBe(3);
+    `),
+    ).not.toThrow();
+    expect(
+      db
+        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM events")
+        .get()?.count,
+    ).toBe(3);
   } finally {
     db.close();
   }
@@ -452,15 +555,25 @@ test("file databases create parents and enable durable SQLite settings", () => {
     const db = openDatabase(path);
     try {
       expect(existsSync(path)).toBe(true);
-      expect(db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys).toBe(1);
-      expect(db.query<{ journal_mode: string }, []>("PRAGMA journal_mode").get()?.journal_mode).toBe("wal");
+      expect(
+        db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()
+          ?.foreign_keys,
+      ).toBe(1);
+      expect(
+        db.query<{ journal_mode: string }, []>("PRAGMA journal_mode").get()
+          ?.journal_mode,
+      ).toBe("wal");
     } finally {
       db.close();
     }
 
     const reopened = openDatabase(path);
     try {
-      expect(reopened.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(3);
+      expect(
+        reopened
+          .query<{ user_version: number }, []>("PRAGMA user_version")
+          .get()?.user_version,
+      ).toBe(3);
     } finally {
       reopened.close();
     }
@@ -477,9 +590,9 @@ test("database rejects a symlinked runtime directory without creating external f
     writeFileSync(join(external, "sentinel.txt"), "unchanged\n");
     symlinkSync(external, join(root, ".agile", "runtime"), "dir");
 
-    expect(() => openDatabase(join(root, ".agile", "runtime", "state.sqlite"))).toThrow(
-      /symbolic link/i,
-    );
+    expect(() =>
+      openDatabase(join(root, ".agile", "runtime", "state.sqlite")),
+    ).toThrow(/symbolic link/i);
     expect(readdirSync(external)).toEqual(["sentinel.txt"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -489,14 +602,16 @@ test("database rejects a symlinked runtime directory without creating external f
 
 test("database rejects a symlinked ancestor even when the runtime directory already exists", () => {
   const root = mkdtempSync(join(tmpdir(), "agile-agents-db-ancestor-symlink-"));
-  const external = mkdtempSync(join(tmpdir(), "agile-agents-db-ancestor-external-"));
+  const external = mkdtempSync(
+    join(tmpdir(), "agile-agents-db-ancestor-external-"),
+  );
   try {
     mkdirSync(join(external, "runtime"));
     symlinkSync(external, join(root, ".agile"), "dir");
 
-    expect(() => openDatabase(join(root, ".agile", "runtime", "state.sqlite"))).toThrow(
-      /symbolic link/i,
-    );
+    expect(() =>
+      openDatabase(join(root, ".agile", "runtime", "state.sqlite")),
+    ).toThrow(/symbolic link/i);
     expect(readdirSync(join(external, "runtime"))).toEqual([]);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -513,7 +628,9 @@ test("database rejects a symlinked database target without changing its referent
     writeFileSync(external, "unchanged\n");
     symlinkSync(external, join(runtime, "state.sqlite"), "file");
 
-    expect(() => openDatabase(join(runtime, "state.sqlite"))).toThrow(/symbolic link/i);
+    expect(() => openDatabase(join(runtime, "state.sqlite"))).toThrow(
+      /symbolic link/i,
+    );
     expect(readFileSync(external, "utf8")).toBe("unchanged\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -528,8 +645,9 @@ test("deferred context references permit an atomic task and context cycle", () =
       VALUES ('week-1', 'Ship foundation', 1000, 'active', '2026-08-24T00:00:00Z');
     `);
 
-    expect(() => db.transaction(() => {
-      db.exec(`
+    expect(() =>
+      db.transaction(() => {
+        db.exec(`
         INSERT INTO contexts (
           id, thread_id, anchor_id, source_task_id, git_commit
         ) VALUES (
@@ -543,7 +661,8 @@ test("deferred context references permit an atomic task and context cycle", () =
           0, 0, 'context-1', '2026-08-24T00:00:00Z', '2026-08-24T00:00:00Z'
         );
       `);
-    })()).not.toThrow();
+      })(),
+    ).not.toThrow();
   } finally {
     db.close();
   }
