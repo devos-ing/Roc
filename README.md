@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="output/imagegen/roc-avatar-tech.png" alt="Roc project avatar" width="220" />
+</p>
+
 # Agile Agents
 
 Agile Agents is a local, sequential development orchestrator for Codex. It turns
