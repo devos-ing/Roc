@@ -1,12 +1,11 @@
 <p align="center">
-  <img src="output/imagegen/roc-avatar-tech.png" alt="Roc project avatar" width="220" />
+  <img src="https://raw.githubusercontent.com/devos-ing/Roc/main/output/imagegen/roc-avatar-tech.png" alt="Roc project avatar" width="220" />
 </p>
 
 # Roc
 
-Roc is a local command-line tool that guides Codex agents through an agile
-software flow. Each task moves through three steps: **Scout → Implement →
-Review**.
+Roc runs agents through a simple agile software flow. Each task moves through
+three steps: **Scout → Implement → Review**.
 
 Scout studies the task. Implement writes the code. Review checks the exact
 finished commit. Roc saves progress and token use in SQLite, so work can continue
@@ -31,30 +30,48 @@ branches, run several tasks at once, or limit token use.
 Ticket import, weekly planning, and an interactive screen are planned but are
 not available yet.
 
-## Run it
+## Quick Start
 
 Prerequisites:
 
-- [Bun](https://bun.sh/)
+- [Bun](https://bun.sh/) 1.3.0 or later
 - Git
 - [Codex CLI](https://github.com/openai/codex) for Codex mode
 
-From the repository root:
+Run Roc without installing it:
 
 ```bash
-bun install
-bun run src/cli/main.ts init
-bun run src/cli/main.ts task list
-bun run src/cli/main.ts tokens
+bunx roc-it help
 ```
 
-Roc can create and inspect its local task database. A public command for adding
-tickets is not ready, so Roc currently needs a prepared backlog.
-
-To run a prepared backlog with Codex:
+You can also use npm:
 
 ```bash
-bun run src/cli/main.ts scheduler run --backend codex --repo /absolute/path/to/project
+npx roc-it help
+```
+
+Or install the command globally:
+
+```bash
+npm install -g roc-it
+roc-it help
+```
+
+Create and inspect the local task database:
+
+```bash
+bunx roc-it init
+bunx roc-it task list
+bunx roc-it tokens
+```
+
+Roc does not yet have a public command for adding tickets, so the scheduler
+needs a prepared backlog.
+
+Run that backlog with Codex:
+
+```bash
+bunx roc-it scheduler run --backend codex --repo /absolute/path/to/project
 ```
 
 Codex mode creates or reuses a work folder at `<project>.agile-checkout`. Roc
@@ -85,31 +102,32 @@ to another task while keeping the code and feedback for later.
 
 ## Commands
 
-All supported CLI commands:
-
 ```bash
-bun run src/cli/main.ts init [--db PATH]
-bun run src/cli/main.ts task list [--db PATH]
-bun run src/cli/main.ts tokens [--db PATH] [--no-color]
-bun run src/cli/main.ts scheduler run --backend fake --fake-script PATH [--db PATH]
-bun run src/cli/main.ts scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
-bun run src/cli/main.ts scheduler inspect [--db PATH]
-bun run src/cli/main.ts help
-```
-
-Development commands:
-
-```bash
-bun install
-bun run typecheck
-bun run test
-bun run check
+roc-it init [--db PATH]
+roc-it task list [--db PATH]
+roc-it tokens [--db PATH] [--no-color]
+roc-it scheduler run --backend fake --fake-script PATH [--db PATH]
+roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+roc-it scheduler inspect [--db PATH]
+roc-it help
 ```
 
 ## Development
 
 Roc uses Bun, TypeScript, Zod, `bun:sqlite`, `simple-git`, and the Codex
-app-server. Start with these documents:
+app-server.
+
+From a source checkout:
+
+```bash
+bun install
+bun run src/cli/main.ts help
+bun run typecheck
+bun run test
+bun run check
+```
+
+Start with these documents:
 
 - [Architecture](docs/architecture.md)
 - [Domain language](CONTEXT.md)
@@ -150,3 +168,8 @@ Roc learns from these projects without including their code:
 
 See [the project research](docs/research/agent-agile-orchestration-landscape.md)
 for a full comparison and source list.
+
+## License
+
+Roc uses the [Apache License 2.0](LICENSE). You may use, change, and share it,
+including for commercial work, as long as you follow the license terms.
