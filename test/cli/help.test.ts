@@ -1,16 +1,20 @@
 import { expect, test } from "bun:test";
 import { helpText } from "../../src/cli/help";
 
-test("help lists the foundation commands", () => {
-  expect(helpText).toContain("agile init");
-  expect(helpText).toContain("agile task list");
-  expect(helpText).toContain("agile tokens [--db PATH] [--no-color]");
+test("help lists the roc-it commands", () => {
   expect(helpText).toContain(
-    "agile scheduler run --backend fake --fake-script PATH [--db PATH]",
+    "roc-it - run Codex agents through an agile software flow",
+  );
+  expect(helpText).toContain("roc-it init");
+  expect(helpText).toContain("roc-it task list");
+  expect(helpText).toContain("roc-it tokens [--db PATH] [--no-color]");
+  expect(helpText).toContain(
+    "roc-it scheduler run --backend fake --fake-script PATH [--db PATH]",
   );
   expect(helpText).toContain(
-    "agile scheduler run --backend codex --repo PATH [--base REF] [--db PATH]",
+    "roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]",
   );
-  expect(helpText).toContain("agile scheduler inspect [--db PATH]");
+  expect(helpText).toContain("roc-it scheduler inspect [--db PATH]");
+  expect(helpText).not.toMatch(/^\s*agile(?:\s|$)/m);
   expect(helpText).not.toContain("--low");
 });
