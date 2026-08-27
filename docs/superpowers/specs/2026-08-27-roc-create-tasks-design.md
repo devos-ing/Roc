@@ -202,6 +202,10 @@ All database reads and writes for one manifest run in one SQLite transaction.
 - If an existing task with the same ID has different immutable content, Roc
   rejects the complete import.
 
+For each newly created task, Roc also stores every declared dependency in
+`task_deps` with kind `blocks`. This makes the scheduler wait until dependency
+tasks are done instead of treating the dependency list as display-only data.
+
 Any parse, validation, dependency, conflict, or database error leaves the
 database unchanged. Success prints stable counts for created, skipped, and
 total tasks.
@@ -227,7 +231,8 @@ The smallest load-bearing test set is:
 - one project-onboard test covering database creation, both skill targets,
   repeat safety, and refusal to overwrite changed content;
 - one global-onboard test using a temporary home directory;
-- one vertical import test covering a valid ready backlog and exact replay;
+- one vertical import test covering a valid ready backlog, stored dependency
+  edges, and exact replay;
 - focused import failure checks for conflicts, invalid dependencies, and full
   rollback;
 - the existing package archive test extended to require the canonical skill;
