@@ -5,6 +5,8 @@ import { CodexClient } from "../codex/client";
 import { createCodexHarness } from "../codex/harness";
 import { ModelListResponseSchema } from "../codex/protocol";
 import { loadDefaultSkillPolicy } from "../codex/skill-policy";
+import { BacklogManifestSchema } from "../domain/schemas";
+import { safeTaskPathComponent } from "../domain/task-path";
 import { type AgentHarness, FakeScenarioSchema } from "../harness/contracts";
 import { createFakeHarness } from "../harness/fake";
 import { AgileError, normalizeError } from "../runtime/errors";
@@ -418,6 +420,10 @@ export async function runCli(
   }
 
   const [command, subcommand] = parsed.positionals;
+  if (parsed.values.global !== undefined && command !== "onboard") {
+    io.err("--global is only supported by onboard");
+    return 2;
+  }
   if (!command || command === "help") {
     io.out(helpText.trimEnd());
     return 0;
@@ -502,7 +508,10 @@ export async function runCli(
       return 2;
     }
     try {
-      const manifest = await Bun.file(resolve(manifestPath)).json();
+      const manifest = BacklogManifestSchema.parse(
+        await Bun.file(resolve(manifestPath)).json(),
+      );
+      for (const task of manifest.tasks) safeTaskPathComponent(task.id);
       const db = openDatabase(dbPath);
       try {
         const result = new PlanningRepository(db).importBacklog(manifest);

@@ -1,7 +1,10 @@
 ---
 name: roc-create-tasks
-description: Turn a software requirement and optional local docs into a reviewed Roc backlog by using grilling, then import it only after explicit user approval.
+description: Use only when the user explicitly invokes roc-create-tasks to turn a software requirement and optional local docs into a reviewed Roc backlog by using grilling, then import it only after approval.
 ---
+
+Do not start this workflow from a general planning request. Continue only when
+the user explicitly invoked `roc-create-tasks`.
 
 Accept the rest of this invocation as the requirement. If it explicitly names
 local files, read every one of those files before asking questions.

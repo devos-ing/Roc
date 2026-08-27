@@ -326,11 +326,12 @@ Create only `skills/roc-create-tasks/SKILL.md`; do not add scripts, references, 
 ```yaml
 ---
 name: roc-create-tasks
-description: Turn a software requirement and optional local docs into a reviewed Roc backlog by using grilling, then import it only after explicit user approval.
+description: Use only when the user explicitly invokes roc-create-tasks to turn a software requirement and optional local docs into a reviewed Roc backlog by using grilling, then import it only after approval.
 ---
 ```
 
-Its body must tell the agent to:
+Its first instruction must refuse automatic use from a general planning
+request. The rest of its body must tell the agent to:
 
 1. accept the rest of the invocation as the requirement;
 2. read every explicitly referenced local file before questioning;

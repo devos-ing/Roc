@@ -95,7 +95,10 @@ skills/roc-create-tasks/SKILL.md
 ```
 
 The skill follows the open Agent Skills `SKILL.md` format and is explicitly
-user-invoked because it can write files and import tasks. Its instructions must:
+user-invoked because it can write files and import tasks. Its discovery
+description and first instruction limit it to an explicit `roc-create-tasks`
+invocation; explicit approval remains required before any write. Its
+instructions must:
 
 1. accept a natural-language requirement and optional local file references;
 2. read referenced files before asking questions;

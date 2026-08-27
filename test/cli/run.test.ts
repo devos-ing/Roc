@@ -224,6 +224,30 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
   }
 });
 
+test("task import validates before creating a database and --global is onboard-only", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
+  const manifestPath = join(root, "invalid-backlog.json");
+  const dbPath = join(root, "agile.db");
+  const errors: string[] = [];
+  const io = { out: () => {}, err: (text: string) => errors.push(text) };
+
+  try {
+    await writeFile(
+      manifestPath,
+      JSON.stringify({ weekId: "2026-W35", goal: "Invalid", tasks: [] }),
+    );
+    expect(
+      await runCli(["task", "import", manifestPath, "--db", dbPath], io),
+    ).toBe(1);
+    await expect(lstat(dbPath)).rejects.toThrow();
+
+    expect(await runCli(["tokens", "--global"], io)).toBe(2);
+    expect(errors.at(-1)).toBe("--global is only supported by onboard");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("operational database failures report an error, return 1, and close the database", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "future.db");
