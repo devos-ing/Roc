@@ -71,10 +71,13 @@ task-creation skill for Codex, Claude Code, and Cursor:
 
 ```bash
 npx roc-it@latest onboard
-npx roc-it@latest task import-github
-npx roc-it@latest task list
-npx roc-it@latest tokens
 ```
+
+Onboarding prints the project scope, each completed step, the selected cycle,
+the settings path, and next steps to install `grilling` if needed, create a
+first backlog with the installed task skill, and inspect the resulting tasks. If
+a later step stops, Roc lists the work already completed and gives a retry
+command; it does not claim to roll anything back.
 
 Use `npx roc-it@latest onboard --global` to install the skill under your user
 account instead; global onboarding does not create a project database.
@@ -160,6 +163,12 @@ New tasks are approved and ready immediately. Their `tokenCeiling` defaults to
 A global install also exposes the compatibility alias `agile`, so
 `agile task import-github` runs the same command.
 
+Inspect the resulting tasks:
+
+```bash
+npx roc-it@latest task list
+```
+
 Run that backlog with Codex:
 
 ```bash
@@ -172,23 +181,16 @@ never switches branches or makes commits in the source folder passed through
 
 ## How it works
 
-Roc follows a small agile loop. It moves each task through three focused agents:
+Roc picks one ready task and passes it through three agent roles.
 
 ```mermaid
 flowchart LR
-    B[Ready backlog] --> S[Scout]
-    S --> I[Implement]
-    I --> R[Review]
-    R -->|Accepted| D[Done]
-    R -->|Changes needed| F[Draft follow-up]
-    F -->|Approved| B[Ready backlog]
+    S["Scout<br/>Understand the task"] --> I["Implement<br/>Write and commit code"]
+    I --> R["Review<br/>Check the exact commit"]
 ```
 
-- **Scout:** Understands the task, checks the code, and prepares a plan.
-- **Implement:** Writes the code in a separate work folder. Roc's trusted
-  Harness validates the result and saves it as a commit.
-- **Review:** Independently checks that exact commit. It accepts the work or
-  creates an unapproved draft follow-up task with clear feedback.
+If Review accepts the commit, the task is done. If Review rejects it, Roc
+creates a follow-up ticket and moves on to the next ready task.
 
 Roc works on one small task at a time. When Review asks for changes, Roc sends
 the feedback to an unapproved draft follow-up. That follow-up returns to the
@@ -218,14 +220,26 @@ Roc is growing in small steps.
 
 ## Commands
 
-```bash
+The built-in `npx roc-it@latest help` groups the production commands by the
+journey they support:
+
+```text
+Get started
 npx roc-it@latest onboard [--global] [--db PATH]
+
+Manage your cycle
 npx roc-it@latest cycle current
+
+Plan work
 npx roc-it@latest task import FILE [--db PATH]
 npx roc-it@latest task import-github [--db PATH]
 npx roc-it@latest task list [--db PATH]
 npx roc-it@latest tokens [--db PATH] [--no-color]
+
+Run work
 npx roc-it@latest scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+
+Get help
 npx roc-it@latest help
 ```
 

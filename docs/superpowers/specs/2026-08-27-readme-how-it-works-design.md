@@ -1,49 +1,43 @@
-# README “How it works” design
+# README “How it works” simplification
 
 ## Goal
 
-Make Roc’s agile mechanism easy to understand without using one large diagram
-to explain every part of the system.
+Make the README’s “How it works” section understandable to someone seeing Roc
+for the first time. The reader should understand the three agent roles without
+having to trace scheduler, token, context, or rejection-state edges.
 
-## Scope
+## Approved design
 
-Update only the README’s “How it works” section. The release process stays in
-the separate “Releases” section and does not appear in this diagram.
+Replace the current multi-branch diagram with one left-to-right Mermaid flow:
 
-## Content design
-
-Use one small Mermaid diagram for the task loop:
-
-```text
-Ready backlog → Scout → Implement → Review
-                                  ├─ Accepted → Done
-                                  └─ Changes needed → Draft follow-up
-                                                       └─ Approved → Ready backlog
+```mermaid
+flowchart LR
+    S["Scout<br/>Understand the task"] --> I["Implement<br/>Write and commit code"]
+    I --> R["Review<br/>Check the exact commit"]
 ```
 
-Follow the diagram with three short descriptions:
+Introduce the diagram with:
 
-- **Scout:** understands the task, checks the code, and prepares a plan.
-- **Implement:** writes the code in a separate work folder. Roc's trusted
-  Harness validates the result and saves it as a commit.
-- **Review:** independently checks that exact commit, then accepts it or creates
-  an unapproved draft follow-up task.
+> Roc picks one ready task and passes it through three agent roles.
 
-End with a short explanation of the agile behavior: Roc moves one small task at
-a time, sends Review feedback to an unapproved draft follow-up, returns it to
-the ready backlog only after approval, and saves progress so work can continue
-after a restart.
+Follow the diagram with:
+
+> If Review accepts the commit, the task is done. If Review rejects it, Roc
+> creates a follow-up ticket and moves on to the next ready task.
 
 ## Constraints
 
-- Use plain English and short sentences.
-- Keep Scout → Implement → Review visually central.
-- Do not add release, token-ledger, model-routing, or command details to the
-  diagram.
-- Keep the existing README structure and Mermaid support.
+- Keep the main diagram to three nodes and two arrows.
+- Keep accepted and rejected outcomes in prose, outside the diagram.
+- Do not show token accounting, context inheritance, Git branches, scheduler
+  state, or database details in this section.
+- Do not change other README sections as part of this edit.
+- Use Mermaid because GitHub renders it directly and the source remains easy to
+  review in Git.
 
-## Verification
+## Acceptance checks
 
-- Confirm the README contract still passes.
-- Add focused assertions only if they protect the simplified agile explanation.
-- Run the full project check before delivery.
+- A first-time reader can identify what Scout, Implement, and Review do.
+- The diagram has no branches, crossing lines, or overlapping connectors.
+- The prose explains both accepted and rejected Review outcomes.
+- The Markdown has no trailing whitespace or broken local links.

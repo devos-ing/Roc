@@ -1,121 +1,86 @@
-# Simpler README Agile Flow Implementation Plan
+# Simpler README “How it works” Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the dense README diagram with a simple explanation of Roc’s agile Scout → Implement → Review loop.
+**Goal:** Replace the README’s branched workflow diagram with a three-role flow that a first-time Roc user can understand immediately.
 
-**Architecture:** Keep one small Mermaid flow for task movement and explain each agent in three plain-language bullets. Show that Review creates an unapproved draft follow-up and that approval is required before it returns to the ready backlog. Keep publishing, token accounting, and model-routing details outside this section so the core loop stays easy to scan.
+**Architecture:** Keep the explanation entirely inside the existing `README.md` section. Mermaid shows only Scout, Implement, and Review; two short paragraphs explain how a task enters the flow and what accepted or rejected Review results mean.
 
-**Tech Stack:** Markdown, Mermaid, Bun test
+**Tech Stack:** Markdown, GitHub Mermaid, Git
 
 ---
 
-## File structure
-
-- Modify `README.md`: simplify only the “How it works” section.
-- Modify `test/release-workflow.test.ts`: add a focused README contract test using the existing `readProjectFile` helper.
-
-### Task 1: Explain Roc’s agile loop clearly
+### Task 1: Simplify the workflow explanation
 
 **Files:**
-- Modify: `README.md:82-106`
-- Test: `test/release-workflow.test.ts`
+- Modify: `README.md:64-84`
+- Reference: `docs/superpowers/specs/2026-08-27-readme-how-it-works-design.md`
 
-- [ ] **Step 1: Add the failing README contract test**
+- [ ] **Step 1: Replace only the existing “How it works” section**
 
-Append this test to `test/release-workflow.test.ts`:
-
-```ts
-test("README explains the agile Scout, Implement, Review loop", async () => {
-  const readme = await readProjectFile("README.md");
-  const start = readme.indexOf("## How it works");
-  const end = readme.indexOf("## Commands", start);
-  const howItWorks = readme.slice(start, end);
-
-  expect(howItWorks).toContain("Roc follows a small agile loop");
-  expect(howItWorks).toContain("B[Ready backlog] --> S[Scout]");
-  expect(howItWorks).toContain("S --> I[Implement]");
-  expect(howItWorks).toContain("I --> R[Review]");
-  expect(howItWorks).toContain("R -->|Accepted| D[Done]");
-  expect(howItWorks).toContain("R -->|Changes needed| F[Follow-up task]");
-  expect(howItWorks).toContain("- **Scout:** Understands the task");
-  expect(howItWorks).toContain("- **Implement:** Writes the code");
-  expect(howItWorks).toContain("- **Review:** Independently checks that exact commit");
-  expect(howItWorks).toContain("Roc works on one small task at a time");
-  expect(howItWorks).toContain("saves progress so the flow can continue after a restart");
-  expect(howItWorks).not.toContain("Token ledger");
-  expect(howItWorks).not.toContain("GitHub Release");
-});
-```
-
-- [ ] **Step 2: Run the focused test and confirm it fails**
-
-Run:
-
-```bash
-rtk bun test test/release-workflow.test.ts
-```
-
-Expected: FAIL because the current section does not contain “Roc follows a small agile loop” and still contains “Token ledger”.
-
-- [ ] **Step 3: Replace the README section with the simple agile flow**
-
-Replace the content from `## How it works` up to `## Commands` with:
+Replace everything from `## How it works` up to, but not including,
+`## Commands` with this exact content:
 
 ````markdown
 ## How it works
 
-Roc follows a small agile loop. It moves each task through three focused agents:
+Roc picks one ready task and passes it through three agent roles.
 
 ```mermaid
 flowchart LR
-    B[Ready backlog] --> S[Scout]
-    S --> I[Implement]
-    I --> R[Review]
-    R -->|Accepted| D[Done]
-    R -->|Changes needed| F[Draft follow-up]
-    F -->|Approved| B[Ready backlog]
+    S["Scout<br/>Understand the task"] --> I["Implement<br/>Write and commit code"]
+    I --> R["Review<br/>Check the exact commit"]
 ```
 
-- **Scout:** Understands the task, checks the code, and prepares a plan.
-- **Implement:** Writes the code in a separate work folder. Roc's trusted Harness validates the result and saves it as a commit.
-- **Review:** Independently checks that exact commit. It accepts the work or
-  creates an unapproved draft follow-up task with clear feedback.
-
-Roc works on one small task at a time. When Review asks for changes, Roc sends
-the feedback to an unapproved draft follow-up. That follow-up returns to the
-ready backlog only after approval. Roc saves progress so the flow can continue
-after a restart.
-
+If Review accepts the commit, the task is done. If Review rejects it, Roc
+creates a follow-up ticket and moves on to the next ready task.
 ````
 
-- [ ] **Step 4: Run the focused README tests**
+- [ ] **Step 2: Inspect the rendered-source boundary**
 
 Run:
 
 ```bash
-rtk bun test test/release-workflow.test.ts
+rtk sed -n '64,86p' README.md
 ```
 
-Expected: all tests in the file PASS.
+Expected: the section contains three Mermaid nodes and two arrows, followed by
+the accepted/rejected explanation; `## Commands` is unchanged and immediately
+follows the section.
 
-- [ ] **Step 5: Run the full project check**
+- [ ] **Step 3: Verify the documentation change**
 
 Run:
 
 ```bash
+rtk git diff --check -- README.md
 rtk bun run check
 ```
 
-Expected: lint, typecheck, and tests PASS; the existing intentional detached Review test may remain skipped.
+Expected: both commands exit `0`; the complete suite reports 146 passing tests,
+one expected skip, and no failures. Existing non-failing Biome warnings are
+allowed by the repository policy.
 
-- [ ] **Step 6: Commit the README update**
+- [ ] **Step 4: Stage only the workflow hunk**
 
-Run:
+`README.md` already contains a separate, user-owned Apache License section.
+Partially stage the “How it works” hunk and decline the License hunk:
 
 ```bash
-rtk git add README.md test/release-workflow.test.ts
-rtk env HUSKY=0 git commit -m "docs: simplify Roc agile flow"
+rtk git add -p README.md
+rtk git diff --cached -- README.md
+rtk git diff -- README.md
 ```
 
-Expected: one commit containing only the README explanation and its contract test.
+Expected: the cached diff contains only the simplified workflow section. The
+unstaged diff still contains the Apache License section. Do not stage
+`package.json`, `LICENSE`, `.codegraph/`, `.cursor/`, or `output/`.
+
+- [ ] **Step 5: Commit the README change**
+
+```bash
+rtk git commit -m "docs: simplify the Roc workflow diagram"
+```
+
+Expected: the Husky hook passes, the commit contains only `README.md`, and the
+unrelated user changes remain uncommitted.

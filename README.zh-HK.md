@@ -70,10 +70,12 @@ Cursor 安裝建立任務的 skill：
 
 ```bash
 npx roc-it@latest onboard
-npx roc-it@latest task import-github
-npx roc-it@latest task list
-npx roc-it@latest tokens
 ```
+
+啟用時會顯示專案範圍、每個已完成步驟、所選週期、設定檔路徑，以及可直接複製
+的下一步指引：如需要先安裝 `grilling`、用已安裝的任務 skill 建立第一個 backlog，
+以及查看產生的任務。若稍後步驟停止，Roc 會列出已完成工作並提供重試指令；它不會
+聲稱已回復任何變更。
 
 使用 `npx roc-it@latest onboard --global` 可改為在使用者帳戶下安裝 skill；
 全域啟用不會建立專案資料庫。
@@ -157,6 +159,12 @@ Roc 不會在到達這個數值時停止執行。
 全域安裝也會提供相容別名 `agile`，因此 `agile task import-github` 會執行
 相同指令。
 
+查看產生的任務：
+
+```bash
+npx roc-it@latest task list
+```
+
 使用 Codex 執行 backlog：
 
 ```bash
@@ -212,14 +220,25 @@ Roc 正在逐步成長。
 
 ## 指令
 
-```bash
+內建的 `npx roc-it@latest help` 會按使用旅程分組顯示正式指令：
+
+```text
+開始使用
 npx roc-it@latest onboard [--global] [--db PATH]
+
+管理週期
 npx roc-it@latest cycle current
+
+規劃工作
 npx roc-it@latest task import FILE [--db PATH]
 npx roc-it@latest task import-github [--db PATH]
 npx roc-it@latest task list [--db PATH]
 npx roc-it@latest tokens [--db PATH] [--no-color]
+
+執行工作
 npx roc-it@latest scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+
+取得說明
 npx roc-it@latest help
 ```
 
