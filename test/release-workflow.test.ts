@@ -108,6 +108,11 @@ test("release workflow keeps the stable-tag, immutable-action, and ordered-relea
   );
   expect(validation).toContain('if [[ "$tag" != "v$version" ]]; then');
 
+  const packing = stepRun(steps, "Pack tagged source");
+  expect(packing).toContain(
+    'if type == "array" then .[0] else .["roc-it"] end',
+  );
+
   const registry = stepRun(steps, "Check npm publication state");
   expect(registry).toContain(
     'if published_integrity="$(npm view "roc-it@$VERSION" dist.integrity 2>"$error_file")"; then',

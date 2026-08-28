@@ -65,8 +65,9 @@ jobs:
         run: |
           set -euo pipefail
           pack_json="$(npm pack --json --ignore-scripts)"
-          archive="$(jq -r '.[0].filename' <<<"$pack_json")"
-          integrity="$(jq -r '.[0].integrity' <<<"$pack_json")"
+          package_json="$(jq -c 'if type == "array" then .[0] else .["roc-it"] end' <<<"$pack_json")"
+          archive="$(jq -r '.filename' <<<"$package_json")"
+          integrity="$(jq -r '.integrity' <<<"$package_json")"
           if [[ ! -f "$archive" || "$integrity" != sha512-* ]]; then
             echo "npm pack did not produce a valid archive and integrity" >&2
             exit 1

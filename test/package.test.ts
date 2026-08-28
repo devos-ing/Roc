@@ -67,7 +67,10 @@ test("npm archive contains only runtime files", async () => {
     throw new Error(`npm pack failed: ${stderr}`);
   }
 
-  const results = JSON.parse(stdout) as PackResult[];
+  const output = JSON.parse(stdout) as
+    | PackResult[]
+    | Record<string, PackResult>;
+  const results = Array.isArray(output) ? output : Object.values(output);
   expect(results).toHaveLength(1);
 
   const paths = results[0]!.files.map((file) => file.path).sort();
