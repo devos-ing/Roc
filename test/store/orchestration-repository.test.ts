@@ -52,7 +52,7 @@ function setup(
 ) {
   const db = openDatabase(path);
   const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
-  planning.createWeek({
+  planning.createCycle({
     id: "2026-W35",
     goal: "Deterministic scheduler",
     nonGoals: [],
@@ -65,7 +65,7 @@ function setup(
   ] as const) {
     planning.createTask({
       id,
-      weekId: "2026-W35",
+      cycleId: "2026-W35",
       title: id,
       spec: ticketSpec,
       priority,
@@ -92,7 +92,7 @@ function setup(
 function setupInspect() {
   const db = openDatabase(":memory:");
   const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
-  planning.createWeek({
+  planning.createCycle({
     id: "2026-W35",
     goal: "Inspect deterministic token usage",
     nonGoals: [],
@@ -101,7 +101,7 @@ function setupInspect() {
   });
   planning.createTask({
     id: "T1",
-    weekId: "2026-W35",
+    cycleId: "2026-W35",
     title: "Inspect token usage",
     spec: ticketSpec,
     priority: 0,
@@ -782,7 +782,7 @@ test("inspects a running Scout role with zero usage", () => {
   try {
     const snapshot = repo.inspect();
 
-    expect(snapshot.weeks).toEqual([
+    expect(snapshot.cycles).toEqual([
       {
         id: "2026-W35",
         tokenTarget: 100_000,
@@ -828,26 +828,26 @@ test("inspects a running Scout role with zero usage", () => {
   }
 });
 
-test("reads raw category usage for one requested week", () => {
+test("reads raw category usage for one requested cycle", () => {
   const { db, repo } = setup();
   try {
     db.query(`
       INSERT INTO usage(
-        id, week_id, task_id, category,
+        id, cycle_id, task_id, category,
         input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens
       ) VALUES
         ('usage-scout', '2026-W35', 'T1', 'scout', 100, 80, 20, 10),
-        ('usage-grill', '2026-W35', NULL, 'weekly_grilling', 40, 30, 5, 4)
+        ('usage-grill', '2026-W35', NULL, 'cycle_grilling', 40, 30, 5, 4)
     `).run();
 
-    expect(repo.getWeekCategoryUsage("2026-W35")).toEqual({
-      weekId: "2026-W35",
+    expect(repo.getCycleCategoryUsage("2026-W35")).toEqual({
+      cycleId: "2026-W35",
       categories: [
+        { category: "cycle_grilling", inputTokens: 40, outputTokens: 5 },
         { category: "scout", inputTokens: 100, outputTokens: 20 },
-        { category: "weekly_grilling", inputTokens: 40, outputTokens: 5 },
       ],
     });
-    expect(repo.getWeekCategoryUsage("2026-W34")).toBeUndefined();
+    expect(repo.getCycleCategoryUsage("2026-W34")).toBeUndefined();
   } finally {
     db.close();
   }
@@ -890,7 +890,7 @@ test("records each token delta once and inspects deterministic usage totals", ()
 
     expect(repo.inspect()).toEqual({
       scheduler: { activeTaskId: "T1", activeAttemptId: "attempt-1" },
-      weeks: [
+      cycles: [
         {
           id: "2026-W35",
           tokenTarget: 100_000,
@@ -1143,7 +1143,7 @@ test("rejected Review creates one idempotent draft follow-up and replans depende
     const followUp = db
       .query<
         {
-          week_id: string;
+          cycle_id: string;
           title: string;
           spec_json: string;
           priority: number;
@@ -1156,13 +1156,13 @@ test("rejected Review creates one idempotent draft follow-up and replans depende
         },
         [string]
       >(`
-      SELECT week_id, title, spec_json, priority, risk, token_ceiling,
+      SELECT cycle_id, title, spec_json, priority, risk, token_ceiling,
              approval_required, base_commit, context_id, discovered_from_review_id
       FROM tasks WHERE id = ?
     `)
       .get("task-1");
     expect(followUp).toMatchObject({
-      week_id: "2026-W35",
+      cycle_id: "2026-W35",
       title: "T1",
       priority: 0,
       risk: "medium",

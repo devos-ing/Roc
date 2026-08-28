@@ -19,7 +19,7 @@ const spec = {
 function createRepository() {
   const db = openDatabase(":memory:");
   const repo = new PlanningRepository(db, () => "2026-08-24T00:00:00.000Z");
-  repo.createWeek({
+  repo.createCycle({
     id: "2026-W35",
     goal: "Foundation",
     nonGoals: [],
@@ -32,7 +32,7 @@ function createRepository() {
 function createTask(repo: PlanningRepository, id: string): void {
   repo.createTask({
     id,
-    weekId: "2026-W35",
+    cycleId: "2026-W35",
     title: `Repository ${id}`,
     spec,
     priority: id === "F1" ? 0 : 1,
@@ -60,7 +60,7 @@ const secondBacklogTask = {
 };
 
 const backlog: BacklogManifest = {
-  weekId: "2026-W35",
+  cycleId: "2026-W35",
   goal: "Import a reviewed backlog",
   tasks: [firstBacklogTask, secondBacklogTask],
 };
@@ -106,9 +106,9 @@ test("imports a ready approved backlog with its blocking dependencies", () => {
     expect(
       db
         .query<{ goal: string; token_budget: number }, [string]>(
-          "SELECT goal, token_budget FROM weeks WHERE id = ?",
+          "SELECT goal, token_budget FROM cycles WHERE id = ?",
         )
-        .get(backlog.weekId),
+        .get(backlog.cycleId),
     ).toEqual({ goal: backlog.goal, token_budget: 25_000 });
     expect(
       db
@@ -147,10 +147,10 @@ test("replays an imported backlog without changing task progress", () => {
   }
 });
 
-test("rolls back a conflicting backlog before adding its week or other tasks", () => {
+test("rolls back a conflicting backlog before adding its cycle or other tasks", () => {
   const { db, repo } = importRepository();
   try {
-    repo.createWeek({
+    repo.createCycle({
       id: "2026-W34",
       goal: "Existing work",
       nonGoals: [],
@@ -159,7 +159,7 @@ test("rolls back a conflicting backlog before adding its week or other tasks", (
     });
     repo.createTask({
       id: "import-01",
-      weekId: "2026-W34",
+      cycleId: "2026-W34",
       title: "Conflicting task",
       spec,
       priority: 0,
@@ -170,7 +170,7 @@ test("rolls back a conflicting backlog before adding its week or other tasks", (
     expect(() => repo.importBacklog(backlog)).toThrow(
       "Task conflict: import-01",
     );
-    expect(rowCount(db, "weeks")).toBe(1);
+    expect(rowCount(db, "cycles")).toBe(1);
     expect(rowCount(db, "tasks")).toBe(1);
     expect(rowCount(db, "task_deps")).toBe(0);
     expect(rowCount(db, "events")).toBe(0);
@@ -195,7 +195,7 @@ test("rejects an unresolved dependency without changing storage", () => {
     expect(() => repo.importBacklog(missingDependency)).toThrow(
       "Missing task dependency: absent-task",
     );
-    expect(rowCount(db, "weeks")).toBe(0);
+    expect(rowCount(db, "cycles")).toBe(0);
     expect(rowCount(db, "tasks")).toBe(0);
     expect(rowCount(db, "task_deps")).toBe(0);
     expect(rowCount(db, "events")).toBe(0);
@@ -219,7 +219,7 @@ test("rejects unsafe and duplicate task identifiers before any write", () => {
         tasks: [firstBacklogTask, firstBacklogTask],
       }),
     ).toThrow("Duplicate task ID: import-01");
-    expect(rowCount(db, "weeks")).toBe(0);
+    expect(rowCount(db, "cycles")).toBe(0);
     expect(rowCount(db, "tasks")).toBe(0);
     expect(rowCount(db, "task_deps")).toBe(0);
     expect(rowCount(db, "events")).toBe(0);
@@ -356,7 +356,7 @@ test("rejects a task whose specification violates the repository boundary schema
     expect(() =>
       repo.createTask({
         id: "F1",
-        weekId: "2026-W35",
+        cycleId: "2026-W35",
         title: "Repository",
         priority: 0,
         approvalRequired: false,
@@ -379,15 +379,15 @@ test("rejects a malformed task record read from storage", () => {
   try {
     db.query(`
       INSERT INTO tasks(
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
       ) VALUES(
-        $id, $weekId, $title, $spec, 'draft', $priority, $risk, $tokenCeiling,
+        $id, $cycleId, $title, $spec, 'draft', $priority, $risk, $tokenCeiling,
         $approvalRequired, $approved, $now, $now
       )
     `).run({
       id: "F1",
-      weekId: "2026-W35",
+      cycleId: "2026-W35",
       title: "Malformed",
       spec: "{}",
       priority: 0,

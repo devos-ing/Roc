@@ -21,25 +21,9 @@ import {
   createTaskBranchManager,
   type TaskBranchManager,
 } from "../../src/workspace/task-branch";
+import { git } from "../helpers/git";
 
 type ServerMessage = Awaited<ReturnType<CodexClientApi["nextServerMessage"]>>;
-
-async function git(args: string[], cwd: string): Promise<string> {
-  const process = Bun.spawn(["git", ...args], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    process.exited,
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${stderr.trim()}`);
-  }
-  return stdout.trim();
-}
 
 async function createRepository(): Promise<string> {
   const root = await realpath(
@@ -144,7 +128,7 @@ class RecordedCodexClient implements CodexClientApi {
 
 const ticket = {
   id: "T1",
-  weekId: "2026-W35",
+  cycleId: "2026-W35",
   title: "Add a real Codex harness",
   spec: {
     problem: "The scheduler only has a fake provider",

@@ -19,7 +19,16 @@ function createV2Database(model = "luna"): Database {
   const db = new Database(":memory:", { strict: true });
   db.exec(`
     PRAGMA foreign_keys = ON;
-    CREATE TABLE tasks (id TEXT PRIMARY KEY NOT NULL);
+    CREATE TABLE weeks (id TEXT PRIMARY KEY NOT NULL);
+    CREATE TABLE tasks (
+      id TEXT PRIMARY KEY NOT NULL,
+      week_id TEXT NOT NULL REFERENCES weeks(id)
+    );
+    CREATE TABLE usage (
+      id TEXT PRIMARY KEY NOT NULL,
+      week_id TEXT NOT NULL REFERENCES weeks(id),
+      category TEXT NOT NULL
+    );
     CREATE TABLE contexts (id TEXT PRIMARY KEY NOT NULL);
     CREATE TABLE attempts (
       id TEXT PRIMARY KEY NOT NULL,
@@ -50,11 +59,46 @@ function createV2Database(model = "luna"): Database {
       rationale_json TEXT NOT NULL,
       UNIQUE(task_id, id)
     );
-    INSERT INTO tasks(id) VALUES('task-1');
+    INSERT INTO weeks(id) VALUES('2026-W35');
+    INSERT INTO tasks(id, week_id) VALUES('task-1', '2026-W35');
     INSERT INTO attempts(
       id, task_id, role, model, effort, status, retry_index, started_at
     ) VALUES('attempt-1', 'task-1', 'scout', '${model}', 'high', 'running', 0, 'now');
     PRAGMA user_version = 2;
+  `);
+  return db;
+}
+
+/** Creates the released version-3 tables affected by the Agile Cycle rename. */
+function createV3CycleRenameDatabase(): Database {
+  const db = new Database(":memory:", { strict: true });
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE weeks (
+      id TEXT PRIMARY KEY NOT NULL,
+      goal TEXT NOT NULL,
+      token_budget INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE tasks (
+      id TEXT PRIMARY KEY NOT NULL,
+      week_id TEXT NOT NULL REFERENCES weeks(id),
+      UNIQUE(week_id, id)
+    );
+    CREATE TABLE usage (
+      id TEXT PRIMARY KEY NOT NULL,
+      week_id TEXT NOT NULL REFERENCES weeks(id),
+      task_id TEXT,
+      category TEXT NOT NULL,
+      FOREIGN KEY(week_id, task_id) REFERENCES tasks(week_id, id)
+    );
+    INSERT INTO weeks(id, goal, token_budget, status, created_at)
+    VALUES('2026-W35', 'Ship safely', 1000, 'active', '2026-08-24T00:00:00Z');
+    INSERT INTO tasks(id, week_id) VALUES('task-1', '2026-W35');
+    INSERT INTO usage(id, week_id, task_id, category)
+    VALUES('usage-1', '2026-W35', 'task-1', 'weekly_grilling');
+    PRAGMA user_version = 3;
   `);
   return db;
 }
@@ -79,14 +123,14 @@ test("migration creates every approved table", () => {
     "task_deps",
     "tasks",
     "usage",
-    "weeks",
+    "cycles",
   ]) {
     expect(names).toContain(name);
   }
   expect(
     db.query<{ user_version: number }, []>("PRAGMA user_version").get()
       ?.user_version,
-  ).toBe(4);
+  ).toBe(5);
   expect(
     db
       .query<{ name: string }, []>("PRAGMA table_info(tasks)")
@@ -129,6 +173,62 @@ test("migration creates every approved table", () => {
   db.close();
 });
 
+test("v4 migration renames weeks to cycles without losing related data", () => {
+  const db = createV3CycleRenameDatabase();
+  try {
+    migrate(db);
+
+    expect(
+      db
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cycles'",
+        )
+        .get(),
+    ).toEqual({ name: "cycles" });
+    expect(
+      db.query<{ cycle_id: string }, []>("SELECT cycle_id FROM tasks").get(),
+    ).toEqual({ cycle_id: "2026-W35" });
+    expect(
+      db
+        .query<{ cycle_id: string; category: string }, []>(
+          "SELECT cycle_id, category FROM usage",
+        )
+        .get(),
+    ).toEqual({ cycle_id: "2026-W35", category: "cycle_grilling" });
+    expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(
+      db.query<{ user_version: number }, []>("PRAGMA user_version").get(),
+    ).toEqual({ user_version: 5 });
+  } finally {
+    db.close();
+  }
+});
+
+test("v5 migration adds task hooks to an existing v4 database", () => {
+  const db = new Database(":memory:", { strict: true });
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE tasks (id TEXT PRIMARY KEY NOT NULL);
+    PRAGMA user_version = 4;
+  `);
+  try {
+    migrate(db);
+
+    expect(
+      db
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'task_hooks'",
+        )
+        .get(),
+    ).toEqual({ name: "task_hooks" });
+    expect(
+      db.query<{ user_version: number }, []>("PRAGMA user_version").get(),
+    ).toEqual({ user_version: 5 });
+  } finally {
+    db.close();
+  }
+});
+
 test("v3 migration rejects an unmappable legacy model profile", () => {
   const db = createV2Database("gpt-5.6-luna");
   try {
@@ -169,7 +269,7 @@ test("v3 migration backfills supported model profiles without losing runtime col
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(4);
+    ).toBe(5);
     expect(
       db
         .query<
@@ -248,13 +348,13 @@ test("entity tables reject null IDs", () => {
   const db = openDatabase(":memory:");
   try {
     db.exec(`
-      INSERT INTO weeks (id, goal, token_budget, status, created_at)
-      VALUES ('week-1', 'Ship foundation', 1000, 'active', '2026-08-24T00:00:00Z');
+      INSERT INTO cycles (id, goal, token_budget, status, created_at)
+      VALUES ('cycle-1', 'Ship foundation', 1000, 'active', '2026-08-24T00:00:00Z');
       INSERT INTO tasks (
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
       ) VALUES (
-        'task-1', 'week-1', 'Foundation', '{}', 'draft', 0, 'low', 100,
+        'task-1', 'cycle-1', 'Foundation', '{}', 'draft', 0, 'low', 100,
         0, 0, '2026-08-24T00:00:00Z', '2026-08-24T00:00:00Z'
       );
       INSERT INTO contexts (
@@ -266,16 +366,16 @@ test("entity tables reject null IDs", () => {
     `);
 
     for (const sql of [
-      "INSERT INTO weeks (id, goal, token_budget, status, created_at) VALUES (NULL, 'Goal', 1, 'active', 'now')",
+      "INSERT INTO cycles (id, goal, token_budget, status, created_at) VALUES (NULL, 'Goal', 1, 'active', 'now')",
       `INSERT INTO tasks (
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
-      ) VALUES (NULL, 'week-1', 'Task', '{}', 'draft', 0, 'low', 1, 0, 0, 'now', 'now')`,
+      ) VALUES (NULL, 'cycle-1', 'Task', '{}', 'draft', 0, 'low', 1, 0, 0, 'now', 'now')`,
       "INSERT INTO contexts (id, thread_id, anchor_id, source_task_id, git_commit) VALUES (NULL, 'thread-2', 'anchor-2', 'task-1', 'def456')",
       "INSERT INTO attempts (id, task_id, role, model, model_profile, effort, status, retry_index, started_at) VALUES (NULL, 'task-1', 'scout', 'gpt-5', 'luna', 'high', 'running', 0, 'now')",
       "INSERT INTO reviews (id, task_id, attempt_id, decision, findings_json) VALUES (NULL, 'task-1', 'attempt-1', 'accepted', '[]')",
       "INSERT INTO model_decisions (id, task_id, role, model, model_profile, effort, token_budget, fallback_models_json, decided_by, confidence, rationale_json) VALUES (NULL, 'task-1', 'scout', 'gpt-5', 'luna', 'high', 1, '[]', 'rule', 1, '[]')",
-      "INSERT INTO usage (id, week_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES (NULL, 'week-1', 'weekly_grilling', 0, 0, 0, 0)",
+      "INSERT INTO usage (id, cycle_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES (NULL, 'cycle-1', 'cycle_grilling', 0, 0, 0, 0)",
     ]) {
       expect(() => db.exec(sql)).toThrow();
     }
@@ -288,23 +388,23 @@ test("lineage and context references reject nonexistent records", () => {
   const db = openDatabase(":memory:");
   try {
     db.exec(`
-      INSERT INTO weeks (id, goal, token_budget, status, created_at)
-      VALUES ('week-1', 'Ship foundation', 1000, 'active', '2026-08-24T00:00:00Z');
+      INSERT INTO cycles (id, goal, token_budget, status, created_at)
+      VALUES ('cycle-1', 'Ship foundation', 1000, 'active', '2026-08-24T00:00:00Z');
       INSERT INTO tasks (
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
       ) VALUES (
-        'task-1', 'week-1', 'Foundation', '{}', 'draft', 0, 'low', 100,
+        'task-1', 'cycle-1', 'Foundation', '{}', 'draft', 0, 'low', 100,
         0, 0, '2026-08-24T00:00:00Z', '2026-08-24T00:00:00Z'
       );
     `);
 
     const taskWithReference = (column: string, value: string) => `
       INSERT INTO tasks (
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, ${column}, created_at, updated_at
       ) VALUES (
-        'task-${column}', 'week-1', 'Follow-up', '{}', 'draft', 0, 'low', 100,
+        'task-${column}', 'cycle-1', 'Follow-up', '{}', 'draft', 0, 'low', 100,
         0, 0, '${value}', '2026-08-24T00:00:00Z', '2026-08-24T00:00:00Z'
       )`;
 
@@ -323,10 +423,10 @@ test("lineage and context references reject nonexistent records", () => {
     expect(() =>
       db.exec(`
       INSERT INTO tasks (
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
       ) VALUES (
-        'task-null-lineage', 'week-1', 'Independent', '{}', 'draft', 0, 'low', 100,
+        'task-null-lineage', 'cycle-1', 'Independent', '{}', 'draft', 0, 'low', 100,
         0, 0, '2026-08-24T00:00:00Z', '2026-08-24T00:00:00Z'
       );
       INSERT INTO model_decisions (
@@ -347,13 +447,13 @@ test("persisted domain enums accept approved values and reject unknown values", 
   const db = openDatabase(":memory:");
   try {
     db.exec(`
-      INSERT INTO weeks (id, goal, token_budget, status, created_at)
-      VALUES ('week-1', 'Ship foundation', 1000, 'active', '2026-08-24T00:00:00Z');
+      INSERT INTO cycles (id, goal, token_budget, status, created_at)
+      VALUES ('cycle-1', 'Ship foundation', 1000, 'active', '2026-08-24T00:00:00Z');
       INSERT INTO tasks (
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
       ) VALUES (
-        'task-1', 'week-1', 'Foundation', '{}', 'draft', 0, 'low', 100,
+        'task-1', 'cycle-1', 'Foundation', '{}', 'draft', 0, 'low', 100,
         0, 0, '2026-08-24T00:00:00Z', '2026-08-24T00:00:00Z'
       );
     `);
@@ -378,13 +478,13 @@ test("persisted domain enums accept approved values and reject unknown values", 
 
     for (const sql of [
       `INSERT INTO tasks (
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
-      ) VALUES ('task-bad-status', 'week-1', 'Bad', '{}', 'unknown', 0, 'low', 1, 0, 0, 'now', 'now')`,
+      ) VALUES ('task-bad-status', 'cycle-1', 'Bad', '{}', 'unknown', 0, 'low', 1, 0, 0, 'now', 'now')`,
       `INSERT INTO tasks (
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
-      ) VALUES ('task-bad-risk', 'week-1', 'Bad', '{}', 'draft', 0, 'critical', 1, 0, 0, 'now', 'now')`,
+      ) VALUES ('task-bad-risk', 'cycle-1', 'Bad', '{}', 'draft', 0, 'critical', 1, 0, 0, 'now', 'now')`,
       "INSERT INTO attempts (id, task_id, role, model, model_profile, effort, status, retry_index, started_at) VALUES ('attempt-bad-role', 'task-1', 'manager', 'gpt-5', 'luna', 'high', 'running', 0, 'now')",
       "INSERT INTO attempts (id, task_id, role, model, model_profile, effort, status, retry_index, started_at) VALUES ('attempt-bad-status', 'task-1', 'scout', 'gpt-5', 'luna', 'high', 'unknown', 0, 'now')",
       "INSERT INTO attempts (id, task_id, role, model, model_profile, effort, status, retry_index, started_at) VALUES ('attempt-low', 'task-1', 'scout', 'gpt-5', 'luna', 'low', 'running', 0, 'now')",
@@ -401,19 +501,19 @@ test("persisted domain enums accept approved values and reject unknown values", 
   }
 });
 
-test("reviews and usage preserve task and week attribution", () => {
+test("reviews and usage preserve task and cycle attribution", () => {
   const db = openDatabase(":memory:");
   try {
     db.exec(`
-      INSERT INTO weeks (id, goal, token_budget, status, created_at) VALUES
-        ('week-1', 'First week', 1000, 'active', '2026-08-24T00:00:00Z'),
-        ('week-2', 'Second week', 1000, 'active', '2026-08-31T00:00:00Z');
+      INSERT INTO cycles (id, goal, token_budget, status, created_at) VALUES
+        ('cycle-1', 'First cycle', 1000, 'active', '2026-08-24T00:00:00Z'),
+        ('cycle-2', 'Second cycle', 1000, 'active', '2026-08-31T00:00:00Z');
       INSERT INTO tasks (
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
       ) VALUES
-        ('task-1', 'week-1', 'First task', '{}', 'draft', 0, 'low', 100, 0, 0, 'now', 'now'),
-        ('task-2', 'week-2', 'Second task', '{}', 'draft', 0, 'low', 100, 0, 0, 'now', 'now');
+        ('task-1', 'cycle-1', 'First task', '{}', 'draft', 0, 'low', 100, 0, 0, 'now', 'now'),
+        ('task-2', 'cycle-2', 'Second task', '{}', 'draft', 0, 'low', 100, 0, 0, 'now', 'now');
       INSERT INTO attempts (
         id, task_id, role, model, model_profile, effort, status, retry_index, started_at
       ) VALUES (
@@ -429,12 +529,12 @@ test("reviews and usage preserve task and week attribution", () => {
 
     for (const sql of [
       "INSERT INTO reviews (id, task_id, attempt_id, decision, findings_json) VALUES ('review-wrong-task', 'task-2', 'attempt-1', 'accepted', '[]')",
-      "INSERT INTO usage (id, week_id, task_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES ('usage-wrong-week', 'week-2', 'task-1', 'ticket_grilling', 0, 0, 0, 0)",
-      "INSERT INTO usage (id, week_id, task_id, attempt_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES ('usage-wrong-attempt', 'week-2', 'task-2', 'attempt-1', 'scout', 0, 0, 0, 0)",
-      "INSERT INTO usage (id, week_id, task_id, model_decision_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES ('usage-wrong-decision', 'week-2', 'task-2', 'decision-1', 'advisor', 0, 0, 0, 0)",
-      "INSERT INTO usage (id, week_id, attempt_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES ('usage-attempt-without-task', 'week-1', 'attempt-1', 'scout', 0, 0, 0, 0)",
-      "INSERT INTO usage (id, week_id, model_decision_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES ('usage-decision-without-task', 'week-1', 'decision-1', 'advisor', 0, 0, 0, 0)",
-      "INSERT INTO usage (id, week_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, cost) VALUES ('usage-negative-cost', 'week-1', 'weekly_grilling', 0, 0, 0, 0, -0.01)",
+      "INSERT INTO usage (id, cycle_id, task_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES ('usage-wrong-cycle', 'cycle-2', 'task-1', 'ticket_grilling', 0, 0, 0, 0)",
+      "INSERT INTO usage (id, cycle_id, task_id, attempt_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES ('usage-wrong-attempt', 'cycle-2', 'task-2', 'attempt-1', 'scout', 0, 0, 0, 0)",
+      "INSERT INTO usage (id, cycle_id, task_id, model_decision_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES ('usage-wrong-decision', 'cycle-2', 'task-2', 'decision-1', 'advisor', 0, 0, 0, 0)",
+      "INSERT INTO usage (id, cycle_id, attempt_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES ('usage-attempt-without-task', 'cycle-1', 'attempt-1', 'scout', 0, 0, 0, 0)",
+      "INSERT INTO usage (id, cycle_id, model_decision_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES ('usage-decision-without-task', 'cycle-1', 'decision-1', 'advisor', 0, 0, 0, 0)",
+      "INSERT INTO usage (id, cycle_id, category, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, cost) VALUES ('usage-negative-cost', 'cycle-1', 'cycle_grilling', 0, 0, 0, 0, -0.01)",
     ]) {
       expect(() => db.exec(sql)).toThrow();
     }
@@ -444,21 +544,21 @@ test("reviews and usage preserve task and week attribution", () => {
       INSERT INTO reviews (id, task_id, attempt_id, decision, findings_json)
       VALUES ('review-valid', 'task-1', 'attempt-1', 'accepted', '[]');
       INSERT INTO usage (
-        id, week_id, category, input_tokens, cached_input_tokens, output_tokens,
+        id, cycle_id, category, input_tokens, cached_input_tokens, output_tokens,
         reasoning_output_tokens
-      ) VALUES ('usage-week', 'week-1', 'weekly_grilling', 0, 0, 0, 0);
+      ) VALUES ('usage-cycle', 'cycle-1', 'cycle_grilling', 0, 0, 0, 0);
       INSERT INTO usage (
-        id, week_id, task_id, category, input_tokens, cached_input_tokens,
+        id, cycle_id, task_id, category, input_tokens, cached_input_tokens,
         output_tokens, reasoning_output_tokens, cost
-      ) VALUES ('usage-task', 'week-1', 'task-1', 'ticket_grilling', 0, 0, 0, 0, 0);
+      ) VALUES ('usage-task', 'cycle-1', 'task-1', 'ticket_grilling', 0, 0, 0, 0, 0);
       INSERT INTO usage (
-        id, week_id, task_id, attempt_id, category, input_tokens,
+        id, cycle_id, task_id, attempt_id, category, input_tokens,
         cached_input_tokens, output_tokens, reasoning_output_tokens
-      ) VALUES ('usage-attempt', 'week-1', 'task-1', 'attempt-1', 'scout', 0, 0, 0, 0);
+      ) VALUES ('usage-attempt', 'cycle-1', 'task-1', 'attempt-1', 'scout', 0, 0, 0, 0);
       INSERT INTO usage (
-        id, week_id, task_id, model_decision_id, category, input_tokens,
+        id, cycle_id, task_id, model_decision_id, category, input_tokens,
         cached_input_tokens, output_tokens, reasoning_output_tokens
-      ) VALUES ('usage-decision', 'week-1', 'task-1', 'decision-1', 'advisor', 0, 0, 0, 0);
+      ) VALUES ('usage-decision', 'cycle-1', 'task-1', 'decision-1', 'advisor', 0, 0, 0, 0);
     `),
     ).not.toThrow();
   } finally {
@@ -470,14 +570,14 @@ test("events reject attempts attributed to a different or missing task", () => {
   const db = openDatabase(":memory:");
   try {
     db.exec(`
-      INSERT INTO weeks (id, goal, token_budget, status, created_at)
-      VALUES ('week-1', 'Ship foundation', 1000, 'active', 'now');
+      INSERT INTO cycles (id, goal, token_budget, status, created_at)
+      VALUES ('cycle-1', 'Ship foundation', 1000, 'active', 'now');
       INSERT INTO tasks (
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
       ) VALUES
-        ('task-1', 'week-1', 'First', '{}', 'draft', 0, 'low', 100, 0, 0, 'now', 'now'),
-        ('task-2', 'week-1', 'Second', '{}', 'draft', 1, 'low', 100, 0, 0, 'now', 'now');
+        ('task-1', 'cycle-1', 'First', '{}', 'draft', 0, 'low', 100, 0, 0, 'now', 'now'),
+        ('task-2', 'cycle-1', 'Second', '{}', 'draft', 1, 'low', 100, 0, 0, 'now', 'now');
       INSERT INTO attempts (
         id, task_id, role, model, model_profile, effort, status, retry_index, started_at
       ) VALUES ('attempt-1', 'task-1', 'scout', 'gpt-5', 'luna', 'high', 'running', 0, 'now');
@@ -498,12 +598,12 @@ test("events permit global, task-only, and correctly attributed attempt events",
   const db = openDatabase(":memory:");
   try {
     db.exec(`
-      INSERT INTO weeks (id, goal, token_budget, status, created_at)
-      VALUES ('week-1', 'Ship foundation', 1000, 'active', 'now');
+      INSERT INTO cycles (id, goal, token_budget, status, created_at)
+      VALUES ('cycle-1', 'Ship foundation', 1000, 'active', 'now');
       INSERT INTO tasks (
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
-      ) VALUES ('task-1', 'week-1', 'First', '{}', 'draft', 0, 'low', 100, 0, 0, 'now', 'now');
+      ) VALUES ('task-1', 'cycle-1', 'First', '{}', 'draft', 0, 'low', 100, 0, 0, 'now', 'now');
       INSERT INTO attempts (
         id, task_id, role, model, model_profile, effort, status, retry_index, started_at
       ) VALUES ('attempt-1', 'task-1', 'scout', 'gpt-5', 'luna', 'high', 'running', 0, 'now');
@@ -512,7 +612,7 @@ test("events permit global, task-only, and correctly attributed attempt events",
     expect(() =>
       db.exec(`
       INSERT INTO events (idempotency_key, type, payload_json, occurred_at)
-      VALUES ('event-global', 'week.started', '{}', 'now');
+      VALUES ('event-global', 'cycle.started', '{}', 'now');
       INSERT INTO events (idempotency_key, task_id, type, payload_json, occurred_at)
       VALUES ('event-task', 'task-1', 'task.created', '{}', 'now');
       INSERT INTO events (idempotency_key, task_id, attempt_id, type, payload_json, occurred_at)
@@ -533,13 +633,13 @@ test("database initialization closes its handle before rethrowing", () => {
   const directory = mkdtempSync(join(tmpdir(), "agile-agents-db-"));
   const path = join(directory, "future.sqlite");
   const future = new Database(path, { create: true });
-  future.exec("PRAGMA user_version = 5");
+  future.exec("PRAGMA user_version = 6");
   future.close();
 
   const close = spyOn(Database.prototype, "close");
   try {
     expect(() => openDatabase(path)).toThrow(
-      "Database version 5 is newer than supported version 4",
+      "Database version 6 is newer than supported version 5",
     );
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
@@ -574,7 +674,7 @@ test("file databases create parents and enable durable SQLite settings", () => {
         reopened
           .query<{ user_version: number }, []>("PRAGMA user_version")
           .get()?.user_version,
-      ).toBe(4);
+      ).toBe(5);
     } finally {
       reopened.close();
     }
@@ -642,8 +742,8 @@ test("deferred context references permit an atomic task and context cycle", () =
   const db = openDatabase(":memory:");
   try {
     db.exec(`
-      INSERT INTO weeks (id, goal, token_budget, status, created_at)
-      VALUES ('week-1', 'Ship foundation', 1000, 'active', '2026-08-24T00:00:00Z');
+      INSERT INTO cycles (id, goal, token_budget, status, created_at)
+      VALUES ('cycle-1', 'Ship foundation', 1000, 'active', '2026-08-24T00:00:00Z');
     `);
 
     expect(() =>
@@ -655,10 +755,10 @@ test("deferred context references permit an atomic task and context cycle", () =
           'context-1', 'thread-1', 'anchor-1', 'task-1', 'abc123'
         );
         INSERT INTO tasks (
-          id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+          id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
           approval_required, approved, context_id, created_at, updated_at
         ) VALUES (
-          'task-1', 'week-1', 'Foundation', '{}', 'draft', 0, 'low', 100,
+          'task-1', 'cycle-1', 'Foundation', '{}', 'draft', 0, 'low', 100,
           0, 0, 'context-1', '2026-08-24T00:00:00Z', '2026-08-24T00:00:00Z'
         );
       `);

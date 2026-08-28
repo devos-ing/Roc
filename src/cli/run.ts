@@ -5,6 +5,11 @@ import { CodexClient } from "../codex/client";
 import { createCodexHarness } from "../codex/harness";
 import { ModelListResponseSchema } from "../codex/protocol";
 import { loadDefaultSkillPolicy } from "../codex/skill-policy";
+import {
+  type AgileCycleSetting,
+  AgileCycleSettingSchema,
+  activeAgileCycle,
+} from "../domain/agile-cycle";
 import { BacklogManifestSchema } from "../domain/schemas";
 import { safeTaskPathComponent } from "../domain/task-path";
 import { type AgentHarness, FakeScenarioSchema } from "../harness/contracts";
@@ -19,15 +24,34 @@ import {
 } from "../scheduler/model-routing";
 import { Scheduler } from "../scheduler/scheduler";
 import { TaskHookService, taskHookConfigHash } from "../scheduler/task-hooks";
-import { installRocCreateTasksSkill } from "../skills/install";
+import { loadRocSettings, saveRocSettings } from "../settings";
+import {
+  installRocCreateTasksSkill,
+  SkillInstallError,
+} from "../skills/install";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
 import { PlanningRepository } from "../store/planning-repository";
 import { createTaskBranchManager } from "../workspace/task-branch";
 import { helpText } from "./help";
-import { currentIsoWeekId, renderTokenUsageChart } from "./token-chart";
+import {
+  renderCycleStep,
+  renderDatabaseStep,
+  renderEmptyTaskList,
+  renderOnboardingComplete,
+  renderOnboardingHeader,
+  renderOnboardingStopped,
+  renderOnboardingUsageError,
+  renderSettingsStep,
+  renderSkillsStep,
+} from "./presentation";
+import { renderTokenUsageChart } from "./token-chart";
 
-export type CliIo = { out(text: string): void; err(text: string): void };
+export type CliIo = {
+  out(text: string): void;
+  err(text: string): void;
+  ask?(question: string): Promise<string>;
+};
 export type SchedulerRunInput =
   | { backend: "fake"; dbPath: string; scenario: unknown }
   | { backend: "codex"; dbPath: string; repoPath: string; baseRef: string };
@@ -39,14 +63,67 @@ export type CliRuntime = {
   ): Promise<void>;
   projectRoot?: string;
   homeRoot?: string;
+  now?: () => Date;
 };
 
-const grillingInstallCommand =
-  "npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor";
+/** Prompts for and validates one global Agile cycle setting. */
+async function promptCycleSetting(
+  io: CliIo,
+  now: Date,
+): Promise<AgileCycleSetting> {
+  if (!io.ask) throw new Error("Interactive input is required for onboard");
+  const choice = (
+    await io.ask("Agile cycle: 1) Daily 2) Weekly 3) Custom")
+  ).trim();
+  if (choice === "1") return { type: "daily" };
+  if (choice === "2") return { type: "weekly" };
+  if (choice !== "3") throw new Error("Choose Daily, Weekly, or Custom");
+  const days = Number((await io.ask("Custom cycle duration in days")).trim());
+  if (!Number.isInteger(days) || days <= 0) {
+    throw new Error("Custom duration must be a whole number greater than zero");
+  }
+  return AgileCycleSettingSchema.parse({
+    type: "custom",
+    days,
+    anchorDate: activeAgileCycle({ type: "daily" }, now).id,
+  });
+}
 
 /** Converts an unknown thrown value into a displayable error message. */
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Builds the copyable onboarding retry command from the accepted onboarding options. */
+function onboardingRetryCommand(input: {
+  dbPath?: string;
+  global?: boolean;
+}): string {
+  if (input.global) return "npx roc-it@latest onboard --global";
+  return input.dbPath === undefined
+    ? "npx roc-it@latest onboard"
+    : `npx roc-it@latest onboard --db ${shellLiteral(input.dbPath)}`;
+}
+
+/** Quotes a value as one literal argument for the supported POSIX-compatible shell. */
+function shellLiteral(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
+/** Returns whether a backlog manifest still uses the removed weekId field. */
+function usesLegacyWeekId(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "weekId" in value
+  );
+}
+
+/** Loads settings and calculates the active Agile cycle for the CLI clock. */
+async function currentCycle(runtime: CliRuntime) {
+  const settings = await loadRocSettings(runtime.homeRoot ?? homedir());
+  return activeAgileCycle(settings.cycle, runtime.now?.() ?? new Date());
 }
 
 /** Parses supported CLI options and positional commands under strict validation. */
@@ -452,8 +529,17 @@ export async function runCli(
   const dbPath =
     requestedDb === ":memory:" ? ":memory:" : resolve(projectRoot, requestedDb);
   if (command === "onboard") {
+    const retryCommand = onboardingRetryCommand({
+      dbPath: parsed.values.db,
+      global: parsed.values.global,
+    });
     if (subcommand !== undefined || parsed.positionals.length !== 1) {
-      io.err("onboard does not accept positional arguments");
+      io.err(
+        renderOnboardingUsageError(
+          "onboard does not accept positional arguments",
+          retryCommand,
+        ),
+      );
       return 2;
     }
     if (
@@ -463,11 +549,21 @@ export async function runCli(
       parsed.values["fake-script"] !== undefined ||
       parsed.values["no-color"] !== undefined
     ) {
-      io.err("onboard accepts only --global and --db PATH");
+      io.err(
+        renderOnboardingUsageError(
+          "onboard accepts only --global and --db PATH",
+          retryCommand,
+        ),
+      );
       return 2;
     }
     if (parsed.values.global && parsed.values.db !== undefined) {
-      io.err("onboard --global does not accept --db PATH");
+      io.err(
+        renderOnboardingUsageError(
+          "onboard --global does not accept --db PATH",
+          retryCommand,
+        ),
+      );
       return 2;
     }
     const sourcePath = resolve(
@@ -478,29 +574,90 @@ export async function runCli(
       "roc-create-tasks",
       "SKILL.md",
     );
+    const root = parsed.values.global
+      ? (runtime.homeRoot ?? homedir())
+      : projectRoot;
+    const scope = parsed.values.global
+      ? { kind: "global" as const, root }
+      : { kind: "project" as const, root };
+    const completedSteps: string[] = [];
+    io.out(renderOnboardingHeader(scope));
     try {
-      const root = parsed.values.global
-        ? (runtime.homeRoot ?? homedir())
-        : projectRoot;
       let installed: Awaited<ReturnType<typeof installRocCreateTasksSkill>>;
       if (parsed.values.global) {
+        const databaseStep = renderDatabaseStep({ scope });
+        completedSteps.push(databaseStep);
+        io.out(databaseStep);
         installed = await installRocCreateTasksSkill({ sourcePath, root });
       } else {
         const db = openDatabase(dbPath);
         try {
+          const databaseStep = renderDatabaseStep({ dbPath, scope });
+          completedSteps.push(databaseStep);
+          io.out(databaseStep);
           installed = await installRocCreateTasksSkill({ sourcePath, root });
         } finally {
           db.close();
         }
       }
-      io.out(
-        [
-          ...installed.created.map((path) => `Created ${path}`),
-          ...installed.skipped.map((path) => `Skipped ${path}`),
-          "Install grilling:",
-          grillingInstallCommand,
-        ].join("\n"),
+      const skillsStep = renderSkillsStep(installed);
+      completedSteps.push(skillsStep);
+      io.out(skillsStep);
+      const setting = await promptCycleSetting(
+        io,
+        runtime.now?.() ?? new Date(),
       );
+      const cycleStep = renderCycleStep(setting);
+      completedSteps.push(cycleStep);
+      io.out(cycleStep);
+      const settingsPath = await saveRocSettings(
+        { cycle: setting },
+        runtime.homeRoot ?? homedir(),
+      );
+      const settingsStep = renderSettingsStep(settingsPath);
+      completedSteps.push(settingsStep);
+      io.out(settingsStep);
+      io.out(renderOnboardingComplete());
+      return 0;
+    } catch (error) {
+      const partialSkills =
+        error instanceof SkillInstallError &&
+        (error.completed.created.length > 0 ||
+          error.completed.skipped.length > 0)
+          ? renderSkillsStep(error.completed)
+          : undefined;
+      io.err(
+        renderOnboardingStopped({
+          completedSteps:
+            partialSkills === undefined
+              ? completedSteps
+              : [...completedSteps, partialSkills],
+          failure: errorMessage(error),
+          retryCommand,
+        }),
+      );
+      return 1;
+    }
+  }
+
+  if (command === "cycle") {
+    if (subcommand !== "current" || parsed.positionals.length !== 2) {
+      io.err("cycle requires current");
+      return 2;
+    }
+    if (
+      parsed.values.db !== undefined ||
+      parsed.values.backend !== undefined ||
+      parsed.values.repo !== undefined ||
+      parsed.values.base !== undefined ||
+      parsed.values["fake-script"] !== undefined ||
+      parsed.values["no-color"] !== undefined
+    ) {
+      io.err("cycle current does not accept options");
+      return 2;
+    }
+    try {
+      io.out((await currentCycle(runtime)).id);
       return 0;
     } catch (error) {
       io.err(errorMessage(error));
@@ -526,15 +683,27 @@ export async function runCli(
       return 2;
     }
     try {
-      const manifest = BacklogManifestSchema.parse(
-        await Bun.file(resolve(manifestPath)).json(),
-      );
+      const input: unknown = await Bun.file(resolve(manifestPath)).json();
+      if (usesLegacyWeekId(input)) {
+        throw new Error("Manifest uses weekId; replace it with cycleId");
+      }
+      const manifest = BacklogManifestSchema.parse(input);
       for (const task of manifest.tasks) safeTaskPathComponent(task.id);
       const db = openDatabase(dbPath);
       try {
         const result = new PlanningRepository(db).importBacklog(manifest);
         io.out(
-          `Created ${result.created}, skipped ${result.skipped}, total ${result.total}.`,
+          [
+            `Created: ${result.created}`,
+            `Already present: ${result.skipped}`,
+            `Total: ${result.total}`,
+            "Next:",
+            `  npx roc-it@latest task list${
+              parsed.values.db === undefined
+                ? ""
+                : ` --db ${shellLiteral(parsed.values.db)}`
+            }`,
+          ].join("\n"),
         );
         return 0;
       } finally {
@@ -554,9 +723,12 @@ export async function runCli(
         io.out(
           tasks.length
             ? tasks
-                .map((task) => `${task.id}\t${task.status}\t${task.title}`)
+                .map(
+                  (task) =>
+                    `- ${JSON.stringify(task.id)} [${task.status}] ${JSON.stringify(task.title)}`,
+                )
                 .join("\n")
-            : "No tasks.",
+            : renderEmptyTaskList(),
         );
         return 0;
       } finally {
@@ -623,18 +795,18 @@ export async function runCli(
       return 2;
     }
     try {
+      const cycle = await currentCycle(runtime);
       const db = openDatabase(dbPath);
       try {
-        const weekId = currentIsoWeekId();
-        const usage = new OrchestrationRepository(db).getWeekCategoryUsage(
-          weekId,
+        const usage = new OrchestrationRepository(db).getCycleCategoryUsage(
+          cycle.id,
         );
         if (usage === undefined) {
-          io.out(`No active week: ${weekId}`);
+          io.out(`No token usage recorded for cycle: ${cycle.id}`);
           return 0;
         }
         io.out(
-          renderTokenUsageChart(weekId, usage.categories, {
+          renderTokenUsageChart(cycle.id, usage.categories, {
             color: !parsed.values["no-color"],
             width: process.stdout.columns ?? 80,
           }),
@@ -689,7 +861,9 @@ export async function runCli(
         baseRef: parsed.values.base ?? "HEAD",
       };
       try {
+        io.out("Status: Starting");
         await runtime.runScheduler(input);
+        io.out("Result: Stopped");
         return 0;
       } catch (error) {
         return reportOperationalError(error, io, runtime, {
@@ -746,6 +920,8 @@ export async function runCli(
     }
   }
 
-  io.err(`Unknown command: ${parsed.positionals.join(" ")}`);
+  io.err(
+    `Unknown command: ${parsed.positionals.join(" ")}\nRun npx roc-it@latest help`,
+  );
   return 2;
 }

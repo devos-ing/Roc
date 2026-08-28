@@ -67,12 +67,36 @@ Cursor 安裝建立任務的 skill：
 
 ```bash
 npx roc-it@latest onboard
-npx roc-it@latest task list
-npx roc-it@latest tokens
 ```
+
+啟用時會顯示專案範圍、每個已完成步驟、所選週期、設定檔路徑，以及可直接複製
+的下一步指引：如需要先安裝 `grilling`、用已安裝的任務 skill 建立第一個 backlog，
+以及查看產生的任務。若稍後步驟停止，Roc 會列出已完成工作並提供重試指令；它不會
+聲稱已回復任何變更。
 
 使用 `npx roc-it@latest onboard --global` 可改為在使用者帳戶下安裝 skill；
 全域啟用不會建立專案資料庫。
+
+### 敏捷週期
+
+啟用時可以選擇每日、每週，或自訂日數。Roc 會把這個選擇儲存在
+`~/.config/roc/settings.json`，並套用到所有專案。
+
+```json
+{ "cycle": { "type": "weekly" } }
+```
+
+你可以隨時查看目前的敏捷週期：
+
+```bash
+npx roc-it@latest cycle current
+```
+
+建立任務的 skill 會把這個值加入 backlog manifest。例如：
+
+```json
+{ "cycleId": "2026-08-28-P14D" }
+```
 
 使用已安裝的 skill，從需求建立 backlog。在 Claude Code 或 Cursor 中使用：
 
@@ -88,6 +112,12 @@ $roc-create-tasks Add team invitations
 
 這個 skill 會使用 `grilling` 釐清需求、預覽完整任務清單和相依關係、等待你的
 明確批准，然後把 JSON backlog 儲存在 `.agile/backlog` 並匯入 Roc。
+
+查看產生的任務：
+
+```bash
+npx roc-it@latest task list
+```
 
 使用 Codex 執行 backlog：
 
@@ -144,13 +174,25 @@ Roc 正在逐步成長。
 
 ## 指令
 
-```bash
-roc-it onboard [--global] [--db PATH]
-roc-it task import FILE [--db PATH]
-roc-it task list [--db PATH]
-roc-it tokens [--db PATH] [--no-color]
-roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
-roc-it help
+內建的 `npx roc-it@latest help` 會按使用旅程分組顯示正式指令：
+
+```text
+開始使用
+npx roc-it@latest onboard [--global] [--db PATH]
+
+管理週期
+npx roc-it@latest cycle current
+
+規劃工作
+npx roc-it@latest task import FILE [--db PATH]
+npx roc-it@latest task list [--db PATH]
+npx roc-it@latest tokens [--db PATH] [--no-color]
+
+執行工作
+npx roc-it@latest scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+
+取得說明
+npx roc-it@latest help
 ```
 
 ## 參與貢獻

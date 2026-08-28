@@ -108,6 +108,11 @@ test("release workflow keeps the stable-tag, immutable-action, and ordered-relea
   );
   expect(validation).toContain('if [[ "$tag" != "v$version" ]]; then');
 
+  const packing = stepRun(steps, "Pack tagged source");
+  expect(packing).toContain(
+    'if type == "array" then .[0] else .["roc-it"] end',
+  );
+
   const registry = stepRun(steps, "Check npm publication state");
   expect(registry).toContain(
     'if published_integrity="$(npm view "roc-it@$VERSION" dist.integrity 2>"$error_file")"; then',
@@ -158,23 +163,18 @@ test("README explains the agile Scout, Implement, Review loop", async () => {
   expect(end).toBeGreaterThan(start);
   const howItWorks = readme.slice(start, end);
 
-  expect(howItWorks).toContain("Roc follows a small agile loop");
-  expect(howItWorks).toContain("B[Ready backlog] --> S[Scout]");
-  expect(howItWorks).toContain("S --> I[Implement]");
-  expect(howItWorks).toContain("I --> R[Review]");
-  expect(howItWorks).toContain("R -->|Accepted| D[Done]");
-  expect(howItWorks).toContain("R -->|Changes needed| F[Draft follow-up]");
-  expect(howItWorks).toContain("F -->|Approved| B[Ready backlog]");
-  expect(howItWorks).toMatch(/\*\*Scout:\*\* Understands the task/);
-  expect(howItWorks).toMatch(
-    /\*\*Implement:\*\* Writes the code[\s\S]+trusted\s+Harness validates the result and saves it as a commit/,
+  expect(howItWorks).toContain(
+    "Roc picks one ready task and passes it through three agent roles",
   );
-  expect(howItWorks).toMatch(
-    /\*\*Review:\*\* Independently checks that exact commit[\s\S]+unapproved draft follow-up/,
+  expect(howItWorks).toContain('S["Scout<br/>Understand the task"]');
+  expect(howItWorks).toContain('I["Implement<br/>Write and commit code"]');
+  expect(howItWorks).toContain('R["Review<br/>Check the exact commit"]');
+  expect(howItWorks).toContain(
+    "If Review accepts the commit, the task is done",
   );
-  expect(howItWorks).toContain("Roc works on one small task at a time");
-  expect(howItWorks).toContain("ready backlog only after approval");
-  expect(howItWorks).toContain("Roc saves progress");
+  expect(howItWorks).toContain(
+    "If Review rejects it, Roc\ncreates a follow-up ticket and moves on to the next ready task",
+  );
   expect(howItWorks).not.toContain("Token ledger");
   expect(howItWorks).not.toContain("GitHub Release");
 });

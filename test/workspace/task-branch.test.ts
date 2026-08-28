@@ -3,23 +3,7 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTaskBranchManager } from "../../src/workspace/task-branch";
-
-async function git(args: string[], cwd: string): Promise<string> {
-  const process = Bun.spawn(["git", ...args], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    process.exited,
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${stderr.trim()}`);
-  }
-  return stdout.trim();
-}
+import { git } from "../helpers/git";
 
 async function createRepository(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "agile-branch-repo-"));

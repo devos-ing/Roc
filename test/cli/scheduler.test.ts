@@ -107,7 +107,7 @@ test("the default runtime binds authored events to generated attempts and stops 
         db,
         () => "2026-08-25T00:00:00.000Z",
       );
-      planning.createWeek({
+      planning.createCycle({
         id: "2026-W35",
         goal: "Exercise the real scheduler runtime",
         nonGoals: [],
@@ -116,7 +116,7 @@ test("the default runtime binds authored events to generated attempts and stops 
       });
       planning.createTask({
         id: "T1",
-        weekId: "2026-W35",
+        cycleId: "2026-W35",
         title: "Generated attempt binding",
         spec: {
           problem: "The script has an authored attempt ID",
@@ -300,7 +300,7 @@ test("prints a stable JSON inspection snapshot", async () => {
   expect(code).toBe(0);
   expect(JSON.parse(output[0] ?? "null")).toEqual({
     scheduler: {},
-    weeks: [],
+    cycles: [],
     tasks: [],
   });
 });
@@ -320,6 +320,7 @@ test("passes normalized Codex scheduler options to the runtime seam", async () =
   const root = await mkdtemp(join(tmpdir(), "agile-scheduler-codex-cli-"));
   const databasePath = join(root, "state.db");
   const calls: unknown[] = [];
+  const output: string[] = [];
   try {
     expect(
       await runCli(
@@ -333,9 +334,10 @@ test("passes normalized Codex scheduler options to the runtime seam", async () =
           "--db",
           databasePath,
         ],
-        { out: () => {}, err: () => {} },
+        { out: (text) => output.push(text), err: () => {} },
         {
           runScheduler: async (input) => {
+            expect(output).toEqual(["Status: Starting"]);
             calls.push(input);
           },
         },
@@ -347,6 +349,7 @@ test("passes normalized Codex scheduler options to the runtime seam", async () =
       baseRef: "HEAD",
       dbPath: resolve(databasePath),
     });
+    expect(output).toEqual(["Status: Starting", "Result: Stopped"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -405,6 +408,7 @@ test("requires backend-specific scheduler options before invoking the runtime", 
 });
 
 test("renders an operational AgileError once and asks the runtime to log it", async () => {
+  const output: string[] = [];
   const errors: string[] = [];
   const logged: AgileError[] = [];
   const runtimeError = new AgileError({
@@ -417,7 +421,7 @@ test("renders an operational AgileError once and asks the runtime to log it", as
   expect(
     await runCli(
       ["scheduler", "run", "--backend", "codex", "--repo", "."],
-      { out: () => {}, err: (text) => errors.push(text) },
+      { out: (text) => output.push(text), err: (text) => errors.push(text) },
       {
         runScheduler: async () => {
           throw runtimeError;
@@ -428,6 +432,7 @@ test("renders an operational AgileError once and asks the runtime to log it", as
       },
     ),
   ).toBe(1);
+  expect(output).toEqual(["Status: Starting"]);
   expect(errors).toEqual(["CODEX_STARTUP_BLOCKED: Codex could not start"]);
   expect(logged).toEqual([runtimeError]);
 });

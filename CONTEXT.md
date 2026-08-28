@@ -11,3 +11,8 @@ Use this format when a term crystallizes:
 ### Term
 
 Definition in domain language, without implementation details.
+
+### Agile Cycle
+
+The calendar window that groups a goal, tasks, and usage. It can be Daily,
+Weekly, or a custom number of days.

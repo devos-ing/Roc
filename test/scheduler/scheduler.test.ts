@@ -162,7 +162,7 @@ function setupAcceptedTask(
 ) {
   const db = openDatabase(":memory:");
   const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
-  planning.createWeek({
+  planning.createCycle({
     id: "2026-W34",
     goal: "Prior context",
     nonGoals: [],
@@ -171,7 +171,7 @@ function setupAcceptedTask(
   });
   planning.createTask({
     id: "C",
-    weekId: "2026-W34",
+    cycleId: "2026-W34",
     title: "Prior task C",
     spec: {
       problem: "Prior task context",
@@ -189,7 +189,7 @@ function setupAcceptedTask(
     approvalRequired: false,
     approved: true,
   });
-  planning.createWeek({
+  planning.createCycle({
     id: "2026-W35",
     goal: "Run roles",
     nonGoals: [],
@@ -198,7 +198,7 @@ function setupAcceptedTask(
   });
   planning.createTask({
     id: "T1",
-    weekId: "2026-W35",
+    cycleId: "2026-W35",
     title: "Run roles",
     spec: {
       problem: "No role pipeline",
@@ -357,7 +357,7 @@ test("runs Scout, Implement, and isolated Review to done", async () => {
     ).toBe(true);
     expect(JSON.stringify(reviewRequest)).not.toContain("thread-implement");
     expect(repo.inspect()).toMatchObject({
-      weeks: [
+      cycles: [
         {
           id: "2026-W34",
           actual: {
@@ -460,7 +460,7 @@ test("reconciles from the committed cursor after a post-commit crash", async () 
       db,
       () => "2026-08-25T00:00:00.000Z",
     );
-    planning.createWeek({
+    planning.createCycle({
       id: "2026-W35",
       goal: "Reconcile",
       nonGoals: [],
@@ -469,7 +469,7 @@ test("reconciles from the committed cursor after a post-commit crash", async () 
     });
     planning.createTask({
       id: "T1",
-      weekId: "2026-W35",
+      cycleId: "2026-W35",
       title: "Reconcile after a crash",
       spec: {
         problem: "A scheduler can crash after commit",
@@ -825,7 +825,7 @@ test("terminalizes a non-retryable task failure and continues with the next task
   const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
   planning.createTask({
     id: "T2",
-    weekId: "2026-W35",
+    cycleId: "2026-W35",
     title: "Continue after T1",
     spec: {
       problem: "A prior task failed",

@@ -1,9 +1,12 @@
 # Architecture
 
-Agile Agents is a sequential CLI scheduler. SQLite owns the durable task state,
+Roc is a sequential CLI scheduler. SQLite owns the durable task state,
 the Scheduler chooses the next ready task, and an `AgentHarness` executes Scout,
 Implement, and Review attempts. `FakeHarness` provides deterministic tests;
 `CodexHarness` talks to one Codex app-server process.
+
+The global Agile Cycle setting selects the active calendar window used by task
+manifests and token reporting. It supports Daily, Weekly, and custom-day cycles.
 
 ```text
 CLI -> Scheduler -> AgentHarness -> FakeHarness
