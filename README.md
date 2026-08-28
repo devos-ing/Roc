@@ -104,23 +104,20 @@ never switches branches or makes commits in the source folder passed through
 
 ## How it works
 
-Roc follows a small agile loop. It moves each task through three focused agents:
+Roc picks one ready task and passes it through three agent roles.
 
 ```mermaid
 flowchart LR
-    B[Ready backlog] --> S[Scout]
-    S --> I[Implement]
-    I --> R[Review]
-    R -->|Accepted| D[Done]
-    R -->|Changes needed| F[Draft follow-up]
-    F -->|Approved| B[Ready backlog]
+    S["Scout<br/>Understand the task"] --> I["Implement<br/>Write and commit code"]
+    I --> R["Review<br/>Check the exact commit"]
 ```
 
-- **Scout:** Understands the task, checks the code, and prepares a plan.
-- **Implement:** Writes the code in a separate work folder. Roc's trusted
-  Harness validates the result and saves it as a commit.
-- **Review:** Independently checks that exact commit. It accepts the work or
-  creates an unapproved draft follow-up task with clear feedback.
+If Review accepts the commit, the task is done. If Review rejects it, Roc
+creates a follow-up ticket and moves on to the next ready task.
+
+## Commands
+
+All supported CLI commands:
 
 Roc works on one small task at a time. When Review asks for changes, Roc sends
 the feedback to an unapproved draft follow-up. That follow-up returns to the
