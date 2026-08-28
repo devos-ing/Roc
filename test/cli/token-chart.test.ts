@@ -1,15 +1,12 @@
 import { expect, test } from "bun:test";
-import {
-  currentIsoWeekId,
-  renderTokenUsageChart,
-} from "../../src/cli/token-chart";
+import { renderTokenUsageChart } from "../../src/cli/token-chart";
 
 const ansiSgrPattern = "\\u001B\\[[0-9;]*m";
 
 const raw = [
   { category: "review", inputTokens: 50, outputTokens: 10 },
   { category: "implement", inputTokens: 100, outputTokens: 20 },
-  { category: "weekly_grilling", inputTokens: 5, outputTokens: 5 },
+  { category: "cycle_grilling", inputTokens: 5, outputTokens: 5 },
   { category: "ticket_grilling", inputTokens: 10, outputTokens: 0 },
   { category: "unrecognized", inputTokens: 3, outputTokens: 2 },
 ];
@@ -44,7 +41,7 @@ test("normalizes, combines, ranks, and totals workflow categories with proportio
   );
 });
 
-test("shows only known categories when a present week has no usage", () => {
+test("shows only known categories when a present cycle has no usage", () => {
   const output = renderTokenUsageChart("2026-W35", [], { color: false });
   expect(output).toContain("Scout");
   expect(output).toContain("Implement");
@@ -69,9 +66,4 @@ test("uses the 40-column minimum when the requested width is smaller", () => {
   expect(clamped.split("\n").find((line) => line.startsWith("Implement"))).toBe(
     "Implement  120 tokens   59%  ███████████",
   );
-});
-
-test("computes local-calendar ISO week IDs across a year boundary", () => {
-  expect(currentIsoWeekId(new Date(2026, 7, 26))).toBe("2026-W35");
-  expect(currentIsoWeekId(new Date(2027, 0, 1))).toBe("2026-W53");
 });

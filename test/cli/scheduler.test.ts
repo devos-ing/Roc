@@ -107,7 +107,7 @@ test("the default runtime binds authored events to generated attempts and stops 
         db,
         () => "2026-08-25T00:00:00.000Z",
       );
-      planning.createWeek({
+      planning.createCycle({
         id: "2026-W35",
         goal: "Exercise the real scheduler runtime",
         nonGoals: [],
@@ -116,7 +116,7 @@ test("the default runtime binds authored events to generated attempts and stops 
       });
       planning.createTask({
         id: "T1",
-        weekId: "2026-W35",
+        cycleId: "2026-W35",
         title: "Generated attempt binding",
         spec: {
           problem: "The script has an authored attempt ID",
@@ -300,7 +300,7 @@ test("prints a stable JSON inspection snapshot", async () => {
   expect(code).toBe(0);
   expect(JSON.parse(output[0] ?? "null")).toEqual({
     scheduler: {},
-    weeks: [],
+    cycles: [],
     tasks: [],
   });
 });

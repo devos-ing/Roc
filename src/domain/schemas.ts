@@ -43,9 +43,9 @@ export const TicketSpecSchema = z
   })
   .strict();
 
-export const WeeklyPlanSchema = z
+export const AgileCyclePlanSchema = z
   .object({
-    id: z.string().regex(/^\d{4}-W\d{2}$/),
+    id: NonEmpty,
     goal: NonEmpty,
     nonGoals: z.array(NonEmpty),
     tokenBudget: z.number().int().positive(),
@@ -56,7 +56,7 @@ export const WeeklyPlanSchema = z
 export const TaskCreateSchema = z
   .object({
     id: NonEmpty,
-    weekId: WeeklyPlanSchema.shape.id,
+    cycleId: AgileCyclePlanSchema.shape.id,
     title: NonEmpty,
     spec: TicketSpecSchema,
     priority: z.number().int().min(0),
@@ -76,7 +76,7 @@ export const BacklogTaskSchema = z
 
 export const BacklogManifestSchema = z
   .object({
-    weekId: WeeklyPlanSchema.shape.id,
+    cycleId: AgileCyclePlanSchema.shape.id,
     goal: NonEmpty,
     tasks: z.array(BacklogTaskSchema).min(1),
   })
@@ -121,7 +121,7 @@ export const ModelDecisionSchema = z
 
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 export type TicketSpec = z.infer<typeof TicketSpecSchema>;
-export type WeeklyPlan = z.infer<typeof WeeklyPlanSchema>;
+export type AgileCyclePlan = z.infer<typeof AgileCyclePlanSchema>;
 export type TaskCreate = z.infer<typeof TaskCreateSchema>;
 export type BacklogManifest = z.infer<typeof BacklogManifestSchema>;
 export type StoredTask = z.infer<typeof StoredTaskSchema>;

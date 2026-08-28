@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {
+  type AgileCyclePlan,
+  AgileCyclePlanSchema,
   type BacklogManifest,
   BacklogManifestSchema,
   type StoredTask,
@@ -8,15 +10,13 @@ import {
   TaskCreateSchema,
   type TaskStatus,
   TaskStatusSchema,
-  type WeeklyPlan,
-  WeeklyPlanSchema,
 } from "../domain/schemas";
 import { safeTaskPathComponent } from "../domain/task-path";
 import { assertTransition, canTransition } from "../domain/transitions";
 
 type TaskRow = {
   id: string;
-  week_id: string;
+  cycle_id: string;
   title: string;
   spec_json: string;
   spec_path: string | null;
@@ -36,7 +36,7 @@ type StatusChangedEventRow = {
 
 type ImportedTaskRow = {
   id: string;
-  week_id: string;
+  cycle_id: string;
   title: string;
   spec_json: string;
   priority: number;
@@ -53,7 +53,7 @@ export type BacklogImportResult = {
 /** Compares the immutable input fields of an imported task. */
 function isSameImportedTask(existing: TaskCreate, task: TaskCreate): boolean {
   return (
-    existing.weekId === task.weekId &&
+    existing.cycleId === task.cycleId &&
     existing.title === task.title &&
     existing.priority === task.priority &&
     existing.approvalRequired === task.approvalRequired &&
@@ -90,12 +90,12 @@ export class PlanningRepository {
     private readonly now: () => string = () => new Date().toISOString(),
   ) {}
 
-  /** Validates and persists a new weekly plan in draft status. */
-  createWeek(input: WeeklyPlan): void {
-    const plan = WeeklyPlanSchema.parse(input);
+  /** Validates and persists a new Agile Cycle plan in draft status. */
+  createCycle(input: AgileCyclePlan): void {
+    const plan = AgileCyclePlanSchema.parse(input);
     this.db
       .query(`
-      INSERT INTO weeks(id, goal, token_budget, status, created_at)
+      INSERT INTO cycles(id, goal, token_budget, status, created_at)
       VALUES($id, $goal, $tokenBudget, 'draft', $now)
     `)
       .run({
@@ -113,16 +113,16 @@ export class PlanningRepository {
     this.db
       .query(`
       INSERT INTO tasks(
-        id, week_id, title, spec_json, status, priority, risk, token_ceiling,
+        id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
         approval_required, approved, created_at, updated_at
       ) VALUES(
-        $id, $weekId, $title, $spec, 'draft', $priority, $risk, $tokenCeiling,
+        $id, $cycleId, $title, $spec, 'draft', $priority, $risk, $tokenCeiling,
         $approvalRequired, $approved, $now, $now
       )
     `)
       .run({
         id: task.id,
-        weekId: task.weekId,
+        cycleId: task.cycleId,
         title: task.title,
         spec: JSON.stringify(task.spec),
         priority: task.priority,
@@ -141,7 +141,7 @@ export class PlanningRepository {
     const tasks = manifest.tasks.map((task) =>
       TaskCreateSchema.parse({
         ...task,
-        weekId: manifest.weekId,
+        cycleId: manifest.cycleId,
         approvalRequired: true,
         approved: true,
       }),
@@ -160,7 +160,7 @@ export class PlanningRepository {
       const placeholders = referencedIds.map(() => "?").join(", ");
       const rows = this.db
         .query<ImportedTaskRow, string[]>(`
-          SELECT id, week_id, title, spec_json, priority, approval_required, approved
+          SELECT id, cycle_id, title, spec_json, priority, approval_required, approved
           FROM tasks WHERE id IN (${placeholders})
         `)
         .all(...referencedIds);
@@ -177,7 +177,7 @@ export class PlanningRepository {
         if (!existing) continue;
         const existingTask = TaskCreateSchema.parse({
           id: existing.id,
-          weekId: existing.week_id,
+          cycleId: existing.cycle_id,
           title: existing.title,
           spec: JSON.parse(existing.spec_json),
           priority: existing.priority,
@@ -189,12 +189,12 @@ export class PlanningRepository {
         }
       }
 
-      const week = this.db
-        .query<{ id: string }, [string]>("SELECT id FROM weeks WHERE id = ?")
-        .get(manifest.weekId);
-      if (!week) {
-        this.createWeek({
-          id: manifest.weekId,
+      const cycle = this.db
+        .query<{ id: string }, [string]>("SELECT id FROM cycles WHERE id = ?")
+        .get(manifest.cycleId);
+      if (!cycle) {
+        this.createCycle({
+          id: manifest.cycleId,
           goal: manifest.goal,
           nonGoals: [],
           tokenBudget,
@@ -228,7 +228,7 @@ export class PlanningRepository {
   listTasks(): StoredTask[] {
     const rows = this.db
       .query<TaskRow, []>(`
-      SELECT id, week_id, title, spec_json, spec_path, spec_hash, base_commit, status,
+      SELECT id, cycle_id, title, spec_json, spec_path, spec_hash, base_commit, status,
              priority, approval_required, approved
       FROM tasks ORDER BY priority, id
     `)
@@ -236,7 +236,7 @@ export class PlanningRepository {
     return rows.map((row) =>
       StoredTaskSchema.parse({
         id: row.id,
-        weekId: row.week_id,
+        cycleId: row.cycle_id,
         title: row.title,
         spec: JSON.parse(row.spec_json),
         status: row.status,

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  AgileCyclePlanSchema,
   ModelDecisionSchema,
   ModelProfileSchema,
   TicketSpecSchema,
-  WeeklyPlanSchema,
 } from "../../src/domain/schemas";
 
 const ticket = {
@@ -52,9 +52,9 @@ describe("domain schemas", () => {
     ).toThrow();
   });
 
-  test("accepts an ISO week plan", () => {
+  test("accepts an ISO cycle plan", () => {
     expect(
-      WeeklyPlanSchema.parse({
+      AgileCyclePlanSchema.parse({
         id: "2026-W35",
         goal: "Ship the foundation slice",
         nonGoals: ["Codex integration"],

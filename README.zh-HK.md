@@ -74,6 +74,27 @@ npx roc-it@latest tokens
 使用 `npx roc-it@latest onboard --global` 可改為在使用者帳戶下安裝 skill；
 全域啟用不會建立專案資料庫。
 
+### 敏捷週期
+
+啟用時可以選擇每日、每週，或自訂日數。Roc 會把這個選擇儲存在
+`~/.config/roc/settings.json`，並套用到所有專案。
+
+```json
+{ "cycle": { "type": "weekly" } }
+```
+
+你可以隨時查看目前的敏捷週期：
+
+```bash
+npx roc-it@latest cycle current
+```
+
+建立任務的 skill 會把這個值加入 backlog manifest。例如：
+
+```json
+{ "cycleId": "2026-08-28-P14D" }
+```
+
 使用已安裝的 skill，從需求建立 backlog。在 Claude Code 或 Cursor 中使用：
 
 ```text
@@ -145,12 +166,13 @@ Roc 正在逐步成長。
 ## 指令
 
 ```bash
-roc-it onboard [--global] [--db PATH]
-roc-it task import FILE [--db PATH]
-roc-it task list [--db PATH]
-roc-it tokens [--db PATH] [--no-color]
-roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
-roc-it help
+npx roc-it@latest onboard [--global] [--db PATH]
+npx roc-it@latest cycle current
+npx roc-it@latest task import FILE [--db PATH]
+npx roc-it@latest task list [--db PATH]
+npx roc-it@latest tokens [--db PATH] [--no-color]
+npx roc-it@latest scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+npx roc-it@latest help
 ```
 
 ## 參與貢獻

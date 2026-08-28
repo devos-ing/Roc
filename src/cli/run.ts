@@ -5,6 +5,11 @@ import { CodexClient } from "../codex/client";
 import { createCodexHarness } from "../codex/harness";
 import { ModelListResponseSchema } from "../codex/protocol";
 import { loadDefaultSkillPolicy } from "../codex/skill-policy";
+import {
+  type AgileCycleSetting,
+  AgileCycleSettingSchema,
+  activeAgileCycle,
+} from "../domain/agile-cycle";
 import { BacklogManifestSchema } from "../domain/schemas";
 import { safeTaskPathComponent } from "../domain/task-path";
 import { type AgentHarness, FakeScenarioSchema } from "../harness/contracts";
@@ -18,15 +23,20 @@ import {
   createStaticModelAdvisor,
 } from "../scheduler/model-routing";
 import { Scheduler } from "../scheduler/scheduler";
+import { loadRocSettings, saveRocSettings } from "../settings";
 import { installRocCreateTasksSkill } from "../skills/install";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
 import { PlanningRepository } from "../store/planning-repository";
 import { createTaskBranchManager } from "../workspace/task-branch";
 import { helpText } from "./help";
-import { currentIsoWeekId, renderTokenUsageChart } from "./token-chart";
+import { renderTokenUsageChart } from "./token-chart";
 
-export type CliIo = { out(text: string): void; err(text: string): void };
+export type CliIo = {
+  out(text: string): void;
+  err(text: string): void;
+  ask?(question: string): Promise<string>;
+};
 export type SchedulerRunInput =
   | { backend: "fake"; dbPath: string; scenario: unknown }
   | { backend: "codex"; dbPath: string; repoPath: string; baseRef: string };
@@ -38,14 +48,51 @@ export type CliRuntime = {
   ): Promise<void>;
   projectRoot?: string;
   homeRoot?: string;
+  now?: () => Date;
 };
 
 const grillingInstallCommand =
   "npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor";
 
+/** Prompts for and validates one global Agile cycle setting. */
+async function promptCycleSetting(
+  io: CliIo,
+  now: Date,
+): Promise<AgileCycleSetting> {
+  if (!io.ask) throw new Error("Interactive input is required for onboard");
+  const choice = (
+    await io.ask("Agile cycle: 1) Daily 2) Weekly 3) Custom")
+  ).trim();
+  if (choice === "1") return { type: "daily" };
+  if (choice === "2") return { type: "weekly" };
+  if (choice !== "3") throw new Error("Choose Daily, Weekly, or Custom");
+  const days = Number((await io.ask("Custom cycle duration in days")).trim());
+  return AgileCycleSettingSchema.parse({
+    type: "custom",
+    days,
+    anchorDate: activeAgileCycle({ type: "daily" }, now).id,
+  });
+}
+
 /** Converts an unknown thrown value into a displayable error message. */
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Returns whether a backlog manifest still uses the removed weekId field. */
+function usesLegacyWeekId(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "weekId" in value
+  );
+}
+
+/** Loads settings and calculates the active Agile cycle for the CLI clock. */
+async function currentCycle(runtime: CliRuntime) {
+  const settings = await loadRocSettings(runtime.homeRoot ?? homedir());
+  return activeAgileCycle(settings.cycle, runtime.now?.() ?? new Date());
 }
 
 /** Parses supported CLI options and positional commands under strict validation. */
@@ -475,14 +522,48 @@ export async function runCli(
           db.close();
         }
       }
+      const setting = await promptCycleSetting(
+        io,
+        runtime.now?.() ?? new Date(),
+      );
+      const settingsPath = await saveRocSettings(
+        { cycle: setting },
+        runtime.homeRoot ?? homedir(),
+      );
       io.out(
         [
           ...installed.created.map((path) => `Created ${path}`),
           ...installed.skipped.map((path) => `Skipped ${path}`),
+          `Saved ${settingsPath}`,
           "Install grilling:",
           grillingInstallCommand,
         ].join("\n"),
       );
+      return 0;
+    } catch (error) {
+      io.err(errorMessage(error));
+      return 1;
+    }
+  }
+
+  if (command === "cycle") {
+    if (subcommand !== "current" || parsed.positionals.length !== 2) {
+      io.err("cycle requires current");
+      return 2;
+    }
+    if (
+      parsed.values.db !== undefined ||
+      parsed.values.backend !== undefined ||
+      parsed.values.repo !== undefined ||
+      parsed.values.base !== undefined ||
+      parsed.values["fake-script"] !== undefined ||
+      parsed.values["no-color"] !== undefined
+    ) {
+      io.err("cycle current does not accept options");
+      return 2;
+    }
+    try {
+      io.out((await currentCycle(runtime)).id);
       return 0;
     } catch (error) {
       io.err(errorMessage(error));
@@ -508,9 +589,11 @@ export async function runCli(
       return 2;
     }
     try {
-      const manifest = BacklogManifestSchema.parse(
-        await Bun.file(resolve(manifestPath)).json(),
-      );
+      const input: unknown = await Bun.file(resolve(manifestPath)).json();
+      if (usesLegacyWeekId(input)) {
+        throw new Error("Manifest uses weekId; replace it with cycleId");
+      }
+      const manifest = BacklogManifestSchema.parse(input);
       for (const task of manifest.tasks) safeTaskPathComponent(task.id);
       const db = openDatabase(dbPath);
       try {
@@ -565,18 +648,18 @@ export async function runCli(
       return 2;
     }
     try {
+      const cycle = await currentCycle(runtime);
       const db = openDatabase(dbPath);
       try {
-        const weekId = currentIsoWeekId();
-        const usage = new OrchestrationRepository(db).getWeekCategoryUsage(
-          weekId,
+        const usage = new OrchestrationRepository(db).getCycleCategoryUsage(
+          cycle.id,
         );
         if (usage === undefined) {
-          io.out(`No active week: ${weekId}`);
+          io.out(`No active cycle: ${cycle.id}`);
           return 0;
         }
         io.out(
-          renderTokenUsageChart(weekId, usage.categories, {
+          renderTokenUsageChart(cycle.id, usage.categories, {
             color: !parsed.values["no-color"],
             width: process.stdout.columns ?? 80,
           }),

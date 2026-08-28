@@ -1,6 +1,6 @@
 ---
 name: roc-create-tasks
-description: Use only when the user explicitly invokes roc-create-tasks to turn a software requirement and optional local docs into a reviewed Roc backlog by using grilling, then import it only after approval.
+description: Use when the user explicitly invokes roc-create-tasks with a software requirement and optional local docs.
 ---
 
 Do not start this workflow from a general planning request. Continue only when
@@ -22,12 +22,20 @@ shared understanding. Then split the work into small, independently reviewable
 Roc tasks for the Scout -> Implement -> Review loop. Give every task explicit
 dependencies by task ID.
 
-Create one strict JSON manifest with this shape. Use the current ISO week for
-`weekId` unless the user chose another week.
+Before creating the manifest, run:
+
+```bash
+npx roc-it@latest cycle current
+```
+
+Use its output as `cycleId`. If Roc says settings are missing or invalid, stop
+and ask the user to run `npx roc-it@latest onboard`.
+
+Create one strict JSON manifest with this shape:
 
 ```json
 {
-  "weekId": "2026-W35",
+  "cycleId": "2026-08-28-P14D",
   "goal": "Deliver the agreed outcome",
   "tasks": [
     {
@@ -51,7 +59,7 @@ Create one strict JSON manifest with this shape. Use the current ISO week for
 }
 ```
 
-Before writing anything, show the complete preview: week goal, every task in
+Before writing anything, show the complete preview: cycle goal, every task in
 order, dependencies, risk, acceptance criteria, and validation. Ask for explicit
 approval immediately before writing. Do not create a backlog file or import it
 without that approval.
