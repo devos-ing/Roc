@@ -5,6 +5,15 @@ type OnboardingScope =
   | { kind: "global"; root: string }
   | { kind: "project"; root: string };
 
+const createBacklogGuidance = [
+  "  Install the grilling skill if needed:",
+  "    npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor",
+  "  Create your first backlog in Claude Code or Cursor:",
+  "    /roc-create-tasks <requirement>",
+  "  Create your first backlog in Codex:",
+  "    $roc-create-tasks <requirement>",
+];
+
 /** Renders the stable identity, scope, and step heading for onboarding. */
 export function renderOnboardingHeader(scope: OnboardingScope): string {
   const label =
@@ -55,15 +64,15 @@ export function renderOnboardingComplete(): string {
   return [
     "Result: Complete",
     "Next:",
-    "  Install the grilling skill if needed:",
-    "    npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor",
-    "  Create your first backlog in Claude Code or Cursor:",
-    "    /roc-create-tasks <requirement>",
-    "  Create your first backlog in Codex:",
-    "    $roc-create-tasks <requirement>",
+    ...createBacklogGuidance,
     "  Inspect the resulting tasks:",
     "    npx roc-it@latest task list",
   ].join("\n");
+}
+
+/** Renders an empty task list with the accepted backlog-creation guidance. */
+export function renderEmptyTaskList(): string {
+  return ["No tasks.", "Next:", ...createBacklogGuidance].join("\n");
 }
 
 /** Renders a truthful partial-failure summary without suggesting rollback or success. */

@@ -36,6 +36,7 @@ import { helpText } from "./help";
 import {
   renderCycleStep,
   renderDatabaseStep,
+  renderEmptyTaskList,
   renderOnboardingComplete,
   renderOnboardingHeader,
   renderOnboardingStopped,
@@ -674,7 +675,17 @@ export async function runCli(
       try {
         const result = new PlanningRepository(db).importBacklog(manifest);
         io.out(
-          `Created ${result.created}, skipped ${result.skipped}, total ${result.total}.`,
+          [
+            `Created: ${result.created}`,
+            `Already present: ${result.skipped}`,
+            `Total: ${result.total}`,
+            "Next:",
+            `  npx roc-it@latest task list${
+              parsed.values.db === undefined
+                ? ""
+                : ` --db ${shellLiteral(parsed.values.db)}`
+            }`,
+          ].join("\n"),
         );
         return 0;
       } finally {
@@ -694,9 +705,12 @@ export async function runCli(
         io.out(
           tasks.length
             ? tasks
-                .map((task) => `${task.id}\t${task.status}\t${task.title}`)
+                .map(
+                  (task) =>
+                    `- ${JSON.stringify(task.id)} [${task.status}] ${JSON.stringify(task.title)}`,
+                )
                 .join("\n")
-            : "No tasks.",
+            : renderEmptyTaskList(),
         );
         return 0;
       } finally {
@@ -730,7 +744,7 @@ export async function runCli(
           cycle.id,
         );
         if (usage === undefined) {
-          io.out(`No active cycle: ${cycle.id}`);
+          io.out(`No token usage recorded for cycle: ${cycle.id}`);
           return 0;
         }
         io.out(
@@ -789,7 +803,9 @@ export async function runCli(
         baseRef: parsed.values.base ?? "HEAD",
       };
       try {
+        io.out("Status: Starting");
         await runtime.runScheduler(input);
+        io.out("Result: Stopped");
         return 0;
       } catch (error) {
         return reportOperationalError(error, io, runtime, {
@@ -846,6 +862,8 @@ export async function runCli(
     }
   }
 
-  io.err(`Unknown command: ${parsed.positionals.join(" ")}`);
+  io.err(
+    `Unknown command: ${parsed.positionals.join(" ")}\nRun npx roc-it@latest help`,
+  );
   return 2;
 }
