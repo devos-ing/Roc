@@ -1,16 +1,35 @@
 import { expect, test } from "bun:test";
-import { helpText } from "../../src/cli/help";
+import { runCli } from "../../src/cli/run";
 
-test("help lists the foundation commands", () => {
-  expect(helpText).toContain("agile init");
-  expect(helpText).toContain("agile task list");
-  expect(helpText).toContain("agile tokens [--db PATH] [--no-color]");
-  expect(helpText).toContain(
-    "agile scheduler run --backend fake --fake-script PATH [--db PATH]",
+test("help prints only production roc-it commands", async () => {
+  const output: string[] = [];
+  const errors: string[] = [];
+
+  expect(
+    await runCli(["help"], {
+      out: (text) => output.push(text),
+      err: (text) => errors.push(text),
+    }),
+  ).toBe(0);
+  expect(errors).toEqual([]);
+  expect(output).toHaveLength(1);
+
+  const help = output[0]!;
+  expect(help).toContain(
+    "roc-it - run Codex agents through an agile software flow",
   );
-  expect(helpText).toContain(
-    "agile scheduler run --backend codex --repo PATH [--base REF] [--db PATH]",
+  expect(help).toContain("roc-it onboard [--global] [--db PATH]");
+  expect(help).toContain("roc-it task import FILE [--db PATH]");
+  expect(help).toContain("roc-it task list [--db PATH]");
+  expect(help).toContain("roc-it tokens [--db PATH] [--no-color]");
+  expect(help).toContain(
+    "roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]",
   );
-  expect(helpText).toContain("agile scheduler inspect [--db PATH]");
-  expect(helpText).not.toContain("--low");
+  expect(help).toContain("roc-it help");
+  expect(help).not.toContain("--backend fake");
+  expect(help).not.toContain("--fake-script");
+  expect(help).not.toContain("scheduler inspect");
+  expect(help).not.toContain("roc-it init");
+  expect(help).not.toMatch(/^\s*agile(?:\s|$)/m);
+  expect(help).not.toContain("--low");
 });

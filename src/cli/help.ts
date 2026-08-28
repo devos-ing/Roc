@@ -1,11 +1,10 @@
-export const helpText = `agile - local agent development orchestrator
+export const helpText = `roc-it - run Codex agents through an agile software flow
 
 Usage:
-  agile init [--db PATH]
-  agile task list [--db PATH]
-  agile tokens [--db PATH] [--no-color]
-  agile scheduler run --backend fake --fake-script PATH [--db PATH]
-  agile scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
-  agile scheduler inspect [--db PATH]
-  agile help
+  roc-it onboard [--global] [--db PATH]
+  roc-it task import FILE [--db PATH]
+  roc-it task list [--db PATH]
+  roc-it tokens [--db PATH] [--no-color]
+  roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+  roc-it help
 `;

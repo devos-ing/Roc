@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="output/imagegen/roc-avatar-tech.png" alt="Roc project avatar" width="220" />
+  <img src="https://raw.githubusercontent.com/devos-ing/Roc/main/output/imagegen/roc-avatar-tech.png" alt="Roc project avatar" width="220" />
+</p>
+
+<p align="center">
+  <strong>English</strong> · <a href="README.zh-HK.md">繁體中文</a>
 </p>
 
 # Roc
@@ -28,33 +32,70 @@ Roc currently provides:
 Roc works on one task at a time. It does not merge or push code, delete task
 branches, run several tasks at once, or limit token use.
 
-Ticket import, weekly planning, and an interactive screen are planned but are
-not available yet.
-
-## Run it
+## Quick Start
 
 Prerequisites:
 
-- [Bun](https://bun.sh/)
+- [Bun](https://bun.sh/) 1.3.0 or later
 - Git
 - [Codex CLI](https://github.com/openai/codex) for Codex mode
-
-From the repository root:
+- The `grilling` skill for creating a backlog:
 
 ```bash
-bun install
-bun run src/cli/main.ts init
-bun run src/cli/main.ts task list
-bun run src/cli/main.ts tokens
+npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor
 ```
 
-Roc can create and inspect its local task database. A public command for adding
-tickets is not ready, so Roc currently needs a prepared backlog.
-
-To run a prepared backlog with Codex:
+Run without a global install (Roc still requires Bun at runtime):
 
 ```bash
-bun run src/cli/main.ts scheduler run --backend codex --repo /absolute/path/to/project
+npx roc-it@latest help
+```
+
+You can also use `bunx` as Bun's package runner:
+
+```bash
+bunx roc-it@latest help
+```
+
+Or install the command globally:
+
+```bash
+npm install -g roc-it@latest
+```
+
+Onboard Roc in one project. This creates the local database and installs the
+task-creation skill for Codex, Claude Code, and Cursor:
+
+```bash
+npx roc-it@latest onboard
+npx roc-it@latest task list
+npx roc-it@latest tokens
+```
+
+Use `npx roc-it@latest onboard --global` to install the skill under your user
+account instead; global onboarding does not create a project database.
+
+Create a backlog from a requirement with the installed skill. In Claude Code or
+Cursor, use:
+
+```text
+/roc-create-tasks Add team invitations
+```
+
+In Codex, use:
+
+```text
+$roc-create-tasks Add team invitations
+```
+
+The skill uses `grilling` to agree on the requirement, previews the full task
+list and dependencies, waits for your explicit approval, saves a JSON backlog
+under `.agile/backlog`, and imports it into Roc.
+
+Run that backlog with Codex:
+
+```bash
+npx roc-it@latest scheduler run --backend codex --repo /absolute/path/to/project
 ```
 
 Codex mode creates or reuses a work folder at `<project>.agile-checkout`. Roc
@@ -78,53 +119,46 @@ creates a follow-up ticket and moves on to the next ready task.
 
 All supported CLI commands:
 
-```bash
-bun run src/cli/main.ts init [--db PATH]
-bun run src/cli/main.ts task list [--db PATH]
-bun run src/cli/main.ts tokens [--db PATH] [--no-color]
-bun run src/cli/main.ts scheduler run --backend fake --fake-script PATH [--db PATH]
-bun run src/cli/main.ts scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
-bun run src/cli/main.ts scheduler inspect [--db PATH]
-bun run src/cli/main.ts help
-```
+Roc works on one small task at a time. When Review asks for changes, Roc sends
+the feedback to an unapproved draft follow-up. That follow-up returns to the
+ready backlog only after approval. Roc saves progress so the flow can continue
+after a restart.
 
-Development commands:
+## Milestones
 
-```bash
-bun install
-bun run typecheck
-bun run test
-bun run check
-```
+Roc is growing in small steps.
 
-## Development
+### Product
 
-Roc uses Bun, TypeScript, Zod, `bun:sqlite`, `simple-git`, and the Codex
-app-server. Start with these documents:
+- [ ] **GitHub Issues backlog** — Bring approved GitHub Issues into Roc's ready
+  backlog.
+- [ ] **Visible task board** — See task progress in a terminal UI.
+- [ ] **Parallel task runs** — Run independent tasks at the same time.
+- [ ] **Remote approvals** — Review and approve waiting work remotely.
+- [ ] **Notifications** — Get updates when work finishes, fails, or needs
+  approval.
 
-- [Architecture](docs/architecture.md)
-- [Domain language](CONTEXT.md)
-- [Approved specifications](docs/specs/)
-- [Durable decisions](docs/adr/)
-- [Research](docs/research/)
-- [Testing policy](AGENTS.md)
+### Agent support
 
-Keep changes small and follow these safety rules:
+- [x] **OpenAI Codex** — Available today.
+- [ ] **Pi agents** — Run Roc tasks with Pi.
+- [ ] **Claude Code** — Run Roc tasks with Claude Code.
+- [ ] **Cursor** — Run Roc tasks with Cursor agents.
 
-- never change the source work folder;
-- Review must check the exact clean commit from Implement;
-- receiving the same update twice must not repeat the change;
-- a rejected task must stay closed and create only one draft follow-up.
-
-Before submitting a change, run:
+## Commands
 
 ```bash
-bun run check
+roc-it onboard [--global] [--db PATH]
+roc-it task import FILE [--db PATH]
+roc-it task list [--db PATH]
+roc-it tokens [--db PATH] [--no-color]
+roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+roc-it help
 ```
 
-Tests should prove the most important behavior. Full test coverage is not the
-goal. Use the Fake Harness to test retries, rejection, restart, and repeated
-events.
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and testing instructions.
 
 ## References
 
@@ -141,3 +175,8 @@ Roc learns from these projects without including their code:
 
 See [the project research](docs/research/agent-agile-orchestration-landscape.md)
 for a full comparison and source list.
+
+## License
+
+Roc uses the [Apache License 2.0](LICENSE). You may use, change, and share it,
+including for commercial work, as long as you follow the license terms.

@@ -1,6 +1,14 @@
 import { Database } from "bun:sqlite";
 import { expect, spyOn, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/run";
@@ -10,7 +18,7 @@ import { PlanningRepository } from "../../src/store/planning-repository";
 
 const ansiSgrPattern = "\\u001B\\[[0-9;]*m";
 
-test("init creates a database and task list reads it", async () => {
+test("onboard installs identical project skill copies without overwriting changes", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "agile.db");
   const output: string[] = [];
@@ -20,9 +28,221 @@ test("init creates a database and task list reads it", async () => {
   };
 
   try {
-    expect(await runCli(["init", "--db", dbPath], io)).toBe(0);
-    expect(await runCli(["task", "list", "--db", dbPath], io)).toBe(0);
-    expect(output).toEqual([`Initialized ${dbPath}`, "No tasks."]);
+    expect(
+      await runCli(["onboard", "--db", dbPath], io, {
+        runScheduler: async () => {},
+        projectRoot: root,
+      }),
+    ).toBe(0);
+    const source = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "..",
+        "skills",
+        "roc-create-tasks",
+        "SKILL.md",
+      ),
+    );
+    const agentsSkill = join(
+      root,
+      ".agents",
+      "skills",
+      "roc-create-tasks",
+      "SKILL.md",
+    );
+    const claudeSkill = join(
+      root,
+      ".claude",
+      "skills",
+      "roc-create-tasks",
+      "SKILL.md",
+    );
+    expect(await readFile(agentsSkill)).toEqual(source);
+    expect(await readFile(claudeSkill)).toEqual(source);
+    expect(await lstat(dbPath)).toMatchObject({ isFile: expect.any(Function) });
+
+    expect(
+      await runCli(["onboard", "--db", dbPath], io, {
+        runScheduler: async () => {},
+        projectRoot: root,
+      }),
+    ).toBe(0);
+    await writeFile(agentsSkill, "changed skill");
+    expect(
+      await runCli(["onboard", "--db", dbPath], io, {
+        runScheduler: async () => {},
+        projectRoot: root,
+      }),
+    ).toBe(1);
+    expect(await readFile(agentsSkill, "utf8")).toBe("changed skill");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("global onboarding installs skills without creating a project database", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const output: string[] = [];
+
+  try {
+    expect(
+      await runCli(
+        ["onboard", "--global"],
+        { out: (text) => output.push(text), err: (text) => output.push(text) },
+        { runScheduler: async () => {}, projectRoot: root, homeRoot: home },
+      ),
+    ).toBe(0);
+    expect(
+      await readFile(
+        join(home, ".agents", "skills", "roc-create-tasks", "SKILL.md"),
+      ),
+    ).toEqual(
+      await readFile(
+        join(home, ".claude", "skills", "roc-create-tasks", "SKILL.md"),
+      ),
+    );
+    await expect(lstat(join(root, ".agile"))).rejects.toThrow();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("onboarding refuses a symbolic-link path component", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
+  const dbPath = join(root, "agile.db");
+  const redirected = join(root, "redirected");
+  await mkdir(redirected);
+  await symlink(redirected, join(root, ".agents"));
+  const errors: string[] = [];
+
+  try {
+    expect(
+      await runCli(
+        ["onboard", "--db", dbPath],
+        { out: () => {}, err: (text) => errors.push(text) },
+        { runScheduler: async () => {}, projectRoot: root },
+      ),
+    ).toBe(1);
+    expect(errors[0]).toContain("symbolic link");
+    await expect(lstat(join(redirected, "skills"))).rejects.toThrow();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("task import creates ready tasks, replays them, and rejects invalid input", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
+  const dbPath = join(root, "agile.db");
+  const manifestPath = join(root, "backlog.json");
+  const malformedPath = join(root, "malformed.json");
+  const firstTask = {
+    id: "cli-import-01",
+    title: "First imported task",
+    priority: 0,
+    spec: {
+      problem: "No importer",
+      desiredOutcome: "Imported work is ready",
+      scope: ["import a backlog"],
+      nonGoals: [],
+      acceptanceCriteria: ["tasks are ready"],
+      validation: ["bun test"],
+      dependencies: [],
+      risk: "medium",
+      contextCandidates: [],
+      tokenCeiling: 10_000,
+    },
+  };
+  const secondTask = {
+    id: "cli-import-02",
+    title: "Second imported task",
+    priority: 1,
+    spec: { ...firstTask.spec, dependencies: ["cli-import-01"] },
+  };
+  const manifest = {
+    weekId: "2026-W35",
+    goal: "Import tasks from the CLI",
+    tasks: [firstTask, secondTask],
+  };
+  const output: string[] = [];
+  const errors: string[] = [];
+  const io = {
+    out: (text: string) => output.push(text),
+    err: (text: string) => errors.push(text),
+  };
+
+  try {
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await writeFile(malformedPath, "not JSON");
+    expect(
+      await runCli(["task", "import", manifestPath, "--db", dbPath], io),
+    ).toBe(0);
+    expect(output).toEqual(["Created 2, skipped 0, total 2."]);
+    const db = openDatabase(dbPath);
+    try {
+      expect(new PlanningRepository(db).listTasks()).toMatchObject([
+        { id: "cli-import-01", status: "ready" },
+        { id: "cli-import-02", status: "ready" },
+      ]);
+    } finally {
+      db.close();
+    }
+    expect(
+      await runCli(["task", "import", manifestPath, "--db", dbPath], io),
+    ).toBe(0);
+    expect(output.at(-1)).toBe("Created 0, skipped 2, total 2.");
+    expect(
+      await runCli(["task", "import", malformedPath, "--db", dbPath], io),
+    ).toBe(1);
+
+    await writeFile(
+      manifestPath,
+      JSON.stringify({
+        ...manifest,
+        tasks: [{ ...firstTask, title: "Conflicting title" }],
+      }),
+    );
+    expect(
+      await runCli(["task", "import", manifestPath, "--db", dbPath], io),
+    ).toBe(1);
+    const replayDb = openDatabase(dbPath);
+    try {
+      expect(new PlanningRepository(replayDb).listTasks()).toHaveLength(2);
+    } finally {
+      replayDb.close();
+    }
+    expect(await runCli(["task", "import"], io)).toBe(2);
+    expect(await runCli(["task", "import", manifestPath, "extra"], io)).toBe(2);
+    expect(await runCli(["task", "import", manifestPath, "--global"], io)).toBe(
+      2,
+    );
+    expect(errors).toHaveLength(5);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("task import validates before creating a database and --global is onboard-only", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
+  const manifestPath = join(root, "invalid-backlog.json");
+  const dbPath = join(root, "agile.db");
+  const errors: string[] = [];
+  const io = { out: () => {}, err: (text: string) => errors.push(text) };
+
+  try {
+    await writeFile(
+      manifestPath,
+      JSON.stringify({ weekId: "2026-W35", goal: "Invalid", tasks: [] }),
+    );
+    expect(
+      await runCli(["task", "import", manifestPath, "--db", dbPath], io),
+    ).toBe(1);
+    await expect(lstat(dbPath)).rejects.toThrow();
+
+    expect(await runCli(["tokens", "--global"], io)).toBe(2);
+    expect(errors.at(-1)).toBe("--global is only supported by onboard");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -66,8 +286,9 @@ test("argument and unknown-command errors keep exit code 2", async () => {
 
   expect(await runCli(["--unknown-option"], io)).toBe(2);
   expect(await runCli(["unknown"], io)).toBe(2);
+  expect(await runCli(["init"], io)).toBe(2);
   expect(output).toEqual([]);
-  expect(errors).toHaveLength(2);
+  expect(errors).toHaveLength(3);
   expect(errors[1]).toBe("Unknown command: unknown");
 });
 
