@@ -72,6 +72,11 @@ npx roc-it@latest task list
 npx roc-it@latest tokens
 ```
 
+Onboarding prints the project scope, each completed step, the selected cycle,
+the settings path, and copyable next commands. If a later step stops, Roc lists
+the work already completed and gives a retry command; it does not claim to roll
+anything back.
+
 Use `npx roc-it@latest onboard --global` to install the skill under your user
 account instead; global onboarding does not create a project database.
 
@@ -168,13 +173,25 @@ Roc is growing in small steps.
 
 ## Commands
 
-```bash
+The built-in `npx roc-it@latest help` groups the production commands by the
+journey they support:
+
+```text
+Get started
 npx roc-it@latest onboard [--global] [--db PATH]
+
+Manage your cycle
 npx roc-it@latest cycle current
+
+Plan work
 npx roc-it@latest task import FILE [--db PATH]
 npx roc-it@latest task list [--db PATH]
 npx roc-it@latest tokens [--db PATH] [--no-color]
+
+Run work
 npx roc-it@latest scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+
+Get help
 npx roc-it@latest help
 ```
 

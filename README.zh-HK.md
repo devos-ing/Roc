@@ -71,6 +71,10 @@ npx roc-it@latest task list
 npx roc-it@latest tokens
 ```
 
+啟用時會顯示專案範圍、每個已完成步驟、所選週期、設定檔路徑，以及可直接複製
+的下一步指令。若稍後步驟停止，Roc 會列出已完成工作並提供重試指令；它不會聲稱
+已回復任何變更。
+
 使用 `npx roc-it@latest onboard --global` 可改為在使用者帳戶下安裝 skill；
 全域啟用不會建立專案資料庫。
 
@@ -165,13 +169,24 @@ Roc 正在逐步成長。
 
 ## 指令
 
-```bash
+內建的 `npx roc-it@latest help` 會按使用旅程分組顯示正式指令：
+
+```text
+開始使用
 npx roc-it@latest onboard [--global] [--db PATH]
+
+管理週期
 npx roc-it@latest cycle current
+
+規劃工作
 npx roc-it@latest task import FILE [--db PATH]
 npx roc-it@latest task list [--db PATH]
 npx roc-it@latest tokens [--db PATH] [--no-color]
+
+執行工作
 npx roc-it@latest scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+
+取得說明
 npx roc-it@latest help
 ```
 

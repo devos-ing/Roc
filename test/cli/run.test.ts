@@ -97,6 +97,46 @@ test("onboard installs identical project skill copies without overwriting change
   }
 });
 
+test("project onboarding reports completed steps, configuration, and next commands", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const dbPath = join(root, "agile.db");
+  const { io, output, errors } = interactiveIo(["2"]);
+
+  try {
+    expect(
+      await runCli(["onboard", "--db", dbPath], io, {
+        runScheduler: async () => {},
+        projectRoot: root,
+        homeRoot: home,
+      }),
+    ).toBe(0);
+
+    const transcript = output.join("\n");
+    expect(transcript).toContain("Roc onboarding");
+    expect(transcript).toContain(`Scope: Project (${root})`);
+    expect(transcript).toContain(`1. Database: Ready (${dbPath})`);
+    expect(transcript).toContain("2. Skills:");
+    expect(transcript).toContain("Installed:");
+    expect(transcript).toContain("3. Selected cycle: Weekly");
+    expect(transcript).toContain("4. Settings: Saved ");
+    expect(transcript).toContain(".config/roc/settings.json");
+    expect(transcript).toContain("Result: Complete");
+    expect(transcript).toContain("Next:");
+    expect(transcript).toContain("npx roc-it@latest task list");
+    expect(transcript).toContain("npx roc-it@latest cycle current");
+    expect(errors).toEqual([]);
+    expect(
+      new TextEncoder()
+        .encode(transcript)
+        .every((byte) => byte === 10 || (byte >= 32 && byte <= 126)),
+    ).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("global onboarding installs skills without creating a project database", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
@@ -114,6 +154,11 @@ test("global onboarding installs skills without creating a project database", as
         { runScheduler: async () => {}, projectRoot: root, homeRoot: home },
       ),
     ).toBe(0);
+    expect(output.join("\n")).toContain(`Scope: Global user account (${home})`);
+    expect(output.join("\n")).toContain(
+      "1. Database: Not created (global scope)",
+    );
+    expect(output.join("\n")).not.toContain("Project database");
     expect(
       await readFile(
         join(home, ".agents", "skills", "roc-create-tasks", "SKILL.md"),
@@ -124,6 +169,36 @@ test("global onboarding installs skills without creating a project database", as
       ),
     );
     await expect(lstat(join(root, ".agile"))).rejects.toThrow();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("repeat onboarding reports identical skills as already installed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const dbPath = join(root, "agile.db");
+  const first = interactiveIo(["1"]);
+  const repeated = interactiveIo(["1"]);
+
+  try {
+    expect(
+      await runCli(["onboard", "--db", dbPath], first.io, {
+        runScheduler: async () => {},
+        projectRoot: root,
+        homeRoot: home,
+      }),
+    ).toBe(0);
+    expect(
+      await runCli(["onboard", "--db", dbPath], repeated.io, {
+        runScheduler: async () => {},
+        projectRoot: root,
+        homeRoot: home,
+      }),
+    ).toBe(0);
+    expect(repeated.output.join("\n")).toContain("Already installed:");
+    expect(repeated.errors).toEqual([]);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
@@ -197,6 +272,11 @@ test("onboard rejects an invalid Custom duration without writing settings", asyn
       }),
     ).toBe(1);
     expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Onboarding stopped");
+    expect(errors[0]).toContain(
+      "Custom duration must be a whole number greater than zero",
+    );
+    expect(errors[0]).toContain("Retry:");
     await expect(
       lstat(join(homeRoot, ".config", "roc", "settings.json")),
     ).rejects.toThrow();
@@ -219,7 +299,10 @@ test("onboard requires interactive input", async () => {
         { runScheduler: async () => {}, projectRoot, homeRoot },
       ),
     ).toBe(1);
-    expect(errors).toEqual(["Interactive input is required for onboard"]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Onboarding stopped");
+    expect(errors[0]).toContain("Interactive input is required for onboard");
+    expect(errors[0]).toContain("Retry:");
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
     await rm(homeRoot, { recursive: true, force: true });
@@ -243,9 +326,42 @@ test("onboarding refuses a symbolic-link path component", async () => {
       ),
     ).toBe(1);
     expect(errors[0]).toContain("symbolic link");
+    expect(errors[0]).toContain("Retry:");
     await expect(lstat(join(redirected, "skills"))).rejects.toThrow();
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("onboarding stops truthfully after prior work when a later step fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const dbPath = join(root, "agile.db");
+  const { io, output, errors } = interactiveIo(["3", "0"]);
+
+  try {
+    expect(
+      await runCli(["onboard", "--db", dbPath], io, {
+        runScheduler: async () => {},
+        projectRoot: root,
+        homeRoot: home,
+      }),
+    ).toBe(1);
+    const completed = output.join("\n");
+    expect(completed).toContain(`1. Database: Ready (${dbPath})`);
+    expect(completed).toContain("2. Skills:");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Onboarding stopped");
+    expect(errors[0]).toContain("Completed work:");
+    expect(errors[0]).toContain("1. Database: Ready");
+    expect(errors[0]).toContain("2. Skills:");
+    expect(errors[0]).toContain("Failed:");
+    expect(errors[0]).toContain("Retry:");
+    expect(errors[0]).not.toContain("Result: Complete");
+    expect(errors[0]).not.toContain("Next:");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });
 
@@ -418,9 +534,12 @@ test("argument and unknown-command errors keep exit code 2", async () => {
   expect(await runCli(["--unknown-option"], io)).toBe(2);
   expect(await runCli(["unknown"], io)).toBe(2);
   expect(await runCli(["init"], io)).toBe(2);
+  expect(await runCli(["onboard", "--backend", "fake"], io)).toBe(2);
   expect(output).toEqual([]);
-  expect(errors).toHaveLength(3);
+  expect(errors).toHaveLength(4);
   expect(errors[1]).toBe("Unknown command: unknown");
+  expect(errors[3]).toContain("onboard accepts only --global and --db PATH");
+  expect(errors[3]).toContain("Retry:");
 });
 
 test("cycle current prints the configured active cycle", async () => {
