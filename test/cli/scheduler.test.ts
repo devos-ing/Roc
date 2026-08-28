@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli, runDaemon, schedulerSleep } from "../../src/cli/run";
 import { defaultRuntime } from "../../src/cli/runtime";
+import type { SchedulerRunInput } from "../../src/cli/types";
 import { AgileError } from "../../src/runtime/errors";
 import { openDatabase } from "../../src/store/database";
 import { PlanningRepository } from "../../src/store/planning-repository";
@@ -259,7 +260,7 @@ test("passes fixed project paths and the selected base to the Codex runtime", as
 });
 
 test("rejects internal scheduler flags before invoking the runtime", async () => {
-  for (const option of ["--db", "--repo", "--backend", "--fake-script"]) {
+  for (const option of ["--db", "--repo", "--fake-script"]) {
     const errors: string[] = [];
     let called = false;
     expect(
@@ -275,6 +276,55 @@ test("rejects internal scheduler flags before invoking the runtime", async () =>
     ).toBe(2);
     expect(errors.join("\n")).toContain(`unknown option '${option}'`);
     expect(called).toBeFalse();
+  }
+});
+
+test("rejects a --backend name outside the registry before invoking the runtime", async () => {
+  const errors: string[] = [];
+  let called = false;
+  expect(
+    await runCli(
+      ["scheduler", "run", "--backend", "nope"],
+      { out: () => {}, err: (text) => errors.push(text) },
+      {
+        runScheduler: async () => {
+          called = true;
+        },
+      },
+    ),
+  ).toBe(2);
+  expect(errors.join("\n")).toContain(
+    "scheduler run requires --backend fake|codex",
+  );
+  expect(called).toBeFalse();
+});
+
+test("routes a registered --backend name into the scheduler run input", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-scheduler-backend-"));
+  const calls: SchedulerRunInput[] = [];
+  try {
+    expect(
+      await runCli(
+        ["scheduler", "run", "--backend", "codex"],
+        { out: () => {}, err: () => {} },
+        {
+          projectRoot: root,
+          runScheduler: async (input) => {
+            calls.push(input);
+          },
+        },
+      ),
+    ).toBe(0);
+    expect(calls).toEqual([
+      {
+        backend: "codex",
+        repoPath: root,
+        baseRef: "HEAD",
+        dbPath: join(root, ".agile", "runtime", "agile.db"),
+      },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

@@ -1,10 +1,7 @@
 import { dirname, join } from "node:path";
 import { CodexClient } from "../agents/codex/client";
 import { listWorkspaceSkills as readWorkspaceSkills } from "../agents/codex/skill-catalog";
-import {
-  loadSchedulerSkillPolicy,
-  startCodexBackend,
-} from "../agents/codex/backend";
+import { loadSchedulerSkillPolicy } from "../agents/codex/backend";
 import { backends } from "../agents/registry";
 import type { BackendFactory } from "../agents/types";
 import type { AgentHarness } from "../harness/contracts";
@@ -21,7 +18,11 @@ import { TaskHookService } from "../scheduler/task-hooks";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
 import { createTaskBranchManager } from "../workspace/task-branch";
-import type { CliRuntime, SchedulerRunInput } from "./types";
+import type {
+  CliRuntime,
+  RealSchedulerRunInput,
+  SchedulerRunInput,
+} from "./types";
 
 /** Sleeps until the requested delay elapses or an optional abort signal fires. */
 export function schedulerSleep(
@@ -223,11 +224,19 @@ export { loadSchedulerSkillPolicy };
 
 /** Runs a scheduler session against any registered backend factory. */
 async function runRealBackend(
-  input: Extract<SchedulerRunInput, { backend: "codex" }>,
+  input: RealSchedulerRunInput,
   runId: string,
-  startBackend: BackendFactory,
-  backendLabel: string,
 ): Promise<void> {
+  await runBackendSession(backends[input.backend], input, runId);
+}
+
+/** Runs one scheduler session against a started backend factory. */
+export async function runBackendSession(
+  startBackend: BackendFactory,
+  input: RealSchedulerRunInput,
+  runId: string,
+): Promise<void> {
+  const backendLabel = input.backend;
   let branches: Awaited<ReturnType<typeof createTaskBranchManager>>;
   try {
     branches = await createTaskBranchManager(input.repoPath, input.baseRef);
@@ -304,13 +313,7 @@ export const defaultRuntime: CliRuntime = {
     const runId = crypto.randomUUID();
     try {
       if (input.backend === "fake") await runFake(input, runId);
-      else
-        await runRealBackend(
-          input,
-          runId,
-          backends[input.backend],
-          input.backend,
-        );
+      else await runRealBackend(input, runId);
     } catch (error) {
       throw attachRunId(error, runId, {
         code: "SCHEDULER_RUN_FAILED",
