@@ -1,4 +1,4 @@
-import { startCodexBackend } from "./codex";
+import { startCodexBackend } from "./codex/backend";
 
 /**
  * The backend registry: adding a backend means one factory here plus one CLI

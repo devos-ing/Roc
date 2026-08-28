@@ -1,15 +1,15 @@
 import { homedir } from "node:os";
-import { CodexClient } from "../codex/client";
-import { createCodexHarness } from "../codex/harness";
-import { ModelListResponseSchema } from "../codex/protocol";
+import { AgileError } from "../../runtime/errors";
+import type { CatalogModel } from "../../scheduler/model-routing";
+import { loadRocSettings } from "../../settings";
+import type { BackendFactory } from "../types";
+import { CodexClient } from "./client";
+import { createCodexHarness } from "./harness";
+import { ModelListResponseSchema } from "./protocol";
 import {
   type DefaultSkillPolicy,
   loadDefaultSkillPolicy,
-} from "../codex/skill-policy";
-import { AgileError } from "../runtime/errors";
-import { loadRocSettings } from "../settings";
-import type { CatalogModel } from "../scheduler/model-routing";
-import type { BackendFactory } from "./types";
+} from "./skill-policy";
 
 /** Loads the current trusted policy intersected with the saved global selection. */
 export async function loadSchedulerSkillPolicy(

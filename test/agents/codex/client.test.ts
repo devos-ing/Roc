@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { CodexClient } from "../../src/codex/client";
-import { ModelListResponseSchema } from "../../src/codex/protocol";
+import { CodexClient } from "../../../src/agents/codex/client";
+import { ModelListResponseSchema } from "../../../src/agents/codex/protocol";
 
 test("initializes the app server and correlates requests while preserving inbound messages", async () => {
   const fixturePath = join(
     import.meta.dir,
+    "..",
     "..",
     "fixtures",
     "scripted-app-server.ts",
@@ -48,6 +49,7 @@ test("child exit rejects future message reads instead of exposing queued message
   const fixturePath = join(
     import.meta.dir,
     "..",
+    "..",
     "fixtures",
     "scripted-app-server.ts",
   );
@@ -79,6 +81,7 @@ test("close immediately rejects a blocked server-message read and terminates pro
   const fixturePath = join(
     import.meta.dir,
     "..",
+    "..",
     "fixtures",
     "scripted-app-server.ts",
   );
@@ -105,6 +108,7 @@ test("close force-terminates an app server that ignores graceful termination", a
   const fixturePath = join(
     import.meta.dir,
     "..",
+    "..",
     "fixtures",
     "scripted-app-server.ts",
   );
@@ -127,6 +131,7 @@ test("close force-terminates an app server that ignores graceful termination", a
 test("classifies structured RPC failure data for scheduler fallback", async () => {
   const fixturePath = join(
     import.meta.dir,
+    "..",
     "..",
     "fixtures",
     "scripted-app-server.ts",

@@ -4,7 +4,7 @@ import type { Command } from "commander";
 import {
   buildDefaultSkillCandidates,
   loadDefaultSkillPolicy,
-} from "../../codex/skill-policy";
+} from "../../agents/codex/skill-policy";
 import {
   type AgileCycleSetting,
   AgileCycleSettingSchema,

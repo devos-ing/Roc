@@ -9,12 +9,12 @@ import {
   ImplementOutputSchema,
   ReviewOutputSchema,
   ScoutOutputSchema,
-} from "../harness/contracts";
-import { AgileError, normalizeError } from "../runtime/errors";
+} from "../../harness/contracts";
+import { AgileError, normalizeError } from "../../runtime/errors";
 import type {
   TaskBranchManager,
   TaskWorkspace,
-} from "../workspace/task-branch";
+} from "../../workspace/task-branch";
 import type { CodexClientApi } from "./client";
 import {
   ImplementDraftOutputJsonSchema,

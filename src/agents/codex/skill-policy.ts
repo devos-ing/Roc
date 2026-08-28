@@ -4,7 +4,7 @@ import { z } from "zod";
 import {
   type SkillIdentity,
   skillIdentityKey,
-} from "../domain/skill-allowlist";
+} from "../../domain/skill-allowlist";
 
 const NonEmpty = z.string().trim().min(1);
 

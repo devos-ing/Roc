@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/run";
 import { loadSchedulerSkillPolicy } from "../../src/cli/runtime";
-import { buildDefaultSkillConfig } from "../../src/codex/skill-policy";
+import { buildDefaultSkillConfig } from "../../src/agents/codex/skill-policy";
 import { loadRocSettings } from "../../src/settings";
 
 test("onboarding selection becomes the scheduler skill configuration", async () => {

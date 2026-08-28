@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { classifyCodexTurnFailure } from "../../src/codex/protocol";
+import { classifyCodexTurnFailure } from "../../../src/agents/codex/protocol";
 
 test("classifies representative Codex turn failures without exposing provider text", () => {
   expect(

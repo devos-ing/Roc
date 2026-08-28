@@ -1,7 +1,7 @@
 import type {
   DefaultSkillCandidate,
   DiscoveredSkill,
-} from "../codex/skill-policy";
+} from "../agents/codex/skill-policy";
 import type { SkillIdentity } from "../domain/skill-allowlist";
 import type { GitHubIssueCandidate } from "../github/import-source";
 import type { AgileError } from "../runtime/errors";
