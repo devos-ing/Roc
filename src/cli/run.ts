@@ -12,6 +12,11 @@ import {
 } from "../domain/agile-cycle";
 import { BacklogManifestSchema } from "../domain/schemas";
 import { safeTaskPathComponent } from "../domain/task-path";
+import { importApprovedGitHubIssues } from "../github/import-service";
+import {
+  type GitHubIssueCandidate,
+  readApprovedGitHubIssueCandidates,
+} from "../github/import-source";
 import { type AgentHarness, FakeScenarioSchema } from "../harness/contracts";
 import { createFakeHarness } from "../harness/fake";
 import { AgileError, normalizeError } from "../runtime/errors";
@@ -42,6 +47,8 @@ export type SchedulerRunInput =
   | { backend: "codex"; dbPath: string; repoPath: string; baseRef: string };
 export type CliRuntime = {
   runScheduler(input: SchedulerRunInput): Promise<void>;
+  /** Reads raw approved GitHub Issue candidates for an import command. */
+  readGitHubIssues?(): Promise<GitHubIssueCandidate[]>;
   logError?(
     error: AgileError,
     input: { dbPath: string; repoPath?: string },
@@ -600,6 +607,47 @@ export async function runCli(
         const result = new PlanningRepository(db).importBacklog(manifest);
         io.out(
           `Created ${result.created}, skipped ${result.skipped}, total ${result.total}.`,
+        );
+        return 0;
+      } finally {
+        db.close();
+      }
+    } catch (error) {
+      io.err(errorMessage(error));
+      return 1;
+    }
+  }
+
+  if (command === "task" && subcommand === "import-github") {
+    if (parsed.positionals.length !== 2) {
+      io.err("task import-github does not accept positional arguments");
+      return 2;
+    }
+    if (
+      parsed.values.backend !== undefined ||
+      parsed.values.repo !== undefined ||
+      parsed.values.base !== undefined ||
+      parsed.values["fake-script"] !== undefined ||
+      parsed.values["no-color"] !== undefined ||
+      parsed.values.global !== undefined
+    ) {
+      io.err("task import-github accepts only --db PATH");
+      return 2;
+    }
+    try {
+      const cycle = await currentCycle(runtime);
+      const issues = await (runtime.readGitHubIssues
+        ? runtime.readGitHubIssues()
+        : readApprovedGitHubIssueCandidates({ stderr: () => undefined }));
+      const db = openDatabase(dbPath);
+      try {
+        const result = await importApprovedGitHubIssues({
+          repository: new PlanningRepository(db),
+          cycleId: cycle.id,
+          readIssues: async () => issues,
+        });
+        io.out(
+          `created=${result.created} skipped=${result.skipped} total=${result.total}`,
         );
         return 0;
       } finally {

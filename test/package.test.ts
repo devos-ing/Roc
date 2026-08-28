@@ -35,7 +35,10 @@ test("package metadata exposes roc-it as a public Bun CLI", async () => {
   expect(manifest.version).toMatch(stableVersionPattern);
   expect(manifest.private).toBeUndefined();
   expect(manifest.license).toBe("Apache-2.0");
-  expect(manifest.bin).toEqual({ "roc-it": "./src/cli/main.ts" });
+  expect(manifest.bin).toEqual({
+    "roc-it": "./src/cli/main.ts",
+    agile: "./src/cli/main.ts",
+  });
   expect(manifest.files).toEqual([
     "src",
     "skills",

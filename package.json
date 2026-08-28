@@ -5,7 +5,8 @@
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "roc-it": "./src/cli/main.ts"
+    "roc-it": "./src/cli/main.ts",
+    "agile": "./src/cli/main.ts"
   },
   "files": [
     "src",

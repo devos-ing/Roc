@@ -134,6 +134,19 @@ export class PlanningRepository {
       });
   }
 
+  /** Returns existing task identifiers without parsing their stored specifications. */
+  findExistingTaskIds(ids: string[]): Set<string> {
+    const taskIds = ids.map((id) => TaskCreateSchema.shape.id.parse(id));
+    const query = this.db.query<{ id: string }, [string]>(
+      "SELECT id FROM tasks WHERE id = ?",
+    );
+    const existing = new Set<string>();
+    for (const taskId of taskIds) {
+      if (query.get(taskId)) existing.add(taskId);
+    }
+    return existing;
+  }
+
   /** Atomically imports approved backlog tasks and their blocking dependencies. */
   importBacklog(input: BacklogManifest): BacklogImportResult {
     const manifest = BacklogManifestSchema.parse(input);

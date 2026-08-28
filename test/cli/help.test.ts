@@ -22,6 +22,7 @@ test("help prints only production roc-it commands", async () => {
   expect(help).toContain("npx roc-it@latest cycle current");
   expect(help).toContain("Show the active Agile cycle.");
   expect(help).toContain("npx roc-it@latest task import FILE [--db PATH]");
+  expect(help).toContain("npx roc-it@latest task import-github [--db PATH]");
   expect(help).toContain("npx roc-it@latest task list [--db PATH]");
   expect(help).toContain("npx roc-it@latest tokens [--db PATH] [--no-color]");
   expect(help).toContain(
