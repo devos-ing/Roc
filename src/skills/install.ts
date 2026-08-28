@@ -7,6 +7,29 @@ export type SkillInstallResult = {
   skipped: string[];
 };
 
+/** Carries the known completed skill targets when installation stops at one destination. */
+export class SkillInstallError extends Error {
+  readonly completed: SkillInstallResult;
+  readonly destination: string;
+
+  /** Creates an installation error with the completed targets and destination that stopped. */
+  constructor(input: {
+    cause: unknown;
+    completed: SkillInstallResult;
+    destination: string;
+  }) {
+    super(
+      input.cause instanceof Error ? input.cause.message : String(input.cause),
+    );
+    this.name = "SkillInstallError";
+    this.completed = {
+      created: [...input.completed.created],
+      skipped: [...input.completed.skipped],
+    };
+    this.destination = input.destination;
+  }
+}
+
 /** Reports whether an error means a filesystem path does not exist. */
 function isMissingPathError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
@@ -55,40 +78,50 @@ export async function installRocCreateTasksSkill(input: {
 
   await assertRealDirectory(input.root);
   for (const target of targets) {
-    let directory = input.root;
-    for (const component of target.directory) {
-      directory = join(directory, component);
-      await ensureRealDirectory(directory);
-    }
-    const destination = join(directory, target.file);
+    const destination = join(input.root, ...target.directory, target.file);
     try {
-      const stats = await lstat(destination);
-      if (stats.isSymbolicLink()) {
-        throw new Error(`Skill destination is a symbolic link: ${destination}`);
+      let directory = input.root;
+      for (const component of target.directory) {
+        directory = join(directory, component);
+        await ensureRealDirectory(directory);
       }
-      if (!stats.isFile()) {
-        throw new Error(`Skill destination is not a file: ${destination}`);
-      }
-      if (!(await readFile(destination)).equals(source)) {
-        throw new Error(`Skill destination differs: ${destination}`);
-      }
-      result.skipped.push(destination);
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-      const file = await open(
-        destination,
-        constants.O_WRONLY |
-          constants.O_CREAT |
-          constants.O_EXCL |
-          constants.O_NOFOLLOW,
-        0o644,
-      );
       try {
-        await file.writeFile(source);
-      } finally {
-        await file.close();
+        const stats = await lstat(destination);
+        if (stats.isSymbolicLink()) {
+          throw new Error(
+            `Skill destination is a symbolic link: ${destination}`,
+          );
+        }
+        if (!stats.isFile()) {
+          throw new Error(`Skill destination is not a file: ${destination}`);
+        }
+        if (!(await readFile(destination)).equals(source)) {
+          throw new Error(`Skill destination differs: ${destination}`);
+        }
+        result.skipped.push(destination);
+      } catch (error) {
+        if (!isMissingPathError(error)) throw error;
+        const file = await open(
+          destination,
+          constants.O_WRONLY |
+            constants.O_CREAT |
+            constants.O_EXCL |
+            constants.O_NOFOLLOW,
+          0o644,
+        );
+        try {
+          await file.writeFile(source);
+        } finally {
+          await file.close();
+        }
+        result.created.push(destination);
       }
-      result.created.push(destination);
+    } catch (error) {
+      throw new SkillInstallError({
+        cause: error,
+        completed: result,
+        destination,
+      });
     }
   }
   return result;

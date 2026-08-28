@@ -333,6 +333,87 @@ test("onboarding refuses a symbolic-link path component", async () => {
   }
 });
 
+test("onboarding discloses the installed skill when a later target conflicts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const dbPath = join(root, "agile.db");
+  const agentsSkill = join(
+    root,
+    ".agents",
+    "skills",
+    "roc-create-tasks",
+    "SKILL.md",
+  );
+  const claudeSkill = join(
+    root,
+    ".claude",
+    "skills",
+    "roc-create-tasks",
+    "SKILL.md",
+  );
+  const { io, output, errors } = interactiveIo(["1"]);
+
+  try {
+    await mkdir(join(root, ".claude", "skills", "roc-create-tasks"), {
+      recursive: true,
+    });
+    await writeFile(claudeSkill, "conflicting skill");
+
+    expect(
+      await runCli(["onboard", "--db", dbPath], io, {
+        runScheduler: async () => {},
+        projectRoot: root,
+        homeRoot: home,
+      }),
+    ).toBe(1);
+    expect(await lstat(agentsSkill)).toMatchObject({
+      isFile: expect.any(Function),
+    });
+    expect(await readFile(claudeSkill, "utf8")).toBe("conflicting skill");
+    expect(output.join("\n")).not.toContain("Result: Complete");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Completed work:");
+    expect(errors[0]).toContain(`Installed: ${agentsSkill}`);
+    expect(errors[0]).toContain(`Skill destination differs: ${claudeSkill}`);
+    expect(errors[0]).not.toContain("Result: Complete");
+    expect(errors[0]).not.toContain("Next:");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("onboarding retry quotes a literal database path for zsh", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const dbPath = "$HOME/roc db 'quoted' `backtick` $(substitution)";
+  const errors: string[] = [];
+
+  try {
+    expect(
+      await runCli(
+        ["onboard", "--db", dbPath],
+        { out: () => {}, err: (text) => errors.push(text) },
+        { runScheduler: async () => {}, projectRoot: root, homeRoot: home },
+      ),
+    ).toBe(1);
+    const retryCommand = errors.at(0)?.split("Retry:\n  ").at(1);
+    expect(retryCommand).toBeDefined();
+    if (retryCommand === undefined) throw new Error("Expected a retry command");
+    const shell = Bun.spawn(
+      ["zsh", "-fc", `npx() { printf '%s\\n' "$@"; }\n${retryCommand}`],
+      { stdout: "pipe" },
+    );
+    expect(await shell.exited).toBe(0);
+    expect(
+      (await new Response(shell.stdout).text()).trimEnd().split("\n"),
+    ).toEqual(["roc-it@latest", "onboard", "--db", dbPath]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("onboarding stops truthfully after prior work when a later step fails", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));

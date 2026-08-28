@@ -24,7 +24,10 @@ import {
 } from "../scheduler/model-routing";
 import { Scheduler } from "../scheduler/scheduler";
 import { loadRocSettings, saveRocSettings } from "../settings";
-import { installRocCreateTasksSkill } from "../skills/install";
+import {
+  installRocCreateTasksSkill,
+  SkillInstallError,
+} from "../skills/install";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
 import { PlanningRepository } from "../store/planning-repository";
@@ -97,7 +100,12 @@ function onboardingRetryCommand(input: {
   if (input.global) return "npx roc-it@latest onboard --global";
   return input.dbPath === undefined
     ? "npx roc-it@latest onboard"
-    : `npx roc-it@latest onboard --db ${JSON.stringify(input.dbPath)}`;
+    : `npx roc-it@latest onboard --db ${shellLiteral(input.dbPath)}`;
+}
+
+/** Quotes a value as one literal argument for the supported POSIX-compatible shell. */
+function shellLiteral(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 /** Returns whether a backlog manifest still uses the removed weekId field. */
@@ -593,9 +601,18 @@ export async function runCli(
       io.out(renderOnboardingComplete());
       return 0;
     } catch (error) {
+      const partialSkills =
+        error instanceof SkillInstallError &&
+        (error.completed.created.length > 0 ||
+          error.completed.skipped.length > 0)
+          ? renderSkillsStep(error.completed)
+          : undefined;
       io.err(
         renderOnboardingStopped({
-          completedSteps,
+          completedSteps:
+            partialSkills === undefined
+              ? completedSteps
+              : [...completedSteps, partialSkills],
           failure: errorMessage(error),
           retryCommand,
         }),

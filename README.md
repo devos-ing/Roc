@@ -141,10 +141,6 @@ flowchart LR
 If Review accepts the commit, the task is done. If Review rejects it, Roc
 creates a follow-up ticket and moves on to the next ready task.
 
-## Commands
-
-All supported CLI commands:
-
 Roc works on one small task at a time. When Review asks for changes, Roc sends
 the feedback to an unapproved draft follow-up. That follow-up returns to the
 ready backlog only after approval. Roc saves progress so the flow can continue
