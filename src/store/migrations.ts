@@ -197,14 +197,34 @@ ALTER TABLE usage RENAME COLUMN week_id TO cycle_id;
 UPDATE usage SET category = 'cycle_grilling' WHERE category = 'weekly_grilling';
 `;
 
+const migration5 = `
+CREATE TABLE task_hooks (
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  phase TEXT NOT NULL CHECK(phase IN ('prehook', 'posthook')),
+  config_hash TEXT NOT NULL,
+  trusted_hash TEXT,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'succeeded', 'failed')),
+  attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 3),
+  workspace_path TEXT,
+  started_at TEXT,
+  ended_at TEXT,
+  exit_code INTEGER,
+  signal TEXT,
+  timed_out INTEGER NOT NULL DEFAULT 0 CHECK(timed_out IN (0, 1)),
+  stdout TEXT,
+  stderr TEXT,
+  PRIMARY KEY(task_id, phase)
+);
+`;
+
 /** Migrates a database transactionally through every supported schema version. */
 export function migrate(db: Database): void {
   let version =
     db.query<{ user_version: number }, []>("PRAGMA user_version").get()
       ?.user_version ?? 0;
-  if (version > 4)
+  if (version > 5)
     throw new Error(
-      `Database version ${version} is newer than supported version 4`,
+      `Database version ${version} is newer than supported version 5`,
     );
   if (version === 0) {
     db.transaction(() => {
@@ -291,6 +311,13 @@ export function migrate(db: Database): void {
         );
       }
       db.exec("PRAGMA user_version = 4");
+    })();
+    version = 4;
+  }
+  if (version === 4) {
+    db.transaction(() => {
+      db.exec(migration5);
+      db.exec("PRAGMA user_version = 5");
     })();
   }
 }

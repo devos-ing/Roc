@@ -23,6 +23,7 @@ import {
   createStaticModelAdvisor,
 } from "../scheduler/model-routing";
 import { Scheduler } from "../scheduler/scheduler";
+import { TaskHookService, taskHookConfigHash } from "../scheduler/task-hooks";
 import { loadRocSettings, saveRocSettings } from "../settings";
 import {
   installRocCreateTasksSkill,
@@ -229,6 +230,7 @@ export async function runDaemon(input: {
   logger: Logger;
   runId: string;
   closeBackend?: () => Promise<void>;
+  cancelHooks?: () => Promise<void>;
   shutdownTimeoutMs?: number;
 }): Promise<void> {
   const stop = new AbortController();
@@ -238,12 +240,14 @@ export async function runDaemon(input: {
     stop.abort();
     shutdown ??= (async () => {
       const active = input.repo.getRunningAttempt();
-      const cancellation =
+      const cancellation = Promise.all([
         active === undefined
           ? Promise.resolve()
           : input.harness
               .cancel(active.descriptor.attemptId)
-              .catch(() => undefined);
+              .catch(() => undefined),
+        input.cancelHooks?.().catch(() => undefined) ?? Promise.resolve(),
+      ]).then(() => undefined);
       let deadline: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
         cancellation,
@@ -289,12 +293,22 @@ function daemonFor(
   repo: OrchestrationRepository,
   harness: AgentHarness,
   runId: string,
+  hooks?: TaskHookService,
 ): SchedulerDaemon {
-  return new SchedulerDaemon(new Scheduler(repo, harness), repo, {
-    ownerId: runId,
-    now: () => new Date(),
-    sleep: schedulerSleep,
-  });
+  return new SchedulerDaemon(
+    new Scheduler(repo, harness, () => {}, hooks),
+    repo,
+    {
+      ownerId: runId,
+      now: () => new Date(),
+      sleep: schedulerSleep,
+    },
+  );
+}
+
+/** Supplies the current local directory as the deterministic fake-backend task workspace. */
+async function fakeTaskWorkspace(): Promise<{ path: string }> {
+  return { path: process.cwd() };
 }
 
 /** Runs a scheduler session against the deterministic fake harness. */
@@ -312,12 +326,14 @@ async function runFake(
       () => {},
       createStaticModelAdvisor(),
     );
+    const hooks = new TaskHookService(repo, { prepare: fakeTaskWorkspace });
     await runDaemon({
-      daemon: daemonFor(repo, fake.harness, runId),
+      daemon: daemonFor(repo, fake.harness, runId, hooks),
       repo,
       harness: fake.harness,
       logger: loggerFor({ dbPath: input.dbPath }),
       runId,
+      cancelHooks: () => hooks.stop(),
     });
   } finally {
     db.close();
@@ -410,13 +426,15 @@ async function runCodex(
       branches,
       skillPolicy: await loadDefaultSkillPolicy(),
     });
+    const hooks = new TaskHookService(repo, branches);
     await runDaemon({
-      daemon: daemonFor(repo, harness, runId),
+      daemon: daemonFor(repo, harness, runId, hooks),
       repo,
       harness,
       logger: loggerFor({ dbPath: input.dbPath, repoPath: input.repoPath }),
       runId,
       closeBackend: () => client.close(),
+      cancelHooks: () => hooks.stop(),
     });
   } finally {
     try {
@@ -712,6 +730,46 @@ export async function runCli(
                 .join("\n")
             : renderEmptyTaskList(),
         );
+        return 0;
+      } finally {
+        db.close();
+      }
+    } catch (error) {
+      io.err(errorMessage(error));
+      return 1;
+    }
+  }
+
+  if (command === "task" && subcommand === "hook") {
+    const [, , action, taskId, phase, extra] = parsed.positionals;
+    if (
+      action !== "trust" ||
+      taskId === undefined ||
+      (phase !== "prehook" && phase !== "posthook") ||
+      extra !== undefined
+    ) {
+      io.err(
+        "Usage: roc-it task hook trust <task-id> <prehook|posthook> [--db PATH]",
+      );
+      return 2;
+    }
+    try {
+      const db = openDatabase(dbPath);
+      try {
+        const repo = new OrchestrationRepository(db);
+        const task = repo.getTask(taskId);
+        if (task === undefined) {
+          io.err(`Task not found: ${taskId}`);
+          return 1;
+        }
+        const hook = task.spec[phase];
+        if (hook === undefined) {
+          io.err(`Task ${taskId} has no ${phase}`);
+          return 1;
+        }
+        const hash = taskHookConfigHash(hook);
+        repo.trustTaskHook(taskId, phase, hash);
+        io.out(`Trusted ${phase} for ${taskId}: ${hash}`);
         return 0;
       } finally {
         db.close();

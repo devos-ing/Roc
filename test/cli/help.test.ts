@@ -39,6 +39,9 @@ test("empty arguments and help print the same production-only journey guide", as
   expect(help).toContain("Show the current Agile cycle.");
   expect(help).toContain("npx roc-it@latest task import FILE [--db PATH]");
   expect(help).toContain("npx roc-it@latest task list [--db PATH]");
+  expect(help).toContain(
+    "npx roc-it@latest task hook trust <task-id> <prehook|posthook> [--db PATH]",
+  );
   expect(help).toContain("npx roc-it@latest tokens [--db PATH] [--no-color]");
   expect(help).toContain(
     "npx roc-it@latest scheduler run --backend codex --repo PATH [--base REF] [--db PATH]",

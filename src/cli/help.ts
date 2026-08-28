@@ -13,6 +13,8 @@ Plan work:
       Import an approved backlog into the current project.
   npx roc-it@latest task list [--db PATH]
       List the current project's tasks.
+  npx roc-it@latest task hook trust <task-id> <prehook|posthook> [--db PATH]
+      Trust the current task-scoped hook configuration.
   npx roc-it@latest tokens [--db PATH] [--no-color]
       Show token use for the current Agile cycle.
 

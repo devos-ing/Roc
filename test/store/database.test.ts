@@ -119,6 +119,7 @@ test("migration creates every approved table", () => {
     "model_decisions",
     "reviews",
     "scheduler_lease",
+    "task_hooks",
     "task_deps",
     "tasks",
     "usage",
@@ -129,7 +130,7 @@ test("migration creates every approved table", () => {
   expect(
     db.query<{ user_version: number }, []>("PRAGMA user_version").get()
       ?.user_version,
-  ).toBe(4);
+  ).toBe(5);
   expect(
     db
       .query<{ name: string }, []>("PRAGMA table_info(tasks)")
@@ -197,7 +198,32 @@ test("v4 migration renames weeks to cycles without losing related data", () => {
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get(),
-    ).toEqual({ user_version: 4 });
+    ).toEqual({ user_version: 5 });
+  } finally {
+    db.close();
+  }
+});
+
+test("v5 migration adds task hooks to an existing v4 database", () => {
+  const db = new Database(":memory:", { strict: true });
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE tasks (id TEXT PRIMARY KEY NOT NULL);
+    PRAGMA user_version = 4;
+  `);
+  try {
+    migrate(db);
+
+    expect(
+      db
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'task_hooks'",
+        )
+        .get(),
+    ).toEqual({ name: "task_hooks" });
+    expect(
+      db.query<{ user_version: number }, []>("PRAGMA user_version").get(),
+    ).toEqual({ user_version: 5 });
   } finally {
     db.close();
   }
@@ -243,7 +269,7 @@ test("v3 migration backfills supported model profiles without losing runtime col
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(4);
+    ).toBe(5);
     expect(
       db
         .query<
@@ -607,13 +633,13 @@ test("database initialization closes its handle before rethrowing", () => {
   const directory = mkdtempSync(join(tmpdir(), "agile-agents-db-"));
   const path = join(directory, "future.sqlite");
   const future = new Database(path, { create: true });
-  future.exec("PRAGMA user_version = 5");
+  future.exec("PRAGMA user_version = 6");
   future.close();
 
   const close = spyOn(Database.prototype, "close");
   try {
     expect(() => openDatabase(path)).toThrow(
-      "Database version 5 is newer than supported version 4",
+      "Database version 6 is newer than supported version 5",
     );
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
@@ -648,7 +674,7 @@ test("file databases create parents and enable durable SQLite settings", () => {
         reopened
           .query<{ user_version: number }, []>("PRAGMA user_version")
           .get()?.user_version,
-      ).toBe(4);
+      ).toBe(5);
     } finally {
       reopened.close();
     }
