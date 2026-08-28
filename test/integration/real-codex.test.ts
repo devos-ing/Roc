@@ -256,7 +256,7 @@ realTest(
       ).toBeTrue();
       expect(
         new Set(task?.attempts.map((attempt) => attempt.threadId)).size,
-      ).toBe(3);
+      ).toBe(4);
       expect(
         task?.attempts.every(
           (attempt) => Boolean(attempt.threadId) && Boolean(attempt.turnId),

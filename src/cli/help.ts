@@ -4,6 +4,7 @@ Usage:
   roc-it onboard [--global] [--db PATH]
   roc-it task import FILE [--db PATH]
   roc-it task list [--db PATH]
+  roc-it task hook trust <task-id> <prehook|posthook> [--db PATH]
   roc-it tokens [--db PATH] [--no-color]
   roc-it scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
   roc-it help

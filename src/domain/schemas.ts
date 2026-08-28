@@ -28,6 +28,17 @@ export const ContextRefSchema = z
   })
   .strict();
 
+/** Defines one argv-only command that runs at a bounded task lifecycle boundary. */
+export const TaskHookSchema = z
+  .object({
+    command: NonEmpty,
+    args: z.array(z.string()),
+    timeoutSeconds: z.number().int().min(1).max(3600),
+  })
+  .strict();
+
+export const TaskHookPhaseSchema = z.enum(["prehook", "posthook"]);
+
 export const TicketSpecSchema = z
   .object({
     problem: NonEmpty,
@@ -40,6 +51,8 @@ export const TicketSpecSchema = z
     risk: z.enum(["low", "medium", "high"]),
     contextCandidates: z.array(ContextRefSchema),
     tokenCeiling: z.number().int().positive(),
+    prehook: TaskHookSchema.optional(),
+    posthook: TaskHookSchema.optional(),
   })
   .strict();
 
@@ -121,6 +134,8 @@ export const ModelDecisionSchema = z
 
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 export type TicketSpec = z.infer<typeof TicketSpecSchema>;
+export type TaskHook = z.infer<typeof TaskHookSchema>;
+export type TaskHookPhase = z.infer<typeof TaskHookPhaseSchema>;
 export type WeeklyPlan = z.infer<typeof WeeklyPlanSchema>;
 export type TaskCreate = z.infer<typeof TaskCreateSchema>;
 export type BacklogManifest = z.infer<typeof BacklogManifestSchema>;

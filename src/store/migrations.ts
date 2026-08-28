@@ -190,14 +190,34 @@ DROP TABLE model_decisions;
 ALTER TABLE model_decisions_v3 RENAME TO model_decisions;
 `;
 
+const migration4 = `
+CREATE TABLE task_hooks (
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  phase TEXT NOT NULL CHECK(phase IN ('prehook', 'posthook')),
+  config_hash TEXT NOT NULL,
+  trusted_hash TEXT,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'succeeded', 'failed')),
+  attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 3),
+  workspace_path TEXT,
+  started_at TEXT,
+  ended_at TEXT,
+  exit_code INTEGER,
+  signal TEXT,
+  timed_out INTEGER NOT NULL DEFAULT 0 CHECK(timed_out IN (0, 1)),
+  stdout TEXT,
+  stderr TEXT,
+  PRIMARY KEY(task_id, phase)
+);
+`;
+
 /** Migrates a database transactionally through every supported schema version. */
 export function migrate(db: Database): void {
   let version =
     db.query<{ user_version: number }, []>("PRAGMA user_version").get()
       ?.user_version ?? 0;
-  if (version > 3)
+  if (version > 4)
     throw new Error(
-      `Database version ${version} is newer than supported version 3`,
+      `Database version ${version} is newer than supported version 4`,
     );
   if (version === 0) {
     db.transaction(() => {
@@ -262,5 +282,12 @@ export function migrate(db: Database): void {
           : "PRAGMA foreign_keys = ON",
       );
     }
+    version = 3;
+  }
+  if (version === 3) {
+    db.transaction(() => {
+      db.exec(migration4);
+      db.exec("PRAGMA user_version = 4");
+    })();
   }
 }

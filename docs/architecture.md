@@ -9,6 +9,7 @@ Implement, and Review attempts. `FakeHarness` provides deterministic tests;
 CLI -> Scheduler -> AgentHarness -> FakeHarness
                  \-> CodexHarness -> CodexClient -> codex app-server
                               \-> TaskBranchManager -> simple-git -> system Git
+                 \-> TaskHookService -> Bun argv subprocess
 ```
 
 The Codex backend never changes the checkout supplied through `--repo`. A
@@ -24,3 +25,12 @@ only to the scheduler checkout. The trusted Harness stages and commits the final
 changes, then Review checks that exact clean commit in a detached conversation.
 Accepted and rejected branches are retained; v1 does not merge, push, delete
 branches, execute tasks concurrently, or enforce token budgets.
+
+Tasks may optionally carry one `prehook` and one `posthook`. SQLite's
+`task_hooks` table stores the task-scoped configuration hash, explicit trust,
+attempt receipt, bounded output, and final status. Scheduler runs a trusted
+prehook in the prepared task workspace before Scout; it runs a posthook only
+after `done`, `rejected`, or `failed_infra`. A prehook exhausts three attempts
+before failing the task, while a failed posthook preserves the task outcome and
+fails the scheduler invocation. Hooks use direct argv execution rather than a
+shell and are cancelled with the scheduler on shutdown.

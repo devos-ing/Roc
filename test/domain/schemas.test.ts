@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   ModelDecisionSchema,
   ModelProfileSchema,
+  TaskHookSchema,
   TicketSpecSchema,
   WeeklyPlanSchema,
 } from "../../src/domain/schemas";
@@ -29,6 +30,35 @@ describe("domain schemas", () => {
 
   test("accepts a complete ticket", () => {
     expect(TicketSpecSchema.parse(ticket)).toEqual(ticket);
+  });
+
+  test("accepts one strict argv hook and rejects unsafe hook shapes", () => {
+    expect(
+      TaskHookSchema.parse({
+        command: "codegraph",
+        args: ["init", "-i"],
+        timeoutSeconds: 120,
+      }),
+    ).toEqual({
+      command: "codegraph",
+      args: ["init", "-i"],
+      timeoutSeconds: 120,
+    });
+    expect(() => TaskHookSchema.parse([])).toThrow();
+    expect(() =>
+      TaskHookSchema.parse({ command: " ", args: [], timeoutSeconds: 1 }),
+    ).toThrow();
+    expect(() =>
+      TaskHookSchema.parse({ command: "x", args: [], timeoutSeconds: 0 }),
+    ).toThrow();
+    expect(() =>
+      TaskHookSchema.parse({
+        command: "x",
+        args: [],
+        timeoutSeconds: 1,
+        shell: true,
+      }),
+    ).toThrow();
   });
 
   test("rejects an empty acceptance list", () => {

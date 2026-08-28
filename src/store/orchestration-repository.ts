@@ -4,6 +4,7 @@ import {
   ContextRefSchema,
   ModelProfileSchema,
   StoredTaskSchema,
+  TaskHookPhaseSchema,
   TaskStatusSchema,
   TicketSpecSchema,
 } from "../domain/schemas";
@@ -36,6 +37,22 @@ export type RunningAttempt = {
   input: z.infer<typeof HarnessRoleInputSchema>;
   backendCursor?: string;
 };
+
+export type TaskHookRecord = {
+  taskId: string;
+  phase: "prehook" | "posthook";
+  configHash: string;
+  trustedHash?: string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  attempts: number;
+  workspacePath?: string;
+};
+
+export type HookAttemptStart =
+  | { kind: "untrusted" }
+  | { kind: "succeeded" }
+  | { kind: "exhausted" }
+  | { kind: "started"; attempt: number };
 
 const NonEmpty = z.string().trim().min(1);
 const WeekIdSchema = z.string().regex(/^\d{4}-W\d{2}$/);
@@ -172,6 +189,16 @@ type RunningAttemptRow = TaskRow & {
   context_summary_artifact: string | null;
 };
 
+type TaskHookRow = {
+  task_id: string;
+  phase: string;
+  config_hash: string;
+  trusted_hash: string | null;
+  status: string;
+  attempts: number;
+  workspace_path: string | null;
+};
+
 /** Converts a database task row into its validated stored-task representation. */
 function storedTask(row: TaskRow) {
   return StoredTaskSchema.parse({
@@ -187,6 +214,21 @@ function storedTask(row: TaskRow) {
     specHash: row.spec_hash ?? undefined,
     baseCommit: row.base_commit ?? undefined,
   });
+}
+
+/** Converts one persisted hook row into the scheduler's validated hook receipt. */
+function taskHookRecord(row: TaskHookRow): TaskHookRecord {
+  return {
+    taskId: row.task_id,
+    phase: TaskHookPhaseSchema.parse(row.phase),
+    configHash: row.config_hash,
+    trustedHash: row.trusted_hash ?? undefined,
+    status: z
+      .enum(["pending", "running", "succeeded", "failed"])
+      .parse(row.status),
+    attempts: z.number().int().min(0).max(3).parse(row.attempts),
+    workspacePath: row.workspace_path ?? undefined,
+  };
 }
 
 export class OrchestrationRepository {
@@ -240,6 +282,233 @@ export class OrchestrationRepository {
       `)
         .run(this.id("event"), row.id, this.now());
       return { taskId: row.id };
+    })();
+  }
+
+  /** Returns the single claimed task that must finish its prehook before Scout can start. */
+  getClaimedTask(): z.infer<typeof StoredTaskSchema> | undefined {
+    const row = this.db
+      .query<TaskRow, []>(`
+        SELECT id, week_id, title, spec_json, spec_path, spec_hash, base_commit, status,
+               priority, approval_required, approved, context_id
+        FROM tasks
+        WHERE status = 'claimed'
+        ORDER BY priority ASC, created_at ASC, id ASC
+        LIMIT 1
+      `)
+      .get();
+    return row === null ? undefined : storedTask(row);
+  }
+
+  /** Returns one validated stored task by identity for task-scoped lifecycle operations. */
+  getTask(taskId: string): z.infer<typeof StoredTaskSchema> | undefined {
+    const row = this.db
+      .query<TaskRow, [string]>(`
+        SELECT id, week_id, title, spec_json, spec_path, spec_hash, base_commit, status,
+               priority, approval_required, approved, context_id
+        FROM tasks WHERE id = ?
+      `)
+      .get(taskId);
+    return row === null ? undefined : storedTask(row);
+  }
+
+  /** Returns terminal tasks in deterministic order so their posthooks can be settled. */
+  listTerminalTasks(): z.infer<typeof StoredTaskSchema>[] {
+    return this.db
+      .query<TaskRow, []>(`
+        SELECT id, week_id, title, spec_json, spec_path, spec_hash, base_commit, status,
+               priority, approval_required, approved, context_id
+        FROM tasks
+        WHERE status IN ('done', 'rejected', 'failed_infra')
+        ORDER BY updated_at ASC, id ASC
+      `)
+      .all()
+      .map(storedTask);
+  }
+
+  /** Returns the durable receipt for one task hook when one has been trusted or executed. */
+  getTaskHook(
+    taskId: string,
+    phase: "prehook" | "posthook",
+  ): TaskHookRecord | undefined {
+    const row = this.db
+      .query<TaskHookRow, [string, string]>(`
+        SELECT task_id, phase, config_hash, trusted_hash, status, attempts, workspace_path
+        FROM task_hooks WHERE task_id = ? AND phase = ?
+      `)
+      .get(taskId, phase);
+    return row === null ? undefined : taskHookRecord(row);
+  }
+
+  /** Trusts the exact current hash for a configured task hook and resets its execution receipt. */
+  trustTaskHook(
+    taskId: string,
+    phase: "prehook" | "posthook",
+    configHash: string,
+  ): void {
+    const task = this.getTask(taskId);
+    if (task === undefined) throw new Error(`Task not found: ${taskId}`);
+    if (task.spec[phase] === undefined)
+      throw new Error(`Task ${taskId} has no ${phase}`);
+    this.db
+      .query(`
+        INSERT INTO task_hooks(
+          task_id, phase, config_hash, trusted_hash, status, attempts, timed_out
+        ) VALUES(?, ?, ?, ?, 'pending', 0, 0)
+        ON CONFLICT(task_id, phase) DO UPDATE SET
+          config_hash = excluded.config_hash,
+          trusted_hash = excluded.trusted_hash,
+          status = 'pending',
+          attempts = 0,
+          workspace_path = NULL,
+          started_at = NULL,
+          ended_at = NULL,
+          exit_code = NULL,
+          signal = NULL,
+          timed_out = 0,
+          stdout = NULL,
+          stderr = NULL
+      `)
+      .run(taskId, phase, configHash, configHash);
+  }
+
+  /** Atomically reserves one of three attempts only for a matching trusted hook configuration. */
+  beginTaskHook(
+    taskId: string,
+    phase: "prehook" | "posthook",
+    configHash: string,
+    workspacePath: string,
+    leaseOwnerId?: string,
+  ): HookAttemptStart {
+    return this.db.transaction((): HookAttemptStart => {
+      this.assertLeaseOwner(leaseOwnerId);
+      const current = this.getTaskHook(taskId, phase);
+      if (
+        current === undefined ||
+        current.configHash !== configHash ||
+        current.trustedHash !== configHash
+      )
+        return { kind: "untrusted" };
+      if (current.status === "succeeded") return { kind: "succeeded" };
+      if (current.attempts >= 3) return { kind: "exhausted" };
+      const attempt = current.attempts + 1;
+      this.db
+        .query(`
+          UPDATE task_hooks
+          SET status = 'running', attempts = ?, workspace_path = ?, started_at = ?,
+              ended_at = NULL, exit_code = NULL, signal = NULL, timed_out = 0,
+              stdout = NULL, stderr = NULL
+          WHERE task_id = ? AND phase = ? AND config_hash = ? AND trusted_hash = ?
+        `)
+        .run(
+          attempt,
+          workspacePath,
+          this.now(),
+          taskId,
+          phase,
+          configHash,
+          configHash,
+        );
+      return { kind: "started", attempt };
+    })();
+  }
+
+  /** Persists a bounded hook result and makes its success receipt durable before later ticks. */
+  finishTaskHook(input: {
+    taskId: string;
+    phase: "prehook" | "posthook";
+    succeeded: boolean;
+    exitCode?: number;
+    signal?: string;
+    timedOut: boolean;
+    stdout: string;
+    stderr: string;
+    leaseOwnerId?: string;
+  }): void {
+    this.db.transaction(() => {
+      this.assertLeaseOwner(input.leaseOwnerId);
+      const changed = this.db
+        .query(`
+          UPDATE task_hooks
+          SET status = ?, ended_at = ?, exit_code = ?, signal = ?, timed_out = ?,
+              stdout = ?, stderr = ?
+          WHERE task_id = ? AND phase = ? AND status = 'running'
+        `)
+        .run(
+          input.succeeded ? "succeeded" : "failed",
+          this.now(),
+          input.exitCode ?? null,
+          input.signal ?? null,
+          Number(input.timedOut),
+          input.stdout,
+          input.stderr,
+          input.taskId,
+          input.phase,
+        ).changes;
+      if (changed !== 1)
+        throw new Error(
+          `Task hook is not running: ${input.taskId}:${input.phase}`,
+        );
+    })();
+  }
+
+  /** Moves a claimed task to infrastructure failure after its prehook exhausts all retries. */
+  failClaimedTaskHook(taskId: string, leaseOwnerId?: string): void {
+    this.db.transaction(() => {
+      this.assertLeaseOwner(leaseOwnerId);
+      const status = this.db
+        .query<{ status: string }, [string]>(
+          "SELECT status FROM tasks WHERE id = ?",
+        )
+        .get(taskId)?.status;
+      if (status === undefined) throw new Error(`Task not found: ${taskId}`);
+      const from = TaskStatusSchema.parse(status);
+      if (from !== "claimed") return;
+      assertTransition(from, "failed_infra");
+      const now = this.now();
+      this.db
+        .query(
+          "UPDATE tasks SET status = 'failed_infra', updated_at = ? WHERE id = ?",
+        )
+        .run(now, taskId);
+      this.db
+        .query(`
+          INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+          VALUES(?, ?, 'task.status_changed', ?, ?)
+        `)
+        .run(
+          this.id("event"),
+          taskId,
+          JSON.stringify({ from, to: "failed_infra" }),
+          now,
+        );
+      const dependents = this.db
+        .query<{ id: string }, [string]>(`
+          SELECT id FROM tasks
+          WHERE id IN (SELECT task_id FROM task_deps WHERE depends_on_task_id = ?)
+            AND status IN ('draft', 'ready')
+        `)
+        .all(taskId);
+      this.db
+        .query(`
+          UPDATE tasks SET status = 'needs_replan', updated_at = ?
+          WHERE id IN (SELECT task_id FROM task_deps WHERE depends_on_task_id = ?)
+            AND status IN ('draft', 'ready')
+        `)
+        .run(now, taskId);
+      for (const dependent of dependents) {
+        this.db
+          .query(`
+            INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+            VALUES(?, ?, 'task.needs_replan', ?, ?)
+          `)
+          .run(
+            this.id("event"),
+            dependent.id,
+            JSON.stringify({ failedTaskId: taskId }),
+            now,
+          );
+      }
     })();
   }
 

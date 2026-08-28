@@ -9,6 +9,11 @@ import type {
 } from "../../src/harness/contracts";
 import { createFakeHarness } from "../../src/harness/fake";
 import { Scheduler } from "../../src/scheduler/scheduler";
+import {
+  type TaskHookRunner,
+  TaskHookService,
+  taskHookConfigHash,
+} from "../../src/scheduler/task-hooks";
 import { openDatabase } from "../../src/store/database";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
@@ -148,6 +153,12 @@ function setupAcceptedTask(
     Extract<HarnessEvent, { type: "attempt.output" }>["output"],
     { kind: "review" }
   > = reviewOutput,
+  hooks?: {
+    prehook?: { command: string; args: string[]; timeoutSeconds: number };
+    posthook?: { command: string; args: string[]; timeoutSeconds: number };
+    runner: TaskHookRunner;
+    workspacePath?: string;
+  },
 ) {
   const db = openDatabase(":memory:");
   const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
@@ -200,6 +211,8 @@ function setupAcceptedTask(
       risk: "medium",
       contextCandidates: [inheritedContext],
       tokenCeiling: 10_000,
+      ...(hooks?.prehook === undefined ? {} : { prehook: hooks.prehook }),
+      ...(hooks?.posthook === undefined ? {} : { posthook: hooks.posthook }),
     },
     priority: 0,
     approvalRequired: false,
@@ -274,8 +287,42 @@ function setupAcceptedTask(
     },
     cancel: (attemptId) => fake.harness.cancel(attemptId),
   };
-  const scheduler = new Scheduler(repo, harness);
-  return { db, repo, scheduler, fake, requests };
+  const taskHooks =
+    hooks === undefined
+      ? undefined
+      : new TaskHookService(
+          repo,
+          {
+            async prepare() {
+              return { path: hooks.workspacePath ?? "/workspace/T1" };
+            },
+          },
+          hooks.runner,
+        );
+  const scheduler = new Scheduler(repo, harness, () => {}, taskHooks);
+  return { db, repo, scheduler, fake, requests, taskHooks };
+}
+
+/** Creates a deterministic hook runner that records each workspace invocation. */
+function scriptedHookRunner(
+  outcomes: boolean[],
+  calls: Array<{ command: string; cwd: string }>,
+): TaskHookRunner {
+  return {
+    async run(input) {
+      calls.push({ command: input.hook.command, cwd: input.cwd });
+      const succeeded = outcomes.shift();
+      if (succeeded === undefined) throw new Error("Unexpected hook execution");
+      return {
+        succeeded,
+        exitCode: succeeded ? 0 : 1,
+        timedOut: false,
+        stdout: "ok\u0000",
+        stderr: succeeded ? "" : "failure\u001b[31m",
+      };
+    },
+    async stop() {},
+  };
 }
 
 test("runs Scout, Implement, and isolated Review to done", async () => {
@@ -848,6 +895,137 @@ test("terminalizes a non-retryable task failure and continues with the next task
     expect(repo.inspectTask("T1")).toMatchObject({ status: "failed_infra" });
     expect(repo.inspectTask("T2")).toMatchObject({ status: "done" });
     expect(() => fake.assertComplete()).not.toThrow();
+  } finally {
+    db.close();
+  }
+});
+
+test("trusted prehook runs once in the task workspace before Scout and survives restart", async () => {
+  const calls: Array<{ command: string; cwd: string }> = [];
+  const prehook = { command: "prepare-task", args: [], timeoutSeconds: 1 };
+  const { db, repo, scheduler, fake, requests, taskHooks } = setupAcceptedTask(
+    reviewOutput,
+    {
+      prehook,
+      runner: scriptedHookRunner([true], calls),
+      workspacePath: "/isolated/T1",
+    },
+  );
+  try {
+    await scheduler.runUntilIdle(2);
+    expect(calls).toEqual([]);
+    expect(requests).toEqual([]);
+
+    repo.trustTaskHook("T1", "prehook", taskHookConfigHash(prehook));
+    await scheduler.runUntilIdle(40);
+
+    expect(calls).toEqual([{ command: "prepare-task", cwd: "/isolated/T1" }]);
+    expect(requests[0]?.attempt.role).toBe("scout");
+    expect(repo.getTaskHook("T1", "prehook")).toMatchObject({
+      status: "succeeded",
+      attempts: 1,
+      workspacePath: "/isolated/T1",
+    });
+    expect(repo.inspectTask("T1")).toMatchObject({ status: "done" });
+    expect(() => fake.assertComplete()).not.toThrow();
+
+    const restarted = new Scheduler(repo, fake.harness, () => {}, taskHooks);
+    expect((await restarted.tick()).kind).toBe("idle");
+    expect(calls).toHaveLength(1);
+  } finally {
+    db.close();
+  }
+});
+
+test("prehook retries three times, fails the task without Scout, then runs its posthook", async () => {
+  const calls: Array<{ command: string; cwd: string }> = [];
+  const prehook = { command: "fail-pre", args: [], timeoutSeconds: 1 };
+  const posthook = { command: "finish-post", args: [], timeoutSeconds: 1 };
+  const { db, repo, scheduler, requests } = setupAcceptedTask(reviewOutput, {
+    prehook,
+    posthook,
+    runner: scriptedHookRunner([false, false, false, true], calls),
+  });
+  try {
+    repo.trustTaskHook("T1", "prehook", taskHookConfigHash(prehook));
+    repo.trustTaskHook("T1", "posthook", taskHookConfigHash(posthook));
+
+    await scheduler.runUntilIdle(12);
+
+    expect(repo.inspectTask("T1")).toMatchObject({ status: "failed_infra" });
+    expect(requests).toEqual([]);
+    expect(calls.map((call) => call.command)).toEqual([
+      "fail-pre",
+      "fail-pre",
+      "fail-pre",
+      "finish-post",
+    ]);
+    expect(repo.getTaskHook("T1", "prehook")).toMatchObject({
+      status: "failed",
+      attempts: 3,
+    });
+    expect(repo.getTaskHook("T1", "posthook")).toMatchObject({
+      status: "succeeded",
+      attempts: 1,
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test("a task spec change invalidates prehook trust before it can spawn", async () => {
+  const calls: Array<{ command: string; cwd: string }> = [];
+  const original = { command: "prepare-original", args: [], timeoutSeconds: 1 };
+  const replacement = {
+    command: "prepare-replacement",
+    args: [],
+    timeoutSeconds: 1,
+  };
+  const { db, repo, scheduler, requests } = setupAcceptedTask(reviewOutput, {
+    prehook: original,
+    runner: scriptedHookRunner([true], calls),
+  });
+  try {
+    repo.trustTaskHook("T1", "prehook", taskHookConfigHash(original));
+    const task = repo.getTask("T1");
+    if (task === undefined) throw new Error("Expected T1");
+    db.query("UPDATE tasks SET spec_json = ? WHERE id = 'T1'").run(
+      JSON.stringify({ ...task.spec, prehook: replacement }),
+    );
+
+    await scheduler.runUntilIdle(2);
+
+    expect(calls).toEqual([]);
+    expect(requests).toEqual([]);
+    expect(repo.getTaskHook("T1", "prehook")).toMatchObject({
+      configHash: taskHookConfigHash(original),
+      trustedHash: taskHookConfigHash(original),
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test("posthook failure preserves a completed task while terminating the scheduler run", async () => {
+  const calls: Array<{ command: string; cwd: string }> = [];
+  const posthook = { command: "fail-post", args: [], timeoutSeconds: 1 };
+  const { db, repo, scheduler } = setupAcceptedTask(reviewOutput, {
+    posthook,
+    runner: scriptedHookRunner([false, false, false], calls),
+  });
+  try {
+    repo.trustTaskHook("T1", "posthook", taskHookConfigHash(posthook));
+
+    await expect(scheduler.runUntilIdle(40)).rejects.toThrow(
+      "Task posthook failed after 3 attempts: T1",
+    );
+
+    expect(repo.inspectTask("T1")).toMatchObject({ status: "done" });
+    expect(calls).toHaveLength(3);
+    expect(repo.getTaskHook("T1", "posthook")).toMatchObject({
+      status: "failed",
+      attempts: 3,
+    });
   } finally {
     db.close();
   }

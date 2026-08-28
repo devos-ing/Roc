@@ -75,6 +75,7 @@ test("migration creates every approved table", () => {
     "model_decisions",
     "reviews",
     "scheduler_lease",
+    "task_hooks",
     "task_deps",
     "tasks",
     "usage",
@@ -85,7 +86,7 @@ test("migration creates every approved table", () => {
   expect(
     db.query<{ user_version: number }, []>("PRAGMA user_version").get()
       ?.user_version,
-  ).toBe(3);
+  ).toBe(4);
   expect(
     db
       .query<{ name: string }, []>("PRAGMA table_info(tasks)")
@@ -168,7 +169,7 @@ test("v3 migration backfills supported model profiles without losing runtime col
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(3);
+    ).toBe(4);
     expect(
       db
         .query<
@@ -532,13 +533,13 @@ test("database initialization closes its handle before rethrowing", () => {
   const directory = mkdtempSync(join(tmpdir(), "agile-agents-db-"));
   const path = join(directory, "future.sqlite");
   const future = new Database(path, { create: true });
-  future.exec("PRAGMA user_version = 4");
+  future.exec("PRAGMA user_version = 5");
   future.close();
 
   const close = spyOn(Database.prototype, "close");
   try {
     expect(() => openDatabase(path)).toThrow(
-      "Database version 4 is newer than supported version 3",
+      "Database version 5 is newer than supported version 4",
     );
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
@@ -573,7 +574,7 @@ test("file databases create parents and enable durable SQLite settings", () => {
         reopened
           .query<{ user_version: number }, []>("PRAGMA user_version")
           .get()?.user_version,
-      ).toBe(3);
+      ).toBe(4);
     } finally {
       reopened.close();
     }

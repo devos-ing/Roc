@@ -13,7 +13,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/run";
 import { currentIsoWeekId } from "../../src/cli/token-chart";
+import { taskHookConfigHash } from "../../src/scheduler/task-hooks";
 import { openDatabase } from "../../src/store/database";
+import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
 
 const ansiSgrPattern = "\\u001B\\[[0-9;]*m";
@@ -252,7 +254,7 @@ test("operational database failures report an error, return 1, and close the dat
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "future.db");
   const future = new Database(dbPath, { create: true });
-  future.exec("PRAGMA user_version = 4");
+  future.exec("PRAGMA user_version = 5");
   future.close();
   const output: string[] = [];
   const errors: string[] = [];
@@ -267,7 +269,7 @@ test("operational database failures report an error, return 1, and close the dat
     ).toBe(1);
     expect(output).toEqual([]);
     expect(errors).toEqual([
-      "Database version 4 is newer than supported version 3",
+      "Database version 5 is newer than supported version 4",
     ]);
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
@@ -408,7 +410,7 @@ test("tokens rejects scheduler-only options and reports read failures through th
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, "future.db");
   const future = new Database(dbPath, { create: true });
-  future.exec("PRAGMA user_version = 4");
+  future.exec("PRAGMA user_version = 5");
   future.close();
   try {
     expect(
@@ -425,6 +427,74 @@ test("tokens rejects scheduler-only options and reports read failures through th
     expect(output.at(-1)).toBe(
       "TOKEN_USAGE_READ_FAILED: Could not read token usage",
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("task hook trust records only the current task-scoped configuration hash", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
+  const dbPath = join(root, "agile.db");
+  const hook = {
+    command: "codegraph",
+    args: ["init", "-i"],
+    timeoutSeconds: 120,
+  };
+  const db = openDatabase(dbPath);
+  const planning = new PlanningRepository(db);
+  planning.createWeek({
+    id: "2026-W35",
+    goal: "Trust a task hook",
+    nonGoals: [],
+    tokenBudget: 10_000,
+    ticketIds: ["H1"],
+  });
+  planning.createTask({
+    id: "H1",
+    weekId: "2026-W35",
+    title: "Trusted hook",
+    spec: {
+      problem: "A hook needs explicit approval",
+      desiredOutcome: "Persist task-scoped trust",
+      scope: ["hooks"],
+      nonGoals: [],
+      acceptanceCriteria: ["trust remains task scoped"],
+      validation: ["bun test"],
+      dependencies: [],
+      risk: "low",
+      contextCandidates: [],
+      tokenCeiling: 1_000,
+      prehook: hook,
+    },
+    priority: 0,
+    approvalRequired: false,
+    approved: true,
+  });
+  db.close();
+  const output: string[] = [];
+
+  try {
+    expect(
+      await runCli(["task", "hook", "trust", "H1", "prehook", "--db", dbPath], {
+        out: (text) => output.push(text),
+        err: (text) => output.push(text),
+      }),
+    ).toBe(0);
+    expect(output).toEqual([
+      `Trusted prehook for H1: ${taskHookConfigHash(hook)}`,
+    ]);
+    const reopened = openDatabase(dbPath);
+    try {
+      expect(
+        new OrchestrationRepository(reopened).getTaskHook("H1", "prehook"),
+      ).toMatchObject({
+        configHash: taskHookConfigHash(hook),
+        trustedHash: taskHookConfigHash(hook),
+        status: "pending",
+      });
+    } finally {
+      reopened.close();
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
