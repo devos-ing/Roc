@@ -24,12 +24,26 @@ import {
 } from "../scheduler/model-routing";
 import { Scheduler } from "../scheduler/scheduler";
 import { loadRocSettings, saveRocSettings } from "../settings";
-import { installRocCreateTasksSkill } from "../skills/install";
+import {
+  installRocCreateTasksSkill,
+  SkillInstallError,
+} from "../skills/install";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
 import { PlanningRepository } from "../store/planning-repository";
 import { createTaskBranchManager } from "../workspace/task-branch";
 import { helpText } from "./help";
+import {
+  renderCycleStep,
+  renderDatabaseStep,
+  renderEmptyTaskList,
+  renderOnboardingComplete,
+  renderOnboardingHeader,
+  renderOnboardingStopped,
+  renderOnboardingUsageError,
+  renderSettingsStep,
+  renderSkillsStep,
+} from "./presentation";
 import { renderTokenUsageChart } from "./token-chart";
 
 export type CliIo = {
@@ -51,9 +65,6 @@ export type CliRuntime = {
   now?: () => Date;
 };
 
-const grillingInstallCommand =
-  "npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor";
-
 /** Prompts for and validates one global Agile cycle setting. */
 async function promptCycleSetting(
   io: CliIo,
@@ -67,6 +78,9 @@ async function promptCycleSetting(
   if (choice === "2") return { type: "weekly" };
   if (choice !== "3") throw new Error("Choose Daily, Weekly, or Custom");
   const days = Number((await io.ask("Custom cycle duration in days")).trim());
+  if (!Number.isInteger(days) || days <= 0) {
+    throw new Error("Custom duration must be a whole number greater than zero");
+  }
   return AgileCycleSettingSchema.parse({
     type: "custom",
     days,
@@ -77,6 +91,22 @@ async function promptCycleSetting(
 /** Converts an unknown thrown value into a displayable error message. */
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Builds the copyable onboarding retry command from the accepted onboarding options. */
+function onboardingRetryCommand(input: {
+  dbPath?: string;
+  global?: boolean;
+}): string {
+  if (input.global) return "npx roc-it@latest onboard --global";
+  return input.dbPath === undefined
+    ? "npx roc-it@latest onboard"
+    : `npx roc-it@latest onboard --db ${shellLiteral(input.dbPath)}`;
+}
+
+/** Quotes a value as one literal argument for the supported POSIX-compatible shell. */
+function shellLiteral(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 /** Returns whether a backlog manifest still uses the removed weekId field. */
@@ -481,8 +511,17 @@ export async function runCli(
   const dbPath =
     requestedDb === ":memory:" ? ":memory:" : resolve(projectRoot, requestedDb);
   if (command === "onboard") {
+    const retryCommand = onboardingRetryCommand({
+      dbPath: parsed.values.db,
+      global: parsed.values.global,
+    });
     if (subcommand !== undefined || parsed.positionals.length !== 1) {
-      io.err("onboard does not accept positional arguments");
+      io.err(
+        renderOnboardingUsageError(
+          "onboard does not accept positional arguments",
+          retryCommand,
+        ),
+      );
       return 2;
     }
     if (
@@ -492,11 +531,21 @@ export async function runCli(
       parsed.values["fake-script"] !== undefined ||
       parsed.values["no-color"] !== undefined
     ) {
-      io.err("onboard accepts only --global and --db PATH");
+      io.err(
+        renderOnboardingUsageError(
+          "onboard accepts only --global and --db PATH",
+          retryCommand,
+        ),
+      );
       return 2;
     }
     if (parsed.values.global && parsed.values.db !== undefined) {
-      io.err("onboard --global does not accept --db PATH");
+      io.err(
+        renderOnboardingUsageError(
+          "onboard --global does not accept --db PATH",
+          retryCommand,
+        ),
+      );
       return 2;
     }
     const sourcePath = resolve(
@@ -507,41 +556,68 @@ export async function runCli(
       "roc-create-tasks",
       "SKILL.md",
     );
+    const root = parsed.values.global
+      ? (runtime.homeRoot ?? homedir())
+      : projectRoot;
+    const scope = parsed.values.global
+      ? { kind: "global" as const, root }
+      : { kind: "project" as const, root };
+    const completedSteps: string[] = [];
+    io.out(renderOnboardingHeader(scope));
     try {
-      const root = parsed.values.global
-        ? (runtime.homeRoot ?? homedir())
-        : projectRoot;
       let installed: Awaited<ReturnType<typeof installRocCreateTasksSkill>>;
       if (parsed.values.global) {
+        const databaseStep = renderDatabaseStep({ scope });
+        completedSteps.push(databaseStep);
+        io.out(databaseStep);
         installed = await installRocCreateTasksSkill({ sourcePath, root });
       } else {
         const db = openDatabase(dbPath);
         try {
+          const databaseStep = renderDatabaseStep({ dbPath, scope });
+          completedSteps.push(databaseStep);
+          io.out(databaseStep);
           installed = await installRocCreateTasksSkill({ sourcePath, root });
         } finally {
           db.close();
         }
       }
+      const skillsStep = renderSkillsStep(installed);
+      completedSteps.push(skillsStep);
+      io.out(skillsStep);
       const setting = await promptCycleSetting(
         io,
         runtime.now?.() ?? new Date(),
       );
+      const cycleStep = renderCycleStep(setting);
+      completedSteps.push(cycleStep);
+      io.out(cycleStep);
       const settingsPath = await saveRocSettings(
         { cycle: setting },
         runtime.homeRoot ?? homedir(),
       );
-      io.out(
-        [
-          ...installed.created.map((path) => `Created ${path}`),
-          ...installed.skipped.map((path) => `Skipped ${path}`),
-          `Saved ${settingsPath}`,
-          "Install grilling:",
-          grillingInstallCommand,
-        ].join("\n"),
-      );
+      const settingsStep = renderSettingsStep(settingsPath);
+      completedSteps.push(settingsStep);
+      io.out(settingsStep);
+      io.out(renderOnboardingComplete());
       return 0;
     } catch (error) {
-      io.err(errorMessage(error));
+      const partialSkills =
+        error instanceof SkillInstallError &&
+        (error.completed.created.length > 0 ||
+          error.completed.skipped.length > 0)
+          ? renderSkillsStep(error.completed)
+          : undefined;
+      io.err(
+        renderOnboardingStopped({
+          completedSteps:
+            partialSkills === undefined
+              ? completedSteps
+              : [...completedSteps, partialSkills],
+          failure: errorMessage(error),
+          retryCommand,
+        }),
+      );
       return 1;
     }
   }
@@ -599,7 +675,17 @@ export async function runCli(
       try {
         const result = new PlanningRepository(db).importBacklog(manifest);
         io.out(
-          `Created ${result.created}, skipped ${result.skipped}, total ${result.total}.`,
+          [
+            `Created: ${result.created}`,
+            `Already present: ${result.skipped}`,
+            `Total: ${result.total}`,
+            "Next:",
+            `  npx roc-it@latest task list${
+              parsed.values.db === undefined
+                ? ""
+                : ` --db ${shellLiteral(parsed.values.db)}`
+            }`,
+          ].join("\n"),
         );
         return 0;
       } finally {
@@ -619,9 +705,12 @@ export async function runCli(
         io.out(
           tasks.length
             ? tasks
-                .map((task) => `${task.id}\t${task.status}\t${task.title}`)
+                .map(
+                  (task) =>
+                    `- ${JSON.stringify(task.id)} [${task.status}] ${JSON.stringify(task.title)}`,
+                )
                 .join("\n")
-            : "No tasks.",
+            : renderEmptyTaskList(),
         );
         return 0;
       } finally {
@@ -655,7 +744,7 @@ export async function runCli(
           cycle.id,
         );
         if (usage === undefined) {
-          io.out(`No active cycle: ${cycle.id}`);
+          io.out(`No token usage recorded for cycle: ${cycle.id}`);
           return 0;
         }
         io.out(
@@ -714,7 +803,9 @@ export async function runCli(
         baseRef: parsed.values.base ?? "HEAD",
       };
       try {
+        io.out("Status: Starting");
         await runtime.runScheduler(input);
+        io.out("Result: Stopped");
         return 0;
       } catch (error) {
         return reportOperationalError(error, io, runtime, {
@@ -771,6 +862,8 @@ export async function runCli(
     }
   }
 
-  io.err(`Unknown command: ${parsed.positionals.join(" ")}`);
+  io.err(
+    `Unknown command: ${parsed.positionals.join(" ")}\nRun npx roc-it@latest help`,
+  );
   return 2;
 }

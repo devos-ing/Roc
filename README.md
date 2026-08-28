@@ -68,9 +68,13 @@ task-creation skill for Codex, Claude Code, and Cursor:
 
 ```bash
 npx roc-it@latest onboard
-npx roc-it@latest task list
-npx roc-it@latest tokens
 ```
+
+Onboarding prints the project scope, each completed step, the selected cycle,
+the settings path, and next steps to install `grilling` if needed, create a
+first backlog with the installed task skill, and inspect the resulting tasks. If
+a later step stops, Roc lists the work already completed and gives a retry
+command; it does not claim to roll anything back.
 
 Use `npx roc-it@latest onboard --global` to install the skill under your user
 account instead; global onboarding does not create a project database.
@@ -113,6 +117,12 @@ The skill uses `grilling` to agree on the requirement, previews the full task
 list and dependencies, waits for your explicit approval, saves a JSON backlog
 under `.agile/backlog`, and imports it into Roc.
 
+Inspect the resulting tasks:
+
+```bash
+npx roc-it@latest task list
+```
+
 Run that backlog with Codex:
 
 ```bash
@@ -135,10 +145,6 @@ flowchart LR
 
 If Review accepts the commit, the task is done. If Review rejects it, Roc
 creates a follow-up ticket and moves on to the next ready task.
-
-## Commands
-
-All supported CLI commands:
 
 Roc works on one small task at a time. When Review asks for changes, Roc sends
 the feedback to an unapproved draft follow-up. That follow-up returns to the
@@ -168,13 +174,25 @@ Roc is growing in small steps.
 
 ## Commands
 
-```bash
+The built-in `npx roc-it@latest help` groups the production commands by the
+journey they support:
+
+```text
+Get started
 npx roc-it@latest onboard [--global] [--db PATH]
+
+Manage your cycle
 npx roc-it@latest cycle current
+
+Plan work
 npx roc-it@latest task import FILE [--db PATH]
 npx roc-it@latest task list [--db PATH]
 npx roc-it@latest tokens [--db PATH] [--no-color]
+
+Run work
 npx roc-it@latest scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+
+Get help
 npx roc-it@latest help
 ```
 
