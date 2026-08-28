@@ -1,8 +1,8 @@
 import { startCodexBackend } from "./codex/backend";
 
 /**
- * The backend registry: adding a backend means one factory here plus one CLI
- * flag, with no new branches in the scheduler, store, or run loop.
+ * The backend registry: adding a backend means one factory plus one entry
+ * here, with no new branches in the CLI, scheduler, store, or run loop.
  */
 export const backends = {
   codex: startCodexBackend,
