@@ -68,14 +68,13 @@ task-creation skill for Codex, Claude Code, and Cursor:
 
 ```bash
 npx roc-it@latest onboard
-npx roc-it@latest task list
-npx roc-it@latest tokens
 ```
 
 Onboarding prints the project scope, each completed step, the selected cycle,
-the settings path, and copyable next commands. If a later step stops, Roc lists
-the work already completed and gives a retry command; it does not claim to roll
-anything back.
+the settings path, and next steps to install `grilling` if needed, create a
+first backlog with the installed task skill, and inspect the resulting tasks. If
+a later step stops, Roc lists the work already completed and gives a retry
+command; it does not claim to roll anything back.
 
 Use `npx roc-it@latest onboard --global` to install the skill under your user
 account instead; global onboarding does not create a project database.
@@ -117,6 +116,12 @@ $roc-create-tasks Add team invitations
 The skill uses `grilling` to agree on the requirement, previews the full task
 list and dependencies, waits for your explicit approval, saves a JSON backlog
 under `.agile/backlog`, and imports it into Roc.
+
+Inspect the resulting tasks:
+
+```bash
+npx roc-it@latest task list
+```
 
 Run that backlog with Codex:
 

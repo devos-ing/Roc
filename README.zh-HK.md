@@ -67,13 +67,12 @@ Cursor 安裝建立任務的 skill：
 
 ```bash
 npx roc-it@latest onboard
-npx roc-it@latest task list
-npx roc-it@latest tokens
 ```
 
 啟用時會顯示專案範圍、每個已完成步驟、所選週期、設定檔路徑，以及可直接複製
-的下一步指令。若稍後步驟停止，Roc 會列出已完成工作並提供重試指令；它不會聲稱
-已回復任何變更。
+的下一步指引：如需要先安裝 `grilling`、用已安裝的任務 skill 建立第一個 backlog，
+以及查看產生的任務。若稍後步驟停止，Roc 會列出已完成工作並提供重試指令；它不會
+聲稱已回復任何變更。
 
 使用 `npx roc-it@latest onboard --global` 可改為在使用者帳戶下安裝 skill；
 全域啟用不會建立專案資料庫。
@@ -113,6 +112,12 @@ $roc-create-tasks Add team invitations
 
 這個 skill 會使用 `grilling` 釐清需求、預覽完整任務清單和相依關係、等待你的
 明確批准，然後把 JSON backlog 儲存在 `.agile/backlog` 並匯入 Roc。
+
+查看產生的任務：
+
+```bash
+npx roc-it@latest task list
+```
 
 使用 Codex 執行 backlog：
 

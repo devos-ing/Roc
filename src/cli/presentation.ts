@@ -55,9 +55,14 @@ export function renderOnboardingComplete(): string {
   return [
     "Result: Complete",
     "Next:",
-    "  npx roc-it@latest task list",
-    "  npx roc-it@latest cycle current",
-    "  npx roc-it@latest tokens",
+    "  Install the grilling skill if needed:",
+    "    npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor",
+    "  Create your first backlog in Claude Code or Cursor:",
+    "    /roc-create-tasks <requirement>",
+    "  Create your first backlog in Codex:",
+    "    $roc-create-tasks <requirement>",
+    "  Inspect the resulting tasks:",
+    "    npx roc-it@latest task list",
   ].join("\n");
 }
 

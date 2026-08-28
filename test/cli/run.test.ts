@@ -17,6 +17,17 @@ import { openDatabase } from "../../src/store/database";
 import { PlanningRepository } from "../../src/store/planning-repository";
 
 const ansiSgrPattern = "\\u001B\\[[0-9;]*m";
+const onboardingNextSteps = [
+  "Next:",
+  "  Install the grilling skill if needed:",
+  "    npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor",
+  "  Create your first backlog in Claude Code or Cursor:",
+  "    /roc-create-tasks <requirement>",
+  "  Create your first backlog in Codex:",
+  "    $roc-create-tasks <requirement>",
+  "  Inspect the resulting tasks:",
+  "    npx roc-it@latest task list",
+].join("\n");
 
 /** Creates deterministic interactive CLI I/O from queued answers. */
 function interactiveIo(answers: string[]) {
@@ -122,9 +133,7 @@ test("project onboarding reports completed steps, configuration, and next comman
     expect(transcript).toContain("4. Settings: Saved ");
     expect(transcript).toContain(".config/roc/settings.json");
     expect(transcript).toContain("Result: Complete");
-    expect(transcript).toContain("Next:");
-    expect(transcript).toContain("npx roc-it@latest task list");
-    expect(transcript).toContain("npx roc-it@latest cycle current");
+    expect(transcript).toContain(onboardingNextSteps);
     expect(errors).toEqual([]);
     expect(
       new TextEncoder()
@@ -159,6 +168,7 @@ test("global onboarding installs skills without creating a project database", as
       "1. Database: Not created (global scope)",
     );
     expect(output.join("\n")).not.toContain("Project database");
+    expect(output.join("\n")).toContain(onboardingNextSteps);
     expect(
       await readFile(
         join(home, ".agents", "skills", "roc-create-tasks", "SKILL.md"),
