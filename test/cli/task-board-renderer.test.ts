@@ -215,13 +215,14 @@ test("keeps plain Unicode output cell-bounded without splitting graphemes", () =
   );
 });
 
-test("removes stored ANSI SGR controls from plain task details", () => {
+test("removes stored terminal controls from plain task details", () => {
   const unsafe = task({
     id: "\u001B[31munsafe\u001B[0m",
-    title: "\u001B[32mUnsafe title\u001B[0m",
+    title: "\u001B[2J\u001B[32mUnsafe title\u001B[0m",
     spec: {
       ...spec,
-      problem: "\u001B[33mUnsafe problem\u001B[0m",
+      problem:
+        "\u001B]8;;https://example.com\u001B\\Unsafe problem\u001B]8;;\u001B\\",
       desiredOutcome: "\u001B[34mUnsafe outcome\u001B[0m",
       acceptanceCriteria: ["\u001B[35mUnsafe criterion\u001B[0m"],
       dependencies: ["\u001B[36munsafe-dependency\u001B[0m"],
@@ -240,6 +241,7 @@ test("removes stored ANSI SGR controls from plain task details", () => {
   });
 
   expect(output).not.toMatch(ansiSgrPattern);
+  expect(output).not.toContain("\u001B");
   expect(output).toContain("Task unsafe");
   expect(output).toContain("Unsafe title");
   expect(output).toContain("Unsafe problem");

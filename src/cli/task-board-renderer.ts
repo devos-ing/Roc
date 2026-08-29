@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import { renderEmptyTaskList } from "./presentation";
 import type { TaskBoardSnapshot, TaskBoardTask } from "./task-board-model";
 
@@ -112,9 +113,9 @@ function color(
   return enabled ? `${colors[tone]}${value}${reset}` : value;
 }
 
-/** Removes stored ANSI SGR controls from a plain board snapshot. */
+/** Removes terminal control sequences from a non-interactive board snapshot. */
 function plainSnapshot(value: string, colorEnabled: boolean): string {
-  return colorEnabled ? value : value.replace(ansiSgrPattern, "");
+  return colorEnabled ? value : stripVTControlCharacters(value);
 }
 
 /** Sums input and output tokens without double-counting their reported subsets. */
