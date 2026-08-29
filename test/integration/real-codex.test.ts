@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/run";
+import { defaultRuntime } from "../../src/cli/runtime";
 import { CodexClient } from "../../src/codex/client";
 import { ModelListResponseSchema } from "../../src/codex/protocol";
 import { openDatabase } from "../../src/store/database";
@@ -174,19 +175,9 @@ realTest(
 
       process.env.AGILE_TEST_SECRET = sentinel;
       running = runCli(
-        [
-          "scheduler",
-          "run",
-          "--backend",
-          "codex",
-          "--repo",
-          root,
-          "--base",
-          baseCommit,
-          "--db",
-          databasePath,
-        ],
+        ["scheduler", "run", "--base", baseCommit],
         { out: () => {}, err: (text) => errors.push(text) },
+        { ...defaultRuntime, projectRoot: root },
       );
       void running.then((code) => {
         runtimeSettled = { code };

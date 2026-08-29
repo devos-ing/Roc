@@ -1,0 +1,83 @@
+import type { Command } from "commander";
+import { openDatabase } from "../../store/database";
+import { OrchestrationRepository } from "../../store/orchestration-repository";
+import {
+  commandProjectRoot,
+  errorMessage,
+  projectDatabasePath,
+  reportOperationalError,
+} from "../command-context";
+import type { CliCommandContext, SchedulerRunInput } from "../types";
+
+/** Runs the public scheduler against Codex in the current project. */
+async function executeSchedulerRun(
+  context: CliCommandContext,
+  options: { base: string },
+): Promise<number> {
+  let repoPath: string;
+  try {
+    repoPath = await commandProjectRoot(context);
+  } catch (error) {
+    context.io.err(errorMessage(error));
+    return 1;
+  }
+  const dbPath = projectDatabasePath(repoPath);
+  const input: SchedulerRunInput = {
+    backend: "codex",
+    dbPath,
+    repoPath,
+    baseRef: options.base,
+  };
+  try {
+    context.io.out("Status: Starting");
+    await context.runtime.runScheduler(input);
+    context.io.out("Result: Stopped");
+    return 0;
+  } catch (error) {
+    return reportOperationalError(error, context, { dbPath, repoPath });
+  }
+}
+
+/** Prints the current project's durable scheduler snapshot. */
+async function executeSchedulerInspect(
+  context: CliCommandContext,
+): Promise<number> {
+  try {
+    const projectRoot = await commandProjectRoot(context);
+    const db = openDatabase(projectDatabasePath(projectRoot));
+    try {
+      context.io.out(
+        JSON.stringify(new OrchestrationRepository(db).inspect(), null, 2),
+      );
+      return 0;
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    context.io.err(errorMessage(error));
+    return 1;
+  }
+}
+
+/** Registers scheduler execution and inspection commands. */
+export function registerSchedulerCommands(
+  program: Command,
+  context: CliCommandContext,
+): void {
+  const scheduler = program
+    .command("scheduler")
+    .description("Run and inspect the scheduler");
+  scheduler
+    .command("run")
+    .description("Run ready tasks with Codex")
+    .option("--base <ref>", "Git ref used as the task base", "HEAD")
+    .action(async (options: { base: string }) => {
+      context.exitCode = await executeSchedulerRun(context, options);
+    });
+  scheduler
+    .command("inspect")
+    .description("Print the durable scheduler state")
+    .action(async () => {
+      context.exitCode = await executeSchedulerInspect(context);
+    });
+}

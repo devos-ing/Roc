@@ -1,0 +1,37 @@
+import type { GitHubIssueCandidate } from "../github/import-source";
+import type { AgileError } from "../runtime/errors";
+
+export type CliIo = {
+  /** Writes one normal-output record. */
+  out(text: string): void;
+  /** Writes one diagnostic-output record. */
+  err(text: string): void;
+  /** Prompts for one interactive answer when input is available. */
+  ask?(question: string): Promise<string>;
+};
+
+export type SchedulerRunInput =
+  | { backend: "fake"; dbPath: string; scenario: unknown }
+  | { backend: "codex"; dbPath: string; repoPath: string; baseRef: string };
+
+export type CliRuntime = {
+  /** Runs one scheduler invocation through an injected backend boundary. */
+  runScheduler(input: SchedulerRunInput): Promise<void>;
+  /** Reads raw approved GitHub Issue candidates for an import command. */
+  readGitHubIssues?(): Promise<GitHubIssueCandidate[]>;
+  /** Records a normalized operational error at the resolved runtime location. */
+  logError?(
+    error: AgileError,
+    input: { dbPath: string; repoPath?: string },
+  ): Promise<void>;
+  projectRoot?: string;
+  homeRoot?: string;
+  /** Supplies the clock used for cycle calculations. */
+  now?: () => Date;
+};
+
+export type CliCommandContext = {
+  io: CliIo;
+  runtime: CliRuntime;
+  exitCode: number;
+};

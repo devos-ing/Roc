@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { runCli } from "../../src/cli/run";
 import { taskHookConfigHash } from "../../src/scheduler/task-hooks";
 import { saveRocSettings } from "../../src/settings";
@@ -48,7 +48,7 @@ function interactiveIo(answers: string[]) {
 
 test("onboard installs identical project skill copies without overwriting changes", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, "agile.db");
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const output: string[] = [];
   const io = {
     out: (text: string) => output.push(text),
@@ -58,7 +58,7 @@ test("onboard installs identical project skill copies without overwriting change
 
   try {
     expect(
-      await runCli(["onboard", "--db", dbPath], io, {
+      await runCli(["onboard"], io, {
         runScheduler: async () => {},
         projectRoot: root,
       }),
@@ -92,14 +92,14 @@ test("onboard installs identical project skill copies without overwriting change
     expect(await lstat(dbPath)).toMatchObject({ isFile: expect.any(Function) });
 
     expect(
-      await runCli(["onboard", "--db", dbPath], io, {
+      await runCli(["onboard"], io, {
         runScheduler: async () => {},
         projectRoot: root,
       }),
     ).toBe(0);
     await writeFile(agentsSkill, "changed skill");
     expect(
-      await runCli(["onboard", "--db", dbPath], io, {
+      await runCli(["onboard"], io, {
         runScheduler: async () => {},
         projectRoot: root,
       }),
@@ -113,12 +113,12 @@ test("onboard installs identical project skill copies without overwriting change
 test("project onboarding reports completed steps, configuration, and next commands", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
-  const dbPath = join(root, "agile.db");
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const { io, output, errors } = interactiveIo(["2"]);
 
   try {
     expect(
-      await runCli(["onboard", "--db", dbPath], io, {
+      await runCli(["onboard"], io, {
         runScheduler: async () => {},
         projectRoot: root,
         homeRoot: home,
@@ -190,20 +190,19 @@ test("global onboarding installs skills without creating a project database", as
 test("repeat onboarding reports identical skills as already installed", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
-  const dbPath = join(root, "agile.db");
   const first = interactiveIo(["1"]);
   const repeated = interactiveIo(["1"]);
 
   try {
     expect(
-      await runCli(["onboard", "--db", dbPath], first.io, {
+      await runCli(["onboard"], first.io, {
         runScheduler: async () => {},
         projectRoot: root,
         homeRoot: home,
       }),
     ).toBe(0);
     expect(
-      await runCli(["onboard", "--db", dbPath], repeated.io, {
+      await runCli(["onboard"], repeated.io, {
         runScheduler: async () => {},
         projectRoot: root,
         homeRoot: home,
@@ -323,7 +322,6 @@ test("onboard requires interactive input", async () => {
 
 test("onboarding refuses a symbolic-link path component", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, "agile.db");
   const redirected = join(root, "redirected");
   await mkdir(redirected);
   await symlink(redirected, join(root, ".agents"));
@@ -332,7 +330,7 @@ test("onboarding refuses a symbolic-link path component", async () => {
   try {
     expect(
       await runCli(
-        ["onboard", "--db", dbPath],
+        ["onboard"],
         { out: () => {}, err: (text) => errors.push(text) },
         { runScheduler: async () => {}, projectRoot: root },
       ),
@@ -348,7 +346,6 @@ test("onboarding refuses a symbolic-link path component", async () => {
 test("onboarding discloses the installed skill when a later target conflicts", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
-  const dbPath = join(root, "agile.db");
   const agentsSkill = join(
     root,
     ".agents",
@@ -372,7 +369,7 @@ test("onboarding discloses the installed skill when a later target conflicts", a
     await writeFile(claudeSkill, "conflicting skill");
 
     expect(
-      await runCli(["onboard", "--db", dbPath], io, {
+      await runCli(["onboard"], io, {
         runScheduler: async () => {},
         projectRoot: root,
         homeRoot: home,
@@ -395,16 +392,15 @@ test("onboarding discloses the installed skill when a later target conflicts", a
   }
 });
 
-test("onboarding retry quotes a literal database path for zsh", async () => {
+test("onboarding retry prints a copyable canonical command", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
-  const dbPath = "$HOME/roc db 'quoted' `backtick` $(substitution)";
   const errors: string[] = [];
 
   try {
     expect(
       await runCli(
-        ["onboard", "--db", dbPath],
+        ["onboard"],
         { out: () => {}, err: (text) => errors.push(text) },
         { runScheduler: async () => {}, projectRoot: root, homeRoot: home },
       ),
@@ -419,7 +415,7 @@ test("onboarding retry quotes a literal database path for zsh", async () => {
     expect(await shell.exited).toBe(0);
     expect(
       (await new Response(shell.stdout).text()).trimEnd().split("\n"),
-    ).toEqual(["roc-it@latest", "onboard", "--db", dbPath]);
+    ).toEqual(["roc-it@latest", "onboard"]);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
@@ -429,12 +425,12 @@ test("onboarding retry quotes a literal database path for zsh", async () => {
 test("onboarding stops truthfully after prior work when a later step fails", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
-  const dbPath = join(root, "agile.db");
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const { io, output, errors } = interactiveIo(["3", "0"]);
 
   try {
     expect(
-      await runCli(["onboard", "--db", dbPath], io, {
+      await runCli(["onboard"], io, {
         runScheduler: async () => {},
         projectRoot: root,
         homeRoot: home,
@@ -460,11 +456,7 @@ test("onboarding stops truthfully after prior work when a later step fails", asy
 
 test("task import creates ready tasks, replays them, and rejects invalid input", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const requestedDb = join(
-    root,
-    "$HOME/roc db 'quoted' `backtick` $(substitution)",
-  );
-  const dbPath = resolve(root, requestedDb);
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const manifestPath = join(root, "backlog.json");
   const malformedPath = join(root, "malformed.json");
   const firstTask = {
@@ -501,13 +493,12 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
     out: (text: string) => output.push(text),
     err: (text: string) => errors.push(text),
   };
+  const runtime = { runScheduler: async () => {}, projectRoot: root };
 
   try {
     await writeFile(manifestPath, JSON.stringify(manifest));
     await writeFile(malformedPath, "not JSON");
-    expect(
-      await runCli(["task", "import", manifestPath, "--db", requestedDb], io),
-    ).toBe(0);
+    expect(await runCli(["task", "import", manifestPath], io, runtime)).toBe(0);
     const importResult = output.at(-1);
     expect(importResult).toContain("Created: 2");
     expect(importResult).toContain("Already present: 0");
@@ -522,7 +513,7 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
     expect(await shell.exited).toBe(0);
     expect(
       (await new Response(shell.stdout).text()).trimEnd().split("\n"),
-    ).toEqual(["roc-it@latest", "task", "list", "--db", requestedDb]);
+    ).toEqual(["roc-it@latest", "task", "list"]);
     const db = openDatabase(dbPath);
     try {
       expect(new PlanningRepository(db).listTasks()).toMatchObject([
@@ -532,7 +523,7 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
     } finally {
       db.close();
     }
-    expect(await runCli(["task", "list", "--db", requestedDb], io)).toBe(0);
+    expect(await runCli(["task", "list"], io, runtime)).toBe(0);
     const listed = output.at(-1) ?? "";
     expect(listed).toBe(
       [
@@ -542,15 +533,13 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
     );
     expect(listed.split("\n")).toHaveLength(2);
     expect(listed).not.toContain("\u001B");
-    expect(
-      await runCli(["task", "import", manifestPath, "--db", requestedDb], io),
-    ).toBe(0);
+    expect(await runCli(["task", "import", manifestPath], io, runtime)).toBe(0);
     expect(output.at(-1)).toContain("Created: 0");
     expect(output.at(-1)).toContain("Already present: 2");
     expect(output.at(-1)).toContain("Total: 2");
-    expect(
-      await runCli(["task", "import", malformedPath, "--db", requestedDb], io),
-    ).toBe(1);
+    expect(await runCli(["task", "import", malformedPath], io, runtime)).toBe(
+      1,
+    );
 
     await writeFile(
       manifestPath,
@@ -559,9 +548,7 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
         tasks: [{ ...firstTask, title: "Conflicting title" }],
       }),
     );
-    expect(
-      await runCli(["task", "import", manifestPath, "--db", requestedDb], io),
-    ).toBe(1);
+    expect(await runCli(["task", "import", manifestPath], io, runtime)).toBe(1);
     const replayDb = openDatabase(dbPath);
     try {
       expect(new PlanningRepository(replayDb).listTasks()).toHaveLength(2);
@@ -573,7 +560,10 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
     expect(await runCli(["task", "import", manifestPath, "--global"], io)).toBe(
       2,
     );
-    expect(errors).toHaveLength(5);
+    const usageErrors = errors.join("\n");
+    expect(usageErrors).toContain("missing required argument 'file'");
+    expect(usageErrors).toContain("too many arguments");
+    expect(usageErrors).toContain("unknown option '--global'");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -584,10 +574,14 @@ test("task list reuses create-backlog guidance when empty", async () => {
   const output: string[] = [];
   try {
     expect(
-      await runCli(["task", "list", "--db", join(root, "agile.db")], {
-        out: (text) => output.push(text),
-        err: () => {},
-      }),
+      await runCli(
+        ["task", "list"],
+        {
+          out: (text) => output.push(text),
+          err: () => {},
+        },
+        { runScheduler: async () => {}, projectRoot: root },
+      ),
     ).toBe(0);
     const empty = output.at(0) ?? "";
     expect(empty).toContain("No tasks.");
@@ -601,18 +595,17 @@ test("task list reuses create-backlog guidance when empty", async () => {
 test("task import validates before creating a database, explains weekId, and keeps --global onboard-only", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const manifestPath = join(root, "invalid-backlog.json");
-  const dbPath = join(root, "agile.db");
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const errors: string[] = [];
   const io = { out: () => {}, err: (text: string) => errors.push(text) };
+  const runtime = { runScheduler: async () => {}, projectRoot: root };
 
   try {
     await writeFile(
       manifestPath,
       JSON.stringify({ cycleId: "2026-W35", goal: "Invalid", tasks: [] }),
     );
-    expect(
-      await runCli(["task", "import", manifestPath, "--db", dbPath], io),
-    ).toBe(1);
+    expect(await runCli(["task", "import", manifestPath], io, runtime)).toBe(1);
     await expect(lstat(dbPath)).rejects.toThrow();
 
     await writeFile(
@@ -624,14 +617,12 @@ test("task import validates before creating a database, explains weekId, and kee
         tasks: [{}],
       }),
     );
-    expect(
-      await runCli(["task", "import", manifestPath, "--db", dbPath], io),
-    ).toBe(1);
+    expect(await runCli(["task", "import", manifestPath], io, runtime)).toBe(1);
     expect(errors.at(-1)).toBe("Manifest uses weekId; replace it with cycleId");
     await expect(lstat(dbPath)).rejects.toThrow();
 
     expect(await runCli(["tokens", "--global"], io)).toBe(2);
-    expect(errors.at(-1)).toBe("--global is only supported by onboard");
+    expect(errors.join("\n")).toContain("unknown option '--global'");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -639,8 +630,8 @@ test("task import validates before creating a database, explains weekId, and kee
 
 test("operational database failures report an error, return 1, and close the database", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, "future.db");
-  const future = new Database(dbPath, { create: true });
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
+  const future = openDatabase(dbPath);
   future.exec("PRAGMA user_version = 6");
   future.close();
   const output: string[] = [];
@@ -649,10 +640,14 @@ test("operational database failures report an error, return 1, and close the dat
 
   try {
     expect(
-      await runCli(["task", "list", "--db", dbPath], {
-        out: (text) => output.push(text),
-        err: (text) => errors.push(text),
-      }),
+      await runCli(
+        ["task", "list"],
+        {
+          out: (text) => output.push(text),
+          err: (text) => errors.push(text),
+        },
+        { runScheduler: async () => {}, projectRoot: root },
+      ),
     ).toBe(1);
     expect(output).toEqual([]);
     expect(errors).toEqual([
@@ -666,24 +661,23 @@ test("operational database failures report an error, return 1, and close the dat
 });
 
 test("argument and unknown-command errors keep exit code 2", async () => {
-  const output: string[] = [];
-  const errors: string[] = [];
-  const io = {
-    out: (text: string) => output.push(text),
-    err: (text: string) => errors.push(text),
-  };
-
-  expect(await runCli(["--unknown-option"], io)).toBe(2);
-  expect(await runCli(["unknown"], io)).toBe(2);
-  expect(await runCli(["init"], io)).toBe(2);
-  expect(await runCli(["onboard", "--backend", "fake"], io)).toBe(2);
-  expect(output).toEqual([]);
-  expect(errors).toHaveLength(4);
-  expect(errors[1]).toBe(
-    "Unknown command: unknown\nRun npx roc-it@latest help",
-  );
-  expect(errors[3]).toContain("onboard accepts only --global and --db PATH");
-  expect(errors[3]).toContain("Retry:");
+  for (const args of [
+    ["--unknown-option"],
+    ["unknown"],
+    ["init"],
+    ["onboard", "--backend", "fake"],
+  ]) {
+    const output: string[] = [];
+    const errors: string[] = [];
+    expect(
+      await runCli(args, {
+        out: (text) => output.push(text),
+        err: (text) => errors.push(text),
+      }),
+    ).toBe(2);
+    expect(output).toEqual([]);
+    expect(errors.join("\n")).toContain("error:");
+  }
 });
 
 test("cycle current prints the configured active cycle", async () => {
@@ -754,7 +748,7 @@ test("cycle current explains how to create missing settings", async () => {
 
 test("tokens prints the current-cycle report", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, "agile.db");
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const cycleId = "2026-08-28-P14D";
   await saveRocSettings(
     { cycle: { type: "custom", days: 14, anchorDate: "2026-08-28" } },
@@ -780,22 +774,24 @@ test("tokens prints the current-cycle report", async () => {
   try {
     expect(
       await runCli(
-        ["tokens", "--db", dbPath],
+        ["tokens"],
         {
           out: (text) => output.push(text),
           err: (text) => output.push(text),
         },
         {
           runScheduler: async () => {},
+          projectRoot: root,
           homeRoot: root,
           now: () => new Date(2026, 7, 28, 12),
         },
       ),
     ).toBe(0);
     expect(output).toHaveLength(1);
-    expect(output[0]).toContain("Token usage · 2026-08-28-P14D");
-    expect(output[0]!).toContain("\u001B[32m");
-    expect(output[0]!.replace(new RegExp(ansiSgrPattern, "g"), "")).toContain(
+    const chart = output.at(0) ?? "";
+    expect(chart).toContain("Token usage · 2026-08-28-P14D");
+    expect(chart).toContain("\u001B[32m");
+    expect(chart.replace(new RegExp(ansiSgrPattern, "g"), "")).toContain(
       "Implement  150 tokens  100%  █",
     );
   } finally {
@@ -805,7 +801,7 @@ test("tokens prints the current-cycle report", async () => {
 
 test("tokens supports explicit plain output", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, "agile.db");
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const cycleId = "2026-08-28-P14D";
   await saveRocSettings(
     { cycle: { type: "custom", days: 14, anchorDate: "2026-08-28" } },
@@ -831,21 +827,23 @@ test("tokens supports explicit plain output", async () => {
   try {
     expect(
       await runCli(
-        ["tokens", "--db", dbPath, "--no-color"],
+        ["tokens", "--no-color"],
         {
           out: (text) => output.push(text),
           err: (text) => output.push(text),
         },
         {
           runScheduler: async () => {},
+          projectRoot: root,
           homeRoot: root,
           now: () => new Date(2026, 7, 28, 12),
         },
       ),
     ).toBe(0);
     expect(output).toHaveLength(1);
-    expect(output[0]!).not.toContain("\u001B[");
-    expect(output[0]!).toContain("Implement  150 tokens  100%  █");
+    const chart = output.at(0) ?? "";
+    expect(chart).not.toContain("\u001B[");
+    expect(chart).toContain("Implement  150 tokens  100%  █");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -853,7 +851,6 @@ test("tokens supports explicit plain output", async () => {
 
 test("tokens reports a missing current cycle as an empty state", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, "agile.db");
   const output: string[] = [];
 
   try {
@@ -863,13 +860,14 @@ test("tokens reports a missing current cycle as an empty state", async () => {
     );
     expect(
       await runCli(
-        ["tokens", "--db", dbPath],
+        ["tokens"],
         {
           out: (text) => output.push(text),
           err: (text) => output.push(text),
         },
         {
           runScheduler: async () => {},
+          projectRoot: root,
           homeRoot: root,
           now: () => new Date(2026, 7, 28, 12),
         },
@@ -905,20 +903,25 @@ test("tokens rejects scheduler-only options and reports read failures through th
   ).toBe(2);
 
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, "future.db");
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
   await saveRocSettings({ cycle: { type: "weekly" } }, root);
-  const future = new Database(dbPath, { create: true });
+  const future = openDatabase(dbPath);
   future.exec("PRAGMA user_version = 6");
   future.close();
   try {
     expect(
       await runCli(
-        ["tokens", "--db", dbPath],
+        ["tokens"],
         {
           out: (text) => output.push(text),
           err: (text) => output.push(text),
         },
-        { ...runtime, homeRoot: root, now: () => new Date(2026, 7, 28, 12) },
+        {
+          ...runtime,
+          projectRoot: root,
+          homeRoot: root,
+          now: () => new Date(2026, 7, 28, 12),
+        },
       ),
     ).toBe(1);
     expect(logged).toEqual(["TOKEN_USAGE_READ_FAILED"]);
@@ -932,7 +935,7 @@ test("tokens rejects scheduler-only options and reports read failures through th
 
 test("task hook trust records only the current task-scoped configuration hash", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, "agile.db");
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const hook = {
     command: "codegraph",
     args: ["init", "-i"],
@@ -973,10 +976,14 @@ test("task hook trust records only the current task-scoped configuration hash", 
 
   try {
     expect(
-      await runCli(["task", "hook", "trust", "H1", "prehook", "--db", dbPath], {
-        out: (text) => output.push(text),
-        err: (text) => output.push(text),
-      }),
+      await runCli(
+        ["task", "hook", "trust", "H1", "prehook"],
+        {
+          out: (text) => output.push(text),
+          err: (text) => output.push(text),
+        },
+        { runScheduler: async () => {}, projectRoot: root },
+      ),
     ).toBe(0);
     expect(output).toEqual([
       `Trusted prehook for H1: ${taskHookConfigHash(hook)}`,

@@ -172,12 +172,12 @@ npx roc-it@latest task list
 Run that backlog with Codex:
 
 ```bash
-npx roc-it@latest scheduler run --backend codex --repo /absolute/path/to/project
+npx roc-it@latest scheduler run
 ```
 
 Codex mode creates or reuses a work folder at `<project>.agile-checkout`. Roc
-never switches branches or makes commits in the source folder passed through
-`--repo`.
+never switches branches or makes commits in the current project's source
+folder.
 
 ## How it works
 
@@ -220,24 +220,25 @@ Roc is growing in small steps.
 
 ## Commands
 
-The built-in `npx roc-it@latest help` groups the production commands by the
-journey they support:
+The built-in `npx roc-it@latest help` describes the public command tree:
 
 ```text
 Get started
-npx roc-it@latest onboard [--global] [--db PATH]
+npx roc-it@latest onboard [--global]
 
 Manage your cycle
 npx roc-it@latest cycle current
 
 Plan work
-npx roc-it@latest task import FILE [--db PATH]
-npx roc-it@latest task import-github [--db PATH]
-npx roc-it@latest task list [--db PATH]
-npx roc-it@latest tokens [--db PATH] [--no-color]
+npx roc-it@latest task import FILE
+npx roc-it@latest task import-github
+npx roc-it@latest task list
+npx roc-it@latest task hook trust <task-id> <prehook|posthook>
+npx roc-it@latest tokens [--no-color]
 
 Run work
-npx roc-it@latest scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+npx roc-it@latest scheduler run [--base REF]
+npx roc-it@latest scheduler inspect
 
 Get help
 npx roc-it@latest help

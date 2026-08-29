@@ -8,6 +8,13 @@ Implement, and Review attempts. `FakeHarness` provides deterministic tests;
 The global Agile Cycle setting selects the active calendar window used by task
 manifests and token reporting. It supports Daily, Weekly, and custom-day cycles.
 
+Commander owns the public CLI command tree and command-scoped argument
+validation. Project commands find the nearest `.agile` ancestor and otherwise
+use the Git checkout root. SQLite and runtime logs stay beneath the resolved
+project at `.agile/runtime/`; the CLI does not accept path overrides. The Fake
+Harness remains an internal deterministic test backend and is not exposed by
+the public scheduler command.
+
 ```text
 CLI -> Scheduler -> AgentHarness -> FakeHarness
                  \-> CodexHarness -> CodexClient -> codex app-server
@@ -15,7 +22,7 @@ CLI -> Scheduler -> AgentHarness -> FakeHarness
                  \-> TaskHookService -> Bun argv subprocess
 ```
 
-The Codex backend never changes the checkout supplied through `--repo`. A
+The Codex backend never changes the resolved project checkout. A
 `TaskBranchManager` creates or reuses one sibling checkout at
 `<repo>.agile-checkout`. It runs one task at a time and switches that checkout
 between retained `agile/<taskId>` branches. Every task branch is tied to its

@@ -54,12 +54,13 @@ async function configureCycle(root: string): Promise<void> {
 
 test("imports through the CLI and skips the unchanged task on repeat", async () => {
   const root = await mkdtemp(join(tmpdir(), "roc-github-command-"));
-  const dbPath = join(root, "agile.db");
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const output: string[] = [];
   let reads = 0;
   await configureCycle(root);
   const runtime = {
     runScheduler: async () => {},
+    projectRoot: root,
     homeRoot: root,
     now: () => new Date(2026, 7, 28, 12),
     readGitHubIssues: async () => {
@@ -73,9 +74,7 @@ test("imports through the CLI and skips the unchanged task on repeat", async () 
   };
 
   try {
-    expect(
-      await runCli(["task", "import-github", "--db", dbPath], io, runtime),
-    ).toBe(0);
+    expect(await runCli(["task", "import-github"], io, runtime)).toBe(0);
     const firstDb = openDatabase(dbPath);
     const firstTask = firstDb
       .query<
@@ -95,9 +94,7 @@ test("imports through the CLI and skips the unchanged task on repeat", async () 
     ]);
     firstDb.close();
 
-    expect(
-      await runCli(["task", "import-github", "--db", dbPath], io, runtime),
-    ).toBe(0);
+    expect(await runCli(["task", "import-github"], io, runtime)).toBe(0);
     const secondDb = openDatabase(dbPath);
     expect(
       secondDb
@@ -131,10 +128,11 @@ test("reports an empty successful import", async () => {
   try {
     expect(
       await runCli(
-        ["task", "import-github", "--db", ":memory:"],
+        ["task", "import-github"],
         { out: (text) => output.push(text), err: (text) => output.push(text) },
         {
           runScheduler: async () => {},
+          projectRoot: root,
           homeRoot: root,
           now: () => new Date(2026, 7, 28, 12),
           readGitHubIssues: async () => [],
@@ -149,16 +147,17 @@ test("reports an empty successful import", async () => {
 
 test("rejects unapproved arguments before GitHub or database access", async () => {
   const root = await mkdtemp(join(tmpdir(), "roc-github-command-"));
-  const dbPath = join(root, "not-created.db");
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const errors: string[] = [];
   let contactedGitHub = false;
   try {
     expect(
       await runCli(
-        ["task", "import-github", "--db", dbPath, "--backend", "fake"],
+        ["task", "import-github", "--backend", "fake"],
         { out: () => {}, err: (text) => errors.push(text) },
         {
           runScheduler: async () => {},
+          projectRoot: root,
           readGitHubIssues: async () => {
             contactedGitHub = true;
             return [];
@@ -168,7 +167,7 @@ test("rejects unapproved arguments before GitHub or database access", async () =
     ).toBe(2);
     expect(contactedGitHub).toBeFalse();
     expect(existsSync(dbPath)).toBeFalse();
-    expect(errors).toEqual(["task import-github accepts only --db PATH"]);
+    expect(errors.join("\n")).toContain("unknown option '--backend'");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -176,19 +175,19 @@ test("rejects unapproved arguments before GitHub or database access", async () =
 
 test("reports prerequisite and atomic database failures with exit code 1", async () => {
   const root = await mkdtemp(join(tmpdir(), "roc-github-command-"));
-  const dbPath = join(root, "agile.db");
-  const unopenedDbPath = join(root, "not-created.db");
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const errors: string[] = [];
   await configureCycle(root);
   const runtime = {
     runScheduler: async () => {},
+    projectRoot: root,
     homeRoot: root,
     now: () => new Date(2026, 7, 28, 12),
   };
   try {
     expect(
       await runCli(
-        ["task", "import-github", "--db", unopenedDbPath],
+        ["task", "import-github"],
         { out: () => {}, err: (text) => errors.push(text) },
         {
           ...runtime,
@@ -200,7 +199,7 @@ test("reports prerequisite and atomic database failures with exit code 1", async
         },
       ),
     ).toBe(1);
-    expect(existsSync(unopenedDbPath)).toBeFalse();
+    expect(existsSync(dbPath)).toBeFalse();
 
     const db = openDatabase(dbPath);
     db.exec(`
@@ -213,7 +212,7 @@ test("reports prerequisite and atomic database failures with exit code 1", async
     db.close();
     expect(
       await runCli(
-        ["task", "import-github", "--db", dbPath],
+        ["task", "import-github"],
         { out: () => {}, err: (text) => errors.push(text) },
         { ...runtime, readGitHubIssues: async () => [candidate()] },
       ),
