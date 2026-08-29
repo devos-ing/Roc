@@ -27,6 +27,7 @@ Roc currently provides:
 - a read-only Review of the exact commit made by Implement;
 - saved task progress and token use, with restart support;
 - a token-use chart in the terminal;
+- one-shot import of approved GitHub Issues into the ready backlog;
 - a list of skills that agents are allowed to use.
 
 Roc works on one task at a time. It does not merge or push code, delete task
@@ -38,6 +39,8 @@ Prerequisites:
 
 - [Bun](https://bun.sh/) 1.3.0 or later
 - Git
+- [GitHub CLI](https://cli.github.com/) for Issue import, authenticated with
+  `gh auth login`
 - [Codex CLI](https://github.com/openai/codex) for Codex mode
 - The `grilling` skill for creating a backlog:
 
@@ -117,6 +120,49 @@ The skill uses `grilling` to agree on the requirement, previews the full task
 list and dependencies, waits for your explicit approval, saves a JSON backlog
 under `.agile/backlog`, and imports it into Roc.
 
+### Import approved GitHub Issues
+
+Run `npx roc-it@latest task import-github` inside a Git repository to import
+open Issues carrying the fixed `roc:ready` label. Roc uses `gh` to identify the
+current GitHub repository; the command has no repository or label override.
+
+Every eligible Issue body must use these second-level headings exactly once and
+in this order. List sections require dash-prefixed items.
+
+```markdown
+## Problem
+
+Why this work is needed.
+
+## Desired outcome
+
+What should be true when it is done.
+
+## Scope
+
+- included work
+
+## Non-goals
+
+- None
+
+## Acceptance criteria
+
+- observable completion condition
+
+## Validation
+
+- verification command or check
+```
+
+Issue `#42` becomes task `github-42` in the active Agile Cycle. Import is
+one-way: later runs skip that ID without reparsing or updating the stored task.
+New tasks are approved and ready immediately. Their `tokenCeiling` defaults to
+`12000` as a planning estimate only—Roc does not stop execution at that value.
+
+A global install also exposes the compatibility alias `agile`, so
+`agile task import-github` runs the same command.
+
 Inspect the resulting tasks:
 
 ```bash
@@ -157,7 +203,7 @@ Roc is growing in small steps.
 
 ### Product
 
-- [ ] **GitHub Issues backlog** — Bring approved GitHub Issues into Roc's ready
+- [x] **GitHub Issues backlog** — Bring approved GitHub Issues into Roc's ready
   backlog.
 - [ ] **Visible task board** — See task progress in a terminal UI.
 - [ ] **Parallel task runs** — Run independent tasks at the same time.
@@ -186,6 +232,7 @@ npx roc-it@latest cycle current
 
 Plan work
 npx roc-it@latest task import FILE [--db PATH]
+npx roc-it@latest task import-github [--db PATH]
 npx roc-it@latest task list [--db PATH]
 npx roc-it@latest tokens [--db PATH] [--no-color]
 

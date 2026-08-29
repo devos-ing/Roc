@@ -11,6 +11,8 @@ Manage your cycle:
 Plan work:
   npx roc-it@latest task import FILE [--db PATH]
       Import an approved backlog into the current project.
+  npx roc-it@latest task import-github [--db PATH]
+      Import approved GitHub Issues into the current project.
   npx roc-it@latest task list [--db PATH]
       List the current project's tasks.
   npx roc-it@latest task hook trust <task-id> <prehook|posthook> [--db PATH]

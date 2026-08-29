@@ -26,6 +26,7 @@ Roc 目前提供：
 - Review 只讀取 Implement 完成的指定 commit；
 - 儲存任務進度和 token 用量，並支援重新啟動；
 - 在終端顯示 token 用量圖表；
+- 一次性把已核准的 GitHub Issues 匯入 ready backlog；
 - 限制 agents 可以使用的 skills 清單。
 
 Roc 目前一次只處理一個任務。它不會合併或 push 程式碼、刪除任務 branch、
@@ -37,6 +38,8 @@ Roc 目前一次只處理一個任務。它不會合併或 push 程式碼、刪�
 
 - [Bun](https://bun.sh/) 1.3.0 或以上版本
 - Git
+- 匯入 Issues 時需要 [GitHub CLI](https://cli.github.com/)，並先執行
+  `gh auth login`
 - 使用 Codex mode 時需要 [Codex CLI](https://github.com/openai/codex)
 - 建立 backlog 時需要 `grilling` skill：
 
@@ -113,6 +116,49 @@ $roc-create-tasks Add team invitations
 這個 skill 會使用 `grilling` 釐清需求、預覽完整任務清單和相依關係、等待你的
 明確批准，然後把 JSON backlog 儲存在 `.agile/backlog` 並匯入 Roc。
 
+### 匯入已核准的 GitHub Issues
+
+在 Git repository 內執行 `npx roc-it@latest task import-github`，即可匯入帶有
+固定 `roc:ready` label 的 open Issues。Roc 會透過 `gh` 找出目前的 GitHub
+repository；此指令不提供 repository 或 label 覆寫選項。
+
+每個合資格 Issue 的內容必須依以下次序各自包含一次二級標題。清單段落必須使用
+連字號項目。
+
+```markdown
+## Problem
+
+需要處理這項工作的原因。
+
+## Desired outcome
+
+完成後應達到的結果。
+
+## Scope
+
+- 包含的工作
+
+## Non-goals
+
+- None
+
+## Acceptance criteria
+
+- 可觀察的完成條件
+
+## Validation
+
+- 驗證指令或檢查
+```
+
+Issue `#42` 會成為目前 Agile Cycle 內的 `github-42` 任務。匯入是單向的：
+之後再次執行時會直接跳過同一 ID，不會重新解析或更新已儲存的任務。新任務會
+立即成為已核准的 ready 任務。`tokenCeiling` 預設為 `12000`，只作規劃估算；
+Roc 不會在到達這個數值時停止執行。
+
+全域安裝也會提供相容別名 `agile`，因此 `agile task import-github` 會執行
+相同指令。
+
 查看產生的任務：
 
 ```bash
@@ -158,7 +204,7 @@ Roc 正在逐步成長。
 
 ### 產品
 
-- [ ] **GitHub Issues backlog** — 把已核准的 GitHub Issues 加入 Roc 的
+- [x] **GitHub Issues backlog** — 把已核准的 GitHub Issues 加入 Roc 的
   ready backlog。
 - [ ] **可見的任務看板** — 在 terminal UI 查看任務進度。
 - [ ] **平行執行任務** — 同時執行互不依賴的任務。
@@ -185,6 +231,7 @@ npx roc-it@latest cycle current
 
 規劃工作
 npx roc-it@latest task import FILE [--db PATH]
+npx roc-it@latest task import-github [--db PATH]
 npx roc-it@latest task list [--db PATH]
 npx roc-it@latest tokens [--db PATH] [--no-color]
 
