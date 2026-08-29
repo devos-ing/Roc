@@ -168,11 +168,11 @@ npx roc-it@latest task list
 使用 Codex 執行 backlog：
 
 ```bash
-npx roc-it@latest scheduler run --backend codex --repo /absolute/path/to/project
+npx roc-it@latest scheduler run
 ```
 
 Codex mode 會在 `<project>.agile-checkout` 建立或重用工作資料夾。Roc 不會在
-`--repo` 指定的來源資料夾切換 branch 或建立 commit。
+目前 project 的來源資料夾切換 branch 或建立 commit。
 
 ## 運作方式
 
@@ -220,23 +220,25 @@ Roc 正在逐步成長。
 
 ## 指令
 
-內建的 `npx roc-it@latest help` 會按使用旅程分組顯示正式指令：
+內建的 `npx roc-it@latest help` 會顯示公開指令樹：
 
 ```text
 開始使用
-npx roc-it@latest onboard [--global] [--db PATH]
+npx roc-it@latest onboard [--global]
 
 管理週期
 npx roc-it@latest cycle current
 
 規劃工作
-npx roc-it@latest task import FILE [--db PATH]
-npx roc-it@latest task import-github [--db PATH]
-npx roc-it@latest task list [--db PATH]
-npx roc-it@latest tokens [--db PATH] [--no-color]
+npx roc-it@latest task import FILE
+npx roc-it@latest task import-github
+npx roc-it@latest task list
+npx roc-it@latest task hook trust <task-id> <prehook|posthook>
+npx roc-it@latest tokens [--no-color]
 
 執行工作
-npx roc-it@latest scheduler run --backend codex --repo PATH [--base REF] [--db PATH]
+npx roc-it@latest scheduler run [--base REF]
+npx roc-it@latest scheduler inspect
 
 取得說明
 npx roc-it@latest help

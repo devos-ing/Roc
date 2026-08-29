@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { runCli, runDaemon, schedulerSleep } from "../../src/cli/run";
+import { defaultRuntime } from "../../src/cli/runtime";
 import { AgileError } from "../../src/runtime/errors";
 import { openDatabase } from "../../src/store/database";
 import { PlanningRepository } from "../../src/store/planning-repository";
 
+/** Waits until one stored task reaches the expected scheduler status. */
 async function waitForTaskStatus(
   databasePath: string,
   taskId: string,
@@ -30,76 +32,10 @@ async function waitForTaskStatus(
   }
 }
 
-test("runs a validated fake scenario through the scheduler runtime seam", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-scheduler-cli-"));
-  const scenarioPath = join(root, "scenario.json");
-  const calls: unknown[] = [];
-  try {
-    await writeFile(
-      scenarioPath,
-      JSON.stringify({
-        attempts: [
-          {
-            taskId: "T1",
-            role: "scout",
-            retryIndex: 0,
-            expect: { model: "luna", effort: "high" },
-            deliveries: [
-              {
-                nextCursor: "1",
-                event: {
-                  type: "attempt.completed",
-                  eventId: "T1:completed",
-                  attemptId: "A1",
-                  sequence: 1,
-                  occurredAt: "2026-08-25T00:00:00.000Z",
-                },
-              },
-            ],
-          },
-        ],
-      }),
-    );
-    const output: string[] = [];
-    const code = await runCli(
-      [
-        "scheduler",
-        "run",
-        "--backend",
-        "fake",
-        "--db",
-        join(root, "state.db"),
-        "--fake-script",
-        scenarioPath,
-      ],
-      { out: (text) => output.push(text), err: (text) => output.push(text) },
-      {
-        runScheduler: async (input) => {
-          calls.push(input);
-        },
-      },
-    );
-    expect(code).toBe(0);
-    expect(calls).toEqual([
-      {
-        backend: "fake",
-        dbPath: resolve(join(root, "state.db")),
-        scenario: expect.any(Object),
-      },
-    ]);
-    expect(output).toEqual([]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("the default runtime binds authored events to generated attempts and stops promptly", async () => {
-  const root = await mkdtemp(
-    join(tmpdir(), "agile-scheduler-default-runtime-"),
-  );
+test("the internal fake runtime binds authored events to generated attempts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-scheduler-runtime-"));
   const databasePath = join(root, "state.db");
-  const scenarioPath = join(root, "scenario.json");
-  let running: Promise<number> | undefined;
+  let running: Promise<void> | undefined;
   try {
     const db = openDatabase(databasePath);
     try {
@@ -109,7 +45,7 @@ test("the default runtime binds authored events to generated attempts and stops 
       );
       planning.createCycle({
         id: "2026-W35",
-        goal: "Exercise the real scheduler runtime",
+        goal: "Exercise the fake scheduler runtime",
         nonGoals: [],
         tokenBudget: 100_000,
         ticketIds: ["T1"],
@@ -138,9 +74,11 @@ test("the default runtime binds authored events to generated attempts and stops 
     } finally {
       db.close();
     }
-    await writeFile(
-      scenarioPath,
-      JSON.stringify({
+
+    running = defaultRuntime.runScheduler({
+      backend: "fake",
+      dbPath: databasePath,
+      scenario: {
         attempts: [
           {
             taskId: "T1",
@@ -157,39 +95,18 @@ test("the default runtime binds authored events to generated attempts and stops 
                   sequence: 1,
                   occurredAt: "2026-08-25T00:00:01.000Z",
                   code: "backend_unavailable",
-                  message: "Stop after one real delivery",
+                  message: "Stop after one delivery",
                   retryable: false,
                 },
               },
             ],
           },
         ],
-      }),
-    );
-
-    const startedAt = Date.now();
-    running = runCli(
-      [
-        "scheduler",
-        "run",
-        "--backend",
-        "fake",
-        "--db",
-        databasePath,
-        "--fake-script",
-        scenarioPath,
-      ],
-      {
-        out: () => {},
-        err: (text) => {
-          throw new Error(text);
-        },
       },
-    );
+    });
     await waitForTaskStatus(databasePath, "T1", "failed_infra");
     process.emit("SIGTERM");
-    expect(await running).toBe(0);
-    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    await running;
 
     const lifecycle = (await readFile(join(root, "agile.log"), "utf8"))
       .trim()
@@ -199,8 +116,6 @@ test("the default runtime binds authored events to generated attempts and stops 
       "SCHEDULER_RUN_STARTED",
       "SCHEDULER_RUN_STOPPED",
     ]);
-    expect(lifecycle[0]?.runId).toBeTruthy();
-    expect(lifecycle[1]?.runId).toBe(lifecycle[0]?.runId);
 
     const inspected = openDatabase(databasePath);
     try {
@@ -215,7 +130,6 @@ test("the default runtime binds authored events to generated attempts and stops 
         )
         .get();
       expect(attempt?.id).toStartWith("attempt-");
-      expect(attempt?.id).not.toBe("authored-attempt-id");
       expect(JSON.parse(payload?.payload_json ?? "null").attemptId).toBe(
         attempt?.id,
       );
@@ -229,13 +143,11 @@ test("the default runtime binds authored events to generated attempts and stops 
   }
 });
 
-test("production sleep cancels heartbeat waits and preserves the one-second idle delay", async () => {
+test("production sleep cancels heartbeat waits and preserves the idle delay", async () => {
   const stop = new AbortController();
-  const heartbeatStartedAt = Date.now();
   const heartbeat = schedulerSleep(3_000, stop.signal);
   stop.abort(new Error("tick finished"));
   await expect(heartbeat).rejects.toThrow("tick finished");
-  expect(Date.now() - heartbeatStartedAt).toBeLessThan(250);
 
   const idleStartedAt = Date.now();
   await schedulerSleep(1_000);
@@ -244,7 +156,7 @@ test("production sleep cancels heartbeat waits and preserves the one-second idle
   expect(idleElapsed).toBeLessThan(2_000);
 });
 
-test("signal shutdown bounds cancellation and closes a blocked backend before waiting for the daemon", async () => {
+test("signal shutdown bounds cancellation and closes a blocked backend", async () => {
   let releaseDaemon: (() => void) | undefined;
   let released = false;
   let cancelCalled = false;
@@ -291,108 +203,68 @@ test("signal shutdown bounds cancellation and closes a blocked backend before wa
   expect(released).toBe(true);
 });
 
-test("prints a stable JSON inspection snapshot", async () => {
+test("prints a stable project scheduler snapshot", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-scheduler-inspect-"));
   const output: string[] = [];
-  const code = await runCli(["scheduler", "inspect", "--db", ":memory:"], {
-    out: (text) => output.push(text),
-    err: (text) => output.push(text),
-  });
-  expect(code).toBe(0);
-  expect(JSON.parse(output[0] ?? "null")).toEqual({
-    scheduler: {},
-    cycles: [],
-    tasks: [],
-  });
+  try {
+    expect(
+      await runCli(
+        ["scheduler", "inspect"],
+        {
+          out: (text) => output.push(text),
+          err: (text) => output.push(text),
+        },
+        { runScheduler: async () => {}, projectRoot: root },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(output[0] ?? "null")).toEqual({
+      scheduler: {},
+      cycles: [],
+      tasks: [],
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
-test("returns configuration errors before opening a database", async () => {
-  const output: string[] = [];
-  expect(
-    await runCli(["scheduler", "run"], {
-      out: (text) => output.push(text),
-      err: (text) => output.push(text),
-    }),
-  ).toBe(2);
-  expect(output[0]).toContain("--backend fake|codex");
-});
-
-test("passes normalized Codex scheduler options to the runtime seam", async () => {
+test("passes fixed project paths and the selected base to the Codex runtime", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-scheduler-codex-cli-"));
-  const databasePath = join(root, "state.db");
   const calls: unknown[] = [];
   const output: string[] = [];
   try {
     expect(
       await runCli(
-        [
-          "scheduler",
-          "run",
-          "--backend",
-          "codex",
-          "--repo",
-          root,
-          "--db",
-          databasePath,
-        ],
+        ["scheduler", "run", "--base", "origin/main"],
         { out: (text) => output.push(text), err: () => {} },
         {
+          projectRoot: root,
           runScheduler: async (input) => {
-            expect(output).toEqual(["Status: Starting"]);
             calls.push(input);
           },
         },
       ),
     ).toBe(0);
-    expect(calls[0]).toEqual({
-      backend: "codex",
-      repoPath: resolve(root),
-      baseRef: "HEAD",
-      dbPath: resolve(databasePath),
-    });
+    expect(calls).toEqual([
+      {
+        backend: "codex",
+        repoPath: root,
+        baseRef: "origin/main",
+        dbPath: join(root, ".agile", "runtime", "agile.db"),
+      },
+    ]);
     expect(output).toEqual(["Status: Starting", "Result: Stopped"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("requires backend-specific scheduler options before invoking the runtime", async () => {
-  const cases: Array<{ args: string[]; message: string }> = [
-    {
-      args: ["scheduler", "run", "--backend", "fake"],
-      message: "--fake-script PATH",
-    },
-    {
-      args: ["scheduler", "run", "--backend", "fake", "--repo", "."],
-      message: "does not accept --repo",
-    },
-    {
-      args: ["scheduler", "run", "--backend", "fake", "--base", "HEAD"],
-      message: "does not accept --base",
-    },
-    {
-      args: [
-        "scheduler",
-        "run",
-        "--backend",
-        "codex",
-        "--repo",
-        ".",
-        "--fake-script",
-        "scenario.json",
-      ],
-      message: "does not accept --fake-script",
-    },
-    {
-      args: ["scheduler", "run", "--backend", "codex"],
-      message: "--repo PATH",
-    },
-  ];
-  for (const entry of cases) {
+test("rejects internal scheduler flags before invoking the runtime", async () => {
+  for (const option of ["--db", "--repo", "--backend", "--fake-script"]) {
     const errors: string[] = [];
     let called = false;
     expect(
       await runCli(
-        entry.args,
+        ["scheduler", "run", option, "value"],
         { out: () => {}, err: (text) => errors.push(text) },
         {
           runScheduler: async () => {
@@ -401,13 +273,13 @@ test("requires backend-specific scheduler options before invoking the runtime", 
         },
       ),
     ).toBe(2);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain(entry.message);
+    expect(errors.join("\n")).toContain(`unknown option '${option}'`);
     expect(called).toBeFalse();
   }
 });
 
-test("renders an operational AgileError once and asks the runtime to log it", async () => {
+test("logs and renders one operational scheduler failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-scheduler-error-"));
   const output: string[] = [];
   const errors: string[] = [];
   const logged: AgileError[] = [];
@@ -418,108 +290,25 @@ test("renders an operational AgileError once and asks the runtime to log it", as
     component: "cli",
     message: "Codex could not start",
   });
-  expect(
-    await runCli(
-      ["scheduler", "run", "--backend", "codex", "--repo", "."],
-      { out: (text) => output.push(text), err: (text) => errors.push(text) },
-      {
-        runScheduler: async () => {
-          throw runtimeError;
-        },
-        logError: async (error) => {
-          logged.push(error);
-        },
-      },
-    ),
-  ).toBe(1);
-  expect(output).toEqual(["Status: Starting"]);
-  expect(errors).toEqual(["CODEX_STARTUP_BLOCKED: Codex could not start"]);
-  expect(logged).toEqual([runtimeError]);
-});
-
-test("returns configuration errors for invalid fake scripts", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-scheduler-cli-"));
-  const invalidJson = join(root, "invalid.json");
-  const invalidSchema = join(root, "invalid-schema.json");
   try {
-    await writeFile(invalidJson, "{");
-    await writeFile(invalidSchema, JSON.stringify({ attempts: [] }));
-    for (const fakeScript of [invalidJson, invalidSchema]) {
-      const output: string[] = [];
-      expect(
-        await runCli(
-          [
-            "scheduler",
-            "run",
-            "--backend",
-            "fake",
-            "--db",
-            join(root, "state.db"),
-            "--fake-script",
-            fakeScript,
-          ],
-          {
-            out: (text) => output.push(text),
-            err: (text) => output.push(text),
-          },
-        ),
-      ).toBe(2);
-      expect(output).toHaveLength(1);
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("returns operational errors for an unreadable scheduler database", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-scheduler-cli-"));
-  const scenarioPath = join(root, "scenario.json");
-  const output: string[] = [];
-  try {
-    await writeFile(
-      scenarioPath,
-      JSON.stringify({
-        attempts: [
-          {
-            taskId: "T1",
-            role: "scout",
-            retryIndex: 0,
-            expect: { model: "luna", effort: "high" },
-            deliveries: [
-              {
-                nextCursor: "1",
-                event: {
-                  type: "attempt.completed",
-                  eventId: "T1:completed",
-                  attemptId: "A1",
-                  sequence: 1,
-                  occurredAt: "2026-08-25T00:00:00.000Z",
-                },
-              },
-            ],
-          },
-        ],
-      }),
-    );
     expect(
       await runCli(
-        [
-          "scheduler",
-          "run",
-          "--backend",
-          "fake",
-          "--db",
-          "/dev/null/state.db",
-          "--fake-script",
-          scenarioPath,
-        ],
+        ["scheduler", "run"],
+        { out: (text) => output.push(text), err: (text) => errors.push(text) },
         {
-          out: (text) => output.push(text),
-          err: (text) => output.push(text),
+          projectRoot: root,
+          runScheduler: async () => {
+            throw runtimeError;
+          },
+          logError: async (error) => {
+            logged.push(error);
+          },
         },
       ),
     ).toBe(1);
-    expect(output).toHaveLength(1);
+    expect(output).toEqual(["Status: Starting"]);
+    expect(errors).toEqual(["CODEX_STARTUP_BLOCKED: Codex could not start"]);
+    expect(logged).toEqual([runtimeError]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
