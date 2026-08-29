@@ -127,20 +127,20 @@ async function executeOnboard(
     );
     const selection = await context.io.selectSkills(candidates);
     if (selection.kind === "cancelled") throw new Error("Onboarding cancelled");
-    const allowlistStep = renderAllowlistStep(selection.identities.length);
-    completedSteps.push(allowlistStep);
-    context.io.out(allowlistStep);
     const setting = await promptCycleSetting(
       context.io,
       context.runtime.now?.() ?? new Date(),
     );
-    const cycleStep = renderCycleStep(setting);
-    completedSteps.push(cycleStep);
-    context.io.out(cycleStep);
     const settingsPath = await saveRocSettings(
       { cycle: setting, skills: { allowlist: selection.identities } },
       homeRoot,
     );
+    const allowlistStep = renderAllowlistStep(selection.identities.length);
+    completedSteps.push(allowlistStep);
+    context.io.out(allowlistStep);
+    const cycleStep = renderCycleStep(setting);
+    completedSteps.push(cycleStep);
+    context.io.out(cycleStep);
     const settingsStep = renderSettingsStep(settingsPath);
     completedSteps.push(settingsStep);
     context.io.out(settingsStep);

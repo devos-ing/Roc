@@ -535,6 +535,93 @@ test("onboard rejects an invalid Custom duration without writing settings", asyn
   }
 });
 
+test("onboarding reports only durable work when cycle validation rejects a new allowlist", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
+  const homeRoot = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const dbPath = join(projectRoot, ".agile", "runtime", "agile.db");
+  await mkdir(join(homeRoot, ".agents"), { recursive: true });
+  await writeFile(
+    join(homeRoot, ".agents", ".skill-lock.json"),
+    JSON.stringify({
+      skills: {
+        tdd: { source: "mattpocock/skills" },
+        grilling: { source: "mattpocock/skills" },
+      },
+    }),
+  );
+  await saveRocSettings(
+    {
+      cycle: { type: "weekly" },
+      skills: { allowlist: [{ name: "tdd", source: "mattpocock/skills" }] },
+    },
+    homeRoot,
+  );
+  const before = await readFile(rocSettingsPath(homeRoot));
+  const output: string[] = [];
+  const errors: string[] = [];
+  const interactions: string[] = [];
+  const answers = ["3", "0"];
+  const io = {
+    out: (text: string) => {
+      output.push(text);
+      if (text.startsWith("1. Database:")) interactions.push("database");
+      if (text.startsWith("2. Skills:")) interactions.push("packaged skills");
+    },
+    err: (text: string) => errors.push(text),
+    ask: async () => {
+      interactions.push("cycle");
+      return answers.shift() ?? "";
+    },
+    selectSkills: async (candidates: DefaultSkillCandidate[]) => {
+      interactions.push("checklist");
+      return {
+        kind: "selected" as const,
+        identities: candidates
+          .filter(({ identity }) => identity.name === "grilling")
+          .map(({ identity }) => identity),
+      };
+    },
+  };
+
+  try {
+    expect(
+      await runCli(
+        ["onboard"],
+        io,
+        onboardingRuntime({
+          projectRoot,
+          homeRoot,
+          listWorkspaceSkills: async () => [
+            {
+              name: "grilling",
+              path: join(homeRoot, ".agents", "skills", "grilling", "SKILL.md"),
+              enabled: true,
+            },
+          ],
+        }),
+      ),
+    ).toBe(1);
+    expect(interactions).toEqual([
+      "database",
+      "packaged skills",
+      "checklist",
+      "cycle",
+      "cycle",
+    ]);
+    expect(await readFile(rocSettingsPath(homeRoot))).toEqual(before);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain(`1. Database: Ready (${dbPath})`);
+    expect(errors[0]).toContain("2. Skills:");
+    expect(errors[0]).not.toContain("3. Agent skills:");
+    expect(errors[0]).not.toContain("4. Selected cycle:");
+    expect(output.join("\n")).not.toContain("3. Agent skills:");
+    expect(output.join("\n")).not.toContain("4. Selected cycle:");
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(homeRoot, { recursive: true, force: true });
+  }
+});
+
 test("onboard requires interactive input", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const homeRoot = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
