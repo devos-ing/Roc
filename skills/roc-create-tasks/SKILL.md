@@ -9,6 +9,10 @@ the user explicitly invoked `roc-create-tasks`.
 Accept the rest of this invocation as the requirement. If it explicitly names
 local files, read every one of those files before asking questions.
 
+**REQUIRED SUB-SKILL:** Use the installed `unslop` skill for every user-facing
+question, preview, manifest prose value, and final report. Run its self-audit
+before showing or writing text. Keep commands, paths, IDs, and JSON keys exact.
+
 Use the installed `grilling` skill for requirement discovery. Do not replace it
 with your own interview. If `grilling` is unavailable, stop and tell the user to
 install it with:
