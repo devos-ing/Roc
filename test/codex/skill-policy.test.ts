@@ -3,41 +3,58 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  buildDefaultSkillCandidates,
   buildDefaultSkillConfig,
   loadDefaultSkillPolicy,
 } from "../../src/codex/skill-policy";
+import { skillIdentityKey } from "../../src/domain/skill-allowlist";
 
-test("loads allowed standalone skill identities from the installed skill lock", async () => {
-  const home = await mkdtemp(join(tmpdir(), "agile-skill-policy-"));
+test("trusts only the exact pstack unslop identity and path", async () => {
+  const home = await mkdtemp(join(tmpdir(), "roc-unslop-policy-"));
+  await mkdir(join(home, ".agents"), { recursive: true });
+  await writeFile(
+    join(home, ".agents", ".skill-lock.json"),
+    JSON.stringify({
+      version: 3,
+      skills: {
+        unslop: { source: "backnotprop/pstack" },
+        "pstack-other": { source: "backnotprop/pstack" },
+      },
+    }),
+  );
+
   try {
-    await mkdir(join(home, ".agents"));
-    await writeFile(
-      join(home, ".agents", ".skill-lock.json"),
-      JSON.stringify({
-        version: 3,
-        skills: {
-          tdd: { source: "mattpocock/skills" },
-          "i-have-adhd": { source: "ayghri/i-have-adhd" },
-          ponytail: { source: "DietrichGebert/ponytail" },
-          animate: { source: "emilkowalski/skills" },
-        },
-      }),
-    );
-
     const policy = await loadDefaultSkillPolicy(home);
+    expect([...policy.standaloneSkillSources]).toEqual([
+      ["unslop", "backnotprop/pstack"],
+    ]);
 
-    expect(policy.agentsSkillsRoot).toBe(join(home, ".agents", "skills"));
-    expect([...policy.allowedStandaloneSkillNames]).toEqual([
-      "tdd",
-      "i-have-adhd",
-      "ponytail",
+    const root = join(home, ".agents", "skills");
+    const skills = [
+      { name: "unslop", path: join(root, "unslop", "SKILL.md"), enabled: true },
+      {
+        name: "unslop",
+        path: join(home, ".codex", "skills", "unslop", "SKILL.md"),
+        enabled: true,
+      },
+      {
+        name: "pstack-other",
+        path: join(root, "pstack-other", "SKILL.md"),
+        enabled: true,
+      },
+    ];
+
+    expect(buildDefaultSkillConfig(skills, policy)).toEqual([
+      { path: skills[0]!.path, enabled: true },
+      { path: skills[1]!.path, enabled: false },
+      { path: skills[2]!.path, enabled: false },
     ]);
   } finally {
     await rm(home, { recursive: true, force: true });
   }
 });
 
-test("default policy only enables installed Matt Pocock, i-have-adhd, and Ponytail skills", () => {
+test("distinguishes legacy, empty, and subset selections", () => {
   const skills = [
     {
       name: "tdd",
@@ -45,49 +62,94 @@ test("default policy only enables installed Matt Pocock, i-have-adhd, and Ponyta
       enabled: true,
     },
     {
-      name: "tdd",
-      path: "/Users/test/.codex/skills/tdd/SKILL.md",
-      enabled: true,
-    },
-    {
       name: "ponytail:ponytail",
-      path: "/Users/test/.codex/plugins/cache/ponytail/ponytail/4.9.0/skills/ponytail/SKILL.md",
-      enabled: true,
-    },
-    {
-      name: "i-have-adhd:focus",
-      path: "/Users/test/.codex/plugins/cache/i-have-adhd/i-have-adhd/1.0.0/skills/focus/SKILL.md",
-      enabled: true,
-    },
-    {
-      name: "ponytail:ponytail-review",
-      path: "/Users/test/.codex/plugins/cache/ponytail/ponytail/4.9.0/skills/ponytail-review/SKILL.md",
-      enabled: false,
-    },
-    {
-      name: "i-have-adhd",
-      path: "/Users/test/.agents/skills/i-have-adhd/SKILL.md",
-      enabled: true,
-    },
-    {
-      name: "openai-docs",
-      path: "/Users/test/.codex/skills/.system/openai-docs/SKILL.md",
+      path: "/plugin/ponytail/SKILL.md",
       enabled: true,
     },
   ];
+  const base = {
+    agentsSkillsRoot: "/Users/test/.agents/skills",
+    standaloneSkillSources: new Map([["tdd", "mattpocock/skills"]]),
+  };
 
   expect(
+    buildDefaultSkillConfig(skills, base).map((entry) => entry.enabled),
+  ).toEqual([true, true]);
+  expect(
     buildDefaultSkillConfig(skills, {
-      agentsSkillsRoot: "/Users/test/.agents/skills",
-      allowedStandaloneSkillNames: new Set(["tdd", "i-have-adhd"]),
-    }),
+      ...base,
+      selectedSkillKeys: new Set(),
+    }).map((entry) => entry.enabled),
+  ).toEqual([false, false]);
+  expect(
+    buildDefaultSkillConfig(skills, {
+      ...base,
+      selectedSkillKeys: new Set([
+        skillIdentityKey({ name: "tdd", source: "mattpocock/skills" }),
+      ]),
+    }).map((entry) => entry.enabled),
+  ).toEqual([true, false]);
+});
+
+test("builds deterministic checklist candidates with missing unslop disabled", () => {
+  const policy = {
+    agentsSkillsRoot: "/Users/test/.agents/skills",
+    standaloneSkillSources: new Map([["tdd", "mattpocock/skills"]]),
+  };
+  expect(
+    buildDefaultSkillCandidates(
+      [
+        {
+          name: "tdd",
+          path: "/Users/test/.agents/skills/tdd/SKILL.md",
+          enabled: true,
+        },
+      ],
+      policy,
+    ),
   ).toEqual([
-    { path: skills[0]!.path, enabled: true },
-    { path: skills[1]!.path, enabled: false },
-    { path: skills[2]!.path, enabled: true },
-    { path: skills[3]!.path, enabled: true },
-    { path: skills[4]!.path, enabled: false },
-    { path: skills[5]!.path, enabled: true },
-    { path: skills[6]!.path, enabled: false },
+    {
+      identity: { name: "tdd", source: "mattpocock/skills" },
+      installed: true,
+      initiallySelected: true,
+    },
+    {
+      identity: { name: "unslop", source: "backnotprop/pstack" },
+      installed: false,
+      initiallySelected: false,
+    },
+  ]);
+
+  const repeatPolicy = {
+    ...policy,
+    selectedSkillKeys: new Set([
+      skillIdentityKey({ name: "tdd", source: "mattpocock/skills" }),
+    ]),
+  };
+  expect(
+    buildDefaultSkillCandidates(
+      [
+        {
+          name: "tdd",
+          path: "/Users/test/.agents/skills/tdd/SKILL.md",
+          enabled: true,
+        },
+        {
+          name: "grilling",
+          path: "/Users/test/.agents/skills/grilling/SKILL.md",
+          enabled: true,
+        },
+      ],
+      {
+        ...repeatPolicy,
+        standaloneSkillSources: new Map([
+          ["tdd", "mattpocock/skills"],
+          ["grilling", "mattpocock/skills"],
+        ]),
+      },
+    ).filter(({ installed }) => installed),
+  ).toMatchObject([
+    { identity: { name: "grilling" }, initiallySelected: false },
+    { identity: { name: "tdd" }, initiallySelected: true },
   ]);
 });

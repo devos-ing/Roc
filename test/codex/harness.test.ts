@@ -363,7 +363,7 @@ test("applies the default skill-source allowlist before starting a role thread",
     branches: memoryBranches(),
     skillPolicy: {
       agentsSkillsRoot: "/Users/test/.agents/skills",
-      allowedStandaloneSkillNames: new Set(["tdd"]),
+      standaloneSkillSources: new Map([["tdd", "mattpocock/skills"]]),
     },
   });
 
