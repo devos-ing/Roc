@@ -105,7 +105,7 @@ function displayWidth(value: string): number {
 test("renders canonical model columns, compact state, and a right-side detail panel", () => {
   const output = renderTaskBoard(snapshot, { width: 120, color: false, selectedTaskId: "active" });
 
-  expect(output).toContain("Cycle 2026-W35 · 5 tasks · 25/1000 tokens");
+  expect(output).toContain("Cycle 2026-W35 · 5 tasks · 20/1000 tokens");
   expect(output).toContain("Ready (1)");
   expect(output).toContain("In progress (1)");
   expect(output).toContain("Attention (1)");
@@ -116,7 +116,7 @@ test("renders canonical model columns, compact state, and a right-side detail pa
   expect(output).toContain("Attempt: attempt-active");
   expect(output).toContain("Model: gpt-5");
   expect(output).toContain("Retry: 1");
-  expect(output).toContain("Tokens: 25/100");
+  expect(output).toContain("Tokens: 20/100");
 });
 
 test("pads colored wide columns and keeps ANSI resets intact", () => {
@@ -178,4 +178,14 @@ test("keeps widths below forty bounded and frames empty boards completely", () =
   expect(output).toContain("No tasks in this cycle.");
   expect(output).toContain("↑↓ select");
   expect(output.split("\n").every((line) => displayWidth(line) <= 24)).toBe(true);
+});
+
+test("keeps selected details bounded when labels exceed the terminal width", () => {
+  const output = renderTaskBoard(snapshot, {
+    width: 10,
+    color: false,
+    selectedTaskId: "active",
+  });
+
+  expect(output.split("\n").every((line) => displayWidth(line) <= 10)).toBe(true);
 });

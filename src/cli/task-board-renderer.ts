@@ -105,14 +105,9 @@ function color(value: string, tone: keyof typeof colors, enabled: boolean): stri
   return enabled ? `${colors[tone]}${value}${reset}` : value;
 }
 
-/** Sums every token category exposed by the canonical inspection model. */
+/** Sums input and output tokens without double-counting their reported subsets. */
 function tokenCount(tokens: TaskBoardTask["tokenTotals"]): number {
-  return (
-    tokens.inputTokens +
-    tokens.cachedInputTokens +
-    tokens.outputTokens +
-    tokens.reasoningOutputTokens
-  );
+  return tokens.inputTokens + tokens.outputTokens;
 }
 
 /** Returns the model attempt currently running for a task, or its most recent attempt. */
@@ -261,7 +256,10 @@ function wrap(value: string, width: number, prefix = ""): string[] {
 
 /** Wraps a labelled detail field while retaining its label on the first line. */
 function detailField(label: string, value: string, width: number): string[] {
-  return wrap(value || "—", width, `${label}: `);
+  const prefix = `${label}: `;
+  return visibleWidth(prefix) < Math.max(1, width)
+    ? wrap(value || "—", width, prefix)
+    : [fit(label, width), ...wrap(value || "—", width)];
 }
 
 /** Renders one task's complete details for either a side panel or narrow full-screen view. */
@@ -290,7 +288,7 @@ function renderDetails(
     "",
     ...detailField("Problem", task.spec.problem, width),
     ...detailField("Desired outcome", task.spec.desiredOutcome, width),
-    "Acceptance criteria:",
+    fit("Acceptance criteria:", width),
     ...(criteria.length
       ? criteria.flatMap((criterion) => wrap(criterion, width, "- "))
       : ["- —"]),
