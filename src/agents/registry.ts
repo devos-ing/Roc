@@ -12,5 +12,5 @@ export type RealBackendName = keyof typeof backends;
 
 /** Narrows a parsed CLI backend flag to a registered real backend name. */
 export function isRealBackendName(value: unknown): value is RealBackendName {
-  return typeof value === "string" && value in backends;
+  return typeof value === "string" && Object.hasOwn(backends, value);
 }

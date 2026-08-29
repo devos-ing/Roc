@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
+import { loadSchedulerSkillPolicy } from "../agents/codex/backend";
 import { CodexClient } from "../agents/codex/client";
 import { listWorkspaceSkills as readWorkspaceSkills } from "../agents/codex/skill-catalog";
-import { loadSchedulerSkillPolicy } from "../agents/codex/backend";
 import { backends } from "../agents/registry";
 import type { BackendFactory } from "../agents/types";
 import type { AgentHarness } from "../harness/contracts";

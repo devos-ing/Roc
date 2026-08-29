@@ -280,23 +280,25 @@ test("rejects internal scheduler flags before invoking the runtime", async () =>
 });
 
 test("rejects a --backend name outside the registry before invoking the runtime", async () => {
-  const errors: string[] = [];
-  let called = false;
-  expect(
-    await runCli(
-      ["scheduler", "run", "--backend", "nope"],
-      { out: () => {}, err: (text) => errors.push(text) },
-      {
-        runScheduler: async () => {
-          called = true;
+  for (const backend of ["nope", "toString", "constructor", "__proto__"]) {
+    const errors: string[] = [];
+    let called = false;
+    expect(
+      await runCli(
+        ["scheduler", "run", "--backend", backend],
+        { out: () => {}, err: (text) => errors.push(text) },
+        {
+          runScheduler: async () => {
+            called = true;
+          },
         },
-      },
-    ),
-  ).toBe(2);
-  expect(errors.join("\n")).toContain(
-    "scheduler run requires --backend fake|codex",
-  );
-  expect(called).toBeFalse();
+      ),
+    ).toBe(2);
+    expect(errors.join("\n")).toContain(
+      "scheduler run requires --backend fake|codex",
+    );
+    expect(called).toBeFalse();
+  }
 });
 
 test("routes a registered --backend name into the scheduler run input", async () => {

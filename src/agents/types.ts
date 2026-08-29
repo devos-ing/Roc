@@ -11,6 +11,7 @@ import type { TaskBranchManager } from "../workspace/task-branch";
 export type BackendRuntime = {
   readonly catalog: readonly CatalogModel[];
   readonly harness: AgentHarness;
+  /** Releases the backend's resources; must stay idempotent across repeated calls. */
   close(): Promise<void>;
 };
 

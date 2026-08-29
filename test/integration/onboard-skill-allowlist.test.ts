@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildDefaultSkillConfig } from "../../src/agents/codex/skill-policy";
 import { runCli } from "../../src/cli/run";
 import { loadSchedulerSkillPolicy } from "../../src/cli/runtime";
-import { buildDefaultSkillConfig } from "../../src/agents/codex/skill-policy";
 import { loadRocSettings } from "../../src/settings";
 
 test("onboarding selection becomes the scheduler skill configuration", async () => {
