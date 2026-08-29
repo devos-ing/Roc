@@ -334,24 +334,28 @@ export async function runTaskBoardSession(
   /** Treats process Ctrl-C consistently with the raw Ctrl-C byte. */
   const onSignal = () => finish();
 
-  /** Performs one restoration step without preventing the remaining terminal cleanup. */
-  const restore = (operation: () => void) => {
-    try {
-      operation();
-    } catch {
-      // Terminal restoration is best effort; every independent reset still runs.
-    }
+  /** Performs one restoration write without preventing the remaining terminal cleanup. */
+  const restore = async (operation: (callback: () => void) => void) => {
+    await new Promise<void>((resolve) => {
+      try {
+        operation(resolve);
+      } catch {
+        // Terminal restoration is best effort; every independent reset still runs.
+        resolve();
+      }
+    });
   };
 
   try {
     input.setRawMode(true);
+    output.on("error", onOutputError);
     output.write(`${alternateScreen}${hideCursor}${enableMouse}`);
+    if (closed) await stopped;
     input.resume();
     input.on("data", onData);
     input.on("error", onInputError);
     input.on("end", onInputEnd);
     input.on("close", onInputClose);
-    output.on("error", onOutputError);
     output.on("resize", onResize);
     output.on("close", onOutputClose);
     process.once("SIGINT", onSignal);
@@ -370,11 +374,17 @@ export async function runTaskBoardSession(
     }
     await stopped;
   } finally {
-    restore(() => output.write(disableMouse));
-    restore(() => output.write(showCursor));
-    restore(() => output.write(leaveAlternateScreen));
-    restore(() => input.setRawMode(false));
-    restore(() => input.pause());
+    await restore((callback) => output.write(disableMouse, callback));
+    await restore((callback) => output.write(showCursor, callback));
+    await restore((callback) => output.write(leaveAlternateScreen, callback));
+    await restore((callback) => {
+      input.setRawMode(false);
+      callback();
+    });
+    await restore((callback) => {
+      input.pause();
+      callback();
+    });
     output.off("error", onOutputError);
   }
 }

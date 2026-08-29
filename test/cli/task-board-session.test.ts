@@ -100,12 +100,26 @@ class Output extends EventEmitter {
   columns = 120;
   writes: string[] = [];
   failFrame = false;
+  deferWriteCallbacks = false;
+  private readonly writeCallbacks: (() => void)[] = [];
 
-  write(value: string): boolean {
+  write(value: string, callback?: () => void): boolean {
     if (this.failFrame && value.startsWith("\u001B[2J"))
       throw new Error("render failed");
     this.writes.push(value);
+    if (callback === undefined) return true;
+    if (this.deferWriteCallbacks) this.writeCallbacks.push(callback);
+    else callback();
     return true;
+  }
+
+  /** Emits a deferred write failure after its write call has returned. */
+  failDeferredWrite(error: Error): void {
+    queueMicrotask(() => {
+      this.emit("error", error);
+      this.deferWriteCallbacks = false;
+      for (const callback of this.writeCallbacks.splice(0)) callback();
+    });
   }
 }
 
@@ -323,4 +337,22 @@ test("restores the terminal after input, output, and render failures", async () 
     }),
   ).rejects.toThrow("render failed");
   expectRestored(renderInput, renderOutput);
+});
+
+test("keeps the output error listener through deferred restoration writes", async () => {
+  const input = new Input();
+  const output = new Output();
+  const running = runTaskBoardSession({
+    input: input as never,
+    output: output as never,
+    read: () => board(),
+  });
+
+  await waitFor(() => frame(output).includes("Ready (2)"));
+  output.deferWriteCallbacks = true;
+  input.emit("data", "q");
+  await waitFor(() => output.writes.includes("\u001B[?1000l\u001B[?1006l"));
+  output.failDeferredWrite(new Error("late output failure"));
+  await running;
+  expectRestored(input, output);
 });
