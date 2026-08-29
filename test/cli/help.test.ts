@@ -33,3 +33,10 @@ test("empty arguments, help, and --help describe the public command tree", async
   expect(help).not.toContain("--backend");
   expect(help).not.toContain("--fake-script");
 });
+
+test("task help exposes the board and its all-cycles option", async () => {
+  const help = await helpFor(["task", "--help"]);
+
+  expect(help).toContain("board");
+  expect(await helpFor(["task", "board", "--help"])).toContain("--all");
+});

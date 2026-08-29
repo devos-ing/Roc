@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { renderTaskBoard } from "../../src/cli/task-board-renderer";
 import type {
   TaskBoardSnapshot,
   TaskBoardTask,
 } from "../../src/cli/task-board-model";
+import { renderTaskBoard } from "../../src/cli/task-board-renderer";
 
 const ansiSgrPattern = /\u001B\[[0-9;]*m/g;
 const tokens = {
@@ -13,8 +13,10 @@ const tokens = {
   reasoningOutputTokens: 3,
 };
 const spec = {
-  problem: "No readable board with a deliberately long explanation that must wrap.",
-  desiredOutcome: "A readable board with detailed task information that also wraps.",
+  problem:
+    "No readable board with a deliberately long explanation that must wrap.",
+  desiredOutcome:
+    "A readable board with detailed task information that also wraps.",
   scope: ["task board"],
   nonGoals: [],
   acceptanceCriteria: [
@@ -28,7 +30,9 @@ const spec = {
 };
 
 /** Creates a canonical task-board task with overridable board-facing fields. */
-function task(input: Partial<TaskBoardTask> & Pick<TaskBoardTask, "id">): TaskBoardTask {
+function task(
+  input: Partial<TaskBoardTask> & Pick<TaskBoardTask, "id">,
+): TaskBoardTask {
   return {
     cycleId: "2026-W35",
     title: `${input.id} work`,
@@ -52,7 +56,8 @@ function task(input: Partial<TaskBoardTask> & Pick<TaskBoardTask, "id">): TaskBo
 const ready = task({ id: "ready", title: "Ready work" });
 const active = task({
   id: "active",
-  title: "Implement board rendering with a deliberately long Unicode title 你好世界",
+  title:
+    "Implement board rendering with a deliberately long Unicode title 你好世界",
   rawStatus: "implementing",
   column: "inProgress",
   isActive: true,
@@ -76,12 +81,28 @@ const blocked = task({
   column: "attention",
   blockingDependencyIds: ["ready"],
 });
-const done = task({ id: "done", title: "Finished work", rawStatus: "done", column: "done" });
-const doneTwo = task({ id: "done-2", title: "Second finished work", rawStatus: "done", column: "done" });
+const done = task({
+  id: "done",
+  title: "Finished work",
+  rawStatus: "done",
+  column: "done",
+});
+const doneTwo = task({
+  id: "done-2",
+  title: "Second finished work",
+  rawStatus: "done",
+  column: "done",
+});
 const snapshot: TaskBoardSnapshot = {
   currentCycleId: "2026-W35",
   scheduler: { activeTaskId: "active", activeAttemptId: "attempt-active" },
-  active: { taskId: "active", attemptId: "attempt-active", role: "implement", model: "gpt-5", retryCount: 1 },
+  active: {
+    taskId: "active",
+    attemptId: "attempt-active",
+    role: "implement",
+    model: "gpt-5",
+    retryCount: 1,
+  },
   cycles: [{ id: "2026-W35", tokenTarget: 1_000, actual: tokens }],
   tasks: [ready, active, blocked, done, doneTwo],
   columns: {
@@ -96,14 +117,26 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 /** Counts terminal cells for the CJK and emoji cases exercised below. */
 function displayWidth(value: string): number {
-  return Array.from(graphemes.segment(value.replace(ansiSgrPattern, ""))).reduce(
-    (width, { segment }) => width + (/\p{Extended_Pictographic}|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\uff00-\uffef]/u.test(segment) ? 2 : 1),
+  return Array.from(
+    graphemes.segment(value.replace(ansiSgrPattern, "")),
+  ).reduce(
+    (width, { segment }) =>
+      width +
+      (/\p{Extended_Pictographic}|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\uff00-\uffef]/u.test(
+        segment,
+      )
+        ? 2
+        : 1),
     0,
   );
 }
 
 test("renders canonical model columns, compact state, and a right-side detail panel", () => {
-  const output = renderTaskBoard(snapshot, { width: 120, color: false, selectedTaskId: "active" });
+  const output = renderTaskBoard(snapshot, {
+    width: 120,
+    color: false,
+    selectedTaskId: "active",
+  });
 
   expect(output).toContain("Cycle 2026-W35 · 5 tasks · 20/1000 tokens");
   expect(output).toContain("Ready (1)");
@@ -120,7 +153,11 @@ test("renders canonical model columns, compact state, and a right-side detail pa
 });
 
 test("pads colored wide columns and keeps ANSI resets intact", () => {
-  const output = renderTaskBoard(snapshot, { width: 120, selectedTaskId: "active", doneExpanded: true });
+  const output = renderTaskBoard(snapshot, {
+    width: 120,
+    selectedTaskId: "active",
+    doneExpanded: true,
+  });
   const boardLines = output
     .split("\n")
     .map((line) => line.replace(ansiSgrPattern, ""))
@@ -133,16 +170,32 @@ test("pads colored wide columns and keeps ANSI resets intact", () => {
 });
 
 test("uses a vertical list and full-screen wrapped detail in narrow terminals", () => {
-  const list = renderTaskBoard(snapshot, { width: 60, color: false, doneExpanded: true });
-  const detail = renderTaskBoard(snapshot, { width: 60, color: false, selectedTaskId: "active" });
+  const list = renderTaskBoard(snapshot, {
+    width: 60,
+    color: false,
+    doneExpanded: true,
+  });
+  const detail = renderTaskBoard(snapshot, {
+    width: 60,
+    color: false,
+    selectedTaskId: "active",
+  });
 
-  expect(list.indexOf("Finished work")).toBeLessThan(list.indexOf("Second finished work"));
+  expect(list.indexOf("Finished work")).toBeLessThan(
+    list.indexOf("Second finished work"),
+  );
   expect(detail).toStartWith("Task active");
   expect(detail).not.toContain("Ready (1)");
-  expect(detail).toContain("Problem: No readable board with a deliberately long");
-  expect(detail).toContain("Desired outcome: A readable board with detailed task");
+  expect(detail).toContain(
+    "Problem: No readable board with a deliberately long",
+  );
+  expect(detail).toContain(
+    "Desired outcome: A readable board with detailed task",
+  );
   expect(detail).toContain("Acceptance criteria:");
-  expect(detail.split("\n").every((line) => displayWidth(line) <= 60)).toBe(true);
+  expect(detail.split("\n").every((line) => displayWidth(line) <= 60)).toBe(
+    true,
+  );
 });
 
 test("keeps plain Unicode output cell-bounded without splitting graphemes", () => {
@@ -157,7 +210,9 @@ test("keeps plain Unicode output cell-bounded without splitting graphemes", () =
   expect(output).not.toMatch(ansiSgrPattern);
   expect(output).toContain("…");
   expect(output).not.toContain("�");
-  expect(output.split("\n").every((line) => displayWidth(line) <= 20)).toBe(true);
+  expect(output.split("\n").every((line) => displayWidth(line) <= 20)).toBe(
+    true,
+  );
 });
 
 test("keeps widths below forty bounded and frames empty boards completely", () => {
@@ -175,9 +230,13 @@ test("keeps widths below forty bounded and frames empty boards completely", () =
   expect(output).toContain("In progress (0)");
   expect(output).toContain("Attention (0)");
   expect(output).toContain("Done (0)");
-  expect(output).toContain("No tasks in this cycle.");
+  expect(output).toContain("No tasks.");
+  expect(output).toContain("/roc-create-tasks");
+  expect(output).toContain("$roc-create-tasks");
   expect(output).toContain("↑↓ select");
-  expect(output.split("\n").every((line) => displayWidth(line) <= 24)).toBe(true);
+  expect(output.split("\n").every((line) => displayWidth(line) <= 24)).toBe(
+    true,
+  );
 });
 
 test("keeps selected details bounded when labels exceed the terminal width", () => {
@@ -187,5 +246,7 @@ test("keeps selected details bounded when labels exceed the terminal width", () 
     selectedTaskId: "active",
   });
 
-  expect(output.split("\n").every((line) => displayWidth(line) <= 10)).toBe(true);
+  expect(output.split("\n").every((line) => displayWidth(line) <= 10)).toBe(
+    true,
+  );
 });

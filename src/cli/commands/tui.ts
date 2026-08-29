@@ -10,20 +10,20 @@ import {
   reportOperationalError,
 } from "../command-context";
 import { buildTaskBoardSnapshot } from "../task-board-model";
+import { renderTaskBoard } from "../task-board-renderer";
 import { runTaskBoardSession } from "../task-board-session";
 import type { CliCommandContext } from "../types";
 
-/** Runs the read-only interactive task board for the current Agile cycle. */
-async function executeTui(context: CliCommandContext): Promise<number> {
+/** Runs the read-only task board for the current cycle or every stored cycle. */
+export async function executeTaskBoard(
+  context: CliCommandContext,
+  allCycles = false,
+): Promise<number> {
   let dbPath: string;
   try {
     dbPath = projectDatabasePath(await commandProjectRoot(context));
   } catch (error) {
     context.io.err(errorMessage(error));
-    return 1;
-  }
-  if (context.io.input === undefined || context.io.output === undefined) {
-    context.io.err("Task board requires an interactive terminal");
     return 1;
   }
   try {
@@ -32,16 +32,24 @@ async function executeTui(context: CliCommandContext): Promise<number> {
     try {
       const planning = new PlanningRepository(db);
       const orchestration = new OrchestrationRepository(db);
-      await runTaskBoardSession({
-        input: context.io.input,
-        output: context.io.output,
-        read: () =>
-          buildTaskBoardSnapshot({
-            tasks: planning.listTasks(),
-            inspection: orchestration.inspect(),
-            currentCycleId: cycle.id,
+      const read = () =>
+        buildTaskBoardSnapshot({
+          tasks: planning.listTasks(),
+          inspection: orchestration.inspect(),
+          currentCycleId: cycle.id,
+          allCycles,
+        });
+      const { input, output } = context.io;
+      if (input?.isTTY === true && output?.isTTY === true) {
+        await runTaskBoardSession({ input, output, read });
+      } else {
+        context.io.out(
+          renderTaskBoard(read(), {
+            width: output?.columns ?? 80,
+            isTTY: false,
           }),
-      });
+        );
+      }
       return 0;
     } finally {
       db.close();
@@ -56,7 +64,7 @@ async function executeTui(context: CliCommandContext): Promise<number> {
         category: "infra",
         retryable: true,
         component: "cli",
-        message: "Task board stopped unexpectedly",
+        message: errorMessage(error),
       },
     );
   }
@@ -71,6 +79,6 @@ export function registerTuiCommand(
     .command("tui")
     .description("Open the live read-only task board")
     .action(async () => {
-      context.exitCode = await executeTui(context);
+      context.exitCode = await executeTaskBoard(context);
     });
 }

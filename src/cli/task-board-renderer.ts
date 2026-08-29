@@ -1,7 +1,5 @@
-import type {
-  TaskBoardSnapshot,
-  TaskBoardTask,
-} from "./task-board-model";
+import { renderEmptyTaskList } from "./presentation";
+import type { TaskBoardSnapshot, TaskBoardTask } from "./task-board-model";
 
 export type { TaskBoardSnapshot, TaskBoardTask } from "./task-board-model";
 
@@ -18,9 +16,7 @@ export type TaskBoardRenderOptions = {
   expandedDone?: boolean;
 };
 
-export type TaskBoardHit =
-  | { kind: "task"; taskId: string }
-  | { kind: "done" };
+export type TaskBoardHit = { kind: "task"; taskId: string } | { kind: "done" };
 
 type ColumnName = "Ready" | "In progress" | "Attention" | "Done";
 
@@ -83,7 +79,8 @@ function fit(value: string, width: number): string {
   for (const match of value.matchAll(ansiSgrPattern)) {
     for (const grapheme of splitGraphemes(value.slice(offset, match.index))) {
       const size = graphemeWidth(grapheme);
-      if (used + size > contentWidth) return `${result}${ellipsis}${activeColor ? reset : ""}`;
+      if (used + size > contentWidth)
+        return `${result}${ellipsis}${activeColor ? reset : ""}`;
       result += grapheme;
       used += size;
     }
@@ -93,7 +90,8 @@ function fit(value: string, width: number): string {
   }
   for (const grapheme of splitGraphemes(value.slice(offset))) {
     const size = graphemeWidth(grapheme);
-    if (used + size > contentWidth) return `${result}${ellipsis}${activeColor ? reset : ""}`;
+    if (used + size > contentWidth)
+      return `${result}${ellipsis}${activeColor ? reset : ""}`;
     result += grapheme;
     used += size;
   }
@@ -106,7 +104,11 @@ function pad(value: string, width: number): string {
 }
 
 /** Colors text only when the renderer is producing interactive terminal output. */
-function color(value: string, tone: keyof typeof colors, enabled: boolean): string {
+function color(
+  value: string,
+  tone: keyof typeof colors,
+  enabled: boolean,
+): string {
   return enabled ? `${colors[tone]}${value}${reset}` : value;
 }
 
@@ -116,11 +118,10 @@ function tokenCount(tokens: TaskBoardTask["tokenTotals"]): number {
 }
 
 /** Returns the model attempt currently running for a task, or its most recent attempt. */
-function currentAttempt(
-  task: TaskBoardTask,
-  snapshot: TaskBoardSnapshot,
-) {
-  const activeAttemptId = task.isActive ? snapshot.active?.attemptId : undefined;
+function currentAttempt(task: TaskBoardTask, snapshot: TaskBoardSnapshot) {
+  const activeAttemptId = task.isActive
+    ? snapshot.active?.attemptId
+    : undefined;
   return (
     task.attempts.find((attempt) => attempt.id === activeAttemptId) ??
     task.attempts.find((attempt) => attempt.status === "running") ??
@@ -157,7 +158,9 @@ function taskById(
 ): TaskBoardTask | undefined {
   return id === undefined
     ? undefined
-    : taskColumns.flatMap((column) => column.tasks).find((task) => task.id === id);
+    : taskColumns
+        .flatMap((column) => column.tasks)
+        .find((task) => task.id === id);
 }
 
 /** Renders one compact task card for a board column or vertical list. */
@@ -227,7 +230,10 @@ function cardHeight(task: TaskBoardTask): number {
 }
 
 /** Combines equal-height padded columns into a width-bounded horizontal board. */
-function joinColumns(columnsToJoin: readonly string[][], cellWidth: number): string[] {
+function joinColumns(
+  columnsToJoin: readonly string[][],
+  cellWidth: number,
+): string[] {
   const height = Math.max(...columnsToJoin.map((column) => column.length));
   return Array.from({ length: height }, (_, index) =>
     columnsToJoin
@@ -245,14 +251,20 @@ function wrap(value: string, width: number, prefix = ""): string[] {
   for (const word of value.trim().split(/\s+/u)) {
     if (word.length === 0) continue;
     const separator = visibleWidth(line) > visibleWidth(indentation) ? " " : "";
-    if (visibleWidth(line) + visibleWidth(separator) + visibleWidth(word) <= limit) {
+    if (
+      visibleWidth(line) + visibleWidth(separator) + visibleWidth(word) <=
+      limit
+    ) {
       line += `${separator}${word}`;
       continue;
     }
     if (visibleWidth(line) > visibleWidth(indentation)) lines.push(line);
     line = indentation;
     for (const grapheme of splitGraphemes(word)) {
-      if (visibleWidth(line) + graphemeWidth(grapheme) > limit && visibleWidth(line) > visibleWidth(indentation)) {
+      if (
+        visibleWidth(line) + graphemeWidth(grapheme) > limit &&
+        visibleWidth(line) > visibleWidth(indentation)
+      ) {
         lines.push(line);
         line = indentation;
       }
@@ -288,10 +300,26 @@ function renderDetails(
     ...detailField("Status", task.rawStatus, width),
     ...detailField("Phase", phase(task, snapshot), width),
     ...detailField("Role", attempt?.role ?? "—", width),
-    ...detailField("Attempt", attempt?.id ?? String(task.attempts.length || "—"), width),
-    ...detailField("Model", attempt?.model ?? task.modelDecisions.at(-1)?.model ?? "—", width),
-    ...detailField("Retry", attempt === undefined ? "—" : String(attempt.retryIndex), width),
-    ...detailField("Tokens", `${tokenCount(task.tokenTotals)}/${task.tokenTarget}`, width),
+    ...detailField(
+      "Attempt",
+      attempt?.id ?? String(task.attempts.length || "—"),
+      width,
+    ),
+    ...detailField(
+      "Model",
+      attempt?.model ?? task.modelDecisions.at(-1)?.model ?? "—",
+      width,
+    ),
+    ...detailField(
+      "Retry",
+      attempt === undefined ? "—" : String(attempt.retryIndex),
+      width,
+    ),
+    ...detailField(
+      "Tokens",
+      `${tokenCount(task.tokenTotals)}/${task.tokenTarget}`,
+      width,
+    ),
     ...detailField("Blocker", blocker(task) ?? "—", width),
     ...detailField("Dependencies", dependencies.join(", ") || "—", width),
     "",
@@ -306,13 +334,32 @@ function renderDetails(
 
 /** Renders the compact non-interactive shortcut reminder. */
 function footer(width: number): string {
-  return fit("↑↓ select · Space peek · Enter details · d Done · ? help · q quit", width);
+  return fit(
+    "↑↓ select · Space peek · Enter details · d Done · ? help · q quit",
+    width,
+  );
+}
+
+/** Wraps the shared empty-backlog guidance for the available terminal width. */
+function emptyBoardGuidance(width: number): string[] {
+  return renderEmptyTaskList()
+    .split("\n")
+    .flatMap((line) => wrap(line, width));
 }
 
 /** Renders the canonical current-cycle summary and token progress. */
-function summary(snapshot: TaskBoardSnapshot, taskCount: number, width: number): string {
-  const cycle = snapshot.cycles.find((candidate) => candidate.id === snapshot.currentCycleId);
-  const tokens = cycle === undefined ? "" : ` · ${tokenCount(cycle.actual)}/${cycle.tokenTarget} tokens`;
+function summary(
+  snapshot: TaskBoardSnapshot,
+  taskCount: number,
+  width: number,
+): string {
+  const cycle = snapshot.cycles.find(
+    (candidate) => candidate.id === snapshot.currentCycleId,
+  );
+  const tokens =
+    cycle === undefined
+      ? ""
+      : ` · ${tokenCount(cycle.actual)}/${cycle.tokenTarget} tokens`;
   return fit(
     `Cycle ${snapshot.currentCycleId} · ${taskCount} task${taskCount === 1 ? "" : "s"}${tokens}`,
     width,
@@ -339,9 +386,13 @@ export function renderTaskBoard(
     options.detailTaskId ??
       (options.detailMode === undefined ? selectedId : undefined),
   );
-  const doneExpanded = options.doneExpanded === true || options.expandedDone === true;
+  const doneExpanded =
+    options.doneExpanded === true || options.expandedDone === true;
 
-  if (detail !== undefined && (options.detailMode === "full" || width < narrowWidth))
+  if (
+    detail !== undefined &&
+    (options.detailMode === "full" || width < narrowWidth)
+  )
     return [
       ...renderDetails(detail, snapshot, width, colorEnabled),
       "",
@@ -353,7 +404,8 @@ export function renderTaskBoard(
     const lines = [heading, ""];
     for (const column of taskColumns) {
       lines.push(fit(`${column.name} (${column.tasks.length})`, width));
-      if (column.name === "Done" && !doneExpanded) lines.push(fit("  collapsed", width));
+      if (column.name === "Done" && !doneExpanded)
+        lines.push(fit("  collapsed", width));
       else if (column.tasks.length === 0) lines.push(fit("  —", width));
       else
         for (const task of column.tasks)
@@ -367,8 +419,7 @@ export function renderTaskBoard(
             }),
           );
     }
-    if (taskCount === 0)
-      lines.push("", ...wrap("No tasks in this cycle. Create a backlog, then run: roc-it task import <manifest>", width));
+    if (taskCount === 0) lines.push("", ...emptyBoardGuidance(width));
     return [...lines, "", footer(width)].join("\n");
   }
 
@@ -397,12 +448,12 @@ export function renderTaskBoard(
       boardLines.length,
       ...Array.from(
         { length: height },
-        (_, index) => `${pad(boardLines[index] ?? "", boardWidth)} │ ${details[index] ?? ""}`,
+        (_, index) =>
+          `${pad(boardLines[index] ?? "", boardWidth)} │ ${details[index] ?? ""}`,
       ),
     );
   }
-  if (taskCount === 0)
-    lines.push("", ...wrap("No tasks in this cycle. Create a backlog, then run: roc-it task import <manifest>", width));
+  if (taskCount === 0) lines.push("", ...emptyBoardGuidance(width));
   return [...lines, "", footer(width)].join("\n");
 }
 
@@ -414,7 +465,8 @@ export function taskBoardHitTest(
 ): TaskBoardHit | undefined {
   const width = Math.max(1, Math.floor(options.width ?? 100));
   const columns = boardColumns(snapshot);
-  const doneExpanded = options.doneExpanded === true || options.expandedDone === true;
+  const doneExpanded =
+    options.doneExpanded === true || options.expandedDone === true;
   if (options.detailMode === "full") return undefined;
 
   if (width < narrowWidth) {
@@ -444,7 +496,7 @@ export function taskBoardHitTest(
     columns,
     options.detailTaskId ??
       (options.detailMode === undefined
-        ? options.selectedTaskId ?? options.selectedId
+        ? (options.selectedTaskId ?? options.selectedId)
         : undefined),
   );
   const detailWidth = detail === undefined ? 0 : Math.floor(width * 0.3);

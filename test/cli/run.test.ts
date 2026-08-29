@@ -932,6 +932,146 @@ test("task list reuses create-backlog guidance when empty", async () => {
   }
 });
 
+test("task board prints an unchanged, plain current-cycle snapshot and supports --all", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-board-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
+  const output: string[] = [];
+  const errors: string[] = [];
+  const taskSpec = {
+    problem: "See the board",
+    desiredOutcome: "A plain task snapshot",
+    scope: ["task board"],
+    nonGoals: [],
+    acceptanceCriteria: ["task appears"],
+    validation: ["bun test"],
+    dependencies: [],
+    risk: "low" as const,
+    contextCandidates: [],
+    tokenCeiling: 1_000,
+  };
+
+  try {
+    await saveRocSettings({ cycle: { type: "daily" } }, home);
+    const db = openDatabase(dbPath);
+    const planning = new PlanningRepository(db);
+    planning.createCycle({
+      id: "2026-08-30",
+      goal: "Current board",
+      nonGoals: [],
+      tokenBudget: 1_000,
+      ticketIds: [],
+    });
+    planning.createCycle({
+      id: "other-cycle",
+      goal: "Other board",
+      nonGoals: [],
+      tokenBudget: 1_000,
+      ticketIds: [],
+    });
+    for (const [id, cycleId] of [
+      ["current-task", "2026-08-30"],
+      ["other-task", "other-cycle"],
+    ] as const)
+      planning.createTask({
+        id,
+        cycleId,
+        title: id,
+        spec: taskSpec,
+        priority: 0,
+        approvalRequired: false,
+        approved: false,
+      });
+    const before = ["tasks", "attempts", "events", "scheduler_lease"].map(
+      (table) => db.query(`SELECT * FROM ${table} ORDER BY 1`).all(),
+    );
+    db.close();
+
+    const close = spyOn(Database.prototype, "close");
+    try {
+      expect(
+        await runCli(
+          ["task", "board"],
+          {
+            out: (text) => output.push(text),
+            err: (text) => errors.push(text),
+          },
+          {
+            runScheduler: async () => {},
+            projectRoot: root,
+            homeRoot: home,
+            now: () => new Date(2026, 7, 30),
+          },
+        ),
+      ).toBe(0);
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      close.mockRestore();
+    }
+    expect(errors).toEqual([]);
+    expect(output).toHaveLength(1);
+    expect(output[0]).toContain("current-task");
+    expect(output[0]).not.toContain("other-task");
+    expect(output[0]).not.toMatch(new RegExp(ansiSgrPattern));
+
+    expect(
+      await runCli(
+        ["task", "board", "--all"],
+        { out: (text) => output.push(text), err: (text) => errors.push(text) },
+        {
+          runScheduler: async () => {},
+          projectRoot: root,
+          homeRoot: home,
+          now: () => new Date(2026, 7, 30),
+        },
+      ),
+    ).toBe(0);
+    expect(output.at(-1)).toContain("other-task");
+
+    const afterDb = openDatabase(dbPath);
+    try {
+      expect(
+        ["tasks", "attempts", "events", "scheduler_lease"].map((table) =>
+          afterDb.query(`SELECT * FROM ${table} ORDER BY 1`).all(),
+        ),
+      ).toEqual(before);
+    } finally {
+      afterDb.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("task board shows backlog guidance for an empty project", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-board-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const output: string[] = [];
+
+  try {
+    await saveRocSettings({ cycle: { type: "daily" } }, home);
+    expect(
+      await runCli(
+        ["task", "board"],
+        { out: (text) => output.push(text), err: () => {} },
+        {
+          runScheduler: async () => {},
+          projectRoot: root,
+          homeRoot: home,
+          now: () => new Date(2026, 7, 30),
+        },
+      ),
+    ).toBe(0);
+    expect(output.at(0)).toContain("No tasks.");
+    expect(output.at(0)).toContain("/roc-create-tasks <requirement>");
+    expect(output.at(0)).toContain("$roc-create-tasks <requirement>");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("task import validates before creating a database, explains weekId, and keeps --global onboard-only", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const manifestPath = join(root, "invalid-backlog.json");
@@ -997,6 +1137,43 @@ test("operational database failures report an error, return 1, and close the dat
   } finally {
     close.mockRestore();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("task board reports database failures without emitting a snapshot", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-board-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
+  const output: string[] = [];
+  const errors: string[] = [];
+
+  try {
+    await saveRocSettings({ cycle: { type: "daily" } }, home);
+    const future = openDatabase(dbPath);
+    future.exec("PRAGMA user_version = 6");
+    future.close();
+    expect(
+      await runCli(
+        ["task", "board"],
+        {
+          out: (text) => output.push(text),
+          err: (text) => errors.push(text),
+        },
+        {
+          runScheduler: async () => {},
+          projectRoot: root,
+          homeRoot: home,
+          now: () => new Date(2026, 7, 30),
+        },
+      ),
+    ).toBe(1);
+    expect(output).toEqual([]);
+    expect(errors).toEqual([
+      "TASK_BOARD_FAILED: Database version 6 is newer than supported version 5",
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });
 
