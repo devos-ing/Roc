@@ -976,7 +976,7 @@ test("task board prints an unchanged, plain current-cycle snapshot and supports 
       planning.createTask({
         id,
         cycleId,
-        title: id,
+        title: id === "current-task" ? "\u001B[31mcurrent task\u001B[0m" : id,
         spec: taskSpec,
         priority: 0,
         approvalRequired: false,
@@ -1011,6 +1011,7 @@ test("task board prints an unchanged, plain current-cycle snapshot and supports 
     expect(errors).toEqual([]);
     expect(output).toHaveLength(1);
     expect(output[0]).toContain("current-task");
+    expect(output[0]).toContain("current task");
     expect(output[0]).not.toContain("other-task");
     expect(output[0]).not.toMatch(new RegExp(ansiSgrPattern));
 

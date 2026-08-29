@@ -112,6 +112,11 @@ function color(
   return enabled ? `${colors[tone]}${value}${reset}` : value;
 }
 
+/** Removes stored ANSI SGR controls from a plain board snapshot. */
+function plainSnapshot(value: string, colorEnabled: boolean): string {
+  return colorEnabled ? value : value.replace(ansiSgrPattern, "");
+}
+
 /** Sums input and output tokens without double-counting their reported subsets. */
 function tokenCount(tokens: TaskBoardTask["tokenTotals"]): number {
   return tokens.inputTokens + tokens.outputTokens;
@@ -393,11 +398,14 @@ export function renderTaskBoard(
     detail !== undefined &&
     (options.detailMode === "full" || width < narrowWidth)
   )
-    return [
-      ...renderDetails(detail, snapshot, width, colorEnabled),
-      "",
-      footer(width),
-    ].join("\n");
+    return plainSnapshot(
+      [
+        ...renderDetails(detail, snapshot, width, colorEnabled),
+        "",
+        footer(width),
+      ].join("\n"),
+      colorEnabled,
+    );
 
   const heading = summary(snapshot, taskCount, width);
   if (width < narrowWidth) {
@@ -420,7 +428,10 @@ export function renderTaskBoard(
           );
     }
     if (taskCount === 0) lines.push("", ...emptyBoardGuidance(width));
-    return [...lines, "", footer(width)].join("\n");
+    return plainSnapshot(
+      [...lines, "", footer(width)].join("\n"),
+      colorEnabled,
+    );
   }
 
   const detailWidth = detail === undefined ? 0 : Math.floor(width * 0.3);
@@ -454,7 +465,7 @@ export function renderTaskBoard(
     );
   }
   if (taskCount === 0) lines.push("", ...emptyBoardGuidance(width));
-  return [...lines, "", footer(width)].join("\n");
+  return plainSnapshot([...lines, "", footer(width)].join("\n"), colorEnabled);
 }
 
 /** Maps a one-based terminal mouse position to a board card or Done header control. */

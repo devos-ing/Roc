@@ -215,6 +215,39 @@ test("keeps plain Unicode output cell-bounded without splitting graphemes", () =
   );
 });
 
+test("removes stored ANSI SGR controls from plain task details", () => {
+  const unsafe = task({
+    id: "\u001B[31munsafe\u001B[0m",
+    title: "\u001B[32mUnsafe title\u001B[0m",
+    spec: {
+      ...spec,
+      problem: "\u001B[33mUnsafe problem\u001B[0m",
+      desiredOutcome: "\u001B[34mUnsafe outcome\u001B[0m",
+      acceptanceCriteria: ["\u001B[35mUnsafe criterion\u001B[0m"],
+      dependencies: ["\u001B[36munsafe-dependency\u001B[0m"],
+    },
+  });
+  const unsafeSnapshot: TaskBoardSnapshot = {
+    ...snapshot,
+    tasks: [unsafe],
+    columns: { ready: [unsafe], inProgress: [], attention: [], done: [] },
+  };
+  const output = renderTaskBoard(unsafeSnapshot, {
+    width: 120,
+    isTTY: false,
+    detailTaskId: unsafe.id,
+    detailMode: "full",
+  });
+
+  expect(output).not.toMatch(ansiSgrPattern);
+  expect(output).toContain("Task unsafe");
+  expect(output).toContain("Unsafe title");
+  expect(output).toContain("Unsafe problem");
+  expect(output).toContain("Unsafe outcome");
+  expect(output).toContain("Unsafe criterion");
+  expect(output).toContain("unsafe-dependency");
+});
+
 test("keeps widths below forty bounded and frames empty boards completely", () => {
   const empty: TaskBoardSnapshot = {
     currentCycleId: "2026-W35",
