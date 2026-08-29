@@ -312,7 +312,10 @@ export async function runTaskBoardSession(
       if (escapeTimer !== undefined) clearTimeout(escapeTimer);
       input.off("data", onData);
       input.off("error", onInputError);
+      input.off("end", onInputEnd);
+      input.off("close", onInputClose);
       output.off("resize", onResize);
+      output.off("close", onOutputClose);
       process.off("SIGINT", onSignal);
       error === undefined ? resolve() : reject(error);
     };
@@ -320,6 +323,14 @@ export async function runTaskBoardSession(
 
   /** Treats terminal input errors as an abnormal session exit. */
   const onInputError = (error: Error) => finish(error);
+  /** Treats terminal input ending as a normal session exit. */
+  const onInputEnd = () => finish();
+  /** Treats terminal input closing as a normal session exit. */
+  const onInputClose = () => finish();
+  /** Treats terminal output errors as an abnormal session exit. */
+  const onOutputError = (error: Error) => finish(error);
+  /** Treats terminal output closing as a normal session exit. */
+  const onOutputClose = () => finish();
   /** Treats process Ctrl-C consistently with the raw Ctrl-C byte. */
   const onSignal = () => finish();
 
@@ -338,7 +349,11 @@ export async function runTaskBoardSession(
     input.resume();
     input.on("data", onData);
     input.on("error", onInputError);
+    input.on("end", onInputEnd);
+    input.on("close", onInputClose);
+    output.on("error", onOutputError);
     output.on("resize", onResize);
+    output.on("close", onOutputClose);
     process.once("SIGINT", onSignal);
     interval = setInterval(requestRefresh, options.refreshIntervalMs ?? 1_000);
     refreshInFlight = true;
@@ -360,5 +375,6 @@ export async function runTaskBoardSession(
     restore(() => output.write(leaveAlternateScreen));
     restore(() => input.setRawMode(false));
     restore(() => input.pause());
+    output.off("error", onOutputError);
   }
 }

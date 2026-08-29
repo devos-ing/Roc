@@ -134,6 +134,10 @@ function expectRestored(input: Input, output: Output): void {
   expect(output.writes).toContain("\u001B[?1000l\u001B[?1006l");
   expect(output.writes).toContain("\u001B[?25h");
   expect(output.writes).toContain("\u001B[?1049l");
+  expect(input.listenerCount("end")).toBe(0);
+  expect(input.listenerCount("close")).toBe(0);
+  expect(output.listenerCount("error")).toBe(0);
+  expect(output.listenerCount("close")).toBe(0);
 }
 
 test("refreshes serialized snapshots and supports keyboard navigation, detail modes, help, Done, and quit", async () => {
@@ -266,7 +270,24 @@ test("does not overlap interval or manual reads", async () => {
   await running;
 });
 
-test("restores the terminal after input and render failures", async () => {
+test("restores the terminal after input and output closures", async () => {
+  for (const event of ["end", "close", "output close"] as const) {
+    const input = new Input();
+    const output = new Output();
+    const running = runTaskBoardSession({
+      input: input as never,
+      output: output as never,
+      read: () => board(),
+    });
+    await waitFor(() => frame(output).includes("Ready (2)"));
+    if (event === "output close") output.emit("close");
+    else input.emit(event);
+    await running;
+    expectRestored(input, output);
+  }
+});
+
+test("restores the terminal after input, output, and render failures", async () => {
   const inputFailure = new Input();
   const inputOutput = new Output();
   const inputRunning = runTaskBoardSession({
@@ -278,6 +299,18 @@ test("restores the terminal after input and render failures", async () => {
   inputFailure.emit("error", new Error("input failed"));
   await expect(inputRunning).rejects.toThrow("input failed");
   expectRestored(inputFailure, inputOutput);
+
+  const outputInput = new Input();
+  const outputFailure = new Output();
+  const outputRunning = runTaskBoardSession({
+    input: outputInput as never,
+    output: outputFailure as never,
+    read: () => board(),
+  });
+  await waitFor(() => frame(outputFailure).includes("Ready (2)"));
+  outputFailure.emit("error", new Error("output failed"));
+  await expect(outputRunning).rejects.toThrow("output failed");
+  expectRestored(outputInput, outputFailure);
 
   const renderInput = new Input();
   const renderOutput = new Output();
