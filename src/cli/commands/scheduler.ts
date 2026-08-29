@@ -17,7 +17,7 @@ async function executeSchedulerRun(
 ): Promise<number> {
   if (!isRealBackendName(options.backend)) {
     context.io.err(
-      `scheduler run requires --backend fake|${Object.keys(backends).join("|")}`,
+      `scheduler run requires --backend ${Object.keys(backends).join("|")}`,
     );
     return 2;
   }

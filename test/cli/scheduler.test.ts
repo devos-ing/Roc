@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { backends } from "../../src/agents/registry";
 import { runCli, runDaemon, schedulerSleep } from "../../src/cli/run";
 import { defaultRuntime } from "../../src/cli/runtime";
 import type { SchedulerRunInput } from "../../src/cli/types";
@@ -280,7 +281,13 @@ test("rejects internal scheduler flags before invoking the runtime", async () =>
 });
 
 test("rejects a --backend name outside the registry before invoking the runtime", async () => {
-  for (const backend of ["nope", "toString", "constructor", "__proto__"]) {
+  for (const backend of [
+    "nope",
+    "fake",
+    "toString",
+    "constructor",
+    "__proto__",
+  ]) {
     const errors: string[] = [];
     let called = false;
     expect(
@@ -295,7 +302,7 @@ test("rejects a --backend name outside the registry before invoking the runtime"
       ),
     ).toBe(2);
     expect(errors.join("\n")).toContain(
-      "scheduler run requires --backend fake|codex",
+      `scheduler run requires --backend ${Object.keys(backends).join("|")}`,
     );
     expect(called).toBeFalse();
   }
