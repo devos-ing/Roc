@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { CodexClient } from "../codex/client";
 import { createCodexHarness } from "../codex/harness";
 import { ModelListResponseSchema } from "../codex/protocol";
+import { listWorkspaceSkills as readWorkspaceSkills } from "../codex/skill-catalog";
 import { loadDefaultSkillPolicy } from "../codex/skill-policy";
 import type { AgentHarness } from "../harness/contracts";
 import { createFakeHarness } from "../harness/fake";
@@ -341,5 +342,14 @@ export const defaultRuntime: CliRuntime = {
   /** Writes an operational error through the logger associated with its runtime paths. */
   async logError(error, input) {
     await loggerFor(input).error(error);
+  },
+  /** Reads one workspace skill catalog through a short-lived Codex client. */
+  async listWorkspaceSkills(cwd) {
+    const client = await CodexClient.start();
+    try {
+      return await readWorkspaceSkills(client, cwd);
+    } finally {
+      await client.close();
+    }
   },
 };

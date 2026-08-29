@@ -1,3 +1,4 @@
+import type { DiscoveredSkill } from "../codex/skill-policy";
 import type { GitHubIssueCandidate } from "../github/import-source";
 import type { AgileError } from "../runtime/errors";
 
@@ -24,6 +25,8 @@ export type CliRuntime = {
     error: AgileError,
     input: { dbPath: string; repoPath?: string },
   ): Promise<void>;
+  /** Returns Codex's complete skill catalog for one onboarding workspace. */
+  listWorkspaceSkills?(cwd: string): Promise<DiscoveredSkill[]>;
   projectRoot?: string;
   homeRoot?: string;
   /** Supplies the clock used for cycle calculations. */

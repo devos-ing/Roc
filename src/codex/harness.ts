@@ -38,10 +38,10 @@ import {
   TurnCompletedNotificationSchema,
   TurnStartResponseSchema,
 } from "./protocol";
+import { listWorkspaceSkills } from "./skill-catalog";
 import {
   buildDefaultSkillConfig,
   type DefaultSkillPolicy,
-  SkillListResponseSchema,
 } from "./skill-policy";
 
 const UsageSchema = z
@@ -485,24 +485,12 @@ export function createCodexHarness(input: {
     let skillsConfig: { path: string; enabled: boolean }[] | undefined;
     if (input.skillPolicy !== undefined) {
       try {
-        const catalog = SkillListResponseSchema.parse(
-          await input.client.request("skills/list", {
-            cwds: [workspace.path],
-          }),
+        const workspaceSkills = await listWorkspaceSkills(
+          input.client,
+          workspace.path,
         );
-        const workspaceSkills = catalog.data.find(
-          (entry) => entry.cwd === workspace.path,
-        );
-        if (
-          workspaceSkills === undefined ||
-          workspaceSkills.errors.length > 0
-        ) {
-          throw new Error(
-            "Codex did not return a complete workspace skill catalog",
-          );
-        }
         skillsConfig = buildDefaultSkillConfig(
-          workspaceSkills.skills,
+          workspaceSkills,
           input.skillPolicy,
         );
       } catch (error) {
