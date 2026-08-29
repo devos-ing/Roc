@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { createInterface } from "node:readline/promises";
 import { runCli } from "./run";
+import { selectSkillAllowlist } from "./skill-selector";
 
 if (import.meta.main) {
   let prompt: ReturnType<typeof createInterface> | undefined;
@@ -15,6 +16,7 @@ if (import.meta.main) {
         });
         return prompt.question(`${question}: `);
       },
+      selectSkills: selectSkillAllowlist,
     });
   } finally {
     prompt?.close();

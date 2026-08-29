@@ -2,11 +2,15 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import {
+  buildDefaultSkillCandidates,
+  loadDefaultSkillPolicy,
+} from "../../codex/skill-policy";
+import {
   type AgileCycleSetting,
   AgileCycleSettingSchema,
   activeAgileCycle,
 } from "../../domain/agile-cycle";
-import { saveRocSettings } from "../../settings";
+import { loadRocSettingsIfPresent, saveRocSettings } from "../../settings";
 import {
   installRocCreateTasksSkill,
   SkillInstallError,
@@ -18,6 +22,7 @@ import {
   projectDatabasePath,
 } from "../command-context";
 import {
+  renderAllowlistStep,
   renderCycleStep,
   renderDatabaseStep,
   renderOnboardingComplete,
@@ -104,21 +109,48 @@ async function executeOnboard(
     const skillsStep = renderSkillsStep(installed);
     completedSteps.push(skillsStep);
     context.io.out(skillsStep);
+    const homeRoot = context.runtime.homeRoot ?? homedir();
+    if (context.runtime.listWorkspaceSkills === undefined) {
+      throw new Error("Codex skill discovery is required for onboard");
+    }
+    if (context.io.selectSkills === undefined) {
+      throw new Error("Interactive skill selection is required for onboard");
+    }
+    const priorSettings = await loadRocSettingsIfPresent(homeRoot);
+    const policy = await loadDefaultSkillPolicy(
+      homeRoot,
+      priorSettings?.skills?.allowlist,
+    );
+    const candidates = buildDefaultSkillCandidates(
+      await context.runtime.listWorkspaceSkills(root),
+      policy,
+    );
+    const selection = await context.io.selectSkills(candidates);
+    if (selection.kind === "cancelled") throw new Error("Onboarding cancelled");
     const setting = await promptCycleSetting(
       context.io,
       context.runtime.now?.() ?? new Date(),
     );
+    const settingsPath = await saveRocSettings(
+      { cycle: setting, skills: { allowlist: selection.identities } },
+      homeRoot,
+    );
+    const allowlistStep = renderAllowlistStep(selection.identities.length);
+    completedSteps.push(allowlistStep);
+    context.io.out(allowlistStep);
     const cycleStep = renderCycleStep(setting);
     completedSteps.push(cycleStep);
     context.io.out(cycleStep);
-    const settingsPath = await saveRocSettings(
-      { cycle: setting },
-      context.runtime.homeRoot ?? homedir(),
-    );
     const settingsStep = renderSettingsStep(settingsPath);
     completedSteps.push(settingsStep);
     context.io.out(settingsStep);
-    context.io.out(renderOnboardingComplete());
+    context.io.out(
+      renderOnboardingComplete({
+        unslopMissing: candidates.some(
+          ({ identity, installed }) => identity.name === "unslop" && !installed,
+        ),
+      }),
+    );
     return 0;
   } catch (error) {
     const partialSkills =

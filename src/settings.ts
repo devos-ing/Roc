@@ -10,24 +10,44 @@ export function rocSettingsPath(homeRoot = homedir()): string {
   return join(homeRoot, ".config", "roc", "settings.json");
 }
 
-/** Loads and strictly validates Roc's global settings. */
-export async function loadRocSettings(
+/** Reports whether a settings read failed because the file does not exist. */
+function isMissingSettings(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+/** Wraps one settings read or validation failure in Roc's stable startup error. */
+function invalidSettings(error: unknown): AgileError {
+  return new AgileError({
+    code: "ROC_SETTINGS_INVALID",
+    category: "startup",
+    retryable: false,
+    component: "settings",
+    message: "Run npx roc-it@latest onboard to configure an Agile cycle",
+    cause: error,
+  });
+}
+
+/** Loads strict settings for repeat onboarding, returning undefined only when absent. */
+export async function loadRocSettingsIfPresent(
   homeRoot = homedir(),
-): Promise<RocSettings> {
+): Promise<RocSettings | undefined> {
   try {
     return RocSettingsSchema.parse(
       JSON.parse(await readFile(rocSettingsPath(homeRoot), "utf8")),
     );
   } catch (error) {
-    throw new AgileError({
-      code: "ROC_SETTINGS_INVALID",
-      category: "startup",
-      retryable: false,
-      component: "settings",
-      message: "Run npx roc-it@latest onboard to configure an Agile cycle",
-      cause: error,
-    });
+    if (isMissingSettings(error)) return undefined;
+    throw invalidSettings(error);
   }
+}
+
+/** Loads and strictly validates Roc's global settings. */
+export async function loadRocSettings(
+  homeRoot = homedir(),
+): Promise<RocSettings> {
+  const settings = await loadRocSettingsIfPresent(homeRoot);
+  if (settings !== undefined) return settings;
+  throw invalidSettings(new Error("Roc settings do not exist"));
 }
 
 /** Validates and safely writes Roc's global settings. */

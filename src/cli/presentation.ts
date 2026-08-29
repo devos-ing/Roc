@@ -49,21 +49,36 @@ export function describeCycle(setting: AgileCycleSetting): string {
   return `Custom (${setting.days} days)`;
 }
 
+/** Renders the confirmed count of exact agent skill identities. */
+export function renderAllowlistStep(selectedCount: number): string {
+  return `3. Agent skills: ${selectedCount} allowed`;
+}
+
 /** Renders the completed selection of a valid Agile cycle. */
 export function renderCycleStep(setting: AgileCycleSetting): string {
-  return `3. Selected cycle: ${describeCycle(setting)}`;
+  return `4. Selected cycle: ${describeCycle(setting)}`;
 }
 
 /** Renders the completed global settings write. */
 export function renderSettingsStep(settingsPath: string): string {
-  return `4. Settings: Saved ${settingsPath}`;
+  return `5. Settings: Saved ${settingsPath}`;
 }
 
 /** Renders the successful onboarding summary and copyable follow-up commands. */
-export function renderOnboardingComplete(): string {
+export function renderOnboardingComplete(
+  input: { unslopMissing?: boolean } = {},
+): string {
   return [
     "Result: Complete",
     "Next:",
+    ...(input.unslopMissing
+      ? [
+          "  Install unslop from pstack if needed:",
+          "    npx skills add backnotprop/pstack --skill unslop --global --agent codex --agent claude-code --agent cursor",
+          "  Then choose it:",
+          "    npx roc-it@latest onboard",
+        ]
+      : []),
     ...createBacklogGuidance,
     "  Inspect the resulting tasks:",
     "    npx roc-it@latest task list",

@@ -12,8 +12,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/run";
+import type { CliRuntime } from "../../src/cli/types";
+import type { DefaultSkillCandidate } from "../../src/codex/skill-policy";
 import { taskHookConfigHash } from "../../src/scheduler/task-hooks";
-import { saveRocSettings } from "../../src/settings";
+import {
+  loadRocSettings,
+  rocSettingsPath,
+  saveRocSettings,
+} from "../../src/settings";
 import { openDatabase } from "../../src/store/database";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
@@ -21,6 +27,10 @@ import { PlanningRepository } from "../../src/store/planning-repository";
 const ansiSgrPattern = "\\u001B\\[[0-9;]*m";
 const onboardingNextSteps = [
   "Next:",
+  "  Install unslop from pstack if needed:",
+  "    npx skills add backnotprop/pstack --skill unslop --global --agent codex --agent claude-code --agent cursor",
+  "  Then choose it:",
+  "    npx roc-it@latest onboard",
   "  Install the grilling skill if needed:",
   "    npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor",
   "  Create your first backlog in Claude Code or Cursor:",
@@ -32,7 +42,10 @@ const onboardingNextSteps = [
 ].join("\n");
 
 /** Creates deterministic interactive CLI I/O from queued answers. */
-function interactiveIo(answers: string[]) {
+function interactiveIo(
+  answers: string[],
+  selectedNames: string[] | "cancel" = [],
+) {
   const output: string[] = [];
   const errors: string[] = [];
   return {
@@ -40,28 +53,49 @@ function interactiveIo(answers: string[]) {
       out: (text: string) => output.push(text),
       err: (text: string) => errors.push(text),
       ask: async () => answers.shift() ?? "",
+      selectSkills: async (candidates: DefaultSkillCandidate[]) =>
+        selectedNames === "cancel"
+          ? { kind: "cancelled" as const }
+          : {
+              kind: "selected" as const,
+              identities: candidates
+                .filter(
+                  ({ identity, installed }) =>
+                    installed && selectedNames.includes(identity.name),
+                )
+                .map(({ identity }) => identity),
+            },
     },
     output,
     errors,
   };
 }
 
+/** Creates the deterministic runtime used by onboarding CLI tests. */
+function onboardingRuntime(overrides: Partial<CliRuntime> = {}): CliRuntime {
+  return {
+    runScheduler: async () => {},
+    listWorkspaceSkills: async () => [],
+    ...overrides,
+  };
+}
+
 test("onboard installs identical project skill copies without overwriting changes", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
   const dbPath = join(root, ".agile", "runtime", "agile.db");
-  const output: string[] = [];
-  const io = {
-    out: (text: string) => output.push(text),
-    err: (text: string) => output.push(text),
-    ask: async () => "2",
-  };
+  const { io } = interactiveIo(["2", "2", "2"]);
 
   try {
     expect(
-      await runCli(["onboard"], io, {
-        runScheduler: async () => {},
-        projectRoot: root,
-      }),
+      await runCli(
+        ["onboard"],
+        io,
+        onboardingRuntime({
+          projectRoot: root,
+          homeRoot: home,
+        }),
+      ),
     ).toBe(0);
     const source = await readFile(
       join(
@@ -92,21 +126,30 @@ test("onboard installs identical project skill copies without overwriting change
     expect(await lstat(dbPath)).toMatchObject({ isFile: expect.any(Function) });
 
     expect(
-      await runCli(["onboard"], io, {
-        runScheduler: async () => {},
-        projectRoot: root,
-      }),
+      await runCli(
+        ["onboard"],
+        io,
+        onboardingRuntime({
+          projectRoot: root,
+          homeRoot: home,
+        }),
+      ),
     ).toBe(0);
     await writeFile(agentsSkill, "changed skill");
     expect(
-      await runCli(["onboard"], io, {
-        runScheduler: async () => {},
-        projectRoot: root,
-      }),
+      await runCli(
+        ["onboard"],
+        io,
+        onboardingRuntime({
+          projectRoot: root,
+          homeRoot: home,
+        }),
+      ),
     ).toBe(1);
     expect(await readFile(agentsSkill, "utf8")).toBe("changed skill");
   } finally {
     await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });
 
@@ -118,11 +161,14 @@ test("project onboarding reports completed steps, configuration, and next comman
 
   try {
     expect(
-      await runCli(["onboard"], io, {
-        runScheduler: async () => {},
-        projectRoot: root,
-        homeRoot: home,
-      }),
+      await runCli(
+        ["onboard"],
+        io,
+        onboardingRuntime({
+          projectRoot: root,
+          homeRoot: home,
+        }),
+      ),
     ).toBe(0);
 
     const transcript = output.join("\n");
@@ -131,8 +177,9 @@ test("project onboarding reports completed steps, configuration, and next comman
     expect(transcript).toContain(`1. Database: Ready (${dbPath})`);
     expect(transcript).toContain("2. Skills:");
     expect(transcript).toContain("Installed:");
-    expect(transcript).toContain("3. Selected cycle: Weekly");
-    expect(transcript).toContain("4. Settings: Saved ");
+    expect(transcript).toContain("3. Agent skills: 0 allowed");
+    expect(transcript).toContain("4. Selected cycle: Weekly");
+    expect(transcript).toContain("5. Settings: Saved ");
     expect(transcript).toContain(".config/roc/settings.json");
     expect(transcript).toContain("Result: Complete");
     expect(transcript).toContain(onboardingNextSteps);
@@ -151,18 +198,14 @@ test("project onboarding reports completed steps, configuration, and next comman
 test("global onboarding installs skills without creating a project database", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
-  const output: string[] = [];
+  const { io, output } = interactiveIo(["1"]);
 
   try {
     expect(
       await runCli(
         ["onboard", "--global"],
-        {
-          out: (text) => output.push(text),
-          err: (text) => output.push(text),
-          ask: async () => "1",
-        },
-        { runScheduler: async () => {}, projectRoot: root, homeRoot: home },
+        io,
+        onboardingRuntime({ projectRoot: root, homeRoot: home }),
       ),
     ).toBe(0);
     expect(output.join("\n")).toContain(`Scope: Global user account (${home})`);
@@ -195,18 +238,24 @@ test("repeat onboarding reports identical skills as already installed", async ()
 
   try {
     expect(
-      await runCli(["onboard"], first.io, {
-        runScheduler: async () => {},
-        projectRoot: root,
-        homeRoot: home,
-      }),
+      await runCli(
+        ["onboard"],
+        first.io,
+        onboardingRuntime({
+          projectRoot: root,
+          homeRoot: home,
+        }),
+      ),
     ).toBe(0);
     expect(
-      await runCli(["onboard"], repeated.io, {
-        runScheduler: async () => {},
-        projectRoot: root,
-        homeRoot: home,
-      }),
+      await runCli(
+        ["onboard"],
+        repeated.io,
+        onboardingRuntime({
+          projectRoot: root,
+          homeRoot: home,
+        }),
+      ),
     ).toBe(0);
     expect(repeated.output.join("\n")).toContain("Already installed:");
     expect(repeated.errors).toEqual([]);
@@ -216,23 +265,206 @@ test("repeat onboarding reports identical skills as already installed", async ()
   }
 });
 
+test("onboard saves the selected global skill allowlist", async () => {
+  const root = await mkdtemp(join(tmpdir(), "roc-onboard-root-"));
+  const home = await mkdtemp(join(tmpdir(), "roc-onboard-home-"));
+  await mkdir(join(home, ".agents"), { recursive: true });
+  await writeFile(
+    join(home, ".agents", ".skill-lock.json"),
+    JSON.stringify({ skills: { tdd: { source: "mattpocock/skills" } } }),
+  );
+  const { io, output } = interactiveIo(["2"], ["tdd"]);
+
+  expect(
+    await runCli(
+      ["onboard", "--global"],
+      io,
+      onboardingRuntime({
+        projectRoot: root,
+        homeRoot: home,
+        listWorkspaceSkills: async () => [
+          {
+            name: "tdd",
+            path: join(home, ".agents", "skills", "tdd", "SKILL.md"),
+            enabled: true,
+          },
+        ],
+      }),
+    ),
+  ).toBe(0);
+  expect(await loadRocSettings(home)).toMatchObject({
+    skills: {
+      allowlist: [{ name: "tdd", source: "mattpocock/skills" }],
+    },
+  });
+  expect(output.join("\n")).toContain("3. Agent skills: 1 allowed");
+});
+
+test("onboard cancellation preserves the prior allowlist", async () => {
+  const home = await mkdtemp(join(tmpdir(), "roc-onboard-cancel-"));
+  await saveRocSettings(
+    {
+      cycle: { type: "weekly" },
+      skills: { allowlist: [{ name: "tdd", source: "mattpocock/skills" }] },
+    },
+    home,
+  );
+  const before = await readFile(rocSettingsPath(home), "utf8");
+  const { io, errors } = interactiveIo([], "cancel");
+
+  expect(
+    await runCli(
+      ["onboard", "--global"],
+      io,
+      onboardingRuntime({
+        homeRoot: home,
+        listWorkspaceSkills: async () => [],
+      }),
+    ),
+  ).toBe(1);
+  expect(await readFile(rocSettingsPath(home), "utf8")).toBe(before);
+  expect(errors.join("\n")).toContain("Onboarding cancelled");
+});
+
+test("missing unslop is disabled and only produces manual install guidance", async () => {
+  const home = await mkdtemp(join(tmpdir(), "roc-onboard-unslop-"));
+  let seen: DefaultSkillCandidate[] = [];
+  const io = {
+    out: () => {},
+    err: () => {},
+    ask: async () => "1",
+    selectSkills: async (candidates: DefaultSkillCandidate[]) => {
+      seen = candidates;
+      return { kind: "selected" as const, identities: [] };
+    },
+  };
+  expect(
+    await runCli(
+      ["onboard", "--global"],
+      io,
+      onboardingRuntime({
+        homeRoot: home,
+        listWorkspaceSkills: async () => [],
+      }),
+    ),
+  ).toBe(0);
+  expect(seen).toContainEqual({
+    identity: { name: "unslop", source: "backnotprop/pstack" },
+    installed: false,
+    initiallySelected: false,
+  });
+  await expect(
+    lstat(join(home, ".agents", "skills", "unslop")),
+  ).rejects.toThrow();
+});
+
+test("repeat onboarding preselects only the saved identities", async () => {
+  const home = await mkdtemp(join(tmpdir(), "roc-onboard-repeat-selection-"));
+  await mkdir(join(home, ".agents"), { recursive: true });
+  await writeFile(
+    join(home, ".agents", ".skill-lock.json"),
+    JSON.stringify({
+      skills: {
+        tdd: { source: "mattpocock/skills" },
+        grilling: { source: "mattpocock/skills" },
+      },
+    }),
+  );
+  await saveRocSettings(
+    {
+      cycle: { type: "weekly" },
+      skills: { allowlist: [{ name: "tdd", source: "mattpocock/skills" }] },
+    },
+    home,
+  );
+  let seen: DefaultSkillCandidate[] = [];
+  const { io } = interactiveIo(["2"], ["tdd"]);
+  io.selectSkills = async (candidates) => {
+    seen = candidates;
+    return {
+      kind: "selected",
+      identities: candidates
+        .filter(({ identity }) => identity.name === "tdd")
+        .map(({ identity }) => identity),
+    };
+  };
+  const discovered = ["tdd", "grilling"].map((name) => ({
+    name,
+    path: join(home, ".agents", "skills", name, "SKILL.md"),
+    enabled: true,
+  }));
+
+  expect(
+    await runCli(
+      ["onboard", "--global"],
+      io,
+      onboardingRuntime({
+        homeRoot: home,
+        listWorkspaceSkills: async () => discovered,
+      }),
+    ),
+  ).toBe(0);
+  expect(
+    seen
+      .filter(({ installed }) => installed)
+      .map(({ identity, initiallySelected }) => ({
+        name: identity.name,
+        initiallySelected,
+      })),
+  ).toEqual([
+    { name: "grilling", initiallySelected: false },
+    { name: "tdd", initiallySelected: true },
+  ]);
+});
+
+test("catalog failure preserves the prior allowlist", async () => {
+  const home = await mkdtemp(join(tmpdir(), "roc-onboard-catalog-failure-"));
+  await saveRocSettings(
+    {
+      cycle: { type: "weekly" },
+      skills: { allowlist: [{ name: "tdd", source: "mattpocock/skills" }] },
+    },
+    home,
+  );
+  const before = await readFile(rocSettingsPath(home), "utf8");
+  const { io, errors } = interactiveIo(["2"], ["tdd"]);
+
+  expect(
+    await runCli(
+      ["onboard", "--global"],
+      io,
+      onboardingRuntime({
+        homeRoot: home,
+        listWorkspaceSkills: async () => {
+          throw new Error(
+            "Codex did not return a complete workspace skill catalog",
+          );
+        },
+      }),
+    ),
+  ).toBe(1);
+  expect(await readFile(rocSettingsPath(home), "utf8")).toBe(before);
+  expect(errors.join("\n")).toContain("complete workspace skill catalog");
+});
+
 test("onboard saves each selected Agile cycle globally", async () => {
   const cases = [
     {
       name: "Daily",
       answers: ["1"],
-      expected: { cycle: { type: "daily" } },
+      expected: { cycle: { type: "daily" }, skills: { allowlist: [] } },
     },
     {
       name: "Weekly",
       answers: ["2"],
-      expected: { cycle: { type: "weekly" } },
+      expected: { cycle: { type: "weekly" }, skills: { allowlist: [] } },
     },
     {
       name: "Custom",
       answers: ["3", "14"],
       expected: {
         cycle: { type: "custom", days: 14, anchorDate: "2026-08-28" },
+        skills: { allowlist: [] },
       },
     },
   ];
@@ -243,12 +475,15 @@ test("onboard saves each selected Agile cycle globally", async () => {
     const { io, errors } = interactiveIo(scenario.answers);
     try {
       expect(
-        await runCli(["onboard", "--global"], io, {
-          runScheduler: async () => {},
-          projectRoot,
-          homeRoot,
-          now: () => new Date(2026, 7, 28, 12),
-        }),
+        await runCli(
+          ["onboard", "--global"],
+          io,
+          onboardingRuntime({
+            projectRoot,
+            homeRoot,
+            now: () => new Date(2026, 7, 28, 12),
+          }),
+        ),
         scenario.name,
       ).toBe(0);
       expect(
@@ -275,12 +510,15 @@ test("onboard rejects an invalid Custom duration without writing settings", asyn
 
   try {
     expect(
-      await runCli(["onboard", "--global"], io, {
-        runScheduler: async () => {},
-        projectRoot,
-        homeRoot,
-        now: () => new Date(2026, 7, 28, 12),
-      }),
+      await runCli(
+        ["onboard", "--global"],
+        io,
+        onboardingRuntime({
+          projectRoot,
+          homeRoot,
+          now: () => new Date(2026, 7, 28, 12),
+        }),
+      ),
     ).toBe(1);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("Onboarding stopped");
@@ -297,6 +535,93 @@ test("onboard rejects an invalid Custom duration without writing settings", asyn
   }
 });
 
+test("onboarding reports only durable work when cycle validation rejects a new allowlist", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
+  const homeRoot = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
+  const dbPath = join(projectRoot, ".agile", "runtime", "agile.db");
+  await mkdir(join(homeRoot, ".agents"), { recursive: true });
+  await writeFile(
+    join(homeRoot, ".agents", ".skill-lock.json"),
+    JSON.stringify({
+      skills: {
+        tdd: { source: "mattpocock/skills" },
+        grilling: { source: "mattpocock/skills" },
+      },
+    }),
+  );
+  await saveRocSettings(
+    {
+      cycle: { type: "weekly" },
+      skills: { allowlist: [{ name: "tdd", source: "mattpocock/skills" }] },
+    },
+    homeRoot,
+  );
+  const before = await readFile(rocSettingsPath(homeRoot));
+  const output: string[] = [];
+  const errors: string[] = [];
+  const interactions: string[] = [];
+  const answers = ["3", "0"];
+  const io = {
+    out: (text: string) => {
+      output.push(text);
+      if (text.startsWith("1. Database:")) interactions.push("database");
+      if (text.startsWith("2. Skills:")) interactions.push("packaged skills");
+    },
+    err: (text: string) => errors.push(text),
+    ask: async () => {
+      interactions.push("cycle");
+      return answers.shift() ?? "";
+    },
+    selectSkills: async (candidates: DefaultSkillCandidate[]) => {
+      interactions.push("checklist");
+      return {
+        kind: "selected" as const,
+        identities: candidates
+          .filter(({ identity }) => identity.name === "grilling")
+          .map(({ identity }) => identity),
+      };
+    },
+  };
+
+  try {
+    expect(
+      await runCli(
+        ["onboard"],
+        io,
+        onboardingRuntime({
+          projectRoot,
+          homeRoot,
+          listWorkspaceSkills: async () => [
+            {
+              name: "grilling",
+              path: join(homeRoot, ".agents", "skills", "grilling", "SKILL.md"),
+              enabled: true,
+            },
+          ],
+        }),
+      ),
+    ).toBe(1);
+    expect(interactions).toEqual([
+      "database",
+      "packaged skills",
+      "checklist",
+      "cycle",
+      "cycle",
+    ]);
+    expect(await readFile(rocSettingsPath(homeRoot))).toEqual(before);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain(`1. Database: Ready (${dbPath})`);
+    expect(errors[0]).toContain("2. Skills:");
+    expect(errors[0]).not.toContain("3. Agent skills:");
+    expect(errors[0]).not.toContain("4. Selected cycle:");
+    expect(output.join("\n")).not.toContain("3. Agent skills:");
+    expect(output.join("\n")).not.toContain("4. Selected cycle:");
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(homeRoot, { recursive: true, force: true });
+  }
+});
+
 test("onboard requires interactive input", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const homeRoot = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
@@ -306,8 +631,15 @@ test("onboard requires interactive input", async () => {
     expect(
       await runCli(
         ["onboard", "--global"],
-        { out: () => {}, err: (text) => errors.push(text) },
-        { runScheduler: async () => {}, projectRoot, homeRoot },
+        {
+          out: () => {},
+          err: (text) => errors.push(text),
+          selectSkills: async () => ({
+            kind: "selected" as const,
+            identities: [],
+          }),
+        },
+        onboardingRuntime({ projectRoot, homeRoot }),
       ),
     ).toBe(1);
     expect(errors).toHaveLength(1);
@@ -322,6 +654,7 @@ test("onboard requires interactive input", async () => {
 
 test("onboarding refuses a symbolic-link path component", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
   const redirected = join(root, "redirected");
   await mkdir(redirected);
   await symlink(redirected, join(root, ".agents"));
@@ -332,7 +665,7 @@ test("onboarding refuses a symbolic-link path component", async () => {
       await runCli(
         ["onboard"],
         { out: () => {}, err: (text) => errors.push(text) },
-        { runScheduler: async () => {}, projectRoot: root },
+        onboardingRuntime({ projectRoot: root, homeRoot: home }),
       ),
     ).toBe(1);
     expect(errors[0]).toContain("symbolic link");
@@ -340,6 +673,7 @@ test("onboarding refuses a symbolic-link path component", async () => {
     await expect(lstat(join(redirected, "skills"))).rejects.toThrow();
   } finally {
     await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });
 
@@ -369,11 +703,14 @@ test("onboarding discloses the installed skill when a later target conflicts", a
     await writeFile(claudeSkill, "conflicting skill");
 
     expect(
-      await runCli(["onboard"], io, {
-        runScheduler: async () => {},
-        projectRoot: root,
-        homeRoot: home,
-      }),
+      await runCli(
+        ["onboard"],
+        io,
+        onboardingRuntime({
+          projectRoot: root,
+          homeRoot: home,
+        }),
+      ),
     ).toBe(1);
     expect(await lstat(agentsSkill)).toMatchObject({
       isFile: expect.any(Function),
@@ -402,7 +739,7 @@ test("onboarding retry prints a copyable canonical command", async () => {
       await runCli(
         ["onboard"],
         { out: () => {}, err: (text) => errors.push(text) },
-        { runScheduler: async () => {}, projectRoot: root, homeRoot: home },
+        onboardingRuntime({ projectRoot: root, homeRoot: home }),
       ),
     ).toBe(1);
     const retryCommand = errors.at(0)?.split("Retry:\n  ").at(1);
@@ -430,11 +767,14 @@ test("onboarding stops truthfully after prior work when a later step fails", asy
 
   try {
     expect(
-      await runCli(["onboard"], io, {
-        runScheduler: async () => {},
-        projectRoot: root,
-        homeRoot: home,
-      }),
+      await runCli(
+        ["onboard"],
+        io,
+        onboardingRuntime({
+          projectRoot: root,
+          homeRoot: home,
+        }),
+      ),
     ).toBe(1);
     const completed = output.join("\n");
     expect(completed).toContain(`1. Database: Ready (${dbPath})`);
