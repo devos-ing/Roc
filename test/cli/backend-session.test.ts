@@ -12,6 +12,9 @@ import { join } from "node:path";
 import type { BackendFactory, BackendRuntime } from "../../src/agents/types";
 import { runBackendSession } from "../../src/cli/runtime";
 import type { RealSchedulerRunInput } from "../../src/cli/types";
+import type { HarnessStepRequest } from "../../src/harness/contracts";
+import { openDatabase } from "../../src/store/database";
+import { PlanningRepository } from "../../src/store/planning-repository";
 import { git } from "../helpers/git";
 
 async function createRepository(): Promise<string> {
@@ -25,38 +28,97 @@ async function createRepository(): Promise<string> {
   return realpath(root);
 }
 
+/** Seeds one approved, ready task so the daemon dispatches a real attempt. */
+async function seedReadyTask(dbPath: string): Promise<void> {
+  const db = openDatabase(dbPath);
+  try {
+    const planning = new PlanningRepository(
+      db,
+      () => "2026-08-29T00:00:00.000Z",
+    );
+    planning.createCycle({
+      id: "2026-W35",
+      goal: "Exercise the backend session boundary",
+      nonGoals: [],
+      tokenBudget: 100_000,
+      ticketIds: ["T1"],
+    });
+    planning.createTask({
+      id: "T1",
+      cycleId: "2026-W35",
+      title: "Backend session boundary",
+      spec: {
+        problem: "The daemon must drive the factory-provided harness",
+        desiredOutcome: "The harness step receives the dispatched attempt",
+        scope: ["cli runtime"],
+        nonGoals: [],
+        acceptanceCriteria: ["the harness observes the attempt"],
+        validation: ["bun test"],
+        dependencies: [],
+        risk: "medium",
+        contextCandidates: [],
+        tokenCeiling: 10_000,
+      },
+      priority: 0,
+      approvalRequired: false,
+      approved: true,
+    });
+    planning.transitionTask("T1", "ready", "T1:ready");
+  } finally {
+    db.close();
+  }
+}
+
 /** A catalog whose single model routes every role at medium risk. */
 const compatibleCatalog = [
   { id: "fake-terra", supportedReasoningEfforts: ["high", "xhigh"] },
 ];
 
-/** Records the branch manager and close calls without touching real agents. */
+/**
+ * Records harness step requests and close bookkeeping without touching real
+ * agents. `close` mirrors an idempotent BackendRuntime close: every caller
+ * advances `closeCalls`, but the underlying cleanup runs exactly once.
+ */
 function fakeBackend(catalog: typeof compatibleCatalog): {
   factory: BackendFactory;
   closed: () => boolean;
   branchSeen: () => boolean;
+  closeCounts: () => { closeCalls: number; cleanupCalls: number };
+  stepRequests: () => HarnessStepRequest[];
 } {
-  let isClosed = false;
+  let closeCalls = 0;
+  let cleanupCalls = 0;
+  let closePromise: Promise<void> | undefined;
   let sawBranches = false;
+  const requests: HarnessStepRequest[] = [];
   const factory: BackendFactory = async ({ branches }) => {
     sawBranches = branches !== undefined;
     const runtime: BackendRuntime = {
       catalog,
       harness: {
-        async step() {
-          throw new Error("no task is scheduled in this session");
+        async step(request) {
+          requests.push(request);
+          return { kind: "idle" };
         },
         async cancel() {},
       },
-      // BackendRuntime.close is an idempotent handle: shutdown and the
-      // session finally block may both reach it.
-      close: async () => {
-        isClosed = true;
+      close: () => {
+        closeCalls += 1;
+        closePromise ??= Promise.resolve().then(() => {
+          cleanupCalls += 1;
+        });
+        return closePromise;
       },
     };
     return runtime;
   };
-  return { factory, closed: () => isClosed, branchSeen: () => sawBranches };
+  return {
+    factory,
+    closed: () => cleanupCalls > 0,
+    branchSeen: () => sawBranches,
+    closeCounts: () => ({ closeCalls, cleanupCalls }),
+    stepRequests: () => requests,
+  };
 }
 
 function sessionInput(repoPath: string, dbPath: string): RealSchedulerRunInput {
@@ -78,11 +140,25 @@ async function waitForRunStarted(logFile: string): Promise<void> {
   throw new Error("Timed out waiting for SCHEDULER_RUN_STARTED");
 }
 
-test("runBackendSession hands the branch manager and catalog to the run and closes the backend after shutdown", async () => {
+/** Waits until the daemon has driven the factory-provided harness once. */
+async function waitForFirstStep(
+  stepRequests: () => HarnessStepRequest[],
+): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (stepRequests().length > 0) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("Timed out waiting for the first harness step");
+}
+
+test("runBackendSession dispatches a ready task through the factory harness and closes it exactly once", async () => {
   const root = await createRepository();
   const dbPath = join(root, ".agile", "runtime", "agile.db");
   const logFile = join(root, ".agile", "runtime", "agile.log");
-  const { factory, closed, branchSeen } = fakeBackend(compatibleCatalog);
+  await seedReadyTask(dbPath);
+  const { factory, closed, branchSeen, closeCounts, stepRequests } =
+    fakeBackend(compatibleCatalog);
   try {
     const running = runBackendSession(
       factory,
@@ -90,10 +166,21 @@ test("runBackendSession hands the branch manager and catalog to the run and clos
       "run-session-startup",
     );
     await waitForRunStarted(logFile);
+    await waitForFirstStep(stepRequests);
     process.emit("SIGTERM");
     await running;
 
     expect(branchSeen()).toBe(true);
+    const [request] = stepRequests();
+    expect(request).toBeDefined();
+    expect(request?.attempt.taskId).toBe("T1");
+    expect(request?.attempt.role).toBe("scout");
+    // The advisor picked the model from the catalog the factory returned.
+    expect(request?.attempt.model).toBe("fake-terra");
+    // Signal shutdown and the session finally block both request a close,
+    // but the idempotent handle cleans the backend up only once.
+    expect(closeCounts().closeCalls).toBe(2);
+    expect(closeCounts().cleanupCalls).toBe(1);
     expect(closed()).toBe(true);
   } finally {
     await rm(root, { recursive: true, force: true });
