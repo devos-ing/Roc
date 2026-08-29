@@ -12,6 +12,7 @@ import {
   ScoutOutputJsonSchema,
   scoutPrompt,
 } from "../../src/codex/prompts";
+import { skillIdentityKey } from "../../src/domain/skill-allowlist";
 import type {
   AgentHarness,
   HarnessEvent,
@@ -350,6 +351,11 @@ test("applies the default skill-source allowlist before starting a role thread",
       enabled: true,
     },
     {
+      name: "unslop",
+      path: "/Users/test/.agents/skills/unslop/SKILL.md",
+      enabled: true,
+    },
+    {
       name: "openai-docs",
       path: "/Users/test/.codex/skills/openai-docs/SKILL.md",
       enabled: true,
@@ -364,7 +370,13 @@ test("applies the default skill-source allowlist before starting a role thread",
     skillPolicy: {
       agentsSkillsRoot: "/Users/test/.agents/skills",
       codexPluginCacheRoot: "/Users/test/.codex/plugins/cache",
-      standaloneSkillSources: new Map([["tdd", "mattpocock/skills"]]),
+      standaloneSkillSources: new Map([
+        ["tdd", "mattpocock/skills"],
+        ["unslop", "backnotprop/pstack"],
+      ]),
+      selectedSkillKeys: new Set([
+        skillIdentityKey({ name: "unslop", source: "backnotprop/pstack" }),
+      ]),
     },
   });
 
@@ -383,8 +395,9 @@ test("applies the default skill-source allowlist before starting a role thread",
         config: {
           skills: {
             config: [
-              { path: skills[0]!.path, enabled: true },
-              { path: skills[1]!.path, enabled: false },
+              { path: skills[0]!.path, enabled: false },
+              { path: skills[1]!.path, enabled: true },
+              { path: skills[2]!.path, enabled: false },
             ],
           },
         },

@@ -1,9 +1,13 @@
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { CodexClient } from "../codex/client";
 import { createCodexHarness } from "../codex/harness";
 import { ModelListResponseSchema } from "../codex/protocol";
 import { listWorkspaceSkills as readWorkspaceSkills } from "../codex/skill-catalog";
-import { loadDefaultSkillPolicy } from "../codex/skill-policy";
+import {
+  type DefaultSkillPolicy,
+  loadDefaultSkillPolicy,
+} from "../codex/skill-policy";
 import type { AgentHarness } from "../harness/contracts";
 import { createFakeHarness } from "../harness/fake";
 import { AgileError, normalizeError } from "../runtime/errors";
@@ -16,6 +20,7 @@ import {
 } from "../scheduler/model-routing";
 import { Scheduler } from "../scheduler/scheduler";
 import { TaskHookService } from "../scheduler/task-hooks";
+import { loadRocSettings } from "../settings";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
 import { createTaskBranchManager } from "../workspace/task-branch";
@@ -217,6 +222,14 @@ async function runFake(
   }
 }
 
+/** Loads the current trusted policy intersected with the saved global selection. */
+export async function loadSchedulerSkillPolicy(
+  homeRoot = homedir(),
+): Promise<DefaultSkillPolicy> {
+  const settings = await loadRocSettings(homeRoot);
+  return loadDefaultSkillPolicy(homeRoot, settings.skills?.allowlist);
+}
+
 /** Runs a scheduler session against Codex with validated models and isolated branches. */
 async function runCodex(
   input: Extract<SchedulerRunInput, { backend: "codex" }>,
@@ -301,7 +314,7 @@ async function runCodex(
     const harness = createCodexHarness({
       client,
       branches,
-      skillPolicy: await loadDefaultSkillPolicy(),
+      skillPolicy: await loadSchedulerSkillPolicy(),
     });
     const hooks = new TaskHookService(repo, branches);
     await runDaemon({
