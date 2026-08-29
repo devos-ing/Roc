@@ -6,6 +6,9 @@ import type { SkillIdentity } from "../domain/skill-allowlist";
 import type { GitHubIssueCandidate } from "../github/import-source";
 import type { AgileError } from "../runtime/errors";
 
+export type CliTerminalInput = NodeJS.ReadStream;
+export type CliTerminalOutput = NodeJS.WriteStream;
+
 export type SkillSelectionResult =
   | { kind: "selected"; identities: SkillIdentity[] }
   | { kind: "cancelled" };
@@ -21,6 +24,10 @@ export type CliIo = {
   selectSkills?(
     candidates: DefaultSkillCandidate[],
   ): Promise<SkillSelectionResult>;
+  /** Supplies the input stream for commands that need direct terminal control. */
+  input?: CliTerminalInput;
+  /** Supplies the output stream for commands that need direct terminal control. */
+  output?: CliTerminalOutput;
 };
 
 export type SchedulerRunInput =

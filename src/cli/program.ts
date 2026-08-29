@@ -4,6 +4,7 @@ import { registerOnboardCommand } from "./commands/onboard";
 import { registerSchedulerCommands } from "./commands/scheduler";
 import { registerTaskCommands } from "./commands/task";
 import { registerTokensCommand } from "./commands/tokens";
+import { registerTuiCommand } from "./commands/tui";
 import type { CliCommandContext, CliIo, CliRuntime } from "./types";
 
 /** Creates the complete public Roc command tree around injected dependencies. */
@@ -25,6 +26,7 @@ function createCliProgram(context: CliCommandContext): Command {
   registerCycleCommands(program, context);
   registerTaskCommands(program, context);
   registerTokensCommand(program, context);
+  registerTuiCommand(program, context);
   registerSchedulerCommands(program, context);
   return program;
 }

@@ -13,9 +13,14 @@ export type TaskBoardRenderOptions = {
   selectedTaskId?: string;
   selectedId?: string;
   detailTaskId?: string;
+  detailMode?: "peek" | "full" | "none";
   doneExpanded?: boolean;
   expandedDone?: boolean;
 };
+
+export type TaskBoardHit =
+  | { kind: "task"; taskId: string }
+  | { kind: "done" };
 
 type ColumnName = "Ready" | "In progress" | "Attention" | "Done";
 
@@ -145,12 +150,11 @@ function boardColumns(snapshot: TaskBoardSnapshot): BoardColumn[] {
   ];
 }
 
-/** Finds the selected task across all canonical board columns. */
-function selectedTask(
+/** Finds one task across all canonical board columns. */
+function taskById(
   taskColumns: readonly BoardColumn[],
-  options: TaskBoardRenderOptions,
+  id: string | undefined,
 ): TaskBoardTask | undefined {
-  const id = options.detailTaskId ?? options.selectedTaskId ?? options.selectedId;
   return id === undefined
     ? undefined
     : taskColumns.flatMap((column) => column.tasks).find((task) => task.id === id);
@@ -215,6 +219,11 @@ function renderColumn(input: {
   if (!collapsed && tasks.length === 0)
     lines.push(color(fit("  —", input.width), "muted", input.colorEnabled));
   return lines;
+}
+
+/** Returns the number of terminal rows occupied by one rendered card. */
+function cardHeight(task: TaskBoardTask): number {
+  return blocker(task) === undefined ? 3 : 4;
 }
 
 /** Combines equal-height padded columns into a width-bounded horizontal board. */
@@ -297,7 +306,7 @@ function renderDetails(
 
 /** Renders the compact non-interactive shortcut reminder. */
 function footer(width: number): string {
-  return fit("↑↓ select · Enter details · d toggle Done · q quit", width);
+  return fit("↑↓ select · Space peek · Enter details · d Done · ? help · q quit", width);
 }
 
 /** Renders the canonical current-cycle summary and token progress. */
@@ -320,13 +329,21 @@ export function renderTaskBoard(
     options.color !== false && options.isTTY !== false && options.tty !== false;
   const taskColumns = boardColumns(snapshot);
   const taskCount = snapshot.tasks.length;
-  const selected = selectedTask(taskColumns, options);
+  const selected = taskById(
+    taskColumns,
+    options.selectedTaskId ?? options.selectedId,
+  );
   const selectedId = selected?.id;
+  const detail = taskById(
+    taskColumns,
+    options.detailTaskId ??
+      (options.detailMode === undefined ? selectedId : undefined),
+  );
   const doneExpanded = options.doneExpanded === true || options.expandedDone === true;
 
-  if (selected !== undefined && width < narrowWidth)
+  if (detail !== undefined && (options.detailMode === "full" || width < narrowWidth))
     return [
-      ...renderDetails(selected, snapshot, width, colorEnabled),
+      ...renderDetails(detail, snapshot, width, colorEnabled),
       "",
       footer(width),
     ].join("\n");
@@ -355,8 +372,8 @@ export function renderTaskBoard(
     return [...lines, "", footer(width)].join("\n");
   }
 
-  const detailWidth = selected === undefined ? 0 : Math.floor(width * 0.3);
-  const boardWidth = selected === undefined ? width : width - detailWidth - 3;
+  const detailWidth = detail === undefined ? 0 : Math.floor(width * 0.3);
+  const boardWidth = detail === undefined ? width : width - detailWidth - 3;
   const cellWidth = Math.max(1, Math.floor((boardWidth - 9) / 4));
   const boardLines = joinColumns(
     taskColumns.map((column) =>
@@ -372,8 +389,8 @@ export function renderTaskBoard(
     cellWidth,
   );
   const lines = [heading, "", ...boardLines];
-  if (selected !== undefined) {
-    const details = renderDetails(selected, snapshot, detailWidth, colorEnabled);
+  if (detail !== undefined) {
+    const details = renderDetails(detail, snapshot, detailWidth, colorEnabled);
     const height = Math.max(boardLines.length, details.length);
     lines.splice(
       2,
@@ -387,4 +404,71 @@ export function renderTaskBoard(
   if (taskCount === 0)
     lines.push("", ...wrap("No tasks in this cycle. Create a backlog, then run: roc-it task import <manifest>", width));
   return [...lines, "", footer(width)].join("\n");
+}
+
+/** Maps a one-based terminal mouse position to a board card or Done header control. */
+export function taskBoardHitTest(
+  snapshot: TaskBoardSnapshot,
+  point: { x: number; y: number },
+  options: TaskBoardRenderOptions = {},
+): TaskBoardHit | undefined {
+  const width = Math.max(1, Math.floor(options.width ?? 100));
+  const columns = boardColumns(snapshot);
+  const doneExpanded = options.doneExpanded === true || options.expandedDone === true;
+  if (options.detailMode === "full") return undefined;
+
+  if (width < narrowWidth) {
+    let row = 3;
+    for (const column of columns) {
+      if (point.y === row && column.name === "Done") return { kind: "done" };
+      row += 1;
+      if (column.name === "Done" && !doneExpanded) {
+        row += 1;
+        continue;
+      }
+      if (column.tasks.length === 0) {
+        row += 1;
+        continue;
+      }
+      for (const task of column.tasks) {
+        const height = cardHeight(task);
+        if (point.y >= row && point.y < row + height)
+          return { kind: "task", taskId: task.id };
+        row += height;
+      }
+    }
+    return undefined;
+  }
+
+  const detail = taskById(
+    columns,
+    options.detailTaskId ??
+      (options.detailMode === undefined
+        ? options.selectedTaskId ?? options.selectedId
+        : undefined),
+  );
+  const detailWidth = detail === undefined ? 0 : Math.floor(width * 0.3);
+  const boardWidth = detail === undefined ? width : width - detailWidth - 3;
+  const cellWidth = Math.max(1, Math.floor((boardWidth - 9) / 4));
+  const columnIndex = Math.floor((point.x - 1) / (cellWidth + 3));
+  const column = columns[columnIndex];
+  const columnStart = columnIndex * (cellWidth + 3) + 1;
+  if (
+    column === undefined ||
+    point.x < columnStart ||
+    point.x >= columnStart + cellWidth ||
+    point.y < 3
+  )
+    return undefined;
+  if (point.y === 3 && column.name === "Done") return { kind: "done" };
+  if (point.y <= 4 || (column.name === "Done" && !doneExpanded))
+    return undefined;
+  let row = 5;
+  for (const task of column.tasks) {
+    const height = cardHeight(task);
+    if (point.y >= row && point.y < row + height)
+      return { kind: "task", taskId: task.id };
+    row += height;
+  }
+  return undefined;
 }
