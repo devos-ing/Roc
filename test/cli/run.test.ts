@@ -82,6 +82,7 @@ function onboardingRuntime(overrides: Partial<CliRuntime> = {}): CliRuntime {
 
 test("onboard installs identical project skill copies without overwriting changes", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
   const dbPath = join(root, ".agile", "runtime", "agile.db");
   const { io } = interactiveIo(["2", "2", "2"]);
 
@@ -92,6 +93,7 @@ test("onboard installs identical project skill copies without overwriting change
         io,
         onboardingRuntime({
           projectRoot: root,
+          homeRoot: home,
         }),
       ),
     ).toBe(0);
@@ -129,6 +131,7 @@ test("onboard installs identical project skill copies without overwriting change
         io,
         onboardingRuntime({
           projectRoot: root,
+          homeRoot: home,
         }),
       ),
     ).toBe(0);
@@ -139,12 +142,14 @@ test("onboard installs identical project skill copies without overwriting change
         io,
         onboardingRuntime({
           projectRoot: root,
+          homeRoot: home,
         }),
       ),
     ).toBe(1);
     expect(await readFile(agentsSkill, "utf8")).toBe("changed skill");
   } finally {
     await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });
 
@@ -562,6 +567,7 @@ test("onboard requires interactive input", async () => {
 
 test("onboarding refuses a symbolic-link path component", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
   const redirected = join(root, "redirected");
   await mkdir(redirected);
   await symlink(redirected, join(root, ".agents"));
@@ -572,7 +578,7 @@ test("onboarding refuses a symbolic-link path component", async () => {
       await runCli(
         ["onboard"],
         { out: () => {}, err: (text) => errors.push(text) },
-        onboardingRuntime({ projectRoot: root }),
+        onboardingRuntime({ projectRoot: root, homeRoot: home }),
       ),
     ).toBe(1);
     expect(errors[0]).toContain("symbolic link");
@@ -580,6 +586,7 @@ test("onboarding refuses a symbolic-link path component", async () => {
     await expect(lstat(join(redirected, "skills"))).rejects.toThrow();
   } finally {
     await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });
 
