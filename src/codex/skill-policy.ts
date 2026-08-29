@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { z } from "zod";
 import {
   type SkillIdentity,
@@ -46,8 +46,18 @@ const UNSLOP_IDENTITY = {
   source: "backnotprop/pstack",
 } as const;
 const pluginSources = [
-  { prefix: "ponytail:", source: "dietrichgebert/ponytail" },
-  { prefix: "i-have-adhd:", source: "ayghri/i-have-adhd" },
+  {
+    prefix: "ponytail:",
+    source: "dietrichgebert/ponytail",
+    cachePublisher: "ponytail",
+    cachePackage: "ponytail",
+  },
+  {
+    prefix: "i-have-adhd:",
+    source: "ayghri/i-have-adhd",
+    cachePublisher: "i-have-adhd",
+    cachePackage: "i-have-adhd",
+  },
 ] as const;
 
 export type DiscoveredSkill = z.infer<typeof DiscoveredSkillSchema>;
@@ -58,20 +68,76 @@ export type DefaultSkillCandidate = {
 };
 export type DefaultSkillPolicy = {
   agentsSkillsRoot: string;
+  codexPluginCacheRoot: string;
   standaloneSkillSources: ReadonlyMap<string, string>;
   selectedSkillKeys?: ReadonlySet<string>;
 };
 
-/** Resolves one discovered skill to a trusted stable identity when policy permits it. */
-function trustedIdentityFor(
+/** Returns whether a value can name exactly one safe filesystem path segment. */
+function isSafePathSegment(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value !== "." &&
+    value !== ".." &&
+    !value.includes("/") &&
+    !value.includes("\\")
+  );
+}
+
+/** Resolves a discovered plugin skill only when its cache path has trusted provenance. */
+function trustedPluginIdentityFor(
   skill: DiscoveredSkill,
   input: DefaultSkillPolicy,
 ): SkillIdentity | undefined {
   const plugin = pluginSources.find(({ prefix }) =>
     skill.name.startsWith(prefix),
   );
-  if (plugin !== undefined) return { name: skill.name, source: plugin.source };
+  if (plugin === undefined) return undefined;
 
+  const suffix = skill.name.slice(plugin.prefix.length);
+  if (!isSafePathSegment(suffix)) return undefined;
+
+  const pluginRoot = join(
+    input.codexPluginCacheRoot,
+    plugin.cachePublisher,
+    plugin.cachePackage,
+  );
+  const [version, skillsDirectory, pathSuffix, fileName, ...extra] = relative(
+    pluginRoot,
+    skill.path,
+  ).split(sep);
+  if (
+    extra.length > 0 ||
+    version === undefined ||
+    !isSafePathSegment(version) ||
+    skillsDirectory !== "skills" ||
+    pathSuffix !== suffix ||
+    fileName !== "SKILL.md"
+  ) {
+    return undefined;
+  }
+  const expectedPath = join(
+    pluginRoot,
+    version,
+    skillsDirectory,
+    pathSuffix,
+    fileName,
+  );
+  return skill.path === expectedPath
+    ? { name: skill.name, source: plugin.source }
+    : undefined;
+}
+
+/** Resolves one discovered skill to a trusted stable identity when policy permits it. */
+function trustedIdentityFor(
+  skill: DiscoveredSkill,
+  input: DefaultSkillPolicy,
+): SkillIdentity | undefined {
+  if (pluginSources.some(({ prefix }) => skill.name.startsWith(prefix))) {
+    return trustedPluginIdentityFor(skill, input);
+  }
+
+  if (!isSafePathSegment(skill.name)) return undefined;
   const expectedPath = join(input.agentsSkillsRoot, skill.name, "SKILL.md");
   if (skill.path !== expectedPath) return undefined;
   const source = input.standaloneSkillSources.get(skill.name);
@@ -102,6 +168,7 @@ export async function loadDefaultSkillPolicy(
   }
   return {
     agentsSkillsRoot: join(agentsRoot, "skills"),
+    codexPluginCacheRoot: join(home, ".codex", "plugins", "cache"),
     standaloneSkillSources,
     ...(selected === undefined
       ? {}

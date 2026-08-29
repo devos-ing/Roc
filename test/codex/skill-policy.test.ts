@@ -25,6 +25,9 @@ test("trusts only the exact pstack unslop identity and path", async () => {
 
   try {
     const policy = await loadDefaultSkillPolicy(home);
+    expect(policy.codexPluginCacheRoot).toBe(
+      join(home, ".codex", "plugins", "cache"),
+    );
     expect([...policy.standaloneSkillSources]).toEqual([
       ["unslop", "backnotprop/pstack"],
     ]);
@@ -55,6 +58,7 @@ test("trusts only the exact pstack unslop identity and path", async () => {
 });
 
 test("distinguishes legacy, empty, and subset selections", () => {
+  const codexPluginCacheRoot = "/Users/test/.codex/plugins/cache";
   const skills = [
     {
       name: "tdd",
@@ -63,12 +67,21 @@ test("distinguishes legacy, empty, and subset selections", () => {
     },
     {
       name: "ponytail:ponytail",
-      path: "/plugin/ponytail/SKILL.md",
+      path: join(
+        codexPluginCacheRoot,
+        "ponytail",
+        "ponytail",
+        "4.9.0",
+        "skills",
+        "ponytail",
+        "SKILL.md",
+      ),
       enabled: true,
     },
   ];
   const base = {
     agentsSkillsRoot: "/Users/test/.agents/skills",
+    codexPluginCacheRoot,
     standaloneSkillSources: new Map([["tdd", "mattpocock/skills"]]),
   };
 
@@ -91,9 +104,65 @@ test("distinguishes legacy, empty, and subset selections", () => {
   ).toEqual([true, false]);
 });
 
+test("requires exact plugin cache provenance and safe standalone names", () => {
+  const agentsSkillsRoot = "/Users/test/.agents/skills";
+  const codexPluginCacheRoot = "/Users/test/.codex/plugins/cache";
+  const skills = [
+    {
+      name: "ponytail:ponytail",
+      path: join(
+        codexPluginCacheRoot,
+        "ponytail",
+        "ponytail",
+        "4.9.0",
+        "skills",
+        "ponytail",
+        "SKILL.md",
+      ),
+      enabled: true,
+    },
+    {
+      name: "i-have-adhd:focus",
+      path: join(
+        codexPluginCacheRoot,
+        "i-have-adhd",
+        "i-have-adhd",
+        "1.0.0",
+        "skills",
+        "focus",
+        "SKILL.md",
+      ),
+      enabled: true,
+    },
+    { name: "ponytail:evil", path: "/tmp/evil/SKILL.md", enabled: true },
+    {
+      name: "ponytail:evil",
+      path: join(agentsSkillsRoot, "ponytail:evil", "SKILL.md"),
+      enabled: true,
+    },
+    {
+      name: "../evil",
+      path: "/Users/test/.agents/evil/SKILL.md",
+      enabled: true,
+    },
+  ];
+
+  expect(
+    buildDefaultSkillConfig(skills, {
+      agentsSkillsRoot,
+      codexPluginCacheRoot,
+      standaloneSkillSources: new Map([
+        ["../evil", "mattpocock/skills"],
+        ["ponytail:evil", "mattpocock/skills"],
+      ]),
+    }).map((entry) => entry.enabled),
+  ).toEqual([true, true, false, false, false]);
+});
+
 test("builds deterministic checklist candidates with missing unslop disabled", () => {
   const policy = {
     agentsSkillsRoot: "/Users/test/.agents/skills",
+    codexPluginCacheRoot: "/Users/test/.codex/plugins/cache",
     standaloneSkillSources: new Map([["tdd", "mattpocock/skills"]]),
   };
   expect(
