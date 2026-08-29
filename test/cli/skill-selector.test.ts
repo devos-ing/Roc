@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import {
   buildSkillPromptConfig,
@@ -107,6 +108,78 @@ test("normalizes Ctrl-C without terminating the host process", async () => {
     Symbol.for("clack:cancel"),
   );
   expect(result).toEqual({ kind: "cancelled" });
+});
+
+/** Waits for a real terminal interaction to reach the expected state. */
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (condition()) return;
+    await Bun.sleep(5);
+  }
+  expect(condition()).toBe(true);
+}
+
+type TtyInput = PassThrough & {
+  isTTY: boolean;
+  setRawMode(enabled: boolean): void;
+};
+
+type ResizableOutput = PassThrough & {
+  isTTY: boolean;
+  columns: number;
+  rows: number;
+};
+
+test("NO_COLOR prompt forwards resize with live dimensions and cleans up", async () => {
+  const previousNoColor = process.env.NO_COLOR;
+  process.env.NO_COLOR = "1";
+  const input = new PassThrough() as TtyInput;
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const size = { columns: 80, rows: 24 };
+  const observed = { columns: [] as number[], rows: [] as number[] };
+  const output = new PassThrough() as ResizableOutput;
+  Object.defineProperties(output, {
+    isTTY: { get: () => true },
+    columns: {
+      get: () => {
+        observed.columns.push(size.columns);
+        return size.columns;
+      },
+    },
+    rows: {
+      get: () => {
+        observed.rows.push(size.rows);
+        return size.rows;
+      },
+    },
+  });
+  const selection = selectSkillAllowlist(candidates, undefined, {
+    input,
+    output,
+  });
+
+  try {
+    await waitFor(() => output.listenerCount("resize") === 1);
+    size.columns = 120;
+    size.rows = 35;
+    output.emit("resize");
+    input.write("\u001B[B");
+    await waitFor(
+      () => observed.columns.includes(120) && observed.rows.includes(35),
+    );
+    input.write("\r");
+    await expect(selection).resolves.toEqual({
+      kind: "selected",
+      identities: [{ name: "tdd", source: "mattpocock/skills" }],
+    });
+    expect(output.listenerCount("resize")).toBe(0);
+  } finally {
+    input.write("\r");
+    await selection.catch(() => {});
+    if (previousNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = previousNoColor;
+  }
 });
 
 /** Runs the Clack fixture with an isolated color environment. */
