@@ -1,6 +1,14 @@
-import type { DiscoveredSkill } from "../codex/skill-policy";
+import type {
+  DefaultSkillCandidate,
+  DiscoveredSkill,
+} from "../codex/skill-policy";
+import type { SkillIdentity } from "../domain/skill-allowlist";
 import type { GitHubIssueCandidate } from "../github/import-source";
 import type { AgileError } from "../runtime/errors";
+
+export type SkillSelectionResult =
+  | { kind: "selected"; identities: SkillIdentity[] }
+  | { kind: "cancelled" };
 
 export type CliIo = {
   /** Writes one normal-output record. */
@@ -9,6 +17,10 @@ export type CliIo = {
   err(text: string): void;
   /** Prompts for one interactive answer when input is available. */
   ask?(question: string): Promise<string>;
+  /** Selects exact trusted skills through an interactive terminal checklist. */
+  selectSkills?(
+    candidates: DefaultSkillCandidate[],
+  ): Promise<SkillSelectionResult>;
 };
 
 export type SchedulerRunInput =
