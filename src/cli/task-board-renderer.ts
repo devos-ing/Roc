@@ -1,54 +1,9 @@
-export type TaskBoardTask = {
-  id: string;
-  title: string;
-  status?: string;
-  rawStatus?: string;
-  phase?: string;
-  active?: boolean;
-  blocker?: string;
-  blockedBy?: readonly string[];
-  dependencies?: readonly string[];
-  role?: string;
-  attempt?: number | string;
-  model?: string;
-  retry?: number | string;
-  retryIndex?: number | string;
-  tokens?: number | string;
-  actualTokens?: number | string;
-  spec?: {
-    problem?: string;
-    desiredOutcome?: string;
-    acceptanceCriteria?: readonly string[];
-    dependencies?: readonly string[];
-  };
-  problem?: string;
-  desiredOutcome?: string;
-  acceptanceCriteria?: readonly string[];
-  activeAttempt?: {
-    id?: string;
-    role?: string;
-    model?: string;
-    retryIndex?: number | string;
-    inputTokens?: number;
-    outputTokens?: number;
-  };
-};
+import type {
+  TaskBoardSnapshot,
+  TaskBoardTask,
+} from "./task-board-model";
 
-export type TaskBoardSnapshot = {
-  cycleId?: string;
-  cycle?: { id?: string; goal?: string };
-  goal?: string;
-  activeTaskId?: string;
-  tasks?: readonly TaskBoardTask[];
-  columns?: readonly {
-    name?: string;
-    label?: string;
-    id?: string;
-    tasks?: readonly TaskBoardTask[];
-  }[];
-  tokenTotal?: number | string;
-  totalTokens?: number | string;
-};
+export type { TaskBoardSnapshot, TaskBoardTask } from "./task-board-model";
 
 export type TaskBoardRenderOptions = {
   width?: number;
@@ -64,12 +19,12 @@ export type TaskBoardRenderOptions = {
 
 type ColumnName = "Ready" | "In progress" | "Attention" | "Done";
 
-type BoardColumn = { name: ColumnName; tasks: TaskBoardTask[] };
+type BoardColumn = { name: ColumnName; tasks: readonly TaskBoardTask[] };
 
-const columnNames: ColumnName[] = ["Ready", "In progress", "Attention", "Done"];
 const reset = "\u001B[0m";
-// biome-ignore lint/suspicious/noControlCharactersInRegex: matches terminal SGR sequences emitted above.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matches terminal SGR sequences emitted below.
 const ansiSgrPattern = /\u001B\[[0-9;]*m/g;
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const colors = {
   active: "\u001B[36m",
   attention: "\u001B[33m",
@@ -78,147 +33,132 @@ const colors = {
 };
 const narrowWidth = 88;
 
-/** Converts an unknown value to a displayable string when it is a string or number. */
-function text(value: unknown): string | undefined {
-  return typeof value === "string" || typeof value === "number"
-    ? String(value)
-    : undefined;
+/** Splits text into user-perceived characters without separating combining or ZWJ sequences. */
+function splitGraphemes(value: string): string[] {
+  return Array.from(graphemes.segment(value), ({ segment }) => segment);
 }
 
-/** Returns the first non-empty displayable value from a list of candidates. */
-function firstText(...values: unknown[]): string | undefined {
-  return values
-    .map(text)
-    .find((value) => value !== undefined && value.length > 0);
-}
-
-/** Truncates text at Unicode code-point boundaries. */
-function truncate(value: string, width: number): string {
-  const characters = Array.from(value);
-  if (characters.length <= width) return value;
-  if (width <= 1) return "…".slice(0, width);
-  return `${characters.slice(0, width - 1).join("")}…`;
-}
-
-/** Pads and clips a line to the supplied terminal width. */
-function fit(value: string, width: number): string {
-  return truncate(value, Math.max(1, width));
-}
-
-/** Counts visible Unicode code points after excluding renderer color sequences. */
-function visibleLength(value: string): number {
-  return Array.from(value.replace(ansiSgrPattern, "")).length;
-}
-
-/** Pads a possibly colored line to its visible display width. */
-function pad(value: string, width: number): string {
-  return `${value}${" ".repeat(Math.max(0, width - visibleLength(value)))}`;
-}
-
-/** Colors text only when the renderer is producing interactive terminal output. */
-function color(
-  value: string,
-  tone: keyof typeof colors,
-  enabled: boolean,
-): string {
-  return enabled ? `${colors[tone]}${value}${reset}` : value;
-}
-
-/** Normalizes a model column label to the renderer's stable heading. */
-function columnName(value: string | undefined): ColumnName | undefined {
-  const normalized = value?.replace(/[ _-]/g, "").toLowerCase();
-  if (normalized === "ready") return "Ready";
-  if (normalized === "inprogress" || normalized === "progress")
-    return "In progress";
-  if (normalized === "attention") return "Attention";
-  if (normalized === "done") return "Done";
-  return undefined;
-}
-
-/** Maps a raw scheduler status to the board column that communicates its urgency. */
-function statusColumn(status: string): ColumnName {
-  if (status === "done") return "Done";
+/** Returns a terminal-cell approximation for one complete grapheme cluster. */
+function graphemeWidth(value: string): number {
+  if (/\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3/u.test(value))
+    return 2;
+  const codePoint = value.codePointAt(0) ?? 0;
   if (
-    ["needs_input", "needs_replan", "rejected", "failed_infra"].includes(status)
+    (codePoint >= 0x1100 && codePoint <= 0x115f) ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xffef) ||
+    (codePoint >= 0x20000 && codePoint <= 0x3fffd)
   )
-    return "Attention";
-  if (["claimed", "scouting", "implementing", "reviewing"].includes(status))
-    return "In progress";
-  return "Ready";
+    return 2;
+  return /^\p{Mark}|^[\u200d\ufe0e\ufe0f]/u.test(value) ? 0 : 1;
 }
 
-/** Returns a task's raw scheduler status with a stable fallback. */
-function rawStatus(task: TaskBoardTask): string {
-  return firstText(task.rawStatus, task.status) ?? "unknown";
-}
-
-/** Infers the current workflow phase from explicit and active-attempt metadata. */
-function phase(task: TaskBoardTask): string {
-  return (
-    firstText(task.phase, task.activeAttempt?.role, task.role) ??
-    rawStatus(task)
+/** Counts visible terminal cells while ignoring renderer ANSI SGR controls. */
+function visibleWidth(value: string): number {
+  return splitGraphemes(value.replace(ansiSgrPattern, "")).reduce(
+    (width, grapheme) => width + graphemeWidth(grapheme),
+    0,
   );
 }
 
-/** Returns the task dependency that is currently blocking progress, when supplied by the model. */
-function blocker(task: TaskBoardTask): string | undefined {
-  return firstText(task.blocker, task.blockedBy?.join(", "));
-}
-
-/** Returns the recorded attempt identity or one-based retry number for task details. */
-function attemptLabel(task: TaskBoardTask): string | undefined {
-  const attempt = task.activeAttempt;
-  const recorded = firstText(task.attempt, attempt?.id);
-  if (recorded !== undefined) return recorded;
-  const retry = attempt?.retryIndex;
-  return typeof retry === "number" ? String(retry + 1) : undefined;
-}
-
-/** Collects the model's ordered columns while preserving their task order. */
-function columns(snapshot: TaskBoardSnapshot): BoardColumn[] {
-  const result: BoardColumn[] = columnNames.map((name) => ({
-    name,
-    tasks: [],
-  }));
-  const namedColumns = snapshot.columns ?? [];
-  if (namedColumns.length > 0) {
-    for (const source of namedColumns) {
-      const name = columnName(firstText(source.name, source.label, source.id));
-      if (name === undefined) continue;
-      result
-        .find((column) => column.name === name)
-        ?.tasks.push(...(source.tasks ?? []));
+/** Clips a string to a terminal-cell width without splitting ANSI or grapheme sequences. */
+function fit(value: string, width: number): string {
+  const limit = Math.max(1, width);
+  const plain = value.replace(ansiSgrPattern, "");
+  if (visibleWidth(plain) <= limit) return value;
+  const ellipsis = limit > 1 ? "…" : "";
+  const contentWidth = limit - visibleWidth(ellipsis);
+  let result = "";
+  let used = 0;
+  let offset = 0;
+  let activeColor = false;
+  for (const match of value.matchAll(ansiSgrPattern)) {
+    for (const grapheme of splitGraphemes(value.slice(offset, match.index))) {
+      const size = graphemeWidth(grapheme);
+      if (used + size > contentWidth) return `${result}${ellipsis}${activeColor ? reset : ""}`;
+      result += grapheme;
+      used += size;
     }
-    return result;
+    result += match[0];
+    activeColor = match[0] !== reset;
+    offset = (match.index ?? 0) + match[0].length;
   }
-  for (const task of snapshot.tasks ?? []) {
-    result
-      .find((column) => column.name === statusColumn(rawStatus(task)))
-      ?.tasks.push(task);
+  for (const grapheme of splitGraphemes(value.slice(offset))) {
+    const size = graphemeWidth(grapheme);
+    if (used + size > contentWidth) return `${result}${ellipsis}${activeColor ? reset : ""}`;
+    result += grapheme;
+    used += size;
   }
   return result;
 }
 
-/** Finds the selected task across all board columns. */
-function selectedTask(
-  boardColumns: BoardColumn[],
-  options: TaskBoardRenderOptions,
-): TaskBoardTask | undefined {
-  const id = firstText(
-    options.detailTaskId,
-    options.selectedTaskId,
-    options.selectedId,
-  );
-  return id === undefined
-    ? undefined
-    : boardColumns
-        .flatMap((column) => column.tasks)
-        .find((task) => task.id === id);
+/** Pads a possibly colored line to its visible terminal-cell width. */
+function pad(value: string, width: number): string {
+  return `${value}${" ".repeat(Math.max(0, width - visibleWidth(value)))}`;
 }
 
-/** Identifies whether a task is the scheduler's active work item. */
-function isActive(task: TaskBoardTask, snapshot: TaskBoardSnapshot): boolean {
-  return task.active === true || task.id === snapshot.activeTaskId;
+/** Colors text only when the renderer is producing interactive terminal output. */
+function color(value: string, tone: keyof typeof colors, enabled: boolean): string {
+  return enabled ? `${colors[tone]}${value}${reset}` : value;
+}
+
+/** Sums every token category exposed by the canonical inspection model. */
+function tokenCount(tokens: TaskBoardTask["tokenTotals"]): number {
+  return (
+    tokens.inputTokens +
+    tokens.cachedInputTokens +
+    tokens.outputTokens +
+    tokens.reasoningOutputTokens
+  );
+}
+
+/** Returns the model attempt currently running for a task, or its most recent attempt. */
+function currentAttempt(
+  task: TaskBoardTask,
+  snapshot: TaskBoardSnapshot,
+) {
+  const activeAttemptId = task.isActive ? snapshot.active?.attemptId : undefined;
+  return (
+    task.attempts.find((attempt) => attempt.id === activeAttemptId) ??
+    task.attempts.find((attempt) => attempt.status === "running") ??
+    task.attempts.at(-1)
+  );
+}
+
+/** Returns the task's current role, falling back to its raw scheduler status. */
+function phase(task: TaskBoardTask, snapshot: TaskBoardSnapshot): string {
+  return currentAttempt(task, snapshot)?.role ?? task.rawStatus;
+}
+
+/** Joins dependency identifiers that presently block a task. */
+function blocker(task: TaskBoardTask): string | undefined {
+  return task.blockingDependencyIds.length > 0
+    ? task.blockingDependencyIds.join(", ")
+    : undefined;
+}
+
+/** Returns the four stable renderer columns backed by the canonical record-valued model columns. */
+function boardColumns(snapshot: TaskBoardSnapshot): BoardColumn[] {
+  return [
+    { name: "Ready", tasks: snapshot.columns.ready },
+    { name: "In progress", tasks: snapshot.columns.inProgress },
+    { name: "Attention", tasks: snapshot.columns.attention },
+    { name: "Done", tasks: snapshot.columns.done },
+  ];
+}
+
+/** Finds the selected task across all canonical board columns. */
+function selectedTask(
+  taskColumns: readonly BoardColumn[],
+  options: TaskBoardRenderOptions,
+): TaskBoardTask | undefined {
+  const id = options.detailTaskId ?? options.selectedTaskId ?? options.selectedId;
+  return id === undefined
+    ? undefined
+    : taskColumns.flatMap((column) => column.tasks).find((task) => task.id === id);
 }
 
 /** Renders one compact task card for a board column or vertical list. */
@@ -229,28 +169,29 @@ function renderCard(input: {
   width: number;
   colorEnabled: boolean;
 }): string[] {
-  const marker = input.selected ? "›" : " ";
-  const active = isActive(input.task, input.snapshot);
   const blocked = blocker(input.task);
   const lines = [
     fit(
-      `${marker} ${active ? "● " : ""}${input.task.id}  ${input.task.title}`,
+      `${input.selected ? "›" : " "} ${input.task.isActive ? "● " : ""}${input.task.id}  ${input.task.title}`,
       input.width,
     ),
-    fit(`  Status: ${rawStatus(input.task)}`, input.width),
-    fit(`  Phase: ${phase(input.task)}`, input.width),
+    fit(`  Status: ${input.task.rawStatus}`, input.width),
+    fit(`  Phase: ${phase(input.task, input.snapshot)}`, input.width),
   ];
   if (blocked) lines.push(fit(`  Blocked: ${blocked}`, input.width));
-  if (input.selected)
-    return lines.map((line) => color(line, "active", input.colorEnabled));
-  if (blocked || statusColumn(rawStatus(input.task)) === "Attention")
-    return lines.map((line) => color(line, "attention", input.colorEnabled));
-  if (statusColumn(rawStatus(input.task)) === "Done")
-    return lines.map((line) => color(line, "done", input.colorEnabled));
-  return lines;
+  const tone = input.selected
+    ? "active"
+    : blocked || input.task.column === "attention"
+      ? "attention"
+      : input.task.column === "done"
+        ? "done"
+        : undefined;
+  return tone === undefined
+    ? lines
+    : lines.map((line) => color(line, tone, input.colorEnabled));
 }
 
-/** Renders one width-bounded board column including its collapsed-Done state. */
+/** Renders one width-bounded board column including its collapsed Done state. */
 function renderColumn(input: {
   column: BoardColumn;
   snapshot: TaskBoardSnapshot;
@@ -261,13 +202,12 @@ function renderColumn(input: {
 }): string[] {
   const collapsed = input.column.name === "Done" && !input.doneExpanded;
   const tasks = collapsed ? [] : input.column.tasks;
-  const heading = `${input.column.name} (${input.column.tasks.length})`;
   const lines = [
-    fit(heading, input.width),
-    fit("─".repeat(input.width), input.width),
+    fit(`${input.column.name} (${input.column.tasks.length})`, input.width),
+    "─".repeat(input.width),
   ];
   if (collapsed) lines.push(fit("  collapsed", input.width));
-  for (const task of tasks) {
+  for (const task of tasks)
     lines.push(
       ...renderCard({
         task,
@@ -277,64 +217,84 @@ function renderColumn(input: {
         colorEnabled: input.colorEnabled,
       }),
     );
-  }
   if (!collapsed && tasks.length === 0)
-    lines.push(color("  —", "muted", input.colorEnabled));
+    lines.push(color(fit("  —", input.width), "muted", input.colorEnabled));
   return lines;
 }
 
-/** Combines equal-height columns into a horizontal board without exceeding its width. */
-function joinColumns(columnsToJoin: string[][], width: number): string[] {
+/** Combines equal-height padded columns into a width-bounded horizontal board. */
+function joinColumns(columnsToJoin: readonly string[][], cellWidth: number): string[] {
   const height = Math.max(...columnsToJoin.map((column) => column.length));
   return Array.from({ length: height }, (_, index) =>
-    fit(columnsToJoin.map((column) => column[index] ?? "").join(" │ "), width),
+    columnsToJoin
+      .map((column) => pad(column[index] ?? "", cellWidth))
+      .join(" │ "),
   );
 }
 
-/** Renders one task's full details for either a side panel or narrow full-screen view. */
+/** Wraps plain text at terminal-cell boundaries, preserving every grapheme cluster. */
+function wrap(value: string, width: number, prefix = ""): string[] {
+  const limit = Math.max(1, width);
+  const indentation = visibleWidth(prefix) < limit ? prefix : "";
+  const lines: string[] = [];
+  let line = prefix;
+  for (const word of value.trim().split(/\s+/u)) {
+    if (word.length === 0) continue;
+    const separator = visibleWidth(line) > visibleWidth(indentation) ? " " : "";
+    if (visibleWidth(line) + visibleWidth(separator) + visibleWidth(word) <= limit) {
+      line += `${separator}${word}`;
+      continue;
+    }
+    if (visibleWidth(line) > visibleWidth(indentation)) lines.push(line);
+    line = indentation;
+    for (const grapheme of splitGraphemes(word)) {
+      if (visibleWidth(line) + graphemeWidth(grapheme) > limit && visibleWidth(line) > visibleWidth(indentation)) {
+        lines.push(line);
+        line = indentation;
+      }
+      line += grapheme;
+    }
+  }
+  if (line.length > 0) lines.push(line);
+  return lines.length > 0 ? lines : [fit(prefix.trimEnd() || "—", limit)];
+}
+
+/** Wraps a labelled detail field while retaining its label on the first line. */
+function detailField(label: string, value: string, width: number): string[] {
+  return wrap(value || "—", width, `${label}: `);
+}
+
+/** Renders one task's complete details for either a side panel or narrow full-screen view. */
 function renderDetails(
   task: TaskBoardTask,
+  snapshot: TaskBoardSnapshot,
   width: number,
   colorEnabled: boolean,
 ): string[] {
-  const spec = task.spec;
-  const criteria = task.acceptanceCriteria ?? spec?.acceptanceCriteria ?? [];
-  const dependencies = task.dependencies ?? spec?.dependencies ?? [];
-  const attempt = task.activeAttempt;
-  const lines = [
+  const attempt = currentAttempt(task, snapshot);
+  const criteria = task.spec.acceptanceCriteria;
+  const dependencies = task.spec.dependencies;
+  return [
     color(fit(`Task ${task.id}`, width), "active", colorEnabled),
-    fit(task.title, width),
+    ...wrap(task.title, width),
     "",
-    fit(`Status: ${rawStatus(task)}`, width),
-    fit(`Phase: ${phase(task)}`, width),
-    fit(`Role: ${firstText(attempt?.role, task.role) ?? "—"}`, width),
-    fit(`Attempt: ${attemptLabel(task) ?? "—"}`, width),
-    fit(`Model: ${firstText(attempt?.model, task.model) ?? "—"}`, width),
-    fit(
-      `Retry: ${firstText(attempt?.retryIndex, task.retry, task.retryIndex) ?? "—"}`,
-      width,
-    ),
-    fit(
-      `Tokens: ${firstText(task.tokens, task.actualTokens, attempt ? (attempt.inputTokens ?? 0) + (attempt.outputTokens ?? 0) : undefined) ?? "—"}`,
-      width,
-    ),
-    fit(`Blocker: ${blocker(task) ?? "—"}`, width),
-    fit(
-      `Dependencies: ${dependencies.length ? dependencies.join(", ") : "—"}`,
-      width,
-    ),
+    ...detailField("Status", task.rawStatus, width),
+    ...detailField("Phase", phase(task, snapshot), width),
+    ...detailField("Role", attempt?.role ?? "—", width),
+    ...detailField("Attempt", attempt?.id ?? String(task.attempts.length || "—"), width),
+    ...detailField("Model", attempt?.model ?? task.modelDecisions.at(-1)?.model ?? "—", width),
+    ...detailField("Retry", attempt === undefined ? "—" : String(attempt.retryIndex), width),
+    ...detailField("Tokens", `${tokenCount(task.tokenTotals)}/${task.tokenTarget}`, width),
+    ...detailField("Blocker", blocker(task) ?? "—", width),
+    ...detailField("Dependencies", dependencies.join(", ") || "—", width),
     "",
-    fit(`Problem: ${firstText(task.problem, spec?.problem) ?? "—"}`, width),
-    fit(
-      `Desired outcome: ${firstText(task.desiredOutcome, spec?.desiredOutcome) ?? "—"}`,
-      width,
-    ),
+    ...detailField("Problem", task.spec.problem, width),
+    ...detailField("Desired outcome", task.spec.desiredOutcome, width),
     "Acceptance criteria:",
     ...(criteria.length
-      ? criteria.map((criterion) => fit(`- ${criterion}`, width))
+      ? criteria.flatMap((criterion) => wrap(criterion, width, "- "))
       : ["- —"]),
   ];
-  return lines;
 }
 
 /** Renders the compact non-interactive shortcut reminder. */
@@ -342,12 +302,14 @@ function footer(width: number): string {
   return fit("↑↓ select · Enter details · d toggle Done · q quit", width);
 }
 
-/** Renders a plain empty-board prompt that tells users how to create work. */
-function renderEmptyBoard(width: number): string {
-  return [
-    fit("No tasks in this cycle.", width),
-    fit("Create a backlog, then run: roc-it task import <manifest>", width),
-  ].join("\n");
+/** Renders the canonical current-cycle summary and token progress. */
+function summary(snapshot: TaskBoardSnapshot, taskCount: number, width: number): string {
+  const cycle = snapshot.cycles.find((candidate) => candidate.id === snapshot.currentCycleId);
+  const tokens = cycle === undefined ? "" : ` · ${tokenCount(cycle.actual)}/${cycle.tokenTarget} tokens`;
+  return fit(
+    `Cycle ${snapshot.currentCycleId} · ${taskCount} task${taskCount === 1 ? "" : "s"}${tokens}`,
+    width,
+  );
 }
 
 /** Renders a stable, width-aware task board without terminal I/O or control sequences. */
@@ -355,88 +317,76 @@ export function renderTaskBoard(
   snapshot: TaskBoardSnapshot,
   options: TaskBoardRenderOptions = {},
 ): string {
-  const width = Math.max(40, Math.floor(options.width ?? 100));
+  const width = Math.max(1, Math.floor(options.width ?? 100));
   const colorEnabled =
     options.color !== false && options.isTTY !== false && options.tty !== false;
-  const boardColumns = columns(snapshot);
-  const taskCount = boardColumns.reduce(
-    (count, column) => count + column.tasks.length,
-    0,
-  );
-  if (taskCount === 0) return renderEmptyBoard(width);
+  const taskColumns = boardColumns(snapshot);
+  const taskCount = snapshot.tasks.length;
+  const selected = selectedTask(taskColumns, options);
+  const selectedId = selected?.id;
+  const doneExpanded = options.doneExpanded === true || options.expandedDone === true;
 
-  const selected = selectedTask(boardColumns, options);
   if (selected !== undefined && width < narrowWidth)
     return [
-      ...renderDetails(selected, width, colorEnabled),
+      ...renderDetails(selected, snapshot, width, colorEnabled),
       "",
       footer(width),
     ].join("\n");
 
-  const cycleId =
-    firstText(snapshot.cycleId, snapshot.cycle?.id) ?? "Current cycle";
-  const goal = firstText(snapshot.goal, snapshot.cycle?.goal);
-  const totalTokens = firstText(snapshot.totalTokens, snapshot.tokenTotal);
-  const summary = fit(
-    `Cycle ${cycleId} · ${taskCount} task${taskCount === 1 ? "" : "s"}${totalTokens ? ` · ${totalTokens} tokens` : ""}${goal ? ` · ${goal}` : ""}`,
-    width,
-  );
-  const selectedId = selected?.id;
-  const doneExpanded =
-    options.doneExpanded === true || options.expandedDone === true;
-
+  const heading = summary(snapshot, taskCount, width);
   if (width < narrowWidth) {
-    const lines = [summary, ""];
-    for (const column of boardColumns) {
-      lines.push(`${column.name} (${column.tasks.length})`);
-      if (column.name === "Done" && !doneExpanded) {
-        lines.push("  collapsed");
-        continue;
-      }
-      for (const task of column.tasks)
-        lines.push(
-          ...renderCard({
-            task,
-            snapshot,
-            selected: task.id === selectedId,
-            width,
-            colorEnabled,
-          }),
-        );
+    const lines = [heading, ""];
+    for (const column of taskColumns) {
+      lines.push(fit(`${column.name} (${column.tasks.length})`, width));
+      if (column.name === "Done" && !doneExpanded) lines.push(fit("  collapsed", width));
+      else if (column.tasks.length === 0) lines.push(fit("  —", width));
+      else
+        for (const task of column.tasks)
+          lines.push(
+            ...renderCard({
+              task,
+              snapshot,
+              selected: task.id === selectedId,
+              width,
+              colorEnabled,
+            }),
+          );
     }
+    if (taskCount === 0)
+      lines.push("", ...wrap("No tasks in this cycle. Create a backlog, then run: roc-it task import <manifest>", width));
     return [...lines, "", footer(width)].join("\n");
   }
 
-  const detailWidth =
-    selected === undefined ? 0 : Math.max(28, Math.floor(width * 0.3));
+  const detailWidth = selected === undefined ? 0 : Math.floor(width * 0.3);
   const boardWidth = selected === undefined ? width : width - detailWidth - 3;
-  const columnWidth = Math.max(10, Math.floor((boardWidth - 9) / 4));
+  const cellWidth = Math.max(1, Math.floor((boardWidth - 9) / 4));
   const boardLines = joinColumns(
-    boardColumns.map((column) =>
+    taskColumns.map((column) =>
       renderColumn({
         column,
         snapshot,
         selectedId,
-        width: columnWidth,
+        width: cellWidth,
         doneExpanded,
         colorEnabled,
       }),
     ),
-    boardWidth,
+    cellWidth,
   );
-  const lines = [summary, "", ...boardLines];
+  const lines = [heading, "", ...boardLines];
   if (selected !== undefined) {
-    const details = renderDetails(selected, detailWidth, colorEnabled);
+    const details = renderDetails(selected, snapshot, detailWidth, colorEnabled);
     const height = Math.max(boardLines.length, details.length);
     lines.splice(
       2,
       boardLines.length,
       ...Array.from(
         { length: height },
-        (_, index) =>
-          `${pad(boardLines[index] ?? "", boardWidth)} │ ${details[index] ?? ""}`,
+        (_, index) => `${pad(boardLines[index] ?? "", boardWidth)} │ ${details[index] ?? ""}`,
       ),
     );
   }
+  if (taskCount === 0)
+    lines.push("", ...wrap("No tasks in this cycle. Create a backlog, then run: roc-it task import <manifest>", width));
   return [...lines, "", footer(width)].join("\n");
 }
