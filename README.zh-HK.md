@@ -77,6 +77,17 @@ npx roc-it@latest onboard
 以及查看產生的任務。若稍後步驟停止，Roc 會列出已完成工作並提供重試指令；它不會
 聲稱已回復任何變更。
 
+Onboarding 會以 checklist 顯示 Roc 已安裝的預設 agent skills。按 Enter 接受目前選擇，按 Space 切換個別 skill，或取消全部項目，讓 agents 在不使用 skills 的情況下執行。Roc 會把準確選擇保存為全域設定。之後新安裝的預設 skill 不會自動啟用，你需要重新執行 onboarding 並勾選它。
+
+Roc 不會自動安裝缺少的 `unslop`。請自行安裝 pstack 版本，再重新執行 onboarding：
+
+```bash
+npx skills add backnotprop/pstack --skill unslop --global --agent codex --agent claude-code --agent cursor
+npx roc-it@latest onboard
+```
+
+如需純文字終端輸出，使用 `NO_COLOR=1 npx roc-it@latest onboard`。
+
 使用 `npx roc-it@latest onboard --global` 可改為在使用者帳戶下安裝 skill；
 全域啟用不會建立專案資料庫。
 

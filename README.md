@@ -79,6 +79,17 @@ first backlog with the installed task skill, and inspect the resulting tasks. If
 a later step stops, Roc lists the work already completed and gives a retry
 command; it does not claim to roll anything back.
 
+Onboarding shows Roc's installed default agent skills as a checklist. Press Enter to accept the current selection, use Space to toggle a skill, or clear every item to run agents without skills. Roc saves the exact selection globally. A newly installed default stays disabled until you run onboarding again and select it.
+
+Roc does not install a missing `unslop` skill. Install the pstack copy yourself, then rerun onboarding:
+
+```bash
+npx skills add backnotprop/pstack --skill unslop --global --agent codex --agent claude-code --agent cursor
+npx roc-it@latest onboard
+```
+
+Use `NO_COLOR=1 npx roc-it@latest onboard` for plain terminal output.
+
 Use `npx roc-it@latest onboard --global` to install the skill under your user
 account instead; global onboarding does not create a project database.
 
