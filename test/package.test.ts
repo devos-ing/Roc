@@ -52,7 +52,7 @@ test("package metadata exposes roc-it as a public Bun CLI", async () => {
 });
 
 test("a representative next stable version satisfies the package boundary", () => {
-  expect("0.0.2").toMatch(stableVersionPattern);
+  expect("0.0.3").toMatch(stableVersionPattern);
 });
 
 test("npm archive contains only runtime files", async () => {
