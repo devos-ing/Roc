@@ -746,7 +746,7 @@ test("onboarding retry prints a copyable canonical command", async () => {
     expect(retryCommand).toBeDefined();
     if (retryCommand === undefined) throw new Error("Expected a retry command");
     const shell = Bun.spawn(
-      ["zsh", "-fc", `npx() { printf '%s\\n' "$@"; }\n${retryCommand}`],
+      ["/bin/sh", "-fc", `npx() { printf '%s\\n' "$@"; }\n${retryCommand}`],
       { stdout: "pipe" },
     );
     expect(await shell.exited).toBe(0);
@@ -847,7 +847,7 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
     expect(nextCommand).toBeDefined();
     if (nextCommand === undefined) throw new Error("Expected a next command");
     const shell = Bun.spawn(
-      ["zsh", "-fc", `npx() { printf '%s\\n' "$@"; }\n${nextCommand}`],
+      ["/bin/sh", "-fc", `npx() { printf '%s\\n' "$@"; }\n${nextCommand}`],
       { stdout: "pipe" },
     );
     expect(await shell.exited).toBe(0);
