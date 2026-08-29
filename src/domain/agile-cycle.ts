@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SkillSettingsSchema } from "./skill-allowlist";
 
 const dayMilliseconds = 86_400_000;
 
@@ -36,7 +37,10 @@ export const AgileCycleSettingSchema = z.discriminatedUnion("type", [
 ]);
 
 export const RocSettingsSchema = z
-  .object({ cycle: AgileCycleSettingSchema })
+  .object({
+    cycle: AgileCycleSettingSchema,
+    skills: SkillSettingsSchema.optional(),
+  })
   .strict();
 
 export type AgileCycleSetting = z.infer<typeof AgileCycleSettingSchema>;
