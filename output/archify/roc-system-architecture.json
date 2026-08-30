@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Roc system architecture",
+    "locale": "en",
+    "output": "roc-system-architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [1380, 840]
+  },
+  "components": [
+    {
+      "id": "operator",
+      "type": "external",
+      "label": "Developer",
+      "sublabel": "project checkout",
+      "pos": [40, 250],
+      "size": [130, 64]
+    },
+    {
+      "id": "cli",
+      "type": "frontend",
+      "label": "Commander CLI",
+      "sublabel": "roc scheduler run",
+      "pos": [240, 250],
+      "size": [170, 64]
+    },
+    {
+      "id": "scheduler",
+      "type": "backend",
+      "label": "Scheduler daemon",
+      "sublabel": "lease + sequential ticks",
+      "pos": [510, 250],
+      "size": [190, 64],
+      "tag": "one task at a time"
+    },
+    {
+      "id": "harness",
+      "type": "backend",
+      "label": "CodexHarness",
+      "sublabel": "attempt dispatch + events",
+      "pos": [810, 250],
+      "size": [190, 64]
+    },
+    {
+      "id": "pipeline",
+      "type": "security",
+      "label": "Agent phase pipeline",
+      "sublabel": "Scout → Implement → Review",
+      "pos": [1120, 250],
+      "size": [220, 64],
+      "tag": "write only during Implement"
+    },
+    {
+      "id": "appserver",
+      "type": "external",
+      "label": "Codex app-server",
+      "sublabel": "one backend process",
+      "pos": [810, 60],
+      "size": [190, 64]
+    },
+    {
+      "id": "hooks",
+      "type": "security",
+      "label": "TaskHookService",
+      "sublabel": "trusted argv hooks",
+      "pos": [300, 560],
+      "size": [180, 64],
+      "tag": "3 attempts"
+    },
+    {
+      "id": "state",
+      "type": "database",
+      "label": "SQLite state",
+      "sublabel": ".agile/runtime",
+      "pos": [540, 560],
+      "size": [180, 64],
+      "tag": "durable + restartable"
+    },
+    {
+      "id": "branches",
+      "type": "backend",
+      "label": "TaskBranchManager",
+      "sublabel": "branch isolation + commit",
+      "pos": [810, 560],
+      "size": [200, 64]
+    },
+    {
+      "id": "checkout",
+      "type": "database",
+      "label": "Sibling checkout",
+      "sublabel": "<repo>.agile-checkout",
+      "pos": [1120, 560],
+      "size": [220, 64],
+      "tag": "agile/<taskId>"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Roc local scheduler process",
+      "wraps": ["cli", "scheduler", "harness", "hooks", "state", "branches"]
+    },
+    {
+      "kind": "region",
+      "label": "Dedicated task workspace",
+      "wraps": ["checkout"]
+    }
+  ],
+  "connections": [
+    { "id": "operator-cli", "from": "operator", "to": "cli", "variant": "emphasis" },
+    { "id": "cli-scheduler", "from": "cli", "to": "scheduler" },
+    { "id": "scheduler-state", "from": "scheduler", "to": "state", "label": "persist tasks + events", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
+    { "id": "scheduler-hooks", "from": "scheduler", "to": "hooks", "label": "trusted prehook / posthook", "variant": "security" },
+    { "id": "scheduler-harness", "from": "scheduler", "to": "harness", "label": "attempts / events", "variant": "emphasis" },
+    { "id": "harness-pipeline", "from": "harness", "to": "pipeline" },
+    { "id": "harness-appserver", "from": "harness", "to": "appserver", "label": "JSON-RPC sessions" },
+    { "id": "harness-branches", "from": "harness", "to": "branches", "label": "prepare + finalize", "fromSide": "bottom", "toSide": "top" },
+    { "id": "branches-checkout", "from": "branches", "to": "checkout", "label": "switch agile/<taskId>" },
+    { "id": "pipeline-checkout", "from": "pipeline", "to": "checkout", "label": "write + exact-commit review", "variant": "security", "labelAt": [1230, 328] }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Execution model",
+      "items": ["The daemon holds one exclusive scheduler lease", "SQLite resumes the active attempt after a restart"]
+    },
+    {
+      "dot": "violet",
+      "title": "Isolation",
+      "items": ["The source checkout is never switched", "Review reads the exact clean implementation commit"]
+    }
+  ]
+}
