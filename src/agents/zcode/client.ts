@@ -22,11 +22,17 @@ type MessageWaiter = {
 };
 
 export type ZcodeClientApi = {
+  /** Sends an RPC request and resolves it from the matching response envelope. */
   request(method: string, params: unknown): Promise<unknown>;
+  /** Sends a fire-and-forget RPC notification. */
   notify(method: string, params: unknown): void;
+  /** Sends a successful response to an app-server request. */
   respond(id: string | number, result: unknown): void;
+  /** Sends an error response to an app-server request. */
   respondError(id: string | number, code: number, message: string): void;
+  /** Returns the next queued server message or waits until one arrives. */
   nextServerMessage(): Promise<ServerMessage>;
+  /** Idempotently closes the client and its child process resources. */
   close(): Promise<void>;
   /**
    * The one session model preference resolved at startup, after every

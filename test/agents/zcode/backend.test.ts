@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
+  buildZcodeBackendFactory,
   startZcodeBackend,
-  startZcodeBackendWith,
 } from "../../../src/agents/zcode/backend";
 import type { ZcodeClientApi } from "../../../src/agents/zcode/client";
 
@@ -65,11 +65,9 @@ test("the factory fails closed and closes the client when no session model can b
       },
     };
 
+    const factory = buildZcodeBackendFactory(async () => unattributedClient);
     await expect(
-      startZcodeBackendWith({
-        branches: undefined as never,
-        startClient: async () => unattributedClient,
-      }),
+      factory({ branches: undefined as never }),
     ).rejects.toMatchObject({
       code: "ZCODE_MODEL_UNRESOLVED",
       category: "startup",
