@@ -19,12 +19,14 @@ bun install --frozen-lockfile
 
 ## Development checks
 
-Run Roc directly from source:
+Use the one-shot `dev` source launcher (it does not watch files):
 
 ```bash
-bun run src/cli/main.ts help
-bun src/cli/main.ts onboard
+bun dev -- help
+bun dev -- onboard
 ```
+
+Direct entry with `bun src/cli/main.ts ...` remains supported.
 
 To check the packaged task-creation skill, run:
 
@@ -36,8 +38,8 @@ You can test an import with a temporary strict JSON manifest, then inspect its
 ready tasks locally:
 
 ```bash
-bun src/cli/main.ts task import /absolute/path/to/backlog.json --db .agile/runtime/agile.db
-bun src/cli/main.ts task list --db .agile/runtime/agile.db
+bun dev -- task import /absolute/path/to/backlog.json --db .agile/runtime/agile.db
+bun dev -- task list --db .agile/runtime/agile.db
 ```
 
 Run the checks that match your change:
@@ -60,13 +62,13 @@ hidden from production help and the public READMEs.
 Run a prepared fake scenario:
 
 ```bash
-bun run src/cli/main.ts scheduler run --backend fake --fake-script /absolute/path/to/scenario.json
+bun dev -- scheduler run --backend fake --fake-script /absolute/path/to/scenario.json
 ```
 
 Inspect the scheduler database:
 
 ```bash
-bun run src/cli/main.ts scheduler inspect
+bun dev -- scheduler inspect
 ```
 
 Both commands accept `--db PATH` when you need a specific database.
