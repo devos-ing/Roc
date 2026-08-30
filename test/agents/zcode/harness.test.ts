@@ -6,11 +6,16 @@ import type {
   HarnessEvent,
   HarnessStepRequest,
 } from "../../../src/harness/contracts";
+import { AgileError } from "../../../src/runtime/errors";
 import type { TaskBranchManager } from "../../../src/workspace/task-branch";
 
 type ServerMessage = Awaited<ReturnType<ZcodeClientApi["nextServerMessage"]>>;
 
 class RecordedZcodeClient implements ZcodeClientApi {
+  readonly sessionModel = Object.freeze({
+    providerId: "bigmodel",
+    modelId: "GLM-5.3",
+  });
   readonly requests: { method: string; params: unknown }[] = [];
   readonly responseErrors: {
     id: string | number;
@@ -509,4 +514,42 @@ test("reconcile completes persisted outputs and retries in-flight turns", async 
       retryable: true,
     },
   });
+});
+
+test("provider rpc rejection text never reaches the durable failure event", async () => {
+  class SendRejectingClient extends RecordedZcodeClient {
+    async request(method: string, params: unknown): Promise<unknown> {
+      if (method === "session/send") {
+        // Exactly the error the production client builds: a fixed message
+        // with the raw provider text only in the non-persisted cause.
+        throw new AgileError({
+          code: "ZCODE_APP_SERVER_RPC_ERROR",
+          category: "protocol",
+          retryable: false,
+          component: "zcode-client",
+          message: "ZCode app-server rejected the request",
+          cause: {
+            code: -32000,
+            message: "provider failure detail zcode-secret-sentinel-0e7a",
+          },
+        });
+      }
+      return super.request(method, params);
+    }
+  }
+
+  const client = new SendRejectingClient();
+  const harness = createZcodeHarness({ client, branches: memoryBranches() });
+
+  const failed = await harness.step(makeScoutRequest());
+  if (failed.kind !== "event") throw new Error("expected an event delivery");
+  expect(failed.event).toMatchObject({
+    type: "attempt.failed_infra",
+    code: "ZCODE_APP_SERVER_RPC_ERROR",
+    message: "ZCode app-server rejected the request",
+    retryable: false,
+  });
+  // The serialized durable event never carries the provider's raw text, and
+  // stderr renders the same fixed message field.
+  expect(JSON.stringify(failed.event)).not.toContain("zcode-secret-sentinel");
 });

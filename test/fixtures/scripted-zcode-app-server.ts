@@ -83,6 +83,21 @@ function handleMessage(message: IncomingMessage): boolean {
       });
       return true;
     }
+    case "fixture/echoEnv":
+      write({
+        id: requestId(message),
+        result: { zcodeModel: process.env.ZCODE_MODEL ?? null },
+      });
+      return true;
+    case "fixture/rpcError":
+      write({
+        id: requestId(message),
+        error: {
+          code: -32000,
+          message: "provider failure detail zcode-secret-sentinel-0e7a",
+        },
+      });
+      return true;
     case "fixture/exit":
       write({ id: requestId(message), result: {} }, () => process.exit(0));
       return false;

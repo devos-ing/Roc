@@ -72,13 +72,17 @@ factory refuses to start unless `ROC_ZCODE_EXPERIMENTAL=1` acknowledges these
 limits; source and outside-workspace sentinel checks belong to that future
 confinement work.
 
-**Model attribution.** The client resolves one effective model at startup —
-the explicit `ZCODE_MODEL` override, else the enabled desktop provider's first
-model — and the catalog, the child environment, and the session `create` call
-all use it. Attempts that would run an unobservable server-side default fail
-startup with `ZCODE_MODEL_UNRESOLVED`. Reasoning effort maps to the protocol's
-`thoughtLevel` on every session create; the catalog advertises exactly the
-efforts the protocol can select.
+**Model attribution.** After every environment priority merges (an explicit
+`ZCODE_MODEL` override, else the enabled desktop provider's first model), the
+client resolves one immutable `{providerId, modelId}` pair, and the child
+environment, the published catalog, and every session `create` use exactly
+that pair. ZCode exposes one effective model and no catalog RPC, so the
+backend maps all three advisor profiles (luna, terra, sol) onto it
+explicitly. A model that cannot be attributed to an enabled provider fails
+startup with `ZCODE_MODEL_UNRESOLVED` instead of running an unobservable
+server-side default. Reasoning effort maps to the protocol's `thoughtLevel`
+on every session create; the catalog advertises exactly the efforts the
+protocol can select.
 
 **Recovery.** ZCode has no durable turn-resume RPC. The app-server process is
 owned by the scheduler run, so a mid-attempt crash loses the in-flight turn:

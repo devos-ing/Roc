@@ -208,8 +208,12 @@ npx roc-it@latest scheduler run
 Or with ZCode (the Z.ai desktop app's headless `app-server`). The backend is
 experimental and production-gated — see below:
 
+Run it from the target project's directory (there is no `--repo` flag; Roc
+resolves the project from the current directory):
+
 ```bash
-ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --backend zcode --repo /absolute/path/to/project
+cd /absolute/path/to/project
+ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --backend zcode
 ```
 
 ZCode mode expects a signed-in Z.ai desktop app on the same machine: Roc reads

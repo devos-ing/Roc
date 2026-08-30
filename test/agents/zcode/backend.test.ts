@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { startZcodeBackend } from "../../../src/agents/zcode/backend";
+import {
+  startZcodeBackend,
+  startZcodeBackendWith,
+} from "../../../src/agents/zcode/backend";
+import type { ZcodeClientApi } from "../../../src/agents/zcode/client";
 
 /**
  * Runs the factory with one experimental-gate value and captures its failure.
@@ -39,4 +43,42 @@ test("the gate message tells the operator how to acknowledge", async () => {
   const error = (await gateFailureWith(undefined)) as Error;
   expect(error.message).toContain("ROC_ZCODE_EXPERIMENTAL=1");
   expect(error.message).toContain("filesystem sandbox");
+});
+
+test("the factory fails closed and closes the client when no session model can be attributed", async () => {
+  const previous = process.env.ROC_ZCODE_EXPERIMENTAL;
+  let closed = false;
+  try {
+    process.env.ROC_ZCODE_EXPERIMENTAL = "1";
+    const unattributedClient: ZcodeClientApi = {
+      request: async () => {
+        throw new Error("unreachable without a session");
+      },
+      notify: () => {},
+      respond: () => {},
+      respondError: () => {},
+      nextServerMessage: async () => {
+        throw new Error("unreachable without a session");
+      },
+      close: async () => {
+        closed = true;
+      },
+    };
+
+    await expect(
+      startZcodeBackendWith({
+        branches: undefined as never,
+        startClient: async () => unattributedClient,
+      }),
+    ).rejects.toMatchObject({
+      code: "ZCODE_MODEL_UNRESOLVED",
+      category: "startup",
+      retryable: false,
+      component: "zcode-backend",
+    });
+    expect(closed).toBe(true);
+  } finally {
+    if (previous === undefined) delete process.env.ROC_ZCODE_EXPERIMENTAL;
+    else process.env.ROC_ZCODE_EXPERIMENTAL = previous;
+  }
 });

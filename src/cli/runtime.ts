@@ -253,7 +253,7 @@ export async function runBackendSession(
   const backend = await startBackend({ branches });
   let db: ReturnType<typeof openDatabase> | undefined;
   try {
-    const advisor = createModelAdvisor(backend.catalog);
+    const advisor = createModelAdvisor(backend.catalog, backend.modelMapping);
     const compatible = (["scout", "implement", "review"] as const).some(
       (role) =>
         advisor.decide({ role, risk: "medium", retryIndex: 0 }) !== undefined ||

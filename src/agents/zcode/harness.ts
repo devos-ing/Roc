@@ -426,6 +426,21 @@ export function createZcodeHarness(input: {
     // workspace, so role turns cannot escape into the scheduler checkout.
     // ZCode has no protocol-level sandbox: read-only roles are constrained by
     // their prompts and verified by the workspace status comparison below.
+    const sessionModel = input.client.sessionModel;
+    if (sessionModel === undefined) {
+      // Fail closed instead of omitting the model: a session without an
+      // attributable provider/model pair would run an unobservable
+      // server-side default while the attempt records something else.
+      throw new AgileError({
+        code: "zcode_session_model_unresolved",
+        category: "protocol",
+        retryable: false,
+        component: "zcode-harness",
+        message: "The ZCode client has no attributable session model",
+        taskId: request.attempt.taskId,
+        attemptId: request.attempt.attemptId,
+      });
+    }
     let rawCreateResponse: unknown;
     try {
       rawCreateResponse = await input.client.request("session/create", {
@@ -437,14 +452,10 @@ export function createZcodeHarness(input: {
         // Forward the routed model so the persisted attribution matches the
         // session the child actually runs; effort maps to the protocol's
         // thought level (low/medium/high/xhigh/max covers every effort).
-        ...(input.client.effectiveProviderId === undefined
-          ? {}
-          : {
-              model: {
-                providerId: input.client.effectiveProviderId,
-                modelId: request.attempt.model,
-              },
-            }),
+        model: {
+          providerId: sessionModel.providerId,
+          modelId: request.attempt.model,
+        },
         thoughtLevel: request.attempt.effort,
       });
     } catch (error) {

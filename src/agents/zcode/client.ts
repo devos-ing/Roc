@@ -29,15 +29,21 @@ export type ZcodeClientApi = {
   nextServerMessage(): Promise<ServerMessage>;
   close(): Promise<void>;
   /**
-   * The model the child process will actually run, resolved once at startup
-   * from the explicit environment override or the enabled desktop provider.
-   * Undefined when neither source provides one, which leaves the child on an
-   * unknowable server-side default; production callers must refuse to start.
+   * The one session model preference resolved at startup, after every
+   * environment priority has merged: the model id from the effective
+   * ZCODE_MODEL (explicit override, else the enabled desktop provider), the
+   * provider id from that provider. Undefined when no complete pair can be
+   * formed, which leaves the child on an unknowable server-side default;
+   * production callers must refuse to start.
    */
-  readonly effectiveModel?: string;
-  /** The desktop provider id that owns the effective model, if one is known. */
-  readonly effectiveProviderId?: string;
+  readonly sessionModel?: ZcodeSessionModel;
 };
+
+/** One immutable provider/model pair used by the child env, catalog, and session create. */
+export type ZcodeSessionModel = Readonly<{
+  providerId: string;
+  modelId: string;
+}>;
 
 type ProviderConfig = {
   enabled?: boolean;
@@ -87,17 +93,15 @@ export class ZcodeClient implements ZcodeClientApi {
   private terminalError: AgileError | undefined;
   private closing = false;
   private closePromise: Promise<void> | undefined;
-  readonly effectiveModel?: string;
-  readonly effectiveProviderId?: string;
+  readonly sessionModel?: ZcodeSessionModel;
 
   /** Creates a client around a spawned app-server process and starts its I/O watchers. */
   private constructor(
     process: AppServerProcess,
-    effective: { model?: string; providerId?: string },
+    sessionModel: ZcodeSessionModel | undefined,
   ) {
     this.process = process;
-    this.effectiveModel = effective.model;
-    this.effectiveProviderId = effective.providerId;
+    this.sessionModel = sessionModel;
     this.stdoutTask = this.watchStdout();
     this.stderrTask = this.drainStderr();
     this.exitTask = this.watchExit();
@@ -133,12 +137,14 @@ export class ZcodeClient implements ZcodeClientApi {
         delete injected[key];
         continue;
       }
+      const explicitValue = process.env[key]?.trim();
       if (
         key !== "ZCODE_BASE_URL" &&
-        process.env[key] !== undefined &&
-        process.env[key] !== ""
+        explicitValue !== undefined &&
+        explicitValue !== ""
       ) {
-        // Explicit caller-provided model and key settings win over config.
+        // Explicit caller-provided model and key settings win over config;
+        // blank values count as unset.
         delete injected[key];
       }
     }
@@ -153,15 +159,26 @@ export class ZcodeClient implements ZcodeClientApi {
       ...(input?.env ?? {}),
     };
 
-    // The child's effective model is exactly what lands in its ZCODE_MODEL
-    // environment: an explicit caller override wins, otherwise the enabled
-    // desktop provider's first model. Production callers must refuse to
-    // start when neither source provides one, because the server-side
-    // default would be unobservable from here.
-    const explicitModel = process.env.ZCODE_MODEL?.trim() || undefined;
-    const effective = explicitModel
-      ? { model: explicitModel, providerId: credentials.providerId }
-      : { model: credentials.model, providerId: credentials.providerId };
+    // Resolve the ONE session model after every environment priority has
+    // merged, so the child env, the published catalog, and session/create
+    // cannot disagree: an explicit override (input.env or process env) wins,
+    // else the enabled desktop provider's first model, always attributed to
+    // that provider. A model without a provider id cannot form a complete
+    // preference and stays undefined; production callers must refuse to
+    // start, because the server-side default would be unobservable.
+    const mergedModel = processEnv.ZCODE_MODEL?.trim() || undefined;
+    const sessionModel =
+      mergedModel !== undefined && credentials.providerId !== undefined
+        ? Object.freeze({
+            providerId: credentials.providerId,
+            modelId: mergedModel,
+          })
+        : undefined;
+    if (sessionModel !== undefined) {
+      // Pin the resolved pair so the child runs exactly the attributed
+      // model, even when the incoming value carried surrounding whitespace.
+      processEnv.ZCODE_MODEL = sessionModel.modelId;
+    }
 
     let spawned: AppServerProcess;
     try {
@@ -181,7 +198,7 @@ export class ZcodeClient implements ZcodeClientApi {
       });
     }
 
-    return new ZcodeClient(spawned, effective);
+    return new ZcodeClient(spawned, sessionModel);
   }
 
   /** Sends an RPC request and resolves it from the matching response envelope. */
@@ -356,7 +373,11 @@ export class ZcodeClient implements ZcodeClientApi {
             category: "protocol",
             retryable: false,
             component: "zcode-client",
-            message: rpcError.message,
+            // The provider's raw text may embed request payloads or keys, so
+            // only the fixed message can reach events, logs, or stderr; the
+            // original error travels in the non-persisted cause.
+            message: "ZCode app-server rejected the request",
+            cause: rpcError,
             requestId: String(response.data.id),
           }),
         );
