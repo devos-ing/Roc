@@ -11,9 +11,9 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { DefaultSkillCandidate } from "../../src/agents/codex/skill-policy";
 import { runCli } from "../../src/cli/run";
 import type { CliRuntime } from "../../src/cli/types";
-import type { DefaultSkillCandidate } from "../../src/codex/skill-policy";
 import { taskHookConfigHash } from "../../src/scheduler/task-hooks";
 import {
   loadRocSettings,

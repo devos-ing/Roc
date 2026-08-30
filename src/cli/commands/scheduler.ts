@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { backends, isRealBackendName } from "../../agents/registry";
 import { openDatabase } from "../../store/database";
 import { OrchestrationRepository } from "../../store/orchestration-repository";
 import {
@@ -9,11 +10,17 @@ import {
 } from "../command-context";
 import type { CliCommandContext, SchedulerRunInput } from "../types";
 
-/** Runs the public scheduler against Codex in the current project. */
+/** Runs the public scheduler against a registered backend in the current project. */
 async function executeSchedulerRun(
   context: CliCommandContext,
-  options: { base: string },
+  options: { base: string; backend: string },
 ): Promise<number> {
+  if (!isRealBackendName(options.backend)) {
+    context.io.err(
+      `scheduler run requires --backend ${Object.keys(backends).join("|")}`,
+    );
+    return 2;
+  }
   let repoPath: string;
   try {
     repoPath = await commandProjectRoot(context);
@@ -23,7 +30,7 @@ async function executeSchedulerRun(
   }
   const dbPath = projectDatabasePath(repoPath);
   const input: SchedulerRunInput = {
-    backend: "codex",
+    backend: options.backend,
     dbPath,
     repoPath,
     baseRef: options.base,
@@ -69,9 +76,14 @@ export function registerSchedulerCommands(
     .description("Run and inspect the scheduler");
   scheduler
     .command("run")
-    .description("Run ready tasks with Codex")
+    .description("Run ready tasks with a registered backend")
     .option("--base <ref>", "Git ref used as the task base", "HEAD")
-    .action(async (options: { base: string }) => {
+    .option(
+      "--backend <name>",
+      `Scheduler backend (${Object.keys(backends).join("|")})`,
+      "codex",
+    )
+    .action(async (options: { base: string; backend: string }) => {
       context.exitCode = await executeSchedulerRun(context, options);
     });
   scheduler

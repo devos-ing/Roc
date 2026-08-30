@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { listWorkspaceSkills } from "../../src/codex/skill-catalog";
+import { listWorkspaceSkills } from "../../../src/agents/codex/skill-catalog";
 
 test("returns the complete requested workspace skill catalog", async () => {
   const client = {

@@ -1,7 +1,8 @@
 import type {
   DefaultSkillCandidate,
   DiscoveredSkill,
-} from "../codex/skill-policy";
+} from "../agents/codex/skill-policy";
+import type { RealBackendName } from "../agents/registry";
 import type { SkillIdentity } from "../domain/skill-allowlist";
 import type { GitHubIssueCandidate } from "../github/import-source";
 import type { AgileError } from "../runtime/errors";
@@ -23,9 +24,16 @@ export type CliIo = {
   ): Promise<SkillSelectionResult>;
 };
 
+export type RealSchedulerRunInput = {
+  backend: RealBackendName;
+  dbPath: string;
+  repoPath: string;
+  baseRef: string;
+};
+
 export type SchedulerRunInput =
   | { backend: "fake"; dbPath: string; scenario: unknown }
-  | { backend: "codex"; dbPath: string; repoPath: string; baseRef: string };
+  | RealSchedulerRunInput;
 
 export type CliRuntime = {
   /** Runs one scheduler invocation through an injected backend boundary. */

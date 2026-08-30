@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CodexClientApi } from "../../src/codex/client";
-import { createCodexHarness } from "../../src/codex/harness";
+import type { CodexClientApi } from "../../../src/agents/codex/client";
+import { createCodexHarness } from "../../../src/agents/codex/harness";
 import {
   ImplementDraftOutputJsonSchema,
   implementPrompt,
@@ -11,18 +11,18 @@ import {
   reviewPrompt,
   ScoutOutputJsonSchema,
   scoutPrompt,
-} from "../../src/codex/prompts";
-import { skillIdentityKey } from "../../src/domain/skill-allowlist";
+} from "../../../src/agents/codex/prompts";
+import { skillIdentityKey } from "../../../src/domain/skill-allowlist";
 import type {
   AgentHarness,
   HarnessEvent,
   HarnessStepRequest,
-} from "../../src/harness/contracts";
+} from "../../../src/harness/contracts";
 import {
   createTaskBranchManager,
   type TaskBranchManager,
-} from "../../src/workspace/task-branch";
-import { git } from "../helpers/git";
+} from "../../../src/workspace/task-branch";
+import { git } from "../../helpers/git";
 
 type ServerMessage = Awaited<ReturnType<CodexClientApi["nextServerMessage"]>>;
 
@@ -152,7 +152,7 @@ const ticket = {
 const scoutOutput = {
   kind: "scout" as const,
   summary: "The provider seam is AgentHarness",
-  files: ["src/codex/harness.ts"],
+  files: ["src/agents/codex/harness.ts"],
   tests: ["test/codex/harness.test.ts"],
   risks: ["Cumulative usage can be replayed"],
 };
@@ -774,8 +774,9 @@ test("fails Review closed when the read-only turn mutates the checkout", async (
     },
   );
   const branches = memoryBranches();
-  const statuses = ["", " M src/codex/harness.ts"];
-  branches.status = async () => statuses.shift() ?? " M src/codex/harness.ts";
+  const statuses = ["", " M src/agents/codex/harness.ts"];
+  branches.status = async () =>
+    statuses.shift() ?? " M src/agents/codex/harness.ts";
   const harness = createCodexHarness({
     client,
     branches,

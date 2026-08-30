@@ -6,8 +6,8 @@ import {
   buildDefaultSkillCandidates,
   buildDefaultSkillConfig,
   loadDefaultSkillPolicy,
-} from "../../src/codex/skill-policy";
-import { skillIdentityKey } from "../../src/domain/skill-allowlist";
+} from "../../../src/agents/codex/skill-policy";
+import { skillIdentityKey } from "../../../src/domain/skill-allowlist";
 
 test("trusts only the exact pstack unslop identity and path", async () => {
   const home = await mkdtemp(join(tmpdir(), "roc-unslop-policy-"));

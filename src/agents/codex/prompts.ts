@@ -5,7 +5,7 @@ import {
   ImplementOutputSchema,
   ReviewOutputSchema,
   ScoutOutputSchema,
-} from "../harness/contracts";
+} from "../../harness/contracts";
 
 export const ScoutOutputJsonSchema = z.toJSONSchema(ScoutOutputSchema);
 export const ImplementDraftOutputSchema = ImplementOutputSchema.omit({

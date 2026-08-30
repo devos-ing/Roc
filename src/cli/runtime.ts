@@ -1,30 +1,28 @@
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { CodexClient } from "../codex/client";
-import { createCodexHarness } from "../codex/harness";
-import { ModelListResponseSchema } from "../codex/protocol";
-import { listWorkspaceSkills as readWorkspaceSkills } from "../codex/skill-catalog";
-import {
-  type DefaultSkillPolicy,
-  loadDefaultSkillPolicy,
-} from "../codex/skill-policy";
+import { loadSchedulerSkillPolicy } from "../agents/codex/backend";
+import { CodexClient } from "../agents/codex/client";
+import { listWorkspaceSkills as readWorkspaceSkills } from "../agents/codex/skill-catalog";
+import { backends } from "../agents/registry";
+import type { BackendFactory } from "../agents/types";
 import type { AgentHarness } from "../harness/contracts";
 import { createFakeHarness } from "../harness/fake";
 import { AgileError, normalizeError } from "../runtime/errors";
 import { createJsonlLogger, type Logger } from "../runtime/logger";
 import { SchedulerDaemon } from "../scheduler/daemon";
 import {
-  type CatalogModel,
   createModelAdvisor,
   createStaticModelAdvisor,
 } from "../scheduler/model-routing";
 import { Scheduler } from "../scheduler/scheduler";
 import { TaskHookService } from "../scheduler/task-hooks";
-import { loadRocSettings } from "../settings";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
 import { createTaskBranchManager } from "../workspace/task-branch";
-import type { CliRuntime, SchedulerRunInput } from "./types";
+import type {
+  CliRuntime,
+  RealSchedulerRunInput,
+  SchedulerRunInput,
+} from "./types";
 
 /** Sleeps until the requested delay elapses or an optional abort signal fires. */
 export function schedulerSleep(
@@ -222,61 +220,40 @@ async function runFake(
   }
 }
 
-/** Loads the current trusted policy intersected with the saved global selection. */
-export async function loadSchedulerSkillPolicy(
-  homeRoot = homedir(),
-): Promise<DefaultSkillPolicy> {
-  const settings = await loadRocSettings(homeRoot);
-  return loadDefaultSkillPolicy(homeRoot, settings.skills?.allowlist);
-}
+export { loadSchedulerSkillPolicy };
 
-/** Runs a scheduler session against Codex with validated models and isolated branches. */
-async function runCodex(
-  input: Extract<SchedulerRunInput, { backend: "codex" }>,
+/** Runs a scheduler session against any registered backend factory. */
+async function runRealBackend(
+  input: RealSchedulerRunInput,
   runId: string,
 ): Promise<void> {
+  await runBackendSession(backends[input.backend], input, runId);
+}
+
+/** Runs one scheduler session against a started backend factory. */
+export async function runBackendSession(
+  startBackend: BackendFactory,
+  input: RealSchedulerRunInput,
+  runId: string,
+): Promise<void> {
+  const backendLabel = input.backend;
   let branches: Awaited<ReturnType<typeof createTaskBranchManager>>;
   try {
     branches = await createTaskBranchManager(input.repoPath, input.baseRef);
   } catch (error) {
     throw attachRunId(error, runId, {
-      code: "CODEX_BRANCH_STARTUP_FAILED",
+      code: "BACKEND_BRANCH_STARTUP_FAILED",
       category: "startup",
       retryable: false,
       component: "cli",
-      message: "Could not validate the Codex repository and base ref",
+      message: `Could not validate the ${backendLabel} repository and base ref`,
     });
   }
 
-  const client = await CodexClient.start();
+  const backend = await startBackend({ branches });
   let db: ReturnType<typeof openDatabase> | undefined;
   try {
-    let catalog: CatalogModel[];
-    try {
-      const response = ModelListResponseSchema.parse(
-        await client.request("model/list", {
-          limit: 100,
-          includeHidden: false,
-        }),
-      );
-      catalog = response.data
-        .filter((model) => !model.hidden)
-        .map((model) => ({
-          id: model.id,
-          supportedReasoningEfforts: model.supportedReasoningEfforts.map(
-            (effort) => effort.reasoningEffort,
-          ),
-        }));
-    } catch (error) {
-      throw attachRunId(error, runId, {
-        code: "CODEX_MODEL_CATALOG_FAILED",
-        category: "startup",
-        retryable: false,
-        component: "cli",
-        message: "Could not load the Codex model catalog",
-      });
-    }
-    const advisor = createModelAdvisor(catalog);
+    const advisor = createModelAdvisor(backend.catalog);
     const compatible = (["scout", "implement", "review"] as const).some(
       (role) =>
         advisor.decide({ role, risk: "medium", retryIndex: 0 }) !== undefined ||
@@ -284,11 +261,11 @@ async function runCodex(
     );
     if (!compatible) {
       throw new AgileError({
-        code: "CODEX_MODEL_CATALOG_INCOMPATIBLE",
+        code: "BACKEND_MODEL_CATALOG_INCOMPATIBLE",
         category: "startup",
         retryable: false,
         component: "cli",
-        message: "No compatible high or xhigh Codex model profile is available",
+        message: `No compatible high or xhigh ${backendLabel} model profile is available`,
         runId,
       });
     }
@@ -311,24 +288,19 @@ async function runCodex(
       () => {},
       advisor,
     );
-    const harness = createCodexHarness({
-      client,
-      branches,
-      skillPolicy: await loadSchedulerSkillPolicy(),
-    });
     const hooks = new TaskHookService(repo, branches);
     await runDaemon({
-      daemon: daemonFor(repo, harness, runId, hooks),
+      daemon: daemonFor(repo, backend.harness, runId, hooks),
       repo,
-      harness,
+      harness: backend.harness,
       logger: loggerFor({ dbPath: input.dbPath, repoPath: input.repoPath }),
       runId,
-      closeBackend: () => client.close(),
+      closeBackend: () => backend.close(),
       cancelHooks: () => hooks.stop(),
     });
   } finally {
     try {
-      await client.close();
+      await backend.close();
     } finally {
       db?.close();
     }
@@ -341,7 +313,7 @@ export const defaultRuntime: CliRuntime = {
     const runId = crypto.randomUUID();
     try {
       if (input.backend === "fake") await runFake(input, runId);
-      else await runCodex(input, runId);
+      else await runRealBackend(input, runId);
     } catch (error) {
       throw attachRunId(error, runId, {
         code: "SCHEDULER_RUN_FAILED",
