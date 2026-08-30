@@ -145,7 +145,9 @@ export async function createTaskBranchManager(
   const sourceOrigin = (await sourceGit.getRemotes()).some(
     (remote) => remote.name === "origin",
   )
-    ? (await sourceGit.raw(["remote", "get-url", "origin"])).trim()
+    ? (
+        await sourceGit.raw(["config", "--local", "--get", "remote.origin.url"])
+      ).trim()
     : undefined;
 
   const baseCommit = await fullCommit(sourceGit, baseRef);
@@ -170,7 +172,12 @@ export async function createTaskBranchManager(
     );
   }
   const origin = (
-    await checkoutIdentityGit.raw(["remote", "get-url", "origin"])
+    await checkoutIdentityGit.raw([
+      "config",
+      "--local",
+      "--get",
+      "remote.origin.url",
+    ])
   ).trim();
   const sourceRepositoryRemote = await isSourceRepositoryRemote(
     origin,

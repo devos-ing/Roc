@@ -67,12 +67,13 @@ test("preserves a GitHub source origin in new and legacy scheduler checkouts", a
       `\n[url "file://${root}"]\n\tinsteadOf = ${sourceOrigin}\n`,
     );
     const legacy = await createTaskBranchManager(root, "HEAD");
+    const legacyCheckoutPath = (await legacy.prepare("T1")).path;
     expect(
-      await git(
-        ["config", "--get", "remote.origin.url"],
-        (await legacy.prepare("T1")).path,
-      ),
+      await git(["config", "--get", "remote.origin.url"], legacyCheckoutPath),
     ).toBe(sourceOrigin);
+    await expect(
+      (await createTaskBranchManager(root, "HEAD")).prepare("T1"),
+    ).resolves.toMatchObject({ path: legacyCheckoutPath });
   } finally {
     await removeRepository(root);
   }
