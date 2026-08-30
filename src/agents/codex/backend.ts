@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { AgileError } from "../../runtime/errors";
+import { normalizeError } from "../../runtime/errors";
 import type { CatalogModel } from "../../scheduler/model-routing";
 import { loadRocSettings } from "../../settings";
 import type { BackendFactory } from "../types";
@@ -20,7 +20,9 @@ export async function loadSchedulerSkillPolicy(
 }
 
 /** Loads the visible Codex model catalog over the running client connection. */
-async function loadCatalog(client: CodexClient): Promise<CatalogModel[]> {
+export async function loadCatalog(
+  client: Pick<CodexClient, "request">,
+): Promise<CatalogModel[]> {
   try {
     const response = ModelListResponseSchema.parse(
       await client.request("model/list", {
@@ -37,13 +39,12 @@ async function loadCatalog(client: CodexClient): Promise<CatalogModel[]> {
         ),
       }));
   } catch (error) {
-    throw new AgileError({
+    throw normalizeError(error, {
       code: "CODEX_MODEL_CATALOG_FAILED",
       category: "startup",
       retryable: false,
       component: "cli",
       message: "Could not load the Codex model catalog",
-      cause: error,
     });
   }
 }
