@@ -162,6 +162,7 @@ export async function createTaskBranchManager(
   }
 
   const checkoutGit = gitAt(checkoutPath, true);
+  const checkoutIdentityGit = gitAt(checkoutPath);
   const checkoutRoot = (await checkoutGit.revparse("--show-toplevel")).trim();
   if (checkoutRoot !== checkoutPath) {
     throw new Error(
@@ -169,7 +170,7 @@ export async function createTaskBranchManager(
     );
   }
   const origin = (
-    await checkoutGit.raw(["remote", "get-url", "origin"])
+    await checkoutIdentityGit.raw(["remote", "get-url", "origin"])
   ).trim();
   const sourceRepositoryRemote = await isSourceRepositoryRemote(
     origin,

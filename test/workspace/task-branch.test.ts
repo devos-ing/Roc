@@ -117,6 +117,9 @@ test("uses global Git configuration when fetching a legacy scheduler checkout", 
 
     const restarted = await createTaskBranchManager(root, "HEAD");
     expect((await restarted.prepare("T1")).path).toBe(checkout);
+    await expect(
+      (await createTaskBranchManager(root, "HEAD")).prepare("T1"),
+    ).resolves.toMatchObject({ path: checkout });
   } finally {
     if (priorGlobalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
     else process.env.GIT_CONFIG_GLOBAL = priorGlobalConfig;

@@ -1,0 +1,19 @@
+0 verbose cli /opt/homebrew/Cellar/node/24.7.0/bin/node /opt/homebrew/bin/npm
+1 info using npm@11.5.1
+2 info using node@v24.7.0
+3 silly config load:file:/opt/homebrew/lib/node_modules/npm/npmrc
+4 silly config load:file:/Users/roy/Documents/ChatGPT/agile-agents/.worktrees/release-0.0.3.agile-checkout/.npmrc
+5 silly config load:file:/Users/roy/.npmrc
+6 silly config load:file:/opt/homebrew/etc/npmrc
+7 verbose title npm pack
+8 verbose argv "pack" "--dry-run" "--json" "--ignore-scripts"
+9 verbose logfile logs-max:10 dir:/Users/roy/Documents/ChatGPT/agile-agents/.worktrees/release-0.0.3.agile-checkout/.tmp/npm-cache/_logs/2026-08-30T20_08_52_201Z-
+10 verbose logfile /Users/roy/Documents/ChatGPT/agile-agents/.worktrees/release-0.0.3.agile-checkout/.tmp/npm-cache/_logs/2026-08-30T20_08_52_201Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+13 verbose cwd /Users/roy/Documents/ChatGPT/agile-agents/.worktrees/release-0.0.3.agile-checkout
+14 verbose os Darwin 25.4.0
+15 verbose node v24.7.0
+16 verbose npm  v11.5.1
+17 verbose exit 0
+18 info ok
