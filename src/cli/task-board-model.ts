@@ -156,7 +156,9 @@ export function buildTaskBoardSnapshot(
     ...(active === undefined ? {} : { active }),
     cycles: input.allCycles
       ? input.inspection.cycles
-      : input.inspection.cycles.filter((cycle) => cycle.id === input.currentCycleId),
+      : input.inspection.cycles.filter(
+          (cycle) => cycle.id === input.currentCycleId,
+        ),
     tasks: orderedTasks,
     columns,
   };

@@ -130,7 +130,9 @@ test("maps every raw status to one board column while retaining it", () => {
       "failed_infra",
     ]);
     expect(board.columns.done.map((task) => task.rawStatus)).toEqual(["done"]);
-    expect(board.tasks.map((task) => task.id).sort()).toEqual([...statuses].sort());
+    expect(board.tasks.map((task) => task.id).sort()).toEqual(
+      [...statuses].sort(),
+    );
   } finally {
     db.close();
   }
@@ -155,7 +157,11 @@ test("keeps dependency-blocked ready tasks ready and filters cycles on request",
       dependencies: ["done", "unfinished"],
     });
     createTask(planning, { id: "unfinished", priority: 2 });
-    createTask(planning, { id: "other-cycle", cycleId: "2026-W36", priority: 0 });
+    createTask(planning, {
+      id: "other-cycle",
+      cycleId: "2026-W36",
+      priority: 0,
+    });
     for (const id of ["done", "blocked", "unfinished", "other-cycle"])
       db.query("UPDATE tasks SET status = 'ready' WHERE id = ?").run(id);
     db.query("UPDATE tasks SET status = 'done' WHERE id = 'done'").run();
@@ -166,16 +172,17 @@ test("keeps dependency-blocked ready tasks ready and filters cycles on request",
       "blocked",
       "unfinished",
     ]);
-    expect(current.columns.ready.find((task) => task.id === "blocked")).toMatchObject({
+    expect(
+      current.columns.ready.find((task) => task.id === "blocked"),
+    ).toMatchObject({
       rawStatus: "ready",
       blockingDependencyIds: ["unfinished"],
     });
-    expect(snapshot({ planning, orchestration, allCycles: true }).tasks.map((task) => task.id)).toEqual([
-      "done",
-      "other-cycle",
-      "blocked",
-      "unfinished",
-    ]);
+    expect(
+      snapshot({ planning, orchestration, allCycles: true }).tasks.map(
+        (task) => task.id,
+      ),
+    ).toEqual(["done", "other-cycle", "blocked", "unfinished"]);
   } finally {
     db.close();
   }
@@ -193,7 +200,9 @@ test("places the active task first with its attempt, model, retry, and token tot
     });
     createTask(planning, { id: "first-ready", priority: 0 });
     createTask(planning, { id: "active", priority: 2, approved: true });
-    db.query("UPDATE tasks SET status = 'ready' WHERE id IN ('first-ready', 'active')").run();
+    db.query(
+      "UPDATE tasks SET status = 'ready' WHERE id IN ('first-ready', 'active')",
+    ).run();
     const claim = orchestration.claimNext();
     expect(claim).toEqual({ taskId: "active" });
     const attempt = orchestration.beginNextAttempt();
@@ -216,7 +225,10 @@ test("places the active task first with its attempt, model, retry, and token tot
     );
 
     const board = snapshot({ planning, orchestration });
-    expect(board.tasks.map((task) => task.id)).toEqual(["active", "first-ready"]);
+    expect(board.tasks.map((task) => task.id)).toEqual([
+      "active",
+      "first-ready",
+    ]);
     expect(board.active).toMatchObject({
       taskId: "active",
       attemptId: attempt.attemptId,

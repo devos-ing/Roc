@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
+import { stripVTControlCharacters } from "node:util";
 import type {
   TaskBoardSnapshot,
   TaskBoardTask,
 } from "../../src/cli/task-board-model";
 import { renderTaskBoard } from "../../src/cli/task-board-renderer";
 
-const ansiSgrPattern = /\u001B\[[0-9;]*m/g;
 const tokens = {
   inputTokens: 12,
   cachedInputTokens: 2,
@@ -117,9 +117,7 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 /** Counts terminal cells for the CJK and emoji cases exercised below. */
 function displayWidth(value: string): number {
-  return Array.from(
-    graphemes.segment(value.replace(ansiSgrPattern, "")),
-  ).reduce(
+  return Array.from(graphemes.segment(stripVTControlCharacters(value))).reduce(
     (width, { segment }) =>
       width +
       (/\p{Extended_Pictographic}|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\uff00-\uffef]/u.test(
@@ -160,13 +158,14 @@ test("pads colored wide columns and keeps ANSI resets intact", () => {
   });
   const boardLines = output
     .split("\n")
-    .map((line) => line.replace(ansiSgrPattern, ""))
+    .map((line) => stripVTControlCharacters(line))
     .filter((line) => line.split(" │ ").length === 5);
 
   expect(boardLines).not.toHaveLength(0);
   expect(new Set(boardLines.map((line) => line.indexOf(" │ "))).size).toBe(1);
-  expect(output).toMatch(/\u001B\[0m/);
-  expect(output.split("\n").at(-1)).not.toMatch(ansiSgrPattern);
+  expect(output).toContain("\u001B[0m");
+  const footer = output.split("\n").at(-1) ?? "";
+  expect(stripVTControlCharacters(footer)).toBe(footer);
 });
 
 test("uses a vertical list and full-screen wrapped detail in narrow terminals", () => {
@@ -207,7 +206,7 @@ test("keeps plain Unicode output cell-bounded without splitting graphemes", () =
   };
   const output = renderTaskBoard(unicodeSnapshot, { width: 20, isTTY: false });
 
-  expect(output).not.toMatch(ansiSgrPattern);
+  expect(stripVTControlCharacters(output)).toBe(output);
   expect(output).toContain("…");
   expect(output).not.toContain("�");
   expect(output.split("\n").every((line) => displayWidth(line) <= 20)).toBe(
@@ -240,8 +239,7 @@ test("removes stored terminal controls from plain task details", () => {
     detailMode: "full",
   });
 
-  expect(output).not.toMatch(ansiSgrPattern);
-  expect(output).not.toContain("\u001B");
+  expect(stripVTControlCharacters(output)).toBe(output);
   expect(output).toContain("Task unsafe");
   expect(output).toContain("Unsafe title");
   expect(output).toContain("Unsafe problem");
