@@ -1,4 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { type SimpleGit, simpleGit } from "simple-git";
 import { safeTaskPathComponent } from "../domain/task-path";
@@ -34,8 +35,8 @@ export function taskBranchName(taskId: string): string {
   return `${TASK_BRANCH_PREFIX}${safeTaskPathComponent(taskId)}`;
 }
 
-/** Creates an isolated SimpleGit client with deterministic noninteractive configuration. */
-function gitAt(baseDir: string): SimpleGit {
+/** Creates a noninteractive SimpleGit client that can optionally use global credentials. */
+function gitAt(baseDir: string, useGlobalConfig = false): SimpleGit {
   return simpleGit({
     baseDir,
     maxConcurrentProcesses: 1,
@@ -56,7 +57,17 @@ function gitAt(baseDir: string): SimpleGit {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     LC_ALL: "C",
     GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: "/dev/null",
+    ...(useGlobalConfig
+      ? {
+          HOME: process.env.HOME ?? homedir(),
+          ...(process.env.XDG_CONFIG_HOME === undefined
+            ? {}
+            : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+          ...(process.env.GIT_CONFIG_GLOBAL === undefined
+            ? {}
+            : { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL }),
+        }
+      : { GIT_CONFIG_GLOBAL: "/dev/null" }),
     GIT_TERMINAL_PROMPT: "0",
     GIT_AUTHOR_NAME: "Agile Agents",
     GIT_AUTHOR_EMAIL: "agile-agents@local",
@@ -102,7 +113,7 @@ function checkpointMessage(taskId: string): string {
 function isRemoteUrl(remote: string): boolean {
   return (
     /^[a-z][a-z\d+.-]*:\/\//i.test(remote) ||
-    /^[^/\s@]+@[^\s:]+:.+$/.test(remote)
+    /^(?:[^/\s:@]+@)?[^/\s:]+:(?![\\/]).+$/.test(remote)
   );
 }
 
@@ -150,7 +161,7 @@ export async function createTaskBranchManager(
     await sourceGit.clone(canonicalRepo, checkoutPath, ["--no-checkout"]);
   }
 
-  const checkoutGit = gitAt(checkoutPath);
+  const checkoutGit = gitAt(checkoutPath, true);
   const checkoutRoot = (await checkoutGit.revparse("--show-toplevel")).trim();
   if (checkoutRoot !== checkoutPath) {
     throw new Error(

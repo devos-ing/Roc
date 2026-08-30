@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   appendFile,
+  chmod,
   mkdtemp,
   readFile,
   realpath,
@@ -76,6 +77,52 @@ test("preserves a GitHub source origin in new and legacy scheduler checkouts", a
     await removeRepository(root);
   }
 }, 30_000);
+
+test("recognizes a no-user SCP SSH alias when restarting a scheduler checkout", async () => {
+  const sourceOrigin = "github-work:agile-agents/roc.git";
+  const root = await createRepository();
+  const sshCommand = join(root, "ssh");
+  const priorPath = process.env.PATH;
+  try {
+    await git(["remote", "add", "origin", sourceOrigin], root);
+    const manager = await createTaskBranchManager(root, "HEAD");
+    const checkout = (await manager.prepare("T1")).path;
+    await writeFile(sshCommand, `#!/bin/sh\nexec git-upload-pack "${root}"\n`);
+    await chmod(sshCommand, 0o755);
+    process.env.PATH = `${root}:${priorPath ?? "/usr/bin:/bin"}`;
+
+    const restarted = await createTaskBranchManager(root, "HEAD");
+    expect((await restarted.prepare("T1")).path).toBe(checkout);
+  } finally {
+    if (priorPath === undefined) delete process.env.PATH;
+    else process.env.PATH = priorPath;
+    await removeRepository(root);
+  }
+});
+
+test("uses global Git configuration when fetching a legacy scheduler checkout", async () => {
+  const sourceOrigin = "https://127.0.0.1:1/agile-agents/roc.git";
+  const root = await createRepository();
+  const globalConfig = join(root, "gitconfig");
+  const priorGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
+  try {
+    await git(["remote", "add", "origin", sourceOrigin], root);
+    const checkout = `${root}.agile-checkout`;
+    await git(["clone", root, checkout], root);
+    await writeFile(
+      globalConfig,
+      `[url "file://${root}"]\n\tinsteadOf = ${sourceOrigin}\n`,
+    );
+    process.env.GIT_CONFIG_GLOBAL = globalConfig;
+
+    const restarted = await createTaskBranchManager(root, "HEAD");
+    expect((await restarted.prepare("T1")).path).toBe(checkout);
+  } finally {
+    if (priorGlobalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = priorGlobalConfig;
+    await removeRepository(root);
+  }
+});
 
 test("switches retained task branches in a scheduler-owned checkout", async () => {
   const root = await createRepository();
