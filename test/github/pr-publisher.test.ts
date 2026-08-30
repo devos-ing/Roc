@@ -100,8 +100,16 @@ test("reconciles an existing merged pull request without a push", async () => {
     branches(branchCalls),
     runner(commands, [
       {
+        stdout: JSON.stringify({ nameWithOwner: "agile-agents/roc" }),
+      },
+      {
         stdout: JSON.stringify([
-          { number: 8, url: "https://example.test/pull/8", state: "MERGED" },
+          {
+            number: 8,
+            url: "https://example.test/pull/8",
+            state: "MERGED",
+            headRepositoryOwner: { login: "agile-agents" },
+          },
         ]),
       },
     ]),
@@ -112,8 +120,8 @@ test("reconciles an existing merged pull request without a push", async () => {
     state: "MERGED",
   });
   expect(branchCalls).toEqual(["prepare", "assertReviewReady"]);
-  expect(commands).toHaveLength(1);
-  expect(commands[0]).toEqual(
+  expect(commands).toHaveLength(2);
+  expect(commands[1]).toEqual(
     expect.arrayContaining(["gh", "pr", "list", "--state", "all"]),
   );
 });
@@ -125,17 +133,36 @@ test("updates an open pull request instead of creating a second one", async () =
     branches([]),
     runner(commands, [
       {
+        stdout: JSON.stringify({ nameWithOwner: "agile-agents/roc" }),
+      },
+      {
         stdout: JSON.stringify([
-          { number: 8, url: "https://example.test/pull/8", state: "OPEN" },
+          {
+            number: 8,
+            url: "https://example.test/pull/8",
+            state: "OPEN",
+            headRepositoryOwner: { login: "agile-agents" },
+          },
         ]),
       },
+      {},
       {},
     ]),
   );
 
   await publisher.publish(input);
-  expect(commands).toHaveLength(2);
-  expect(commands[1]).toEqual(["git", "push", "origin", "agile/T1"]);
+  expect(commands).toHaveLength(4);
+  expect(commands[2]).toEqual(["git", "push", "origin", "agile/T1"]);
+  expect(commands[3]).toEqual([
+    "gh",
+    "pr",
+    "edit",
+    "8",
+    "--title",
+    task.title,
+    "--body",
+    expect.stringContaining("## Validation"),
+  ]);
   expect(commands.flat()).not.toContain("create");
 });
 
@@ -145,12 +172,18 @@ test("pushes and creates one pull request when none exists", async () => {
     "main",
     branches([]),
     runner(commands, [
+      { stdout: JSON.stringify({ nameWithOwner: "agile-agents/roc" }) },
       { stdout: "[]" },
       {},
       { stdout: "https://example.test/pull/9" },
       {
         stdout: JSON.stringify([
-          { number: 9, url: "https://example.test/pull/9", state: "OPEN" },
+          {
+            number: 9,
+            url: "https://example.test/pull/9",
+            state: "OPEN",
+            headRepositoryOwner: { login: "agile-agents" },
+          },
         ]),
       },
     ]),
@@ -160,8 +193,8 @@ test("pushes and creates one pull request when none exists", async () => {
     number: 9,
     state: "OPEN",
   });
-  expect(commands[1]).toEqual(["git", "push", "origin", "agile/T1"]);
-  expect(commands[2]).toEqual(
+  expect(commands[2]).toEqual(["git", "push", "origin", "agile/T1"]);
+  expect(commands[3]).toEqual(
     expect.arrayContaining(["gh", "pr", "create", "--base", "main"]),
   );
 });
@@ -172,9 +205,15 @@ test("fails before push when a matching pull request closed without merging", as
     "main",
     branches([]),
     runner(commands, [
+      { stdout: JSON.stringify({ nameWithOwner: "agile-agents/roc" }) },
       {
         stdout: JSON.stringify([
-          { number: 8, url: "https://example.test/pull/8", state: "CLOSED" },
+          {
+            number: 8,
+            url: "https://example.test/pull/8",
+            state: "CLOSED",
+            headRepositoryOwner: { login: "agile-agents" },
+          },
         ]),
       },
     ]),
@@ -183,7 +222,76 @@ test("fails before push when a matching pull request closed without merging", as
   await expect(publisher.publish(input)).rejects.toBeInstanceOf(
     GitHubPublicationError,
   );
-  expect(commands).toHaveLength(1);
+  expect(commands).toHaveLength(2);
+});
+
+test("ignores a fork pull request with the same task branch", async () => {
+  const commands: string[][] = [];
+  const publisher = new GitHubPullRequestPublisher(
+    "main",
+    branches([]),
+    runner(commands, [
+      { stdout: JSON.stringify({ nameWithOwner: "agile-agents/roc" }) },
+      {
+        stdout: JSON.stringify([
+          {
+            number: 8,
+            url: "https://example.test/pull/8",
+            state: "OPEN",
+            headRepositoryOwner: { login: "fork-owner" },
+          },
+        ]),
+      },
+      {},
+      { stdout: "https://example.test/pull/9" },
+      {
+        stdout: JSON.stringify([
+          {
+            number: 9,
+            url: "https://example.test/pull/9",
+            state: "OPEN",
+            headRepositoryOwner: { login: "agile-agents" },
+          },
+        ]),
+      },
+    ]),
+  );
+
+  await expect(publisher.publish(input)).resolves.toMatchObject({ number: 9 });
+  expect(commands[1]?.at(-1)).toBe("number,url,state,headRepositoryOwner");
+  expect(commands[3]).toEqual(expect.arrayContaining(["gh", "pr", "create"]));
+});
+
+test("uses the durable base branch when publication resumes after reconfiguration", async () => {
+  const commands: string[][] = [];
+  const publisher = new GitHubPullRequestPublisher(
+    "main",
+    branches([]),
+    runner(commands, [
+      { stdout: JSON.stringify({ nameWithOwner: "agile-agents/roc" }) },
+      {
+        stdout: JSON.stringify([
+          {
+            number: 8,
+            url: "https://example.test/pull/8",
+            state: "MERGED",
+            headRepositoryOwner: { login: "agile-agents" },
+          },
+        ]),
+      },
+    ]),
+  );
+
+  await expect(
+    publisher.publish({
+      ...input,
+      publication: { ...input.publication, baseBranch: "release/2026-W35" },
+    }),
+  ).resolves.toMatchObject({ number: 8, state: "MERGED" });
+  expect(commands[1]).toEqual(
+    expect.arrayContaining(["--base", "release/2026-W35"]),
+  );
+  expect(commands.flat()).not.toContain("push");
 });
 
 test("preflight requires explicit base branch and GitHub access", async () => {

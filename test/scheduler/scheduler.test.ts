@@ -1082,6 +1082,16 @@ test("posthook failure returns an accepted task to replanning before publication
 
     expect(repo.inspectTask("T1")).toMatchObject({ status: "needs_replan" });
     expect(calls).toHaveLength(3);
+    expect(
+      db
+        .query<{ commit_sha: string }, []>(`
+          SELECT json_extract(payload_json, '$.output.commitSha') AS commit_sha
+          FROM events
+          WHERE task_id = 'T1' AND type = 'attempt.output'
+            AND json_extract(payload_json, '$.output.kind') = 'implement'
+        `)
+        .get()?.commit_sha,
+    ).toBe(implementOutput.commitSha);
     expect(repo.getTaskHook("T1", "posthook")).toMatchObject({
       status: "failed",
       attempts: 3,

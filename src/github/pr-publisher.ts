@@ -12,6 +12,9 @@ const PullRequestSchema = z
     state: z.enum(["OPEN", "MERGED", "CLOSED"]),
   })
   .strict();
+const PullRequestSearchSchema = PullRequestSchema.extend({
+  headRepositoryOwner: z.object({ login: NonEmpty }).nullable(),
+}).strict();
 
 /** Describes the remote pull request that safely represents a published task branch. */
 export type PullRequest = z.infer<typeof PullRequestSchema>;
@@ -104,12 +107,36 @@ function assertBaseBranch(baseBranch: string): void {
   }
 }
 
-/** Finds the single matching pull request for a task branch and configured base. */
+/** Resolves the owner of the GitHub repository associated with a checkout. */
+async function repositoryOwner(
+  runner: GitHubCommandRunner,
+  cwd: string,
+): Promise<string> {
+  const output = await mustRun(
+    runner,
+    ["gh", "repo", "view", "--json", "nameWithOwner"],
+    cwd,
+  );
+  const nameWithOwner = z
+    .object({ nameWithOwner: NonEmpty })
+    .strict()
+    .parse(JSON.parse(output)).nameWithOwner;
+  const [owner, repository, ...rest] = nameWithOwner.split("/");
+  if (owner === undefined || repository === undefined || rest.length > 0) {
+    throw new GitHubPublicationError(
+      `GitHub repository has an invalid nameWithOwner: ${nameWithOwner}`,
+    );
+  }
+  return owner;
+}
+
+/** Finds the single matching same-repository pull request for a task branch and base. */
 async function matchingPullRequest(
   runner: GitHubCommandRunner,
   cwd: string,
   branch: string,
   baseBranch: string,
+  owner: string,
 ): Promise<PullRequest | undefined> {
   const output = await mustRun(
     runner,
@@ -124,11 +151,15 @@ async function matchingPullRequest(
       "--state",
       "all",
       "--json",
-      "number,url,state",
+      "number,url,state,headRepositoryOwner",
     ],
     cwd,
   );
-  const pullRequests = z.array(PullRequestSchema).parse(JSON.parse(output));
+  const pullRequests = z
+    .array(PullRequestSearchSchema)
+    .parse(JSON.parse(output))
+    .filter((pullRequest) => pullRequest.headRepositoryOwner?.login === owner)
+    .map(({ headRepositoryOwner: _, ...pullRequest }) => pullRequest);
   if (pullRequests.length > 1) {
     throw new GitHubPublicationError(
       `Multiple pull requests exist for ${branch} into ${baseBranch}`,
@@ -189,13 +220,11 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
     private readonly runner: GitHubCommandRunner = new BunGitHubCommandRunner(),
   ) {}
 
-  /** Pushes a validated branch only when needed and creates or returns its pull request. */
+  /** Pushes a validated branch only when needed and creates or reconciles its pull request. */
   async publish(input: PublishTaskInput): Promise<PullRequest> {
-    assertBaseBranch(this.baseBranch);
-    if (
-      input.publication.baseBranch !== this.baseBranch ||
-      input.publication.commitSha !== input.implementation.commitSha
-    ) {
+    const baseBranch = input.publication.baseBranch;
+    assertBaseBranch(baseBranch);
+    if (input.publication.commitSha !== input.implementation.commitSha) {
       throw new GitHubPublicationError(
         `Publication state does not match the current task implementation: ${input.task.id}`,
       );
@@ -215,11 +244,13 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
       input.task.baseCommit,
     );
 
+    const owner = await repositoryOwner(this.runner, workspace.path);
     const existing = await matchingPullRequest(
       this.runner,
       workspace.path,
       workspace.branch,
-      this.baseBranch,
+      baseBranch,
+      owner,
     );
     if (existing?.state === "MERGED") return existing;
     if (existing?.state === "CLOSED") {
@@ -233,7 +264,23 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
       ["git", "push", "origin", workspace.branch],
       workspace.path,
     );
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) {
+      await mustRun(
+        this.runner,
+        [
+          "gh",
+          "pr",
+          "edit",
+          String(existing.number),
+          "--title",
+          input.task.title,
+          "--body",
+          pullRequestBody(input),
+        ],
+        workspace.path,
+      );
+      return existing;
+    }
 
     await mustRun(
       this.runner,
@@ -242,7 +289,7 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
         "pr",
         "create",
         "--base",
-        this.baseBranch,
+        baseBranch,
         "--head",
         workspace.branch,
         "--title",
@@ -256,7 +303,8 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
       this.runner,
       workspace.path,
       workspace.branch,
-      this.baseBranch,
+      baseBranch,
+      owner,
     );
     if (created === undefined) {
       throw new GitHubPublicationError(

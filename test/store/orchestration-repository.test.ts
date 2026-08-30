@@ -1019,6 +1019,18 @@ test("accepted Review waits in publishing until its durable pull request complet
       status: "pending",
       branch: "agile/T1",
     });
+    expect(
+      repo.beginPublication({
+        taskId: "T1",
+        branch: "agile/T1",
+        baseBranch: "release/2026-W35",
+        commitSha: implementOutput.commitSha,
+      }),
+    ).toEqual(publication);
+    expect(repo.getTaskPublication("T1")).toMatchObject({
+      baseBranch: "main",
+      status: "pending",
+    });
 
     repo.completePublication({
       taskId: "T1",

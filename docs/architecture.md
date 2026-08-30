@@ -33,14 +33,17 @@ the manager switches tasks.
 Scout and Review use read-only Codex sandboxes. Implement receives write access
 only to the scheduler checkout. The trusted Harness stages and commits the final
 changes, then Review checks that exact clean commit in a detached conversation.
-Accepted and rejected branches are retained; v1 does not merge, push, delete
-branches, execute tasks concurrently, or enforce token budgets.
+Accepted and rejected branches are retained. After an accepted Review, Roc runs
+the trusted posthook, pushes the task branch, and creates or reconciles one
+pull request before marking the task done; v1 does not merge or delete branches,
+execute tasks concurrently, or enforce token budgets.
 
 Tasks may optionally carry one `prehook` and one `posthook`. SQLite's
 `task_hooks` table stores the task-scoped configuration hash, explicit trust,
 attempt receipt, bounded output, and final status. Scheduler runs a trusted
-prehook in the prepared task workspace before Scout; it runs a posthook only
-after `done`, `rejected`, or `failed_infra`. A prehook exhausts three attempts
-before failing the task, while a failed posthook preserves the task outcome and
-fails the scheduler invocation. Hooks use direct argv execution rather than a
-shell and are cancelled with the scheduler on shutdown.
+prehook in the prepared task workspace before Scout and a posthook before
+publishing accepted work or after `rejected` and `failed_infra`. A prehook
+exhausts three attempts before failing the task; a failed publishing posthook
+returns the task to `needs_replan` while a terminal posthook failure preserves
+the task outcome and fails the scheduler invocation. Hooks use direct argv
+execution rather than a shell and are cancelled with the scheduler on shutdown.

@@ -98,6 +98,26 @@ function checkpointMessage(taskId: string): string {
   return `agile(${taskId}): WIP checkpoint`;
 }
 
+/** Reports whether a Git remote uses a URL rather than a local filesystem path. */
+function isRemoteUrl(remote: string): boolean {
+  return (
+    /^[a-z][a-z\d+.-]*:\/\//i.test(remote) ||
+    /^[^/\s@]+@[^\s:]+:.+$/.test(remote)
+  );
+}
+
+/** Verifies that a local remote points to the source scheduler repository. */
+async function isSourceRepositoryRemote(
+  remote: string,
+  checkoutPath: string,
+  canonicalRepo: string,
+): Promise<boolean> {
+  if (isRemoteUrl(remote)) return false;
+  return (
+    (await realpath(resolve(dirname(checkoutPath), remote))) === canonicalRepo
+  );
+}
+
 /** Creates a branch manager backed by a dedicated validated scheduler checkout. */
 export async function createTaskBranchManager(
   repoPath: string,
@@ -111,6 +131,11 @@ export async function createTaskBranchManager(
       `Repository path is not the Git checkout root: ${canonicalRepo}`,
     );
   }
+  const sourceOrigin = (await sourceGit.getRemotes()).some(
+    (remote) => remote.name === "origin",
+  )
+    ? (await sourceGit.raw(["remote", "get-url", "origin"])).trim()
+    : undefined;
 
   const baseCommit = await fullCommit(sourceGit, baseRef);
   const checkoutPath = `${canonicalRepo}.agile-checkout`;
@@ -135,13 +160,27 @@ export async function createTaskBranchManager(
   const origin = (
     await checkoutGit.raw(["remote", "get-url", "origin"])
   ).trim();
-  const canonicalOrigin = await realpath(
-    resolve(dirname(checkoutPath), origin),
+  const sourceRepositoryRemote = await isSourceRepositoryRemote(
+    origin,
+    checkoutPath,
+    canonicalRepo,
   );
-  if (canonicalOrigin !== canonicalRepo) {
+  if (sourceOrigin === undefined && !sourceRepositoryRemote) {
     throw new Error(
       `Scheduler checkout belongs to a different repository: ${checkoutPath}`,
     );
+  }
+  if (
+    sourceOrigin !== undefined &&
+    origin !== sourceOrigin &&
+    !sourceRepositoryRemote
+  ) {
+    throw new Error(
+      `Scheduler checkout belongs to a different repository: ${checkoutPath}`,
+    );
+  }
+  if (sourceOrigin !== undefined && origin !== sourceOrigin) {
+    await checkoutGit.raw(["remote", "set-url", "origin", sourceOrigin]);
   }
 
   if (checkoutKind === "missing") {

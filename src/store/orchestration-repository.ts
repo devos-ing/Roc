@@ -457,7 +457,6 @@ export class OrchestrationRepository {
       if (
         existing !== undefined &&
         existing.branch === input.branch &&
-        existing.baseBranch === input.baseBranch &&
         existing.commitSha === input.commitSha
       ) {
         return existing;
