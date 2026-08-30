@@ -169,11 +169,12 @@ test("README explains the agile Scout, Implement, Review loop", async () => {
   expect(howItWorks).toContain('S["Scout<br/>Understand the task"]');
   expect(howItWorks).toContain('I["Implement<br/>Write and commit code"]');
   expect(howItWorks).toContain('R["Review<br/>Check the exact commit"]');
+  expect(howItWorks).toContain('P["Posthook and pull request"]');
   expect(howItWorks).toContain(
-    "If Review accepts the commit, the task is done",
+    "creates or updates one\npull request before the task becomes done",
   );
   expect(howItWorks).toContain(
-    "If Review rejects it, Roc\ncreates a follow-up ticket and moves on to the next ready task",
+    "If Review rejects it,\nRoc creates a follow-up ticket and moves on to the next ready task",
   );
   expect(howItWorks).not.toContain("Token ledger");
   expect(howItWorks).not.toContain("GitHub Release");

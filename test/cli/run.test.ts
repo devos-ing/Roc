@@ -1113,7 +1113,7 @@ test("operational database failures report an error, return 1, and close the dat
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, ".agile", "runtime", "agile.db");
   const future = openDatabase(dbPath);
-  future.exec("PRAGMA user_version = 6");
+  future.exec("PRAGMA user_version = 7");
   future.close();
   const output: string[] = [];
   const errors: string[] = [];
@@ -1132,7 +1132,7 @@ test("operational database failures report an error, return 1, and close the dat
     ).toBe(1);
     expect(output).toEqual([]);
     expect(errors).toEqual([
-      "Database version 6 is newer than supported version 5",
+      "Database version 7 is newer than supported version 6",
     ]);
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
@@ -1151,7 +1151,7 @@ test("task board reports database failures without emitting a snapshot", async (
   try {
     await saveRocSettings({ cycle: { type: "daily" } }, home);
     const future = openDatabase(dbPath);
-    future.exec("PRAGMA user_version = 6");
+    future.exec("PRAGMA user_version = 7");
     future.close();
     expect(
       await runCli(
@@ -1170,7 +1170,7 @@ test("task board reports database failures without emitting a snapshot", async (
     ).toBe(1);
     expect(output).toEqual([]);
     expect(errors).toEqual([
-      "TASK_BOARD_FAILED: Database version 6 is newer than supported version 5",
+      "TASK_BOARD_FAILED: Database version 7 is newer than supported version 6",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1424,7 +1424,7 @@ test("tokens rejects scheduler-only options and reports read failures through th
   const dbPath = join(root, ".agile", "runtime", "agile.db");
   await saveRocSettings({ cycle: { type: "weekly" } }, root);
   const future = openDatabase(dbPath);
-  future.exec("PRAGMA user_version = 6");
+  future.exec("PRAGMA user_version = 7");
   future.close();
   try {
     expect(

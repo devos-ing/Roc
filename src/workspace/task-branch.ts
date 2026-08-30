@@ -29,6 +29,11 @@ export type TaskBranchManager = {
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const TASK_BRANCH_PREFIX = "agile/";
 
+/** Returns the deterministic remote branch name owned by a task. */
+export function taskBranchName(taskId: string): string {
+  return `${TASK_BRANCH_PREFIX}${safeTaskPathComponent(taskId)}`;
+}
+
 /** Creates an isolated SimpleGit client with deterministic noninteractive configuration. */
 function gitAt(baseDir: string): SimpleGit {
   return simpleGit({
@@ -159,7 +164,7 @@ export async function createTaskBranchManager(
     return {
       taskId: safeTaskId,
       path: checkoutPath,
-      branch: `${TASK_BRANCH_PREFIX}${safeTaskId}`,
+      branch: taskBranchName(safeTaskId),
       baseCommit: taskBaseCommit,
     };
   }

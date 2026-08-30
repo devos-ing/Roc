@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TaskPublisher } from "../../src/github/pr-publisher";
 import type {
   AgentHarness,
   HarnessEvent,
@@ -47,6 +48,25 @@ const rejectedReviewOutput = {
   findings: ["validation failed"],
   remainingGaps: ["follow-up fixes validation"],
 };
+
+function fakePublisher(
+  calls: Array<{ taskId: string; branch: string }> = [],
+): TaskPublisher {
+  return {
+    baseBranch: "main",
+    async publish(input) {
+      calls.push({
+        taskId: input.task.id,
+        branch: input.publication.branch,
+      });
+      return {
+        number: calls.length,
+        url: `https://example.test/pull/${calls.length}`,
+        state: "OPEN",
+      };
+    },
+  };
+}
 
 const inheritedContext = {
   threadId: "thread-C",
@@ -299,8 +319,25 @@ function setupAcceptedTask(
           },
           hooks.runner,
         );
-  const scheduler = new Scheduler(repo, harness, () => {}, taskHooks);
-  return { db, repo, scheduler, fake, requests, taskHooks };
+  const publicationCalls: Array<{ taskId: string; branch: string }> = [];
+  const publisher = fakePublisher(publicationCalls);
+  const scheduler = new Scheduler(
+    repo,
+    harness,
+    () => {},
+    taskHooks,
+    publisher,
+  );
+  return {
+    db,
+    repo,
+    scheduler,
+    fake,
+    requests,
+    taskHooks,
+    publisher,
+    publicationCalls,
+  };
 }
 
 /** Creates a deterministic hook runner that records each workspace invocation. */
@@ -325,8 +362,9 @@ function scriptedHookRunner(
   };
 }
 
-test("runs Scout, Implement, and isolated Review to done", async () => {
-  const { db, repo, scheduler, fake, requests } = setupAcceptedTask();
+test("runs Scout, Implement, Review, and publication to done", async () => {
+  const { db, repo, scheduler, fake, requests, publicationCalls } =
+    setupAcceptedTask();
   try {
     await scheduler.runUntilIdle(40);
     expect(repo.inspectTask("T1")).toMatchObject({ status: "done" });
@@ -341,6 +379,12 @@ test("runs Scout, Implement, and isolated Review to done", async () => {
       { role: "review", model: "sol", effort: "high", status: "succeeded" },
     ]);
     expect(repo.listReviews("T1")).toMatchObject([{ decision: "accepted" }]);
+    expect(repo.getTaskPublication("T1")).toMatchObject({
+      status: "published",
+      branch: "agile/T1",
+      pullRequestNumber: 1,
+    });
+    expect(publicationCalls).toEqual([{ taskId: "T1", branch: "agile/T1" }]);
     const reviewRequest = requests.find(
       (request) => request.attempt.role === "review",
     );
@@ -655,7 +699,13 @@ test("caps retryable Scout infrastructure failures and upgrades only the final r
       },
     ],
   });
-  const scheduler = new Scheduler(repo, fake.harness);
+  const scheduler = new Scheduler(
+    repo,
+    fake.harness,
+    () => {},
+    undefined,
+    fakePublisher(),
+  );
   try {
     await scheduler.runUntilIdle(12);
 
@@ -718,7 +768,13 @@ test("retries only a failed Implement role and persists both routing rationales"
       },
     ],
   });
-  const scheduler = new Scheduler(repo, fake.harness);
+  const scheduler = new Scheduler(
+    repo,
+    fake.harness,
+    () => {},
+    undefined,
+    fakePublisher(),
+  );
   try {
     await scheduler.runUntilIdle(30);
 
@@ -885,7 +941,13 @@ test("terminalizes a non-retryable task failure and continues with the next task
       },
     ],
   });
-  const scheduler = new Scheduler(repo, fake.harness);
+  const scheduler = new Scheduler(
+    repo,
+    fake.harness,
+    () => {},
+    undefined,
+    fakePublisher(),
+  );
   try {
     await scheduler.runUntilIdle(20);
 
@@ -1006,7 +1068,7 @@ test("a task spec change invalidates prehook trust before it can spawn", async (
   }
 });
 
-test("posthook failure preserves a completed task while terminating the scheduler run", async () => {
+test("posthook failure returns an accepted task to replanning before publication", async () => {
   const calls: Array<{ command: string; cwd: string }> = [];
   const posthook = { command: "fail-post", args: [], timeoutSeconds: 1 };
   const { db, repo, scheduler } = setupAcceptedTask(reviewOutput, {
@@ -1016,11 +1078,9 @@ test("posthook failure preserves a completed task while terminating the schedule
   try {
     repo.trustTaskHook("T1", "posthook", taskHookConfigHash(posthook));
 
-    await expect(scheduler.runUntilIdle(40)).rejects.toThrow(
-      "Task posthook failed after 3 attempts: T1",
-    );
+    await scheduler.runUntilIdle(40);
 
-    expect(repo.inspectTask("T1")).toMatchObject({ status: "done" });
+    expect(repo.inspectTask("T1")).toMatchObject({ status: "needs_replan" });
     expect(calls).toHaveLength(3);
     expect(repo.getTaskHook("T1", "posthook")).toMatchObject({
       status: "failed",

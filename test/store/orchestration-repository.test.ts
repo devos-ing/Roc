@@ -981,6 +981,63 @@ test("inspection includes the verified Implement commit", () => {
   }
 });
 
+test("accepted Review waits in publishing until its durable pull request completes", () => {
+  const { db, repo } = setup();
+  try {
+    const attemptId = startReview(repo);
+    repo.applyHarnessEvent(attemptId, "review-output", {
+      type: "attempt.output",
+      eventId: "review:accepted:output",
+      attemptId,
+      sequence: 1,
+      occurredAt: "2026-08-25T00:00:02.000Z",
+      output: {
+        kind: "review",
+        decision: "accepted",
+        findings: [],
+        remainingGaps: [],
+      },
+    });
+    repo.applyHarnessEvent(attemptId, "review-completed", {
+      type: "attempt.completed",
+      eventId: "review:accepted:completed",
+      attemptId,
+      sequence: 2,
+      occurredAt: "2026-08-25T00:00:03.000Z",
+    });
+
+    expect(repo.inspectTask("T1")).toEqual({ id: "T1", status: "publishing" });
+    const publishing = repo.listPublishingTasks();
+    expect(publishing).toHaveLength(1);
+    const publication = repo.beginPublication({
+      taskId: "T1",
+      branch: "agile/T1",
+      baseBranch: "main",
+      commitSha: implementOutput.commitSha,
+    });
+    expect(publication).toMatchObject({
+      status: "pending",
+      branch: "agile/T1",
+    });
+
+    repo.completePublication({
+      taskId: "T1",
+      pullRequest: {
+        number: 1,
+        url: "https://example.test/pull/1",
+        state: "OPEN",
+      },
+    });
+    expect(repo.inspectTask("T1")).toEqual({ id: "T1", status: "done" });
+    expect(repo.getTaskPublication("T1")).toMatchObject({
+      status: "published",
+      pullRequestNumber: 1,
+    });
+  } finally {
+    db.close();
+  }
+});
+
 test("an Implement policy block replans its task without retry and leaves the next ready task claimable", () => {
   const { db, repo } = setup();
   try {

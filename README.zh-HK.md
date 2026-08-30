@@ -24,14 +24,15 @@ Roc 目前提供：
 - 永遠不使用 `low` thinking effort 的模型設定；
 - 每個任務都有獨立 Git branch 和工作資料夾；
 - Review 只讀取 Implement 完成的指定 commit；
+- Review 接受後自動發佈 pull request；
 - 儲存任務進度和 token 用量，並支援重新啟動；
 - 在終端顯示 token 用量圖表；
 - 顯示目前敏捷週期的唯讀任務看板；
 - 一次性把已核准的 GitHub Issues 匯入 ready backlog；
 - 限制 agents 可以使用的 skills 清單。
 
-Roc 目前一次只處理一個任務。它不會合併或 push 程式碼、刪除任務 branch、
-同時執行多個任務，或限制 token 用量。
+Roc 目前一次只處理一個任務。它只會為已接受的任務 branch push 並開啟或更新
+pull request；它不會合併或刪除 branch、同時執行多個任務，或限制 token 用量。
 
 ## 快速開始
 
@@ -39,8 +40,8 @@ Roc 目前一次只處理一個任務。它不會合併或 push 程式碼、刪�
 
 - [Bun](https://bun.sh/) 1.3.0 或以上版本
 - Git
-- 匯入 Issues 時需要 [GitHub CLI](https://cli.github.com/)，並先執行
-  `gh auth login`
+- 匯入 Issues 和發佈 pull request 時需要
+  [GitHub CLI](https://cli.github.com/)，並先執行 `gh auth login`
 - 使用 Codex mode 時需要 [Codex CLI](https://github.com/openai/codex)
 - 建立 backlog 時需要 `grilling` skill：
 
@@ -196,7 +197,7 @@ npx roc-it@latest task list
 使用 Codex 執行 backlog：
 
 ```bash
-npx roc-it@latest scheduler run
+npx roc-it@latest scheduler run --base-branch main
 ```
 
 Codex mode 會在 `<project>.agile-checkout` 建立或重用工作資料夾。Roc 不會在
@@ -211,7 +212,8 @@ flowchart LR
     B[Ready backlog] --> S[Scout]
     S --> I[Implement]
     I --> R[Review]
-    R -->|Accepted| D[Done]
+    R -->|Accepted| P[Posthook 和 pull request]
+    P --> D[Done]
     R -->|Changes needed| F[Draft follow-up]
     F -->|Approved| B[Ready backlog]
 ```
@@ -221,6 +223,22 @@ flowchart LR
   結果並儲存為 commit。
 - **Review：**獨立檢查該 commit，接受結果，或建立一個包含清楚意見、尚未
   核准的草稿 follow-up 任務。
+
+當 Review 接受 commit 後，Roc 會先執行已信任的 posthook、驗證完全相同而且乾淨的
+Implement commit，然後 push `agile/<task-id>` 並建立或更新一個 pull request，最後才將
+任務標記為 done。PR 內容會包括任務標題、validation 指令、已報告的風險和限制。
+
+### Pull request 發佈
+
+開始實際 scheduler 前，請先以 `gh auth login` 登入 GitHub CLI，並確認 token 可以查看
+repository 和建立 pull request。必須用 `--base-branch` 明確指定 GitHub 的目標 branch；它
+是像 `main` 的遠端 branch 名稱，不可以是 `HEAD` 或 `origin/main` 這類本機 revision。
+`--base` 仍然用來選擇建立任務 branch 的本機 commit。
+
+Roc 不會為同一個任務 branch 建立第二個 PR。重新啟動時，它會先找現有 PR：open PR 會以
+已驗證 commit 更新後完成；已 merged 的 PR 則無需再次 push 就會完成。posthook、push、
+authentication、建立 PR 失敗，或 PR 已關閉但沒有 merge 時，任務會移至 `needs_replan`，
+而本機 Implement commit 會保留作恢復之用。
 
 Roc 每次只處理一個小任務。當 Review 要求修改時，Roc 會把意見送到一個尚未
 核准的草稿 follow-up。只有獲得批准後，它才會回到 ready backlog。Roc 會儲存
@@ -266,7 +284,7 @@ npx roc-it@latest task hook trust <task-id> <prehook|posthook>
 npx roc-it@latest tokens [--no-color]
 
 執行工作
-npx roc-it@latest scheduler run [--base REF]
+npx roc-it@latest scheduler run --base-branch BRANCH [--base REF]
 npx roc-it@latest scheduler inspect
 
 取得說明
