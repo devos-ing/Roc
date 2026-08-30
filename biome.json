@@ -6,6 +6,9 @@
     "useIgnoreFile": true,
     "defaultBranch": "main"
   },
+  "files": {
+    "includes": ["**", "!!output/archify"]
+  },
   "formatter": {
     "enabled": true,
     "indentStyle": "space",
