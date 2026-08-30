@@ -17,6 +17,8 @@ if (import.meta.main) {
         return prompt.question(`${question}: `);
       },
       selectSkills: selectSkillAllowlist,
+      input: process.stdin,
+      output: process.stdout,
     });
   } finally {
     prompt?.close();

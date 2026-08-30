@@ -16,6 +16,7 @@ import {
 } from "../command-context";
 import { renderEmptyTaskList } from "../presentation";
 import type { CliCommandContext } from "../types";
+import { executeTaskBoard } from "./tui";
 
 /** Returns whether a backlog manifest still uses the removed weekId field. */
 function usesLegacyWeekId(value: unknown): boolean {
@@ -153,7 +154,7 @@ async function executeHookTrust(
   }
 }
 
-/** Registers task import, listing, and hook trust commands. */
+/** Registers task import, board, listing, and hook trust commands. */
 export function registerTaskCommands(
   program: Command,
   context: CliCommandContext,
@@ -177,6 +178,13 @@ export function registerTaskCommands(
     .description("List the current project's tasks")
     .action(async () => {
       context.exitCode = await executeTaskList(context);
+    });
+  task
+    .command("board")
+    .description("Open the read-only task board")
+    .option("--all", "include tasks from every cycle")
+    .action(async (options: { all?: boolean }) => {
+      context.exitCode = await executeTaskBoard(context, options.all === true);
     });
   task
     .command("hook")

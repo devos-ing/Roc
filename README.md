@@ -27,6 +27,7 @@ Roc currently provides:
 - a read-only Review of the exact commit made by Implement;
 - saved task progress and token use, with restart support;
 - a token-use chart in the terminal;
+- a read-only task board for the current Agile cycle;
 - one-shot import of approved GitHub Issues into the ready backlog;
 - a list of skills that agents are allowed to use.
 
@@ -101,6 +102,24 @@ the choice for all projects in `~/.config/roc/settings.json`.
 ```json
 { "cycle": { "type": "weekly" } }
 ```
+
+### Task board
+
+Open the read-only board for the current cycle:
+
+```bash
+npx roc-it@latest task board
+```
+
+Use `--all` to include stored tasks from every cycle. In an interactive terminal,
+the board groups compact task cards into Ready, In progress, Attention, and Done.
+Use Up/Down or J/K to select a card, Space to peek, Enter for full details, D to
+expand Done, R to refresh, ? for controls, Esc to return, and Q or Ctrl-C to exit.
+The board never starts the scheduler or changes tasks, attempts, events, or leases.
+
+When either terminal stream is not interactive, the same command prints one plain,
+ANSI-free snapshot and exits. An empty board shows the usual backlog-creation
+guidance.
 
 Show the active cycle at any time:
 
@@ -244,6 +263,7 @@ Plan work
 npx roc-it@latest task import FILE
 npx roc-it@latest task import-github
 npx roc-it@latest task list
+npx roc-it@latest task board [--all]
 npx roc-it@latest task hook trust <task-id> <prehook|posthook>
 npx roc-it@latest tokens [--no-color]
 

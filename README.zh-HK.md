@@ -26,6 +26,7 @@ Roc 目前提供：
 - Review 只讀取 Implement 完成的指定 commit；
 - 儲存任務進度和 token 用量，並支援重新啟動；
 - 在終端顯示 token 用量圖表；
+- 顯示目前敏捷週期的唯讀任務看板；
 - 一次性把已核准的 GitHub Issues 匯入 ready backlog；
 - 限制 agents 可以使用的 skills 清單。
 
@@ -99,6 +100,22 @@ npx roc-it@latest onboard
 ```json
 { "cycle": { "type": "weekly" } }
 ```
+
+### 任務看板
+
+開啟目前週期的唯讀看板：
+
+```bash
+npx roc-it@latest task board
+```
+
+使用 `--all` 可包括所有已儲存週期的任務。在互動式終端中，看板會把精簡任務卡分組為
+Ready、In progress、Attention 和 Done。使用上/下方向鍵或 J/K 選擇卡片，Space 預覽，
+Enter 開啟完整詳情，D 展開 Done，R 立即更新，? 查看控制說明，Esc 返回看板，Q 或
+Ctrl-C 離開。看板不會啟動 scheduler，也不會修改 task、attempt、event 或 lease。
+
+任何一個終端 stream 不是互動式時，同一指令只會輸出一次純文字、沒有 ANSI 的快照然後
+結束。空白看板會顯示平常建立 backlog 的指引。
 
 你可以隨時查看目前的敏捷週期：
 
@@ -244,6 +261,7 @@ npx roc-it@latest cycle current
 npx roc-it@latest task import FILE
 npx roc-it@latest task import-github
 npx roc-it@latest task list
+npx roc-it@latest task board [--all]
 npx roc-it@latest task hook trust <task-id> <prehook|posthook>
 npx roc-it@latest tokens [--no-color]
 
