@@ -67,6 +67,9 @@ Or install the command globally:
 npm install -g roc-it@latest
 ```
 
+The repeat-PR-review skill requires Python 3.9 or later and the authenticated
+GitHub CLI (`gh`). Roc's scheduler and task commands still run on Bun alone.
+
 Onboard Roc in one project. This creates the local database and installs Roc's
 packaged task-creation and repeat-PR-review skills for Codex, Claude Code, and
 Cursor:

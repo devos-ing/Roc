@@ -127,7 +127,9 @@ test("onboard installs complete project skill packages without overwriting chang
       "SKILL.md",
       join("agents", "openai.yaml"),
       join("references", "ledger-schema.md"),
+      join("scripts", "evidence.py"),
       join("scripts", "ledger.py"),
+      join("scripts", "test_evidence.py"),
       join("scripts", "test_ledger.py"),
     ];
     for (const skillRoot of [

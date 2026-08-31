@@ -8,6 +8,7 @@ change, and add only the tests needed to protect important paths.
 You need:
 
 - [Bun](https://bun.sh/) 1.3.0 or later
+- Python 3.9 or later for the packaged PR review tests
 - Git
 - [Codex CLI](https://github.com/openai/codex) when testing Codex mode
 
@@ -26,10 +27,13 @@ bun run src/cli/main.ts help
 bun src/cli/main.ts onboard
 ```
 
-To check the packaged task-creation skill, run:
+To check the packaged skills and the PR review helpers, run:
 
 ```bash
 python3 /Users/roy/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/roc-create-tasks
+python3 /Users/roy/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/pr-review-to-closure
+python3 -B skills/pr-review-to-closure/scripts/test_evidence.py -v
+python3 -B skills/pr-review-to-closure/scripts/test_ledger.py -v
 ```
 
 You can test an import with a temporary strict JSON manifest, then inspect its

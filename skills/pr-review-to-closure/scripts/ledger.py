@@ -1,5 +1,7 @@
 """Durable JSON ledger primitives for pull-request review findings."""
 
+from __future__ import annotations
+
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -29,6 +31,7 @@ _TOP_LEVEL_FIELDS = {
     "last_reviewed_head_sha",
     "lineage_resets",
     "findings",
+    "review_evidence",
     "verification",
     "recommendation",
 }
@@ -56,6 +59,16 @@ _LINEAGE_FIELDS = {
     "reason",
 }
 _VERIFICATION_FIELDS = {"command", "head_sha", "status", "output"}
+_REVIEW_EVIDENCE_FIELDS = {"sources"}
+_REVIEW_EVIDENCE_SOURCE_FIELDS = {"status", "detail"}
+_REQUIRED_REVIEW_EVIDENCE_SOURCES = {
+    "pr_metadata",
+    "pr_description",
+    "reviews",
+    "inline_comments",
+    "issue_comments",
+    "repository_standards",
+}
 _MERGE_RECOMMENDATION_FIELDS = {"kind", "outcome", "head_sha", "reasons"}
 _INDETERMINATE_FIELDS = {"kind", "status", "head_sha", "reasons"}
 _ALLOWED_TRANSITIONS = {
@@ -162,6 +175,7 @@ def new_ledger(
         "last_reviewed_head_sha": _require_string(head_sha, "last_reviewed_head_sha"),
         "lineage_resets": [],
         "findings": [],
+        "review_evidence": None,
         "verification": None,
         "recommendation": None,
     }
@@ -260,6 +274,30 @@ def _validate_verification(value: object, head_sha: str) -> dict[str, object]:
     return metadata
 
 
+def _validate_review_evidence(value: object) -> dict[str, object]:
+    """Validates the required PR and repository evidence source results."""
+    evidence = _require_object(value, "review_evidence")
+    _require_exact_fields(evidence, _REVIEW_EVIDENCE_FIELDS, "review_evidence")
+    sources = _require_object(evidence["sources"], "review_evidence.sources")
+    _require_exact_fields(sources, _REQUIRED_REVIEW_EVIDENCE_SOURCES, "review_evidence.sources")
+    for name, raw_source in sources.items():
+        source = _require_object(raw_source, f"review_evidence.sources.{name}")
+        _require_exact_fields(source, _REVIEW_EVIDENCE_SOURCE_FIELDS, f"review_evidence.sources.{name}")
+        if source["status"] not in {"read", "missing"}:
+            raise ValueError(f"review_evidence.sources.{name}.status is invalid")
+        _require_string(source["detail"], f"review_evidence.sources.{name}.detail")
+    return evidence
+
+
+def _missing_review_evidence(evidence: dict[str, object]) -> list[str]:
+    """Returns required evidence source names that were not read successfully."""
+    return [
+        str(name)
+        for name, source in evidence["sources"].items()
+        if source["status"] == "missing"
+    ]
+
+
 def _validate_reasons(value: object) -> list[str]:
     """Validates a non-empty recommendation reason list."""
     if not isinstance(value, list) or not value:
@@ -274,6 +312,7 @@ def _validate_recommendation(
     value: object,
     head_sha: str,
     findings: list[dict[str, object]],
+    review_evidence: dict[str, object],
     verification: dict[str, object],
 ) -> dict[str, object]:
     """Validates a recommendation and its merge-readiness predicates."""
@@ -309,6 +348,9 @@ def _validate_recommendation(
     elif open_non_blockers:
         if status != "merge_readiness_not_established":
             raise ValueError("an unresolved open finding prevents a merge-ready recommendation")
+    elif _missing_review_evidence(review_evidence):
+        if status != "merge_readiness_not_established":
+            raise ValueError("missing review evidence prevents a merge-ready recommendation")
     elif verification["status"] != "passed":
         if status != "merge_readiness_not_established":
             raise ValueError("a positive recommendation requires passed verification")
@@ -350,14 +392,22 @@ def validate_ledger(value: dict[str, object], *, require_complete: bool = False)
         raise ValueError("duplicate finding id")
 
     if review_state == "incomplete":
-        if revision != 0 or lineage or findings or ledger["verification"] is not None or ledger["recommendation"] is not None:
+        if (
+            revision != 0
+            or lineage
+            or findings
+            or ledger["review_evidence"] is not None
+            or ledger["verification"] is not None
+            or ledger["recommendation"] is not None
+        ):
             raise ValueError("an incomplete ledger must remain an empty revision-zero bootstrap")
         if require_complete:
             raise ValueError("a complete review ledger is required")
         return
 
+    review_evidence = _validate_review_evidence(ledger["review_evidence"])
     verification = _validate_verification(ledger["verification"], head_sha)
-    _validate_recommendation(ledger["recommendation"], head_sha, findings, verification)
+    _validate_recommendation(ledger["recommendation"], head_sha, findings, review_evidence, verification)
 
 
 def _finding_number(item: dict[str, object]) -> int:
@@ -630,6 +680,7 @@ def summarize_ledger(value: dict[str, object]) -> dict[str, object]:
         "counts": counts,
         "open_blocking_ids": blockers,
         "open_non_blocking_ids": non_blockers,
+        "missing_review_evidence": _missing_review_evidence(value["review_evidence"]),
         "recommendation": decision,
     }
 

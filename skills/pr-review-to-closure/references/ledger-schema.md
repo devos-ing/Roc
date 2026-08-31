@@ -43,14 +43,15 @@ The validator rejects missing and additional fields. An initialized ledger is ex
   "last_reviewed_head_sha": "HEAD_SHA",
   "lineage_resets": [],
   "findings": [],
+  "review_evidence": null,
   "verification": null,
   "recommendation": null
 }
 ```
 
-An incomplete ledger must remain revision `0` with empty lineage and findings arrays plus null verification and recommendation. It is a reservation, not evidence of a completed review.
+An incomplete ledger must remain revision `0` with empty lineage and findings arrays plus null review evidence, verification, and recommendation. It is a reservation, not evidence of a completed review.
 
-A completed ledger uses the same exact fields with `review_state: "complete"`, canonical verification and recommendation objects, and zero or more canonical findings. `version` is the integer `1`; `revision` is a non-negative integer; booleans do not count as integers. The pull request object has exactly `host`, `owner`, `repo`, and positive integer `number`.
+A completed ledger uses the same exact fields with `review_state: "complete"`, canonical review evidence, verification, and recommendation objects, and zero or more canonical findings. `version` is the integer `1`; `revision` is a non-negative integer; booleans do not count as integers. The pull request object has exactly `host`, `owner`, `repo`, and positive integer `number`.
 
 ## Revisions and replacement
 
@@ -138,7 +139,26 @@ Each `lineage_resets` entry has exactly:
 
 `kind` is `base_drift` or `force_push`. A base-drift entry must change the base SHA. A force-push entry must change the head SHA. New records on a replacement must match the prior ledger's saved base and head plus the replacement base and head. If both events occurred, append both kinds. Keep the full lineage array forever.
 
-## Verification
+## Review evidence and verification
+
+Before verification, a complete ledger records every required review source:
+
+```json
+{
+  "review_evidence": {
+    "sources": {
+      "pr_metadata": { "status": "read", "detail": "Resolved with gh pr view." },
+      "pr_description": { "status": "read", "detail": "Read from gh pr view." },
+      "reviews": { "status": "read", "detail": "Read from gh pr view." },
+      "inline_comments": { "status": "read", "detail": "Read from the pull-request review-comment API." },
+      "issue_comments": { "status": "read", "detail": "Read from gh pr view." },
+      "repository_standards": { "status": "read", "detail": "Read the repository instruction files." }
+    }
+  }
+}
+```
+
+Each source object has exactly `status` and `detail`. Status is `read` or `missing`; detail is a non-empty retrieval note or failure reason. The six source names are exact and required. Any `missing` source prevents a positive merge recommendation.
 
 A complete ledger has a verification object with exactly:
 
@@ -181,9 +201,10 @@ The recommendation head equals `last_reviewed_head_sha`, and reasons is a non-em
 
 1. Any concrete-evidence open blocker requires `do_not_merge`.
 2. With no blocker, any non-blocking open finding requires `merge_readiness_not_established`.
-3. With no open finding, verification other than `passed` requires `merge_readiness_not_established`.
-4. Passed verification with no open finding and at least one deferred or accepted item requires `merge_ready_with_follow_ups`.
-5. Passed verification with no open, deferred, or accepted item requires `merge_ready`.
+3. With no open finding, missing required review evidence requires `merge_readiness_not_established`.
+4. With complete evidence and no open finding, verification other than `passed` requires `merge_readiness_not_established`.
+5. Complete evidence and passed verification with no open finding and at least one deferred or accepted item requires `merge_ready_with_follow_ups`.
+6. Complete evidence and passed verification with no open, deferred, or accepted item requires `merge_ready`.
 
 `do_not_merge` is invalid without an open blocker. A positive recommendation is invalid while any finding remains open or verification has not passed.
 

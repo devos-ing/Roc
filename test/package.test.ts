@@ -55,6 +55,31 @@ test("a representative next stable version satisfies the package boundary", () =
   expect("0.0.3").toMatch(stableVersionPattern);
 });
 
+test("packaged PR review helpers pass their Python suites", async () => {
+  for (const script of ["test_evidence.py", "test_ledger.py"]) {
+    const child = Bun.spawn(
+      [
+        "python3",
+        "-B",
+        resolve(
+          projectRoot,
+          "skills",
+          "pr-review-to-closure",
+          "scripts",
+          script,
+        ),
+      ],
+      { cwd: projectRoot, stdout: "pipe", stderr: "pipe" },
+    );
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode, `${script}\n${stdout}\n${stderr}`).toBe(0);
+  }
+});
+
 test("npm archive contains only runtime files", async () => {
   const child = Bun.spawn(
     ["npm", "pack", "--dry-run", "--json", "--ignore-scripts"],
@@ -103,7 +128,9 @@ test("npm archive contains only runtime files", async () => {
       "skills/pr-review-to-closure/SKILL.md",
       "skills/pr-review-to-closure/agents/openai.yaml",
       "skills/pr-review-to-closure/references/ledger-schema.md",
+      "skills/pr-review-to-closure/scripts/evidence.py",
       "skills/pr-review-to-closure/scripts/ledger.py",
+      "skills/pr-review-to-closure/scripts/test_evidence.py",
       "skills/pr-review-to-closure/scripts/test_ledger.py",
     ]),
   );

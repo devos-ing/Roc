@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import copy
 import importlib.util
 import json
@@ -71,6 +73,24 @@ def indeterminate(head_sha: str = "head-0001") -> dict[str, object]:
     }
 
 
+def review_evidence(*missing_sources: str) -> dict[str, object]:
+    sources = {
+        name: {
+            "status": "missing" if name in missing_sources else "read",
+            "detail": "The source could not be read." if name in missing_sources else "The source was read.",
+        }
+        for name in (
+            "pr_metadata",
+            "pr_description",
+            "reviews",
+            "inline_comments",
+            "issue_comments",
+            "repository_standards",
+        )
+    }
+    return {"sources": sources}
+
+
 def ledger_value(
     *,
     revision: int = 0,
@@ -83,10 +103,12 @@ def ledger_value(
     head_sha: str = "head-0001",
     findings: list[dict[str, object]] | None = None,
     verification_value: dict[str, object] | None = None,
+    review_evidence_value: dict[str, object] | None = None,
     recommendation_value: dict[str, object] | None = None,
     lineage_resets: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     if review_state == "complete":
+        review_evidence_value = review_evidence() if review_evidence_value is None else review_evidence_value
         verification_value = verification(head_sha) if verification_value is None else verification_value
         recommendation_value = recommendation(head_sha) if recommendation_value is None else recommendation_value
     return {
@@ -103,6 +125,7 @@ def ledger_value(
         "last_reviewed_head_sha": head_sha,
         "lineage_resets": [] if lineage_resets is None else lineage_resets,
         "findings": [] if findings is None else findings,
+        "review_evidence": review_evidence_value,
         "verification": verification_value,
         "recommendation": recommendation_value,
     }
@@ -173,6 +196,7 @@ class InitializationTests(unittest.TestCase):
             value = ledger.initialize_ledger(path, "github.com", "devos-ing", "Roc", 5, "base-0001", "head-0001")
             self.assertEqual(value["revision"], 0)
             self.assertEqual(value["review_state"], "incomplete")
+            self.assertIsNone(value["review_evidence"])
             self.assertIsNone(value["verification"])
             self.assertIsNone(value["recommendation"])
             self.assertEqual(json.loads(path.read_text()), value)
@@ -251,6 +275,17 @@ class ContractValidationTests(unittest.TestCase):
         for name, metadata in mutations.items():
             with self.subTest(name=name), self.assertRaises(ValueError):
                 ledger.validate_ledger(ledger_value(verification_value=metadata))
+
+    def test_missing_review_evidence_prevents_a_positive_recommendation(self) -> None:
+        incomplete_evidence = review_evidence("inline_comments")
+        indeterminate_value = ledger_value(recommendation_value=indeterminate())
+        indeterminate_value["review_evidence"] = incomplete_evidence
+        ledger.validate_ledger(indeterminate_value)
+
+        positive_value = ledger_value()
+        positive_value["review_evidence"] = incomplete_evidence
+        with self.assertRaisesRegex(ValueError, "evidence"):
+            ledger.validate_ledger(positive_value)
 
     def test_do_not_merge_requires_and_follows_an_open_blocker(self) -> None:
         blocker = finding(blocking=True)
@@ -510,6 +545,93 @@ class CompareAndReplaceTests(unittest.TestCase):
             later = ledger_value(revision=2, head_sha="head-0003", lineage_resets=[reset])
             ledger.atomic_write(path, later, expected_revision=1)
             self.assertEqual(json.loads(path.read_text())["lineage_resets"], [reset])
+
+
+class WorkflowFixtureTests(unittest.TestCase):
+    def test_later_round_closes_prior_work_suppresses_deferred_and_adds_one_blocker(self) -> None:
+        deferred_history = [{
+            "from": "open",
+            "to": "deferred",
+            "reason": "The owner accepted follow-up work.",
+            "head_sha": "head-0001",
+        }]
+        original = ledger_value(
+            findings=[
+                finding("SPEC-001", blocking=True),
+                finding("SPEC-002", disposition="deferred", history=deferred_history),
+            ],
+            verification_value=verification(status="not_run"),
+            recommendation_value=recommendation(outcome="do_not_merge"),
+        )
+        replacement = copy.deepcopy(original)
+        replacement["revision"] = 1
+        replacement["last_reviewed_head_sha"] = "head-0002"
+        replacement["verification"] = verification("head-0002")
+        replacement["recommendation"] = recommendation("head-0002", outcome="do_not_merge")
+        replacement["findings"][0]["disposition"] = "fixed"
+        replacement["findings"][0]["history"] = [{
+            "from": "open",
+            "to": "fixed",
+            "reason": "The acceptance condition now passes.",
+            "head_sha": "head-0002",
+        }]
+        replacement["findings"].append(
+            finding("SPEC-003", blocking=True, first_seen_sha="head-0002")
+        )
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "5.json"
+            ledger.atomic_write(path, original)
+            ledger.atomic_write(path, replacement, expected_revision=0)
+            summary = ledger.summarize_ledger(json.loads(path.read_text()))
+
+        self.assertEqual(summary["counts"], {"open": 1, "fixed": 1, "deferred": 1, "accepted": 0})
+        self.assertEqual(summary["open_blocking_ids"], ["SPEC-003"])
+        self.assertEqual(summary["recommendation"], "do_not_merge")
+
+    def test_changed_deferred_work_can_reopen_and_return_to_deferred_without_losing_history(self) -> None:
+        original_history = [{
+            "from": "open",
+            "to": "deferred",
+            "reason": "The owner accepted follow-up work.",
+            "head_sha": "head-0001",
+        }]
+        original = ledger_value(
+            findings=[finding("SPEC-001", disposition="deferred", history=original_history)],
+            recommendation_value=recommendation(outcome="merge_ready_with_follow_ups"),
+        )
+        replacement = ledger_value(
+            revision=1,
+            head_sha="head-0002",
+            findings=[finding("SPEC-001", disposition="deferred", history=[
+                *original_history,
+                {
+                    "from": "deferred",
+                    "to": "open",
+                    "reason": "Relevant validation code changed.",
+                    "head_sha": "head-0002",
+                },
+                {
+                    "from": "open",
+                    "to": "deferred",
+                    "reason": "The owner kept the follow-up disposition after re-review.",
+                    "head_sha": "head-0002",
+                },
+            ])],
+            recommendation_value=recommendation("head-0002", outcome="merge_ready_with_follow_ups"),
+        )
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "5.json"
+            ledger.atomic_write(path, original)
+            ledger.atomic_write(path, replacement, expected_revision=0)
+            saved = json.loads(path.read_text())
+
+        self.assertEqual(
+            [(entry["from"], entry["to"]) for entry in saved["findings"][0]["history"]],
+            [("open", "deferred"), ("deferred", "open"), ("open", "deferred")],
+        )
+        self.assertEqual(ledger.summarize_ledger(saved)["open_non_blocking_ids"], [])
 
 
 class RecoveryTests(unittest.TestCase):

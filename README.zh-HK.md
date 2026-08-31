@@ -66,6 +66,9 @@ bunx roc-it@latest help
 npm install -g roc-it@latest
 ```
 
+重複 PR 審查 skill 需要 Python 3.9 或以上版本，以及已驗證登入的 GitHub CLI
+（`gh`）。Roc scheduler 和 task 指令本身仍然只需要 Bun。
+
 在單一專案中啟用 Roc。這會建立本機資料庫，並為 Codex、Claude Code 和
 Cursor 安裝 Roc 內建的任務建立及重複 PR 審查 skills：
 
