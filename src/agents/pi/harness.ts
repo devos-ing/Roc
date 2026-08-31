@@ -78,7 +78,22 @@ function extractJsonObject(text: string): unknown {
   }
   for (const candidate of candidates) {
     try {
-      return JSON.parse(candidate);
+      const decoded = JSON.parse(candidate) as unknown;
+      // Real-backend smoke found models echoing the embedded JSON Schema as a
+      // "$schema" property alongside the data; it is harmless metadata.
+      if (
+        decoded !== null &&
+        typeof decoded === "object" &&
+        !Array.isArray(decoded) &&
+        "$schema" in decoded
+      ) {
+        const { $schema: _ignored, ...data } = decoded as Record<
+          string,
+          unknown
+        >;
+        return data;
+      }
+      return decoded;
     } catch {
       // Try the next extraction candidate.
     }
