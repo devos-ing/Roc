@@ -32,19 +32,30 @@ Direct entry with `bun src/cli/main.ts ...` remains supported.
 To check the packaged skills and the PR review helpers, run:
 
 ```bash
-python3 /Users/roy/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/roc-create-tasks
-python3 /Users/roy/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/pr-review-to-closure
+python3 <path-to-quick_validate.py> skills/roc-create-tasks
+python3 <path-to-quick_validate.py> skills/pr-review-to-closure
 python3 -B skills/pr-review-to-closure/scripts/test_evidence.py -v
 python3 -B skills/pr-review-to-closure/scripts/test_ledger.py -v
+```
+
+`quick_validate.py` is provided by the `skill-creator` tooling and is not part
+of this repository, so its path depends on where that tooling is installed.
+Locate it in your agent's skills directory, for example:
+
+```bash
+find ~/.codex/skills -name quick_validate.py
 ```
 
 You can test an import with a temporary strict JSON manifest, then inspect its
 ready tasks locally:
 
 ```bash
-bun dev -- task import /absolute/path/to/backlog.json --db .agile/runtime/agile.db
-bun dev -- task list --db .agile/runtime/agile.db
+bun dev -- task import /absolute/path/to/backlog.json
+bun dev -- task list
 ```
+
+Run them inside the target project. Roc resolves the project's `.agile`
+database from the current directory; the public CLI has no `--db` flag.
 
 Run the checks that match your change:
 
@@ -57,25 +68,25 @@ bun run check
 Always run `bun run check` before submitting a change. It runs linting, type
 checks, and the test suite.
 
-## Development-only commands
+## Fake harness and debugging
 
-Roc keeps a fake scheduler for deterministic tests and an inspection command
-for debugging saved scheduler state. They work from source but are intentionally
-hidden from production help and the public READMEs.
-
-Run a prepared fake scenario:
+Roc keeps a fake scheduler harness for deterministic tests. It is intentionally
+not exposed on the public CLI: `scheduler run` only accepts registered backends
+and rejects `--db`, `--repo`, and `--fake-script` before invoking the runtime.
+The fake harness runs through internal test seams instead:
 
 ```bash
-bun dev -- scheduler run --backend fake --fake-script /absolute/path/to/scenario.json
+bun test test/cli/scheduler.test.ts
 ```
 
-Inspect the scheduler database:
+That suite drives authored fake scenarios through the scheduler runtime and
+pins the rejection of the removed internal flags.
+
+To debug saved scheduler state, use the public inspection command from source:
 
 ```bash
 bun dev -- scheduler inspect
 ```
-
-Both commands accept `--db PATH` when you need a specific database.
 
 ## Project documents
 
