@@ -46,12 +46,6 @@ export const SessionCreateResponseSchema = z
   })
   .passthrough();
 
-export const SessionSubscribeResponseSchema = z
-  .object({
-    sessionId: NonEmpty,
-  })
-  .passthrough();
-
 /** Role-attempt usage totals in scheduler terms, mapped from ZCode fields. */
 export const TokenUsageTotalsSchema = z
   .object({

@@ -183,7 +183,6 @@ export function createZcodeHarness(input: {
   const now = input.now ?? (() => new Date().toISOString());
   const activeAttempts = new Map<string, ActiveAttempt>();
   const terminalAttempts = new Set<string>();
-  const terminalSessions = new Set<string>();
 
   /** Removes transient completion markers from a terminal cursor. */
   function withoutTerminalMarkers(cursor: BackendCursor): BackendCursor {
@@ -197,7 +196,6 @@ export function createZcodeHarness(input: {
   function terminalize(active: ActiveAttempt): void {
     activeAttempts.delete(active.attemptId);
     terminalAttempts.add(active.attemptId);
-    terminalSessions.add(active.sessionId);
   }
 
   /** Terminalizes an attempt and emits a structured infrastructure-failure delivery. */
@@ -422,10 +420,12 @@ export function createZcodeHarness(input: {
       }
     }
 
-    // The ZCode app-server runs each session rooted at the isolated task
-    // workspace, so role turns cannot escape into the scheduler checkout.
-    // ZCode has no protocol-level sandbox: read-only roles are constrained by
-    // their prompts and verified by the workspace status comparison below.
+    // The ZCode session uses the task workspace as its working directory,
+    // but that is not a filesystem confinement boundary: ZCode has no
+    // protocol-level sandbox, and turns can still write outside the task
+    // checkout with absolute paths or parent traversal. The Review status
+    // comparison only detects changes inside the task checkout; writes
+    // outside it are invisible to it.
     const sessionModel = input.client.sessionModel;
     if (sessionModel === undefined) {
       // Fail closed instead of omitting the model: a session without an
@@ -631,7 +631,7 @@ export function createZcodeHarness(input: {
             cursor,
             active,
             "review_mutated_workspace",
-            "Review changed the scheduler checkout",
+            "Review changed the task checkout",
           ),
         ];
       }
