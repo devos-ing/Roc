@@ -82,14 +82,17 @@ def collect_snapshot(gh: str, repository: tuple[str, str], pr_number: int) -> di
     body = metadata_value.get("body")
     if body is not None and not isinstance(body, str):
         raise ValueError("pull request field body must be a string or null")
+    base_sha = _required_string(metadata_value.get("baseRefOid"), "baseRefOid")
+    head_sha = _required_string(metadata_value.get("headRefOid"), "headRefOid")
+    description_read = isinstance(body, str) and bool(body.strip())
     return {
         "pull_request": {
             "owner": owner,
             "repo": repo,
             "number": pr_number,
             "url": _required_string(metadata_value.get("url"), "url"),
-            "base_sha": _required_string(metadata_value.get("baseRefOid"), "baseRefOid"),
-            "head_sha": _required_string(metadata_value.get("headRefOid"), "headRefOid"),
+            "base_sha": base_sha,
+            "head_sha": head_sha,
             "title": _required_string(metadata_value.get("title"), "title"),
             "description": "" if body is None else body,
         },
@@ -97,9 +100,17 @@ def collect_snapshot(gh: str, repository: tuple[str, str], pr_number: int) -> di
         "issue_comments": issue_comments,
         "inline_comments": inline_comments,
         "review_evidence": {
+            "head_sha": head_sha,
             "sources": {
                 "pr_metadata": {"status": "read", "detail": "Read with gh pr view."},
-                "pr_description": {"status": "read", "detail": "Read with gh pr view."},
+                "pr_description": {
+                    "status": "read" if description_read else "missing",
+                    "detail": (
+                        "Read a non-empty description with gh pr view."
+                        if description_read
+                        else "The pull request has no non-empty description."
+                    ),
+                },
                 "reviews": {"status": "read", "detail": "Read with gh pr view."},
                 "inline_comments": {"status": "read", "detail": "Read with the GitHub pull-request review-comment API."},
                 "issue_comments": {"status": "read", "detail": "Read with gh pr view."},

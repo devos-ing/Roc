@@ -73,7 +73,7 @@ def indeterminate(head_sha: str = "head-0001") -> dict[str, object]:
     }
 
 
-def review_evidence(*missing_sources: str) -> dict[str, object]:
+def review_evidence(*missing_sources: str, head_sha: str = "head-0001") -> dict[str, object]:
     sources = {
         name: {
             "status": "missing" if name in missing_sources else "read",
@@ -88,7 +88,7 @@ def review_evidence(*missing_sources: str) -> dict[str, object]:
             "repository_standards",
         )
     }
-    return {"sources": sources}
+    return {"head_sha": head_sha, "sources": sources}
 
 
 def ledger_value(
@@ -108,7 +108,11 @@ def ledger_value(
     lineage_resets: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     if review_state == "complete":
-        review_evidence_value = review_evidence() if review_evidence_value is None else review_evidence_value
+        review_evidence_value = (
+            review_evidence(head_sha=head_sha)
+            if review_evidence_value is None
+            else review_evidence_value
+        )
         verification_value = verification(head_sha) if verification_value is None else verification_value
         recommendation_value = recommendation(head_sha) if recommendation_value is None else recommendation_value
     return {
@@ -409,6 +413,20 @@ class CompareAndReplaceTests(unittest.TestCase):
                 ledger.atomic_write(path, second, expected_revision=0)
             self.assertEqual(json.loads(path.read_text()), first)
 
+    def test_changed_head_rejects_review_evidence_from_the_previous_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "5.json"
+            original = ledger_value()
+            ledger.atomic_write(path, original)
+            replacement = ledger_value(
+                revision=1,
+                head_sha="head-0002",
+                review_evidence_value=copy.deepcopy(original["review_evidence"]),
+            )
+
+            with self.assertRaisesRegex(ValueError, "review_evidence.head_sha"):
+                ledger.atomic_write(path, replacement, expected_revision=0)
+
     def test_update_preserves_pr_identity_findings_and_immutable_fields(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "5.json"
@@ -445,6 +463,7 @@ class CompareAndReplaceTests(unittest.TestCase):
             missing_history = copy.deepcopy(original)
             missing_history["revision"] = 1
             missing_history["last_reviewed_head_sha"] = "head-0002"
+            missing_history["review_evidence"] = review_evidence(head_sha="head-0002")
             missing_history["verification"] = verification("head-0002")
             missing_history["recommendation"] = recommendation("head-0002")
             missing_history["findings"][0]["disposition"] = "fixed"
@@ -453,6 +472,7 @@ class CompareAndReplaceTests(unittest.TestCase):
             reopened = copy.deepcopy(original)
             reopened["revision"] = 1
             reopened["last_reviewed_head_sha"] = "head-0002"
+            reopened["review_evidence"] = review_evidence(head_sha="head-0002")
             reopened["verification"] = verification("head-0002")
             reopened["recommendation"] = indeterminate("head-0002")
             reopened["findings"][0]["history"] = [
@@ -474,6 +494,7 @@ class CompareAndReplaceTests(unittest.TestCase):
             truncated = copy.deepcopy(original)
             truncated["revision"] = 1
             truncated["last_reviewed_head_sha"] = "head-0002"
+            truncated["review_evidence"] = review_evidence(head_sha="head-0002")
             truncated["verification"] = verification("head-0002")
             truncated["recommendation"] = recommendation("head-0002", outcome="merge_ready_with_follow_ups")
             truncated["findings"][0]["history"] = []
@@ -482,6 +503,7 @@ class CompareAndReplaceTests(unittest.TestCase):
             wrong_head = copy.deepcopy(original)
             wrong_head["revision"] = 1
             wrong_head["last_reviewed_head_sha"] = "head-0002"
+            wrong_head["review_evidence"] = review_evidence(head_sha="head-0002")
             wrong_head["verification"] = verification("head-0002")
             wrong_head["recommendation"] = indeterminate("head-0002")
             wrong_head["findings"][0]["disposition"] = "open"
@@ -504,6 +526,7 @@ class CompareAndReplaceTests(unittest.TestCase):
                 replacement = copy.deepcopy(original)
                 replacement["revision"] = 1
                 replacement["last_reviewed_head_sha"] = "head-0002"
+                replacement["review_evidence"] = review_evidence(head_sha="head-0002")
                 replacement["verification"] = verification("head-0002")
                 replacement["recommendation"] = indeterminate("head-0002")
                 replacement["findings"].append(new_item)
@@ -548,6 +571,50 @@ class CompareAndReplaceTests(unittest.TestCase):
 
 
 class WorkflowFixtureTests(unittest.TestCase):
+    def test_cli_first_review_persists_stable_axis_ids_and_re_review_advances_them(self) -> None:
+        first = ledger_value(
+            findings=[
+                finding("STD-001", axis="standards"),
+                finding("SPEC-001"),
+            ],
+            recommendation_value=indeterminate(),
+        )
+        replacement = ledger_value(
+            revision=1,
+            head_sha="head-0002",
+            findings=[
+                *first["findings"],
+                finding("SPEC-002", first_seen_sha="head-0002"),
+            ],
+            recommendation_value=indeterminate("head-0002"),
+        )
+
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            path = root_path / "5.json"
+            first_input = root_path / "first.json"
+            replacement_input = root_path / "replacement.json"
+            first_input.write_text(json.dumps(first))
+            replacement_input.write_text(json.dumps(replacement))
+
+            first_result = run_cli("write", "--file", str(path), "--input", str(first_input))
+            replacement_result = run_cli(
+                "write",
+                "--file",
+                str(path),
+                "--input",
+                str(replacement_input),
+                "--expected-revision",
+                "0",
+            )
+
+            self.assertEqual(first_result.returncode, 0, first_result.stderr)
+            self.assertEqual(replacement_result.returncode, 0, replacement_result.stderr)
+            persisted = json.loads(path.read_text())
+
+        self.assertEqual([item["id"] for item in persisted["findings"]], ["STD-001", "SPEC-001", "SPEC-002"])
+        self.assertEqual(persisted["findings"][2]["first_seen_sha"], "head-0002")
+
     def test_later_round_closes_prior_work_suppresses_deferred_and_adds_one_blocker(self) -> None:
         deferred_history = [{
             "from": "open",
@@ -566,6 +633,7 @@ class WorkflowFixtureTests(unittest.TestCase):
         replacement = copy.deepcopy(original)
         replacement["revision"] = 1
         replacement["last_reviewed_head_sha"] = "head-0002"
+        replacement["review_evidence"] = review_evidence(head_sha="head-0002")
         replacement["verification"] = verification("head-0002")
         replacement["recommendation"] = recommendation("head-0002", outcome="do_not_merge")
         replacement["findings"][0]["disposition"] = "fixed"

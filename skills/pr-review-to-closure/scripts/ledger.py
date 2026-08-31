@@ -59,7 +59,7 @@ _LINEAGE_FIELDS = {
     "reason",
 }
 _VERIFICATION_FIELDS = {"command", "head_sha", "status", "output"}
-_REVIEW_EVIDENCE_FIELDS = {"sources"}
+_REVIEW_EVIDENCE_FIELDS = {"head_sha", "sources"}
 _REVIEW_EVIDENCE_SOURCE_FIELDS = {"status", "detail"}
 _REQUIRED_REVIEW_EVIDENCE_SOURCES = {
     "pr_metadata",
@@ -274,10 +274,13 @@ def _validate_verification(value: object, head_sha: str) -> dict[str, object]:
     return metadata
 
 
-def _validate_review_evidence(value: object) -> dict[str, object]:
+def _validate_review_evidence(value: object, head_sha: str) -> dict[str, object]:
     """Validates the required PR and repository evidence source results."""
     evidence = _require_object(value, "review_evidence")
     _require_exact_fields(evidence, _REVIEW_EVIDENCE_FIELDS, "review_evidence")
+    evidence_head = _require_string(evidence["head_sha"], "review_evidence.head_sha")
+    if evidence_head != head_sha:
+        raise ValueError("review_evidence.head_sha must match last_reviewed_head_sha")
     sources = _require_object(evidence["sources"], "review_evidence.sources")
     _require_exact_fields(sources, _REQUIRED_REVIEW_EVIDENCE_SOURCES, "review_evidence.sources")
     for name, raw_source in sources.items():
@@ -405,7 +408,7 @@ def validate_ledger(value: dict[str, object], *, require_complete: bool = False)
             raise ValueError("a complete review ledger is required")
         return
 
-    review_evidence = _validate_review_evidence(ledger["review_evidence"])
+    review_evidence = _validate_review_evidence(ledger["review_evidence"], head_sha)
     verification = _validate_verification(ledger["verification"], head_sha)
     _validate_recommendation(ledger["recommendation"], head_sha, findings, review_evidence, verification)
 

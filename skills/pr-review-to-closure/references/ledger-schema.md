@@ -146,6 +146,7 @@ Before verification, a complete ledger records every required review source:
 ```json
 {
   "review_evidence": {
+    "head_sha": "HEAD_SHA",
     "sources": {
       "pr_metadata": { "status": "read", "detail": "Resolved with gh pr view." },
       "pr_description": { "status": "read", "detail": "Read from gh pr view." },
@@ -158,7 +159,7 @@ Before verification, a complete ledger records every required review source:
 }
 ```
 
-Each source object has exactly `status` and `detail`. Status is `read` or `missing`; detail is a non-empty retrieval note or failure reason. The six source names are exact and required. Any `missing` source prevents a positive merge recommendation.
+`head_sha` must equal `last_reviewed_head_sha`, so evidence from an earlier PR snapshot cannot be reused after the head changes. Each source object has exactly `status` and `detail`. Status is `read` or `missing`; detail is a non-empty retrieval note or failure reason. The six source names are exact and required. Any `missing` source prevents a positive merge recommendation.
 
 A complete ledger has a verification object with exactly:
 

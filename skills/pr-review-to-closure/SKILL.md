@@ -32,7 +32,7 @@ Validate prior state with `validate --require-complete` before an incremental re
 3. Locate repository standards and the originating specification. Apply the installed `code-review` skill's Standards and Spec axes.
 4. On a first review, inspect the full `current_base...current_head` three-dot diff. Cover integration boundaries, error and safety behavior, public commands and documentation, and the smallest vertical path that validates the feature.
 
-Record `review_evidence` for PR metadata, description, reviews, inline comments, issue comments, and repository standards. Mark a source `read` only when its retrieval completed successfully. Mark it `missing` with a concrete reason otherwise. Missing required evidence stays missing even when the visible diff and tests look clean.
+Record `review_evidence` for PR metadata, description, reviews, inline comments, issue comments, and repository standards, and bind it to the snapshot's current head SHA. Mark a source `read` only when its retrieval completed successfully and the source is present; an absent or blank PR description is `missing`. Mark missing evidence with a concrete reason. Missing required evidence stays missing even when the visible diff and tests look clean.
 
 Every finding needs a permanent axis-matched ID, severity, blocking boolean, concrete evidence, location, first-seen SHA, acceptance condition, disposition, and history. Keep all prior findings in the ledger. Never reuse or renumber an ID.
 
