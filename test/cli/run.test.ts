@@ -80,7 +80,7 @@ function onboardingRuntime(overrides: Partial<CliRuntime> = {}): CliRuntime {
   };
 }
 
-test("onboard installs identical project skill copies without overwriting changes", async () => {
+test("onboard installs complete project skill packages without overwriting changes", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
   const dbPath = join(root, ".agile", "runtime", "agile.db");
@@ -123,6 +123,32 @@ test("onboard installs identical project skill copies without overwriting change
     );
     expect(await readFile(agentsSkill)).toEqual(source);
     expect(await readFile(claudeSkill)).toEqual(source);
+    const reviewSkillFiles = [
+      "SKILL.md",
+      join("agents", "openai.yaml"),
+      join("references", "ledger-schema.md"),
+      join("scripts", "ledger.py"),
+      join("scripts", "test_ledger.py"),
+    ];
+    for (const skillRoot of [
+      join(root, ".agents", "skills", "pr-review-to-closure"),
+      join(root, ".claude", "skills", "pr-review-to-closure"),
+    ]) {
+      for (const relativePath of reviewSkillFiles) {
+        expect(await readFile(join(skillRoot, relativePath))).toEqual(
+          await readFile(
+            join(
+              import.meta.dir,
+              "..",
+              "..",
+              "skills",
+              "pr-review-to-closure",
+              relativePath,
+            ),
+          ),
+        );
+      }
+    }
     expect(await lstat(dbPath)).toMatchObject({ isFile: expect.any(Function) });
 
     expect(

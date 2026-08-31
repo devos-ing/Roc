@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { simpleGit } from "simple-git";
 import { resolveProjectRoot } from "../../src/cli/project-root";
+import { git } from "../helpers/git";
 
 const roots: string[] = [];
 
@@ -32,9 +32,31 @@ test("falls back to the Git checkout root before Roc is initialized", async () =
   const root = await temporaryDirectory();
   const nested = join(root, "packages", "worker");
   await mkdir(nested, { recursive: true });
-  await simpleGit({ baseDir: root }).init();
+  await git(["init"], root);
 
   expect(await resolveProjectRoot(nested)).toBe(await realpath(root));
+});
+
+test("ignores inherited Git repository overrides when resolving another checkout", async () => {
+  const hookRoot = await temporaryDirectory();
+  const targetRoot = await temporaryDirectory();
+  const nested = join(targetRoot, "packages", "worker");
+  await mkdir(nested, { recursive: true });
+  await git(["init"], hookRoot);
+  await git(["init"], targetRoot);
+  const priorGitDir = process.env.GIT_DIR;
+  const priorGitIndexFile = process.env.GIT_INDEX_FILE;
+  process.env.GIT_DIR = join(hookRoot, ".git");
+  process.env.GIT_INDEX_FILE = join(hookRoot, ".git", "index");
+
+  try {
+    expect(await resolveProjectRoot(nested)).toBe(await realpath(targetRoot));
+  } finally {
+    if (priorGitDir === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = priorGitDir;
+    if (priorGitIndexFile === undefined) delete process.env.GIT_INDEX_FILE;
+    else process.env.GIT_INDEX_FILE = priorGitIndexFile;
+  }
 });
 
 test("rejects a project-bound command outside Roc and Git projects", async () => {

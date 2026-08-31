@@ -1,7 +1,33 @@
 import { realpath, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { simpleGit } from "simple-git";
 import { AgileError } from "../runtime/errors";
+
+const gitRepositoryEnvironmentVariables = [
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_CONFIG",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_COUNT",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_IMPLICIT_WORK_TREE",
+  "GIT_GRAFT_FILE",
+  "GIT_INDEX_FILE",
+  "GIT_NO_REPLACE_OBJECTS",
+  "GIT_REPLACE_REF_BASE",
+  "GIT_PREFIX",
+  "GIT_SHALLOW_FILE",
+  "GIT_COMMON_DIR",
+] as const;
+
+/** Returns a process environment without repository-local Git overrides. */
+function gitPathResolutionEnvironment(): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  for (const variable of gitRepositoryEnvironmentVariables) {
+    delete environment[variable];
+  }
+  return environment;
+}
 
 /** Returns whether a path names an existing directory. */
 async function isDirectory(path: string): Promise<boolean> {
@@ -27,9 +53,20 @@ async function findRocRoot(startPath: string): Promise<string | undefined> {
 /** Resolves the containing Git checkout root or returns undefined outside Git. */
 async function findGitRoot(startPath: string): Promise<string | undefined> {
   try {
-    const root = (
-      await simpleGit({ baseDir: startPath }).revparse("--show-toplevel")
-    ).trim();
+    const child = Bun.spawn(
+      ["git", "-C", startPath, "rev-parse", "--show-toplevel"],
+      {
+        env: gitPathResolutionEnvironment(),
+        stdout: "pipe",
+        stderr: "ignore",
+      },
+    );
+    const [output, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      child.exited,
+    ]);
+    if (exitCode !== 0) return undefined;
+    const root = output.trim();
     return root.length === 0 ? undefined : await realpath(root);
   } catch {
     return undefined;

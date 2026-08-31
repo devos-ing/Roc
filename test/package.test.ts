@@ -98,4 +98,13 @@ test("npm archive contains only runtime files", async () => {
   expect(paths).toContain("package.json");
   expect(paths).toContain("src/cli/main.ts");
   expect(paths).toContain("skills/roc-create-tasks/SKILL.md");
+  expect(paths).toEqual(
+    expect.arrayContaining([
+      "skills/pr-review-to-closure/SKILL.md",
+      "skills/pr-review-to-closure/agents/openai.yaml",
+      "skills/pr-review-to-closure/references/ledger-schema.md",
+      "skills/pr-review-to-closure/scripts/ledger.py",
+      "skills/pr-review-to-closure/scripts/test_ledger.py",
+    ]),
+  );
 });
