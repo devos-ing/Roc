@@ -237,6 +237,17 @@ the feedback to an unapproved draft follow-up. That follow-up returns to the
 ready backlog only after approval. Roc saves progress so the flow can continue
 after a restart.
 
+### System architecture
+
+Roc stores task state in SQLite and runs Codex work in a dedicated sibling
+checkout. The full diagram maps the scheduler lease, trusted task hooks, agent
+phases, Codex app-server, and branch isolation.
+
+[![Roc system architecture](docs/assets/roc-system-architecture.png)](output/archify/roc-system-architecture.html)
+
+[Open the interactive diagram](output/archify/roc-system-architecture.html) or
+[read the architecture notes](docs/architecture.md).
+
 ## Milestones
 
 Roc is growing in small steps.
