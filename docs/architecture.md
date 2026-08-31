@@ -8,6 +8,11 @@ Implement, and Review attempts. `FakeHarness` provides deterministic tests;
 The global Agile Cycle setting selects the active calendar window used by task
 manifests and token reporting. It supports Daily, Weekly, and custom-day cycles.
 
+Onboarding installs every repository-owned package below `skills/` into both
+`.agents/skills` and `.claude/skills`. It copies regular files only, rejects
+symbolic-link path components, and refuses to overwrite a file whose contents
+differ from the packaged source.
+
 Commander owns the public CLI command tree and command-scoped argument
 validation. Project commands find the nearest `.agile` ancestor and otherwise
 use the Git checkout root. SQLite and runtime logs stay beneath the resolved

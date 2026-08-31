@@ -66,8 +66,11 @@ bunx roc-it@latest help
 npm install -g roc-it@latest
 ```
 
+重複 PR 審查 skill 需要 Python 3.9 或以上版本，以及已驗證登入的 GitHub CLI
+（`gh`）。Roc scheduler 和 task 指令本身仍然只需要 Bun。
+
 在單一專案中啟用 Roc。這會建立本機資料庫，並為 Codex、Claude Code 和
-Cursor 安裝建立任務的 skill：
+Cursor 安裝 Roc 內建的任務建立及重複 PR 審查 skills：
 
 ```bash
 npx roc-it@latest onboard
@@ -89,7 +92,7 @@ npx roc-it@latest onboard
 
 如需純文字終端輸出，使用 `NO_COLOR=1 npx roc-it@latest onboard`。
 
-使用 `npx roc-it@latest onboard --global` 可改為在使用者帳戶下安裝 skill；
+使用 `npx roc-it@latest onboard --global` 可改為在使用者帳戶下安裝 skills；
 全域啟用不會建立專案資料庫。
 
 ### 敏捷週期
@@ -143,6 +146,11 @@ $roc-create-tasks Add team invitations
 
 這個 skill 會使用 `grilling` 釐清需求、預覽完整任務清單和相依關係、等待你的
 明確批准，然後把 JSON backlog 儲存在 `.agile/backlog` 並匯入 Roc。
+
+當你要求再次審查同一個 GitHub pull request 時，已安裝的
+`pr-review-to-closure` skill 會保留穩定的 finding ID，並把新 head 與上次審查
+結果核對。它只會在必要檢查通過後提供 merge 判斷。一般審查不會留言、核准、
+commit、push 或 merge，除非你明確要求該項操作。
 
 ### 匯入已核准的 GitHub Issues
 

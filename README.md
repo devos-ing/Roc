@@ -67,8 +67,12 @@ Or install the command globally:
 npm install -g roc-it@latest
 ```
 
-Onboard Roc in one project. This creates the local database and installs the
-task-creation skill for Codex, Claude Code, and Cursor:
+The repeat-PR-review skill requires Python 3.9 or later and the authenticated
+GitHub CLI (`gh`). Roc's scheduler and task commands still run on Bun alone.
+
+Onboard Roc in one project. This creates the local database and installs Roc's
+packaged task-creation and repeat-PR-review skills for Codex, Claude Code, and
+Cursor:
 
 ```bash
 npx roc-it@latest onboard
@@ -91,7 +95,7 @@ npx roc-it@latest onboard
 
 Use `NO_COLOR=1 npx roc-it@latest onboard` for plain terminal output.
 
-Use `npx roc-it@latest onboard --global` to install the skill under your user
+Use `npx roc-it@latest onboard --global` to install the skills under your user
 account instead; global onboarding does not create a project database.
 
 ### Agile cycle
@@ -149,6 +153,12 @@ $roc-create-tasks Add team invitations
 The skill uses `grilling` to agree on the requirement, previews the full task
 list and dependencies, waits for your explicit approval, saves a JSON backlog
 under `.agile/backlog`, and imports it into Roc.
+
+When you ask for another review of the same GitHub pull request, the installed
+`pr-review-to-closure` skill keeps stable finding IDs and verifies the new head
+against the prior review. It reports a merge decision only after the required
+checks pass. Reviewing does not comment, approve, commit, push, or merge unless
+you explicitly request that action.
 
 ### Import approved GitHub Issues
 
