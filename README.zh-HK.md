@@ -8,342 +8,193 @@
 
 # Roc
 
-Roc 是一個本機命令列工具，帶領 Codex agents 走完整的敏捷軟件開發流程。
-每個任務都會經過三個步驟：**Scout → Implement → Review**。
+Roc 會讓程式開發任務依次經過幾個固定步驟：
 
-Scout 先研究任務，Implement 負責編寫程式，Review 則檢查完成後的指定
-commit。Roc 會把進度和 token 用量儲存在 SQLite，因此重新啟動後也能繼續
-工作。
-
-如果 Review 拒絕工作結果，Roc 會關閉原本的任務，並建立一個包含程式碼和
-意見的草稿 follow-up 任務。它會回到 ready backlog，不會無限重複同一個
-任務。
-
-Roc 目前提供：
-
-- 永遠不使用 `low` thinking effort 的模型設定；
-- 每個任務都有獨立 Git branch 和工作資料夾；
-- Review 只讀取 Implement 完成的指定 commit；
-- Review 接受後自動發佈 pull request；
-- 儲存任務進度和 token 用量，並支援重新啟動；
-- 在終端顯示 token 用量圖表；
-- 顯示目前敏捷週期的唯讀任務看板；
-- 一次性把已核准的 GitHub Issues 匯入 ready backlog；
-- 限制 agents 可以使用的 skills 清單。
-
-Roc 目前一次只處理一個任務。它只會為已接受的任務 branch push 並開啟或更新
-pull request；它不會合併或刪除 branch、同時執行多個任務，或限制 token 用量。
-
-## 快速開始
-
-使用前需要：
-
-- [Bun](https://bun.sh/) 1.3.0 或以上版本
-- Git
-- 匯入 Issues 和發佈 pull request 時需要
-  [GitHub CLI](https://cli.github.com/)，並先執行 `gh auth login`
-- 使用 Codex mode 時需要 [Codex CLI](https://github.com/openai/codex)
-- 建立 backlog 時需要 `grilling` skill：
-
-```bash
-npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor
+```text
+Ready → Scout → Implement → Review → Pull request → Done
 ```
 
-不用全域安裝也可以執行（Roc 執行時仍然需要 Bun）：
+- Scout 讀取任務，了解程式碼並準備實作計劃。
+- Implement 在獨立 Git branch 編寫程式，完成後建立 commit。
+- Review 只檢查該 commit，不會修改程式碼。
+- Roc 會把通過 Review 的 commit 發佈成 pull request。
 
-```bash
-npx roc-it@latest help
-```
+Roc 會把每個任務和執行記錄儲存在 SQLite。停止程式後，之後仍可繼續。
+如果 Review 不接受結果，Roc 會建立一個包含意見的草稿 follow-up 任務，
+不會不停重試同一項工作。
 
-你也可以使用 Bun 的 package runner `bunx`：
+Roc 每次只執行一個任務。它會 push 已接受的任務 branch，並建立或更新
+pull request。它不會 merge pull request 或刪除 branch。
 
-```bash
-bunx roc-it@latest help
-```
+## 開始使用
 
-或者全域安裝指令：
+你需要 [Bun](https://bun.sh/) 1.3 或以上版本、Git、
+[Codex CLI](https://github.com/openai/codex)，以及已執行 `gh auth login` 的
+[GitHub CLI](https://cli.github.com/)。
 
-```bash
-npm install -g roc-it@latest
-```
-
-重複 PR 審查 skill 需要 Python 3.9 或以上版本，以及已驗證登入的 GitHub CLI
-（`gh`）。Roc scheduler 和 task 指令本身仍然只需要 Bun。
-
-在單一專案中啟用 Roc。這會建立本機資料庫，並為 Codex、Claude Code 和
-Cursor 安裝 Roc 內建的任務建立及重複 PR 審查 skills：
+在 Git 專案內執行：
 
 ```bash
 npx roc-it@latest onboard
 ```
 
-啟用時會顯示專案範圍、每個已完成步驟、所選週期、設定檔路徑，以及可直接複製
-的下一步指引：如需要先安裝 `grilling`、用已安裝的任務 skill 建立第一個 backlog，
-以及查看產生的任務。若稍後步驟停止，Roc 會列出已完成工作並提供重試指令；它不會
-聲稱已回復任何變更。
+Onboarding 會建立 Roc 的本機資料庫，並安裝兩個 skills：
 
-Onboarding 會以 checklist 顯示 Roc 已安裝的預設 agent skills。按 Enter 接受目前選擇，按 Space 切換個別 skill，或取消全部項目，讓 agents 在不使用 skills 的情況下執行。Roc 會把準確選擇保存為全域設定。之後新安裝的預設 skill 不會自動啟用，你需要重新執行 onboarding 並勾選它。
+- `roc-create-tasks` 把需求整理成經你批准的 backlog。
+- `pr-review-to-closure` 在重複審查 pull request 時追蹤問題。
 
-Roc 不會自動安裝缺少的 `unslop`。請自行安裝 pstack 版本，再重新執行 onboarding：
+重複 PR 審查 skill 需要 Python 3.9 或以上版本。Roc 的 scheduler 和 task
+指令只需要 Bun。
 
-```bash
-npx skills add backnotprop/pstack --skill unslop --global --agent codex --agent claude-code --agent cursor
-npx roc-it@latest onboard
+在 Codex 建立 backlog：
+
+```text
+$roc-create-tasks 加入團隊邀請功能
 ```
 
-如需純文字終端輸出，使用 `NO_COLOR=1 npx roc-it@latest onboard`。
-
-使用 `npx roc-it@latest onboard --global` 可改為在使用者帳戶下安裝 skills；
-全域啟用不會建立專案資料庫。
-
-### 敏捷週期
-
-啟用時可以選擇每日、每週，或自訂日數。Roc 會把這個選擇儲存在
-`~/.config/roc/settings.json`，並套用到所有專案。
-
-```json
-{ "cycle": { "type": "weekly" } }
-```
-
-### 任務看板
-
-開啟目前週期的唯讀看板：
+這個 skill 會先顯示建議的任務，得到你批准後才會匯入。它需要
+`grilling` skill，你可以用以下指令安裝：
 
 ```bash
+npx skills add mattpocock/skills --skill grilling --global --agent codex
+```
+
+查看任務、開始執行，然後打開看板：
+
+```bash
+npx roc-it@latest task list
+npx roc-it@latest scheduler run --base-branch main
 npx roc-it@latest task board
 ```
 
-使用 `--all` 可包括所有已儲存週期的任務。在互動式終端中，看板會把精簡任務卡分組為
-Ready、In progress、Attention 和 Done。使用上/下方向鍵或 J/K 選擇卡片，Space 預覽，
-Enter 開啟完整詳情，D 展開 Done，R 立即更新，? 查看控制說明，Esc 返回看板，Q 或
-Ctrl-C 離開。看板不會啟動 scheduler，也不會修改 task、attempt、event 或 lease。
+Roc 會在名為 `<project>.agile-checkout` 的相鄰資料夾編寫任務程式碼。
+目前 checkout 會留在原有 branch。
 
-任何一個終端 stream 不是互動式時，同一指令只會輸出一次純文字、沒有 ANSI 的快照然後
-結束。空白看板會顯示平常建立 backlog 的指引。
+## 任務看板
 
-你可以隨時查看目前的敏捷週期：
-
-```bash
-npx roc-it@latest cycle current
-```
-
-建立任務的 skill 會把這個值加入 backlog manifest。例如：
-
-```json
-{ "cycleId": "2026-08-28-P14D" }
-```
-
-使用已安裝的 skill，從需求建立 backlog。在 Claude Code 或 Cursor 中使用：
+看板是 terminal UI，目前使用英文介面。實際畫面如下：
 
 ```text
-/roc-create-tasks Add team invitations
+Cycle 2026-W35 · 4 tasks · 8420/12000 tokens
+
+Ready (1)                   │ In progress (1)             │ Attention (1)               │ Done (1)
+─────────────────────────── │ ─────────────────────────── │ ─────────────────────────── │ ───────────────────────────
+  email  Add email login    │ › ● api  Build auth API     │   tests  Fix auth tests     │   collapsed
+  Status: ready             │   Status: implementing      │   Status: needs_input       │
+  Phase: ready              │   Phase: implement          │   Phase: needs_input        │
+                            │                             │   Blocked: api              │
+
+↑↓ select · Space peek · Enter details · d Done · ? help · q quit
 ```
 
-在 Codex 中使用：
+選取任務後，你可以查看問題、目前階段、使用中的 model、重試次數、token
+用量、相依任務和驗收條件。按 `Space` 快速預覽，按 `Enter` 查看完整資料，
+按 `r` 更新畫面。
 
-```text
-$roc-create-tasks Add team invitations
-```
+看板只供查看。打開看板不會啟動 scheduler，也不會改動任務。
+執行 `npx roc-it@latest task board --all` 可以包括舊 cycle 的任務。
+較短的 `npx roc-it@latest tui` 指令會打開同一個看板。
 
-這個 skill 會使用 `grilling` 釐清需求、預覽完整任務清單和相依關係、等待你的
-明確批准，然後把 JSON backlog 儲存在 `.agile/backlog` 並匯入 Roc。
-
-當你要求再次審查同一個 GitHub pull request 時，已安裝的
-`pr-review-to-closure` skill 會保留穩定的 finding ID，並把新 head 與上次審查
-結果核對。它只會在必要檢查通過後提供 merge 判斷。一般審查不會留言、核准、
-commit、push 或 merge，除非你明確要求該項操作。
-
-### 匯入已核准的 GitHub Issues
-
-在 Git repository 內執行 `npx roc-it@latest task import-github`，即可匯入帶有
-固定 `roc:ready` label 的 open Issues。Roc 會透過 `gh` 找出目前的 GitHub
-repository；此指令不提供 repository 或 label 覆寫選項。
-
-每個合資格 Issue 的內容必須依以下次序各自包含一次二級標題。清單段落必須使用
-連字號項目。
-
-```markdown
-## Problem
-
-需要處理這項工作的原因。
-
-## Desired outcome
-
-完成後應達到的結果。
-
-## Scope
-
-- 包含的工作
-
-## Non-goals
-
-- None
-
-## Acceptance criteria
-
-- 可觀察的完成條件
-
-## Validation
-
-- 驗證指令或檢查
-```
-
-Issue `#42` 會成為目前 Agile Cycle 內的 `github-42` 任務。匯入是單向的：
-之後再次執行時會直接跳過同一 ID，不會重新解析或更新已儲存的任務。新任務會
-立即成為已核准的 ready 任務。`tokenCeiling` 預設為 `12000`，只作規劃估算；
-Roc 不會在到達這個數值時停止執行。
-
-全域安裝也會提供相容別名 `agile`，因此 `agile task import-github` 會執行
-相同指令。
-
-查看產生的任務：
-
-```bash
-npx roc-it@latest task list
-```
-
-使用 Codex 執行 backlog：
-
-```bash
-npx roc-it@latest scheduler run --base-branch main
-```
-
-也可以使用 ZCode（Z.ai 桌面應用程式的 headless `app-server`）執行。這個
-backend 屬實驗性質，並受閘門保護，詳見下文：
-
-請在目標專案的目錄內執行（沒有 `--repo` 選項；Roc 會從目前目錄解析
-專案）：
-
-```bash
-cd /absolute/path/to/project
-ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --backend zcode
-```
-
-ZCode mode 需要同一部機器上已登入的 Z.ai 桌面應用程式：Roc 會從
-`~/.zcode/v2/config.json` 讀取已啟用的 provider，並透過 `ZCODE_BIN` 啟動
-隨應用程式附帶的 CLI（macOS 上例如
-`/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`）。ZCode CLI 沒有
-公開文件，可能隨應用程式版本變動。
-
-設立閘門是因為 ZCode 沒有協定層級的檔案系統沙箱：無人值守的 yolo session
-可以寫入 task checkout 以外的地方，而停用命令沙箱的要求會自動核准。請只在
-曝露 task checkout 的 OS 沙箱或容器內執行這個 backend，並設定
-`ROC_ZCODE_EXPERIMENTAL=1` 以示知悉。詳情請參閱
-[docs/architecture.md](docs/architecture.md)。
-
-Codex mode 會在 `<project>.agile-checkout` 建立或重用工作資料夾。Roc 不會在
-目前 project 的來源資料夾切換 branch 或建立 commit。
-
-## 運作方式
-
-Roc 使用一個簡單的敏捷循環，讓每個任務依次交給三個專門的 agents：
+## 任務怎樣執行
 
 ```mermaid
 flowchart LR
-    B[Ready backlog] --> S[Scout]
-    S --> I[Implement]
-    I --> R[Review]
-    R -->|Accepted| P[Posthook 和 pull request]
+    B[Ready] --> S[Scout 準備計劃]
+    S --> I[Implement 編寫程式並建立 commit]
+    I --> R[Review 檢查 commit]
+    R -->|接受| P[Posthook 和 pull request]
     P --> D[Done]
-    R -->|Changes needed| F[Draft follow-up]
-    F -->|Approved| B[Ready backlog]
+    R -->|拒絕| F[草稿 follow-up]
 ```
 
-- **Scout：**了解任務、檢查程式碼，並準備實作計劃。
-- **Implement：**在獨立工作資料夾編寫程式。Roc 的 trusted Harness 會驗證
-  結果並儲存為 commit。
-- **Review：**獨立檢查該 commit，接受結果，或建立一個包含清楚意見、尚未
-  核准的草稿 follow-up 任務。
+每個任務都有自己的 branch，全部放在專用 checkout。Review 只會收到
+Implement 建立的 commit，而且不能修改 working tree。
 
-當 Review 接受 commit 後，Roc 會先執行已信任的 posthook、驗證完全相同而且乾淨的
-Implement commit，然後 push `agile/<task-id>` 並建立或更新一個 pull request，最後才將
-任務標記為 done。PR 內容會包括任務標題、validation 指令、已報告的風險和限制。
+Review 接受結果後，Roc 會執行已信任的 posthook，並確認 Implement commit
+是乾淨的。之後它會 push `agile/<task-id>`，再建立或更新一個 pull request。
+發佈失敗會令任務進入 `needs_replan`，本機 commit 則會保留作恢復之用。
 
-### Pull request 發佈
+`--base-branch` 指定 pull request 的 GitHub 目標 branch。如果任務 branch
+需要從某個本機 commit 開始，另行使用 `--base`。
 
-開始實際 scheduler 前，請先以 `gh auth login` 登入 GitHub CLI，並確認 token 可以查看
-repository 和建立 pull request。必須用 `--base-branch` 明確指定 GitHub 的目標 branch；它
-是像 `main` 的遠端 branch 名稱，不可以是 `HEAD` 或 `origin/main` 這類本機 revision。
-`--base` 仍然用來選擇建立任務 branch 的本機 commit。
+Roc 會記錄任務狀態、執行次數、事件、model 選擇和 token 用量。Token target
+只用作規劃估算。Agent 用量到達 target 時，Roc 不會強制停止。
 
-Roc 不會為同一個任務 branch 建立第二個 PR。重新啟動時，它會先找現有 PR：open PR 會以
-已驗證 commit 更新後完成；已 merged 的 PR 則無需再次 push 就會完成。posthook、push、
-authentication、建立 PR 失敗，或 PR 已關閉但沒有 merge 時，任務會移至 `needs_replan`，
-而本機 Implement commit 會保留作恢復之用。
+## 實驗性 ZCode backend
 
-Roc 每次只處理一個小任務。當 Review 要求修改時，Roc 會把意見送到一個尚未
-核准的草稿 follow-up。只有獲得批准後，它才會回到 ready backlog。Roc 會儲存
-進度，讓流程在重新啟動後繼續。
+Roc 預設使用 Codex。它也可以使用 Z.ai 桌面應用程式的 headless ZCode server：
 
-## 里程碑
+```bash
+cd /absolute/path/to/project
+ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --base-branch main --backend zcode
+```
 
-Roc 正在逐步成長。
+ZCode 需要同一部電腦上已登入的 Z.ai 桌面應用程式。Roc 會從
+`~/.zcode/v2/config.json` 讀取已啟用的 provider，再透過 `ZCODE_BIN` 啟動
+應用程式附帶的 CLI。該 CLI 沒有公開文件，日後版本可能會改變。
 
-### 產品
+ZCode 沒有協定層級的檔案系統 sandbox。無人看管的 session 可以寫入 task
+checkout 以外的位置，而且停用 command sandbox 的要求會自動獲准。只應在
+僅開放 task checkout 的 OS sandbox 或 container 內使用這個 backend。
+設定 `ROC_ZCODE_EXPERIMENTAL=1` 表示你接受這項風險。
 
-- [x] **GitHub Issues backlog** — 把已核准的 GitHub Issues 加入 Roc 的
-  ready backlog。
-- [ ] **可見的任務看板** — 在 terminal UI 查看任務進度。
-- [ ] **平行執行任務** — 同時執行互不依賴的任務。
-- [ ] **遠端核准** — 遠端檢查並核准等待中的工作。
-- [ ] **通知** — 在工作完成、失敗或需要核准時收到更新。
+## 其他加入任務的方法
 
-### Agent 支援
+匯入 Roc backlog JSON 檔案：
 
-- [x] **OpenAI Codex** — 現已支援。
-- [ ] **Pi agents** — 使用 Pi 執行 Roc 任務。
-- [ ] **Claude Code** — 使用 Claude Code 執行 Roc 任務。
-- [ ] **Cursor** — 使用 Cursor agents 執行 Roc 任務。
+```bash
+npx roc-it@latest task import .agile/backlog/my-backlog.json
+```
 
-## 指令
+或者匯入帶有 `roc:ready` label 的 open GitHub Issues：
 
-內建的 `npx roc-it@latest help` 會顯示公開指令樹：
+```bash
+npx roc-it@latest task import-github
+```
+
+GitHub 匯入是單向操作。Roc 匯入 Issue ID 後會跳過同一個 Issue，
+所以日後修改 Issue 不會更新已儲存的任務。
+
+## 重複審查 pull request
+
+再次審查 pull request 時，可以要求 agent 使用已安裝的
+`pr-review-to-closure` skill。它會保留固定的 finding ID、把新 head 與上次
+審查結果比較，並在必要檢查通過後提供 merge 判斷。除非你明確要求，這個
+skill 不會留言、批准、commit、push 或 merge。
+
+## 常用指令
 
 ```text
-開始使用
-npx roc-it@latest onboard [--global]
-
-管理週期
-npx roc-it@latest cycle current
-
-規劃工作
-npx roc-it@latest task import FILE
-npx roc-it@latest task import-github
-npx roc-it@latest task list
-npx roc-it@latest task board [--all]
-npx roc-it@latest tui
-npx roc-it@latest task hook trust <task-id> <prehook|posthook>
-npx roc-it@latest tokens [--no-color]
-
-執行工作
-npx roc-it@latest scheduler run [--base REF] [--base-branch BRANCH] [--backend <name>]
-npx roc-it@latest scheduler inspect
-
-取得說明
-npx roc-it@latest help
+npx roc-it@latest onboard                 在目前專案設定 Roc
+npx roc-it@latest cycle current           顯示目前 Agile cycle
+npx roc-it@latest task list               列出已儲存的任務
+npx roc-it@latest task board [--all]      打開唯讀看板
+npx roc-it@latest tui                     打開唯讀看板
+npx roc-it@latest scheduler run --base-branch BRANCH [--base REF] [--backend <name>]
+npx roc-it@latest scheduler inspect       查看 scheduler 狀態
+npx roc-it@latest tokens [--no-color]     顯示 token 用量
+npx roc-it@latest help                    顯示所有指令
 ```
 
-## 參與貢獻
+如果想使用較短的指令，可以全域安裝 `roc-it`：
 
-開發與測試說明請參閱 [CONTRIBUTING.md](CONTRIBUTING.md)。
+```bash
+npm install -g roc-it@latest
+roc-it help
+```
 
-## 參考項目
+## 目前限制
 
-Roc 參考了以下專案的做法，但不包含它們的程式碼：
+Roc 現時支援 Codex 和實驗性 ZCode backend。它仍未支援平行執行任務、
+遠端批准或通知。Pi、Claude Code 和 Cursor backend 仍在計劃中。
 
-| 專案 | Roc 參考的部分 |
-| --- | --- |
-| [OpenAI Codex](https://github.com/openai/codex) | 執行 agents、追蹤 token 用量，以及保持獨立 Review |
-| [OpenAI Symphony](https://github.com/openai/symphony) | 選擇任務、使用獨立工作資料夾，以及顯示執行進度 |
-| [Pi](https://github.com/earendil-works/pi) | 儲存 session branches、縮短 context，以及執行其他工具 |
-| [Beads](https://github.com/gastownhall/beads) | 尋找 ready 任務、連結任務，以及建立 follow-up 工作 |
-| [Gas Town](https://github.com/gastownhall/gastown) | Agent 角色、卡住的任務、review 步驟，以及 terminal 畫面構思 |
-| [OpenSpec](https://github.com/Fission-AI/OpenSpec) | 清楚的計劃、設計和任務清單 |
+## 詳細資料
 
-完整比較和資料來源請參閱
-[專案研究](docs/research/agent-agile-orchestration-landscape.md)。
+- [系統架構說明](docs/architecture.md)
+- [互動式系統架構圖](output/archify/roc-system-architecture.html)
+- [參與開發](CONTRIBUTING.md)
+- [研究和專案比較](docs/research/agent-agile-orchestration-landscape.md)
 
 ## 授權條款
 
-Roc 使用 [Apache License 2.0](LICENSE)。只要遵守授權條款，你可以使用、修改及
-分享 Roc，也可以用於商業用途。
+Roc 使用 [Apache License 2.0](LICENSE)。
