@@ -6,12 +6,15 @@ import type { CodexClientApi } from "../../../src/agents/codex/client";
 import { createCodexHarness } from "../../../src/agents/codex/harness";
 import { createTaskBranchManager } from "../../../src/workspace/task-branch";
 import { git } from "../../helpers/git";
-import type { ConformanceRole } from "../conformance";
+import type { ConformanceRole, ScriptedUsage } from "../conformance";
 import {
-  type ConformanceFixture,
-  defineBackendConformance,
+  type AdapterConformanceFixture,
+  defineAdapterConformance,
+  defineNormalizedConformance,
+  type MintCursorInput,
+  normalizedUsage,
   type ProtocolDriver,
-  type ScriptedUsage,
+  roleOutputs,
 } from "../conformance";
 
 type ServerMessage = Awaited<ReturnType<CodexClientApi["nextServerMessage"]>>;
@@ -20,28 +23,6 @@ type QueuedMessage = {
   message: ServerMessage;
   sideEffect?: () => Promise<void>;
 };
-
-const roleOutputs = {
-  scout: {
-    kind: "scout",
-    summary: "The seam is AgentHarness",
-    files: ["test/agents/conformance.ts"],
-    tests: ["test/agents/conformance.ts"],
-    risks: ["Protocol shapes drift"],
-  },
-  implement: {
-    kind: "implement",
-    validation: ["bun test test/agents"],
-    risks: [],
-    limitations: [],
-  },
-  review: {
-    kind: "review",
-    decision: "accepted",
-    findings: [],
-    remainingGaps: [],
-  },
-} as const;
 
 class ScriptedCodexClient implements CodexClientApi {
   readonly requests: { method: string; params: unknown }[] = [];
@@ -139,15 +120,6 @@ class ScriptedCodexClient implements CodexClientApi {
   }
 
   async close(): Promise<void> {}
-}
-
-function normalizedUsage(usage: ScriptedUsage | undefined) {
-  return {
-    inputTokens: usage?.inputTokens ?? 0,
-    cachedInputTokens: usage?.cachedInputTokens ?? 0,
-    outputTokens: usage?.outputTokens ?? 0,
-    reasoningOutputTokens: usage?.reasoningTokens ?? 0,
-  };
 }
 
 class CodexProtocolDriver implements ProtocolDriver {
@@ -296,17 +268,14 @@ class CodexProtocolDriver implements ProtocolDriver {
     });
   }
 
-  mintCursor(input: {
-    ref: string;
-    nextSequence?: number;
-    usage?: ScriptedUsage;
-    outputDelivered?: boolean;
-  }): string {
+  mintCursor(input: MintCursorInput): string {
     const [threadId, turnId] = input.ref.split(":");
-    if (input.outputDelivered === true) {
-      // Reconciling a delivered cursor still recovers and validates the
-      // authoritative history; script a completed turn carrying the
-      // structured output for this ref.
+    if (
+      input.outputDelivered === true ||
+      input.recoveredCompletedTurn === true
+    ) {
+      // Reconciling still recovers and validates the authoritative history;
+      // script a completed turn carrying the structured output for this ref.
       this.client.enqueueThreadRead({
         thread: {
           id: threadId,
@@ -353,9 +322,27 @@ class CodexProtocolDriver implements ProtocolDriver {
       (request) => request.method === "turn/interrupt",
     ).length;
   }
+
+  cursorNextSequence(cursor: string): number {
+    const parsed = JSON.parse(cursor) as { nextSequence?: unknown };
+    if (typeof parsed.nextSequence !== "number") {
+      throw new Error(`codex cursor has no nextSequence: ${cursor}`);
+    }
+    return parsed.nextSequence;
+  }
+
+  cursorUsage(cursor: string) {
+    const parsed = JSON.parse(cursor) as {
+      usage?: ReturnType<typeof normalizedUsage>;
+    };
+    if (parsed.usage === undefined) {
+      throw new Error(`codex cursor has no usage: ${cursor}`);
+    }
+    return parsed.usage;
+  }
 }
 
-async function createFixture(): Promise<ConformanceFixture> {
+async function createFixture(): Promise<AdapterConformanceFixture> {
   const root = await realpath(
     await mkdtemp(join(tmpdir(), "agile-codex-conformance-")),
   );
@@ -387,11 +374,10 @@ async function createFixture(): Promise<ConformanceFixture> {
   };
 }
 
-const cases = defineBackendConformance({
-  backendName: "codex",
-  reconcileInFlight: "history",
-  createFixture,
-});
+const cases = [
+  ...defineNormalizedConformance({ createFixture }),
+  ...defineAdapterConformance({ reconcileInFlight: "history", createFixture }),
+];
 
 describe("codex backend conformance", () => {
   for (const group of new Set(cases.map((entry) => entry.group))) {

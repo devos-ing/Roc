@@ -12,11 +12,17 @@ import { git } from "../helpers/git";
 /**
  * Backend conformance suite.
  *
- * Every backend (codex, zcode, ...) runs these cases against its AgentHarness.
- * The suite asserts the load-bearing invariants the scheduler depends on; it
- * deliberately does not compare protocol shapes. All protocol vocabulary
- * (method names, params, cursor identity fields) stays inside each backend's
- * ProtocolDriver implementation. The one declared axis is
+ * Split in two halves. `defineNormalizedConformance` holds the
+ * normalized-event invariants every backend runs — including the in-memory
+ * fake harness (see docs/research/fake-codex-harness-options.md, "Fake 與
+ * adapter 共用同一 normalized-event conformance suite"). It asserts the
+ * event stream the scheduler depends on and deliberately does not compare
+ * protocol shapes. `defineAdapterConformance` adds the cases that observe the
+ * real adapter machinery: protocol-level interaction handling, reconcile
+ * recovery, and workspace safety against real git checkouts. All protocol
+ * vocabulary (method names, params, cursor encoding) stays inside each
+ * backend's ProtocolDriver implementation — cursors are opaque to the suite;
+ * only the driver may decode them. The one declared axis is
  * `reconcileInFlight`: whether an in-flight attempt can be recovered from
  * persisted history ("history") or only reported as an orphan ("orphan").
  */
@@ -58,37 +64,62 @@ export interface ProtocolDriver {
   /** Queue a notification that belongs to a foreign turn or thread. */
   scriptForeignTurnNotification(ref: string): void;
   /** Mint a backend-native cursor for `ref`. */
-  mintCursor(input: {
-    ref: string;
-    nextSequence?: number;
-    usage?: ScriptedUsage;
-    outputDelivered?: boolean;
-  }): string;
+  mintCursor(input: MintCursorInput): string;
   /** Normalized record of every role start the backend dispatched. */
   roleStartRequests(): RoleStartObservation[];
   /** Whether the backend rejected the server interaction request it received. */
   interactionRejections(): number;
   /** Number of cancellation requests sent (interrupt/stop). */
   interruptionRequestCount(): number;
+  /** Decodes the next sequence an event delivered after `cursor` will carry. */
+  cursorNextSequence(cursor: string): number;
+  /** Decodes the cumulative usage persisted in `cursor`. */
+  cursorUsage(cursor: string): NormalizedUsageTotals;
 }
 
-export interface ConformanceFixture {
+export type MintCursorInput = {
+  ref: string;
+  nextSequence?: number;
+  usage?: ScriptedUsage;
+  outputDelivered?: boolean;
+  /**
+   * Script an authoritative completed turn for `ref` in persisted history, so
+   * a history-recovery reconcile can reconstruct the outcome.
+   */
+  recoveredCompletedTurn?: boolean;
+};
+
+export type NormalizedUsageTotals = {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+};
+
+export interface NormalizedConformanceFixture {
   readonly harness: AgentHarness;
-  readonly branches: TaskBranchManager;
   readonly driver: ProtocolDriver;
+  dispose(): Promise<void>;
+}
+
+export interface AdapterConformanceFixture
+  extends NormalizedConformanceFixture {
+  readonly branches: TaskBranchManager;
   readonly sourceRoot: string;
   readonly workspace: {
     readonly path: string;
     readonly branch: string;
     readonly baseCommit: string;
   };
-  dispose(): Promise<void>;
 }
 
-export interface BackendConformanceConfig {
-  readonly backendName: string;
+export interface NormalizedConformanceConfig {
+  createFixture(): Promise<NormalizedConformanceFixture>;
+}
+
+export interface AdapterConformanceConfig {
   readonly reconcileInFlight: "history" | "orphan";
-  createFixture(): Promise<ConformanceFixture>;
+  createFixture(): Promise<AdapterConformanceFixture>;
 }
 
 export type ConformanceCase = {
@@ -119,15 +150,36 @@ const ticket = {
   status: "scouting" as const,
 };
 
-const scoutOutput = {
-  kind: "scout" as const,
-  summary: "The seam is AgentHarness",
-  files: ["test/agents/conformance.ts"],
-  tests: ["test/agents/conformance.ts"],
-  risks: ["Protocol shapes drift"],
+/**
+ * Structured outputs the scripted turns deliver for each role. Shared by the
+ * suite's request builder and every ProtocolDriver so all backends script
+ * identical payloads; drivers only encode them into their own protocol.
+ */
+export const roleOutputs = {
+  scout: {
+    kind: "scout" as const,
+    summary: "The seam is AgentHarness",
+    files: ["test/agents/conformance.ts"],
+    tests: ["test/agents/conformance.ts"],
+    risks: ["Protocol shapes drift"],
+  },
+  implement: {
+    kind: "implement" as const,
+    validation: ["bun test test/agents"],
+    risks: [],
+    limitations: [],
+  },
+  review: {
+    kind: "review" as const,
+    decision: "accepted" as const,
+    findings: [],
+    remainingGaps: [],
+  },
 };
 
-const roleAttempts: Record<
+const scoutOutput = roleOutputs.scout;
+
+export const roleAttempts: Record<
   ConformanceRole,
   Pick<HarnessStepRequest["attempt"], "modelProfile" | "model" | "effort">
 > = {
@@ -143,6 +195,18 @@ const roleAttempts: Record<
     effort: "medium",
   },
 };
+
+/** Normalizes scripted usage into the totals shape cursors and deltas use. */
+export function normalizedUsage(
+  usage: ScriptedUsage | undefined,
+): NormalizedUsageTotals {
+  return {
+    inputTokens: usage?.inputTokens ?? 0,
+    cachedInputTokens: usage?.cachedInputTokens ?? 0,
+    outputTokens: usage?.outputTokens ?? 0,
+    reasoningOutputTokens: usage?.reasoningTokens ?? 0,
+  };
+}
 
 function conformanceRequest(
   role: ConformanceRole,
@@ -243,21 +307,12 @@ function assertTerminal(events: HarnessEvent[]): void {
   );
 }
 
-function cursorNextSequence(cursor: string): number {
-  const parsed = JSON.parse(cursor) as { nextSequence?: unknown };
-  assert.ok(
-    typeof parsed.nextSequence === "number",
-    `cursor has no nextSequence: ${cursor}`,
-  );
-  return parsed.nextSequence;
-}
-
 async function sourceHead(root: string): Promise<string> {
   return git(["rev-parse", "HEAD"], root);
 }
 
 async function assertSourceUntouched(
-  fixture: ConformanceFixture,
+  fixture: AdapterConformanceFixture,
   headBefore: string,
 ): Promise<void> {
   assert.equal(
@@ -272,11 +327,11 @@ async function assertSourceUntouched(
   );
 }
 
-function createCase(
-  config: BackendConformanceConfig,
+function createCase<F extends NormalizedConformanceFixture>(
+  config: { createFixture(): Promise<F> },
   group: string,
   name: string,
-  test: (fixture: ConformanceFixture) => Promise<void>,
+  test: (fixture: F) => Promise<void>,
 ): ConformanceCase {
   return {
     group,
@@ -299,8 +354,8 @@ const scriptedUsage: ScriptedUsage = {
   reasoningTokens: 40,
 };
 
-export function defineBackendConformance(
-  config: BackendConformanceConfig,
+export function defineNormalizedConformance(
+  config: NormalizedConformanceConfig,
 ): readonly ConformanceCase[] {
   const cases: ConformanceCase[] = [];
 
@@ -329,7 +384,7 @@ export function defineBackendConformance(
           const cursor = cursors[index];
           assert.ok(cursor !== undefined, "missing cursor for an event");
           assert.equal(
-            cursorNextSequence(cursor),
+            fixture.driver.cursorNextSequence(cursor),
             event.sequence + 1,
             `cursor after sequence ${event.sequence} does not chain`,
           );
@@ -352,10 +407,14 @@ export function defineBackendConformance(
           conformanceRequest("scout", { attemptId: "attempt-drain-1" }),
         );
         assertTerminal(first.events);
+        const secondUsage: ScriptedUsage = {
+          inputTokens: 2400,
+          cachedInputTokens: 150,
+          outputTokens: 60,
+          reasoningTokens: 25,
+        };
         fixture.driver.scriptForeignTurnNotification(firstRef);
-        fixture.driver.scriptSuccessfulTurn("scout", {
-          usage: scriptedUsage,
-        });
+        fixture.driver.scriptSuccessfulTurn("scout", { usage: secondUsage });
         const second = await collect(
           fixture.harness,
           conformanceRequest("scout", { attemptId: "attempt-drain-2" }),
@@ -367,6 +426,36 @@ export function defineBackendConformance(
         for (const [index, event] of second.events.entries()) {
           assert.equal(event.sequence, index + 1);
         }
+        // The second attempt must be fully isolated from the first turn and
+        // its late notification: its usage totals are exactly the second
+        // scripted turn's, with nothing leaking in from the stale ref.
+        const deltas = second.events.filter(
+          (
+            event,
+          ): event is Extract<HarnessEvent, { type: "attempt.usage_delta" }> =>
+            event.type === "attempt.usage_delta",
+        );
+        const sum = (
+          pick: (
+            delta: Extract<HarnessEvent, { type: "attempt.usage_delta" }>,
+          ) => number,
+        ) => deltas.reduce((total, delta) => total + pick(delta), 0);
+        assert.equal(
+          sum((delta) => delta.inputTokens),
+          2400,
+        );
+        assert.equal(
+          sum((delta) => delta.cachedInputTokens),
+          150,
+        );
+        assert.equal(
+          sum((delta) => delta.outputTokens),
+          60,
+        );
+        assert.equal(
+          sum((delta) => delta.reasoningOutputTokens),
+          25,
+        );
       },
     ),
   );
@@ -455,6 +544,103 @@ export function defineBackendConformance(
       },
     ),
   );
+
+  // ---- attribution (normalized) ------------------------------------------
+
+  cases.push(
+    createCase(
+      config,
+      "attribution",
+      "usage deltas sum to the scripted totals and the final cursor",
+      async (fixture) => {
+        fixture.driver.scriptSuccessfulTurn("scout", { usage: scriptedUsage });
+        const { events, cursors } = await collect(
+          fixture.harness,
+          conformanceRequest("scout", { attemptId: "attempt-usage" }),
+        );
+        assertTerminal(events);
+        const deltas = events.filter(
+          (
+            event,
+          ): event is Extract<HarnessEvent, { type: "attempt.usage_delta" }> =>
+            event.type === "attempt.usage_delta",
+        );
+        assert.ok(deltas.length > 0, "expected at least one usage delta");
+        const sum = (
+          pick: (
+            delta: Extract<HarnessEvent, { type: "attempt.usage_delta" }>,
+          ) => number,
+        ) => deltas.reduce((total, delta) => total + pick(delta), 0);
+        assert.equal(
+          sum((delta) => delta.inputTokens),
+          scriptedUsage.inputTokens,
+        );
+        assert.equal(
+          sum((delta) => delta.cachedInputTokens),
+          scriptedUsage.cachedInputTokens ?? 0,
+        );
+        assert.equal(
+          sum((delta) => delta.outputTokens),
+          scriptedUsage.outputTokens ?? 0,
+        );
+        assert.equal(
+          sum((delta) => delta.reasoningOutputTokens),
+          scriptedUsage.reasoningTokens ?? 0,
+        );
+        const finalCursorString = cursors.at(-1);
+        assert.ok(finalCursorString !== undefined);
+        const finalUsage = fixture.driver.cursorUsage(finalCursorString);
+        assert.equal(finalUsage.inputTokens, scriptedUsage.inputTokens);
+        assert.equal(
+          finalUsage.cachedInputTokens,
+          scriptedUsage.cachedInputTokens ?? 0,
+        );
+        assert.equal(finalUsage.outputTokens, scriptedUsage.outputTokens ?? 0);
+        assert.equal(
+          finalUsage.reasoningOutputTokens,
+          scriptedUsage.reasoningTokens ?? 0,
+        );
+      },
+    ),
+  );
+
+  cases.push(
+    createCase(
+      config,
+      "attribution",
+      "a turn that reports no usage emits no usage delta",
+      async (fixture) => {
+        fixture.driver.scriptSuccessfulTurn("scout", {
+          usage: {
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningTokens: 0,
+          },
+        });
+        const { events } = await collect(
+          fixture.harness,
+          conformanceRequest("scout", { attemptId: "attempt-zero-usage" }),
+        );
+        assertTerminal(events);
+        assert.ok(
+          !events.some((event) => event.type === "attempt.usage_delta"),
+          "a zero-usage turn must not emit usage deltas",
+        );
+        const types = events.map((event) => event.type);
+        assert.ok(types.includes("attempt.output"));
+        assert.equal(types.at(-1), "attempt.completed");
+      },
+    ),
+  );
+
+  return cases;
+}
+
+export function defineAdapterConformance(
+  config: AdapterConformanceConfig,
+): readonly ConformanceCase[] {
+  const cases: ConformanceCase[] = [];
 
   // ---- approval becomes blocked_policy --------------------------------------
 
@@ -618,6 +804,65 @@ export function defineBackendConformance(
             backendCursor: cursor,
           });
           assert.equal(JSON.stringify(repeat), JSON.stringify(reconciled));
+        },
+      ),
+    );
+  }
+
+  if (config.reconcileInFlight === "history") {
+    cases.push(
+      createCase(
+        config,
+        "cancel and reconcile",
+        "reconciling a persisted in-flight cursor recovers the authoritative completed history",
+        async (fixture) => {
+          const request = conformanceRequest("scout", {
+            attemptId: "attempt-reconcile-inflight",
+            mode: "reconcile",
+          });
+          const cursor = fixture.driver.mintCursor({
+            ref: "conformance-inflight:conformance-inflight",
+            nextSequence: 2,
+            usage: { inputTokens: 900, outputTokens: 70, reasoningTokens: 30 },
+            recoveredCompletedTurn: true,
+          });
+          const output = await fixture.harness.step({
+            ...request,
+            backendCursor: cursor,
+          });
+          assert.equal(output.kind, "event");
+          if (output.kind !== "event") throw new Error("unreachable");
+          assert.equal(output.event.type, "attempt.output");
+          assert.equal(output.event.sequence, 2);
+          assert.equal(output.event.output.kind, "scout");
+          // Re-reconciling the same persisted in-flight cursor replays the
+          // same normalized recovery, byte for byte.
+          const repeatOutput = await fixture.harness.step({
+            ...request,
+            backendCursor: cursor,
+          });
+          assert.equal(
+            JSON.stringify(repeatOutput),
+            JSON.stringify(output),
+            "repeated in-flight reconcile is not deterministic",
+          );
+          const completed = await fixture.harness.step({
+            ...request,
+            backendCursor: output.nextCursor,
+          });
+          assert.equal(completed.kind, "event");
+          if (completed.kind !== "event") throw new Error("unreachable");
+          assert.equal(completed.event.type, "attempt.completed");
+          assert.equal(completed.event.sequence, 3);
+          const repeatCompleted = await fixture.harness.step({
+            ...request,
+            backendCursor: output.nextCursor,
+          });
+          assert.equal(
+            JSON.stringify(repeatCompleted),
+            JSON.stringify(completed),
+            "repeated completion reconcile is not deterministic",
+          );
         },
       ),
     );
@@ -806,99 +1051,6 @@ export function defineBackendConformance(
             `${role} dispatched the wrong effort`,
           );
         }
-      },
-    ),
-  );
-
-  cases.push(
-    createCase(
-      config,
-      "attribution",
-      "usage deltas sum to the scripted totals and the final cursor",
-      async (fixture) => {
-        fixture.driver.scriptSuccessfulTurn("scout", { usage: scriptedUsage });
-        const { events, cursors } = await collect(
-          fixture.harness,
-          conformanceRequest("scout", { attemptId: "attempt-usage" }),
-        );
-        assertTerminal(events);
-        const deltas = events.filter(
-          (
-            event,
-          ): event is Extract<HarnessEvent, { type: "attempt.usage_delta" }> =>
-            event.type === "attempt.usage_delta",
-        );
-        assert.ok(deltas.length > 0, "expected at least one usage delta");
-        const sum = (
-          pick: (
-            delta: Extract<HarnessEvent, { type: "attempt.usage_delta" }>,
-          ) => number,
-        ) => deltas.reduce((total, delta) => total + pick(delta), 0);
-        assert.equal(
-          sum((delta) => delta.inputTokens),
-          scriptedUsage.inputTokens,
-        );
-        assert.equal(
-          sum((delta) => delta.cachedInputTokens),
-          scriptedUsage.cachedInputTokens ?? 0,
-        );
-        assert.equal(
-          sum((delta) => delta.outputTokens),
-          scriptedUsage.outputTokens ?? 0,
-        );
-        assert.equal(
-          sum((delta) => delta.reasoningOutputTokens),
-          scriptedUsage.reasoningTokens ?? 0,
-        );
-        const finalCursorString = cursors.at(-1);
-        assert.ok(finalCursorString !== undefined);
-        const finalCursor = JSON.parse(finalCursorString) as {
-          usage?: Record<string, number>;
-        };
-        assert.ok(finalCursor.usage !== undefined);
-        assert.equal(finalCursor.usage.inputTokens, scriptedUsage.inputTokens);
-        assert.equal(
-          finalCursor.usage.cachedInputTokens,
-          scriptedUsage.cachedInputTokens ?? 0,
-        );
-        assert.equal(
-          finalCursor.usage.outputTokens,
-          scriptedUsage.outputTokens ?? 0,
-        );
-        assert.equal(
-          finalCursor.usage.reasoningOutputTokens,
-          scriptedUsage.reasoningTokens ?? 0,
-        );
-      },
-    ),
-  );
-
-  cases.push(
-    createCase(
-      config,
-      "attribution",
-      "a turn that reports no usage emits no usage delta",
-      async (fixture) => {
-        fixture.driver.scriptSuccessfulTurn("scout", {
-          usage: {
-            inputTokens: 0,
-            cachedInputTokens: 0,
-            outputTokens: 0,
-            reasoningTokens: 0,
-          },
-        });
-        const { events } = await collect(
-          fixture.harness,
-          conformanceRequest("scout", { attemptId: "attempt-zero-usage" }),
-        );
-        assertTerminal(events);
-        assert.ok(
-          !events.some((event) => event.type === "attempt.usage_delta"),
-          "a zero-usage turn must not emit usage deltas",
-        );
-        const types = events.map((event) => event.type);
-        assert.ok(types.includes("attempt.output"));
-        assert.equal(types.at(-1), "attempt.completed");
       },
     ),
   );

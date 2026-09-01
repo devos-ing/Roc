@@ -8,9 +8,13 @@ import { createTaskBranchManager } from "../../../src/workspace/task-branch";
 import { git } from "../../helpers/git";
 import type { ConformanceRole } from "../conformance";
 import {
-  type ConformanceFixture,
-  defineBackendConformance,
+  type AdapterConformanceFixture,
+  defineAdapterConformance,
+  defineNormalizedConformance,
+  type MintCursorInput,
+  normalizedUsage,
   type ProtocolDriver,
+  roleOutputs,
   type ScriptedUsage,
 } from "../conformance";
 
@@ -20,28 +24,6 @@ type QueuedMessage = {
   message: ServerMessage;
   sideEffect?: () => Promise<void>;
 };
-
-const outputs = {
-  scout: {
-    kind: "scout",
-    summary: "The seam is AgentHarness",
-    files: ["test/agents/conformance.ts"],
-    tests: ["test/agents/conformance.ts"],
-    risks: ["Protocol shapes drift"],
-  },
-  implement: {
-    kind: "implement",
-    validation: ["bun test test/agents"],
-    risks: [],
-    limitations: [],
-  },
-  review: {
-    kind: "review",
-    decision: "accepted",
-    findings: [],
-    remainingGaps: [],
-  },
-} as const;
 
 class ScriptedZcodeClient implements ZcodeClientApi {
   readonly sessionModel = Object.freeze({
@@ -130,15 +112,6 @@ class ScriptedZcodeClient implements ZcodeClientApi {
   async close(): Promise<void> {}
 }
 
-function normalizedUsage(usage: ScriptedUsage | undefined) {
-  return {
-    inputTokens: usage?.inputTokens ?? 0,
-    cachedInputTokens: usage?.cachedInputTokens ?? 0,
-    outputTokens: usage?.outputTokens ?? 0,
-    reasoningOutputTokens: usage?.reasoningTokens ?? 0,
-  };
-}
-
 function turnCompleted(
   sessionId: string,
   role: ConformanceRole,
@@ -146,8 +119,8 @@ function turnCompleted(
 ): ServerMessage {
   const output =
     options.invalidOutput === true
-      ? { ...outputs.scout, unexpected: true }
-      : outputs[role];
+      ? { ...roleOutputs.scout, unexpected: true }
+      : roleOutputs[role];
   return {
     method: "session/event",
     params: {
@@ -230,12 +203,7 @@ class ZcodeProtocolDriver implements ProtocolDriver {
     });
   }
 
-  mintCursor(input: {
-    ref: string;
-    nextSequence?: number;
-    usage?: ScriptedUsage;
-    outputDelivered?: boolean;
-  }): string {
+  mintCursor(input: MintCursorInput): string {
     return JSON.stringify({
       version: 1,
       nextSequence: input.nextSequence ?? 2,
@@ -262,9 +230,27 @@ class ZcodeProtocolDriver implements ProtocolDriver {
       (request) => request.method === "session/stop",
     ).length;
   }
+
+  cursorNextSequence(cursor: string): number {
+    const parsed = JSON.parse(cursor) as { nextSequence?: unknown };
+    if (typeof parsed.nextSequence !== "number") {
+      throw new Error(`zcode cursor has no nextSequence: ${cursor}`);
+    }
+    return parsed.nextSequence;
+  }
+
+  cursorUsage(cursor: string) {
+    const parsed = JSON.parse(cursor) as {
+      usage?: ReturnType<typeof normalizedUsage>;
+    };
+    if (parsed.usage === undefined) {
+      throw new Error(`zcode cursor has no usage: ${cursor}`);
+    }
+    return parsed.usage;
+  }
 }
 
-async function createFixture(): Promise<ConformanceFixture> {
+async function createFixture(): Promise<AdapterConformanceFixture> {
   const root = await realpath(
     await mkdtemp(join(tmpdir(), "agile-zcode-conformance-")),
   );
@@ -296,11 +282,10 @@ async function createFixture(): Promise<ConformanceFixture> {
   };
 }
 
-const cases = defineBackendConformance({
-  backendName: "zcode",
-  reconcileInFlight: "orphan",
-  createFixture,
-});
+const cases = [
+  ...defineNormalizedConformance({ createFixture }),
+  ...defineAdapterConformance({ reconcileInFlight: "orphan", createFixture }),
+];
 
 describe("zcode backend conformance", () => {
   for (const group of new Set(cases.map((entry) => entry.group))) {
