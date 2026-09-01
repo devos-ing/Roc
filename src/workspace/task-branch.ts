@@ -466,6 +466,19 @@ export async function createTaskBranchManager(
           `Task branch ${candidate.branch} HEAD is not the exact implementation commit ${commitSha}`,
         );
       }
+      const reviewRef = `refs/agile-review/${candidate.taskId}`;
+      await sourceGit.raw([
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        checkoutPath,
+        `refs/heads/${candidate.branch}:${reviewRef}`,
+      ]);
+      if ((await fullCommit(sourceGit, reviewRef)) !== commitSha) {
+        throw new Error(
+          `Detached Review ref is not the exact implementation commit ${commitSha}`,
+        );
+      }
     },
 
     /** Returns the porcelain status for an active validated task workspace. */
