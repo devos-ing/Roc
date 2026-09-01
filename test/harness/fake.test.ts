@@ -115,6 +115,28 @@ test("delivers scripted events by persisted cursor, including duplicate event ID
   expect(() => fake.assertComplete()).not.toThrow();
 });
 
+test("resets consumed progress when a script is replaced by key", async () => {
+  const fake = createFakeHarness(scenario);
+  await fake.harness.step(request);
+  await fake.harness.step({ ...request, backendCursor: "1" });
+  await fake.harness.step({ ...request, backendCursor: "2" });
+  expect(() => fake.assertComplete()).not.toThrow();
+
+  const original = scenario.attempts[0]!;
+  fake.scriptAttempt({
+    ...original,
+    deliveries: [original.deliveries[0]!, original.deliveries[2]!],
+  });
+
+  expect(() => fake.assertComplete()).toThrow(
+    "Unconsumed fake deliveries for T1:scout:0",
+  );
+
+  await fake.harness.step(request);
+  await fake.harness.step({ ...request, backendCursor: "1" });
+  expect(() => fake.assertComplete()).not.toThrow();
+});
+
 test("binds authored event attempt IDs to the active runtime attempt", async () => {
   const fake = createFakeHarness(scenario);
   const runtimeAttemptId = `attempt-${crypto.randomUUID()}`;
