@@ -31,19 +31,16 @@ Direct entry with `bun src/cli/main.ts ...` remains supported.
 
 To check the packaged skills and the PR review helpers, run:
 
-```bash
-python3 <path-to-quick_validate.py> skills/roc-create-tasks
-python3 <path-to-quick_validate.py> skills/pr-review-to-closure
-python3 -B skills/pr-review-to-closure/scripts/test_evidence.py -v
-python3 -B skills/pr-review-to-closure/scripts/test_ledger.py -v
-```
-
 `quick_validate.py` is provided by the `skill-creator` tooling and is not part
 of this repository, so its path depends on where that tooling is installed.
-Locate it in your agent's skills directory, for example:
+Resolve it once from your agent's skills directory and keep it quoted:
 
 ```bash
-find ~/.codex/skills -name quick_validate.py
+QUICK_VALIDATE="$(find ~/.codex/skills -name quick_validate.py -print -quit)"
+python3 "$QUICK_VALIDATE" skills/roc-create-tasks
+python3 "$QUICK_VALIDATE" skills/pr-review-to-closure
+python3 -B skills/pr-review-to-closure/scripts/test_evidence.py -v
+python3 -B skills/pr-review-to-closure/scripts/test_ledger.py -v
 ```
 
 You can test an import with a temporary strict JSON manifest, then inspect its
