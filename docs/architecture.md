@@ -24,6 +24,7 @@ the public scheduler command.
 CLI -> Scheduler -> AgentHarness -> FakeHarness
                  \-> CodexHarness -> CodexClient -> codex app-server
                  \-> ZcodeHarness -> ZcodeClient -> zcode app-server
+                 \-> PiHarness -> PiClient -> pi --mode rpc
                               \-> TaskBranchManager -> simple-git -> system Git
                  \-> TaskHookService -> Bun argv subprocess
 ```
@@ -97,3 +98,45 @@ owned by the scheduler run, so a mid-attempt crash loses the in-flight turn:
 the repository replays from the last committed cursor and the harness
 reconciles by retrying the attempt from its recorded state rather than
 resuming a dead session.
+
+## Pi backend
+
+The Pi backend (`src/agents/pi/`) drives the documented Pi RPC mode
+(`pi --mode rpc`, npm `@earendil-works/pi-coding-agent`): strict JSONL with
+one JSON object per line — commands are `{type, id?, ...params}` on stdin,
+responses `{id?, type: "response", command, success, data|error}` and
+unwrapped events on stdout. The working directory is process-level state in
+Pi (there is no per-session workspace parameter), so every role attempt
+spawns its own child rooted at the isolated task workspace with deterministic
+startup flags (`--no-extensions --no-skills --no-prompt-templates
+--no-context-files`). One `prompt` is sent per attempt; `agent_settled` is
+the authoritative completion anchor, the last assistant `message_end` before
+it is the turn's final answer, and per-message usage is accumulated so
+session-level compaction stats never reach attempt totals. Extension UI
+requests are the only server-initiated interaction: they are answered with
+`cancelled: true`, the prompt is aborted, and the attempt blocks on policy.
+
+**Safety limits (why the backend is gated).** Pi has no built-in sandbox:
+tools execute with the full process user permissions, so a role turn can
+write anywhere the user can. The task workspace is only the child's working
+directory, not a confinement boundary, and the Review status comparison only
+sees changes inside the task checkout. Until Pi runs inside a real OS sandbox
+or container that exposes only the task checkout, the backend factory refuses
+to start unless `ROC_PI_EXPERIMENTAL=1` acknowledges these limits.
+
+**Model attribution.** A short-lived probe process answers
+`get_available_models` and `get_state`; the probe's effective default model
+becomes the single attributed session model, catalog ids are
+`provider/modelId` pairs, and each attempt re-asserts its routed pair with
+`set_model` plus `set_thinking_level` (Roc efforts map one-to-one onto Pi
+thinking levels). A probe with no resolvable default model fails startup
+with `PI_MODEL_UNRESOLVED` instead of running an unobservable default.
+
+**Recovery.** The Pi session file is an append-only entry tree on disk, and
+the backend cursor persists `{sessionId, sessionFile, entryAnchor}`, where
+the anchor is the `get_entries` leaf id captured when a turn settles. v1 has
+no reattach path: the child process dies with the scheduler run, so
+reconciliation replays from the last committed cursor, completes attempts
+whose `outputDelivered` marker persisted, and retries in-flight turns from
+their tickets. The anchors exist so a future resume can continue a session
+via `get_entries since=entryAnchor`.

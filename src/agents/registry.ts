@@ -1,4 +1,5 @@
 import { startCodexBackend } from "./codex/backend";
+import { startPiBackend } from "./pi/backend";
 import { startZcodeBackend } from "./zcode/backend";
 
 /**
@@ -8,6 +9,7 @@ import { startZcodeBackend } from "./zcode/backend";
 export const backends = {
   codex: startCodexBackend,
   zcode: startZcodeBackend,
+  pi: startPiBackend,
 } as const;
 
 export type RealBackendName = keyof typeof backends;

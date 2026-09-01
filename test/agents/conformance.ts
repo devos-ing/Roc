@@ -179,19 +179,22 @@ export const roleOutputs = {
 
 const scoutOutput = roleOutputs.scout;
 
+// Models are provider-scoped ids (`provider/modelId`) because the Pi backend
+// parses its catalog model that way; the other backends pass the identifier
+// through untouched, so the shared shape is the provider-scoped one.
 export const roleAttempts: Record<
   ConformanceRole,
   Pick<HarnessStepRequest["attempt"], "modelProfile" | "model" | "effort">
 > = {
-  scout: { modelProfile: "luna", model: "conformance-scout", effort: "high" },
+  scout: { modelProfile: "luna", model: "conformance/scout", effort: "high" },
   implement: {
     modelProfile: "terra",
-    model: "conformance-implement",
+    model: "conformance/implement",
     effort: "xhigh",
   },
   review: {
     modelProfile: "sol",
-    model: "conformance-review",
+    model: "conformance/review",
     effort: "medium",
   },
 };
