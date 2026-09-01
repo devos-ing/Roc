@@ -226,7 +226,11 @@ test("wraps colored failed statuses and blockers without splitting ANSI controls
 
   expect(colored).toContain("\u001B[31m");
   expect(colored).toContain("\u001B[33m");
-  expect(colored.replace(/\u001B\[[0-9;]*m/g, "")).not.toContain("\u001B");
+  const ansiColorPattern = new RegExp(
+    `${String.fromCharCode(27)}\\[[0-9;]*m`,
+    "g",
+  );
+  expect(colored.replace(ansiColorPattern, "")).not.toContain("\u001B");
   expect(
     stripVTControlCharacters(colored)
       .split("\n")

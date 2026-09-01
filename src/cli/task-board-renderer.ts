@@ -298,9 +298,10 @@ function detailField(
   colorEnabled = false,
 ): string[] {
   const prefix = `${label}: `;
-  const lines = visibleWidth(prefix) < Math.max(1, width)
-    ? wrap(value || "—", width, prefix)
-    : [fit(label, width), ...wrap(value || "—", width)];
+  const lines =
+    visibleWidth(prefix) < Math.max(1, width)
+      ? wrap(value || "—", width, prefix)
+      : [fit(label, width), ...wrap(value || "—", width)];
   return tone === undefined
     ? lines
     : lines.map((line) => color(line, tone, colorEnabled));
