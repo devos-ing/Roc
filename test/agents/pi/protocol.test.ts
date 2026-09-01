@@ -50,7 +50,7 @@ describe("classifyPiTurnFailure", () => {
 });
 
 describe("mapPiUsage", () => {
-  test("maps native fields and clamps cached and reasoning totals", () => {
+  test("folds cache reads and writes into the prompt total", () => {
     expect(
       mapPiUsage({
         input: 1000,
@@ -60,7 +60,7 @@ describe("mapPiUsage", () => {
         reasoning: 20,
       }),
     ).toEqual({
-      inputTokens: 1000,
+      inputTokens: 1410,
       cachedInputTokens: 400,
       outputTokens: 50,
       reasoningOutputTokens: 20,
@@ -76,12 +76,21 @@ describe("mapPiUsage", () => {
     });
   });
 
-  test("clamps cached and reasoning above their base totals", () => {
+  test("keeps a fully cached prompt a non-zero input total", () => {
+    expect(mapPiUsage({ input: 0, output: 40, cacheRead: 150 })).toEqual({
+      inputTokens: 150,
+      cachedInputTokens: 150,
+      outputTokens: 40,
+      reasoningOutputTokens: 0,
+    });
+  });
+
+  test("counts cache writes as prompt input and clamps reasoning only", () => {
     expect(
-      mapPiUsage({ input: 100, output: 40, cacheRead: 150, reasoning: 60 }),
+      mapPiUsage({ input: 100, output: 40, cacheWrite: 60, reasoning: 60 }),
     ).toEqual({
-      inputTokens: 100,
-      cachedInputTokens: 100,
+      inputTokens: 160,
+      cachedInputTokens: 0,
       outputTokens: 40,
       reasoningOutputTokens: 40,
     });

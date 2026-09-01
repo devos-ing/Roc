@@ -20,16 +20,20 @@ function catalogId(model: PiModel): string {
 }
 
 /**
- * Lists the Roc efforts a model supports. A model without a thinking level
- * map is treated as supporting every Roc effort; a mapped model supports
- * exactly the levels it maps.
+ * Lists the Roc efforts a model supports. Reasoning-disabled models support
+ * none. A mapped model supports exactly its explicitly non-null levels; an
+ * unmapped reasoning model gets the safe default subset, and xhigh is only
+ * ever published from an explicit non-null mapping.
  */
 function supportedEfforts(model: PiModel): string[] {
+  if (model.reasoning === false) return [];
   const levels =
     model.thinkingLevelMap === undefined
       ? []
-      : Object.keys(model.thinkingLevelMap);
-  if (levels.length === 0) return [...ROC_EFFORTS];
+      : Object.entries(model.thinkingLevelMap)
+          .filter(([, level]) => level != null)
+          .map(([level]) => level);
+  if (levels.length === 0) return ["medium", "high"];
   return ROC_EFFORTS.filter((effort) => levels.includes(effort));
 }
 
@@ -142,15 +146,32 @@ export function buildPiBackendFactory(input: {
       }
 
       // The probe process is only a catalog oracle; role attempts spawn
-      // their own children, and every live child is reaped on close.
+      // their own children, and every live child is reaped on close. Both
+      // the default and the injected starter are tracked through the same
+      // wrapper so shutdown covers injected clients too, and a client that
+      // closes itself is dropped from tracking instead of accumulating.
       const liveClients = new Set<PiClientApi>();
-      const startAttemptClient =
-        input.startAttemptClient ??
-        (async (cwd: string) => {
-          const client = await PiClient.start({ cwd });
-          liveClients.add(client);
-          return client;
-        });
+      const trackAttemptClient = (client: PiClientApi): PiClientApi => {
+        liveClients.add(client);
+        return {
+          request: (command, params) => client.request(command, params),
+          send: (message) => client.send(message),
+          nextEvent: () => client.nextEvent(),
+          close: async () => {
+            try {
+              await client.close();
+            } finally {
+              liveClients.delete(client);
+            }
+          },
+        };
+      };
+      const startAttemptClient = async (cwd: string) =>
+        trackAttemptClient(
+          input.startAttemptClient
+            ? await input.startAttemptClient(cwd)
+            : await PiClient.start({ cwd }),
+        );
       let closed: Promise<void> | undefined;
       return {
         catalog,

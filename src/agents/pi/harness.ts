@@ -26,6 +26,7 @@ import {
   PiGetEntriesDataSchema,
   PiGetStateDataSchema,
   PiMessageEndEventSchema,
+  PiModelSchema,
   type TokenUsageTotals,
 } from "./protocol";
 
@@ -549,6 +550,25 @@ export function createPiHarness(input: {
         );
       }
 
+      // The routed model and thinking level must be confirmed by the
+      // session state rather than assumed from the accepted setter calls:
+      // Pi may ignore or clamp either setting, and an unobserved mismatch
+      // would attribute the turn to the wrong configuration.
+      const routed = PiModelSchema.safeParse(state.model);
+      if (
+        !routed.success ||
+        routed.data.provider !== catalogModel.provider ||
+        routed.data.id !== catalogModel.modelId ||
+        state.thinkingLevel !== request.attempt.effort
+      ) {
+        throw protocolError(
+          "model_routing_unverified",
+          "Pi did not confirm the requested model or thinking level",
+          request,
+          state.sessionId,
+        );
+      }
+
       try {
         await client.request("prompt", { message: prompt(request) });
       } catch (error) {
@@ -796,10 +816,16 @@ export function createPiHarness(input: {
     active: ActiveAttempt,
   ): Promise<HarnessDelivery> {
     const cursor = initialCursor;
-    if (active.pendingDeliveries.length > 0) {
-      const queued = active.pendingDeliveries.shift();
-      if (queued !== undefined) return queued;
-    }
+    // Drop queued deliveries the persisted cursor has already confirmed, then
+    // replay the head without shifting it: a retried call with the same cursor
+    // (its repository write failed) must hand out the identical delivery
+    // again, never skip ahead to the next one.
+    active.pendingDeliveries = active.pendingDeliveries.filter(
+      (queued) =>
+        queued.kind !== "event" || queued.event.sequence >= cursor.nextSequence,
+    );
+    const queued = active.pendingDeliveries[0];
+    if (queued !== undefined) return queued;
     if (active.outputDelivered) {
       // The settled prompt's structured output was already delivered; hand
       // out the terminal completion delivery now.
@@ -910,13 +936,17 @@ export function createPiHarness(input: {
           );
         }
         const deliveries = await completeFromSettled(request, cursor, active);
-        const first = deliveries.shift();
-        active.pendingDeliveries = deliveries;
-        if (first !== undefined) {
-          active.outputDelivered = true;
-          return first;
+        const head = deliveries.at(0);
+        if (head === undefined) {
+          return completedDelivery(cursor, active);
         }
-        return completedDelivery(cursor, active);
+        // Every delivery of the settled turn stays queued: the head is
+        // handed out now and only leaves the queue once the persisted cursor
+        // confirms it, so a repository write failure replays the identical
+        // usage or output delivery instead of dropping it.
+        active.pendingDeliveries = deliveries;
+        active.outputDelivered = true;
+        return head;
       }
 
       if (event.type === "extension_ui_request") {

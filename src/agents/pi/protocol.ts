@@ -89,6 +89,7 @@ export const PiGetStateDataSchema = z
     sessionId: NonEmpty,
     sessionFile: NonEmpty,
     model: z.unknown().optional(),
+    thinkingLevel: z.string().optional(),
   })
   .passthrough();
 
@@ -145,11 +146,18 @@ export const TokenUsageTotalsSchema = z
 
 export type TokenUsageTotals = z.infer<typeof TokenUsageTotalsSchema>;
 
-/** Maps one native Pi usage report onto scheduler usage totals. */
+/**
+ * Maps one native Pi usage report onto scheduler usage totals. The scheduler's
+ * inputTokens is the full prompt cost, so cache reads and writes are folded
+ * into it rather than reported as input alone; cachedInputTokens stays the
+ * raw cache-read share of that total.
+ */
 export function mapPiUsage(usage: PiUsage): TokenUsageTotals {
+  const cacheRead = usage.cacheRead ?? 0;
+  const cacheWrite = usage.cacheWrite ?? 0;
   return {
-    inputTokens: usage.input,
-    cachedInputTokens: Math.min(usage.cacheRead ?? 0, usage.input),
+    inputTokens: usage.input + cacheRead + cacheWrite,
+    cachedInputTokens: cacheRead,
     outputTokens: usage.output,
     reasoningOutputTokens: Math.min(usage.reasoning ?? 0, usage.output),
   };
