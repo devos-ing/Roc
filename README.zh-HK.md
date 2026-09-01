@@ -52,11 +52,31 @@ Onboarding 會建立 Roc 的本機資料庫，並安裝兩個 skills：
 $roc-create-tasks 加入團隊邀請功能
 ```
 
-這個 skill 會先顯示建議的任務，得到你批准後才會匯入。它需要
-`grilling` skill，你可以用以下指令安裝：
+這個 skill 會先顯示建議的任務，得到你批准後才會匯入。安裝以下四個
+skills，就可以使用完整流程：
 
 ```bash
+# 把未整理的需求拆成清楚任務
 npx skills add mattpocock/skills --skill grilling --global --agent codex
+
+# 讓 agent 回覆容易閱讀和執行
+codex plugin marketplace add ayghri/i-have-adhd --ref main
+codex plugin add i-have-adhd@i-have-adhd
+
+# 刪走文字中的 AI 語氣和廢話
+npx skills add backnotprop/pstack --skill unslop --global --agent codex
+
+# 優先選擇最簡單而可行的方案
+codex plugin marketplace add DietrichGebert/ponytail
+codex plugin add ponytail@ponytail
+```
+
+建立 backlog 必須使用 `grilling`。另外三個 skills 會引導 agent 怎樣寫作和
+實作任務。安裝後，請再次執行 onboarding，並選擇 Roc agents 可以使用的
+skills：
+
+```bash
+npx roc-it@latest onboard
 ```
 
 查看任務、開始執行，然後打開看板：
@@ -120,24 +140,6 @@ Review 接受結果後，Roc 會執行已信任的 posthook，並確認 Implemen
 Roc 會記錄任務狀態、執行次數、事件、model 選擇和 token 用量。Token target
 只用作規劃估算。Agent 用量到達 target 時，Roc 不會強制停止。
 
-## 實驗性 ZCode backend
-
-Roc 預設使用 Codex。它也可以使用 Z.ai 桌面應用程式的 headless ZCode server：
-
-```bash
-cd /absolute/path/to/project
-ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --base-branch main --backend zcode
-```
-
-ZCode 需要同一部電腦上已登入的 Z.ai 桌面應用程式。Roc 會從
-`~/.zcode/v2/config.json` 讀取已啟用的 provider，再透過 `ZCODE_BIN` 啟動
-應用程式附帶的 CLI。該 CLI 沒有公開文件，日後版本可能會改變。
-
-ZCode 沒有協定層級的檔案系統 sandbox。無人看管的 session 可以寫入 task
-checkout 以外的位置，而且停用 command sandbox 的要求會自動獲准。只應在
-僅開放 task checkout 的 OS sandbox 或 container 內使用這個 backend。
-設定 `ROC_ZCODE_EXPERIMENTAL=1` 表示你接受這項風險。
-
 ## 其他加入任務的方法
 
 匯入 Roc backlog JSON 檔案：
@@ -170,7 +172,7 @@ npx roc-it@latest cycle current           顯示目前 Agile cycle
 npx roc-it@latest task list               列出已儲存的任務
 npx roc-it@latest task board [--all]      打開唯讀看板
 npx roc-it@latest tui                     打開唯讀看板
-npx roc-it@latest scheduler run --base-branch BRANCH [--base REF] [--backend <name>]
+npx roc-it@latest scheduler run --base-branch BRANCH [--base REF]
 npx roc-it@latest scheduler inspect       查看 scheduler 狀態
 npx roc-it@latest tokens [--no-color]     顯示 token 用量
 npx roc-it@latest help                    顯示所有指令
@@ -185,8 +187,8 @@ roc-it help
 
 ## 目前限制
 
-Roc 現時支援 Codex 和實驗性 ZCode backend。它仍未支援平行執行任務、
-遠端批准或通知。Pi、Claude Code 和 Cursor backend 仍在計劃中。
+這份說明只介紹 Codex backend。Roc 仍未支援平行執行任務、遠端批准或通知。
+Pi、Claude Code 和 Cursor backend 仍在計劃中。
 
 ## 詳細資料
 

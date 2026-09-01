@@ -52,11 +52,31 @@ Create a backlog in Codex:
 $roc-create-tasks Add team invitations
 ```
 
-The skill shows you the proposed tasks before it imports anything. It needs the
-`grilling` skill, which you can install with:
+The skill shows you the proposed tasks before it imports anything. Install these
+four supporting skills for the intended workflow:
 
 ```bash
+# Turn a loose requirement into clear tasks
 npx skills add mattpocock/skills --skill grilling --global --agent codex
+
+# Keep agent replies easy to scan and act on
+codex plugin marketplace add ayghri/i-have-adhd --ref main
+codex plugin add i-have-adhd@i-have-adhd
+
+# Remove AI filler from writing
+npx skills add backnotprop/pstack --skill unslop --global --agent codex
+
+# Prefer the smallest solution that works
+codex plugin marketplace add DietrichGebert/ponytail
+codex plugin add ponytail@ponytail
+```
+
+`grilling` is required to create the backlog. The other three guide how agents
+write and implement the work. After installing them, run onboarding again and
+select the skills you want Roc agents to use:
+
+```bash
+npx roc-it@latest onboard
 ```
 
 Check the tasks, run them, then open the board:
@@ -124,27 +144,6 @@ Roc records task state, attempts, events, model choices, and token use. A token
 target is an estimate for planning. It does not stop an agent when the target is
 reached.
 
-## Experimental ZCode backend
-
-Roc uses Codex by default. It can also run the Z.ai desktop app's headless ZCode
-server:
-
-```bash
-cd /absolute/path/to/project
-ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --base-branch main --backend zcode
-```
-
-ZCode needs a signed-in Z.ai desktop app on the same machine. Roc reads the
-enabled provider from `~/.zcode/v2/config.json` and launches the app's bundled
-CLI through `ZCODE_BIN`. That CLI is undocumented and may change between app
-versions.
-
-ZCode has no protocol-level filesystem sandbox. An unattended session can write
-outside the task checkout, and requests to disable command sandboxing are
-approved automatically. Only run this backend inside an OS sandbox or container
-that exposes the task checkout. Setting `ROC_ZCODE_EXPERIMENTAL=1` confirms that
-you accept this risk.
-
 ## Other ways to add tasks
 
 Import a Roc backlog JSON file:
@@ -177,7 +176,7 @@ npx roc-it@latest cycle current           Show the current Agile cycle
 npx roc-it@latest task list               List stored tasks
 npx roc-it@latest task board [--all]      Open the read-only board
 npx roc-it@latest tui                     Open the read-only board
-npx roc-it@latest scheduler run --base-branch BRANCH [--base REF] [--backend <name>]
+npx roc-it@latest scheduler run --base-branch BRANCH [--base REF]
 npx roc-it@latest scheduler inspect       Inspect scheduler state
 npx roc-it@latest tokens [--no-color]     Show token use
 npx roc-it@latest help                    Show all commands
@@ -192,9 +191,9 @@ roc-it help
 
 ## Current limits
 
-Roc supports Codex and an experimental ZCode backend. It does not yet run tasks
-in parallel, ask for remote approval, or send notifications. Pi, Claude Code,
-and Cursor backends are planned.
+This guide covers the Codex backend. Roc does not yet run tasks in parallel, ask
+for remote approval, or send notifications. Pi, Claude Code, and Cursor
+backends are planned.
 
 ## More detail
 
