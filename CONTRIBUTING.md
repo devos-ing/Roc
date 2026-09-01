@@ -33,10 +33,14 @@ To check the packaged skills and the PR review helpers, run:
 
 `quick_validate.py` is provided by the `skill-creator` tooling and is not part
 of this repository, so its path depends on where that tooling is installed.
-Resolve it once from your agent's skills directory and keep it quoted:
+Resolve it once from the skill-creator scripts directory, failing fast when
+it is missing:
 
 ```bash
-QUICK_VALIDATE="$(find ~/.codex/skills -name quick_validate.py -print -quit)"
+set -e
+QUICK_VALIDATE="$(find ~/.codex/skills -path '*/skill-creator/scripts/quick_validate.py' -print -quit)"
+[ -n "$QUICK_VALIDATE" ] || { echo 'quick_validate.py not found' >&2; exit 1; }
+
 python3 "$QUICK_VALIDATE" skills/roc-create-tasks
 python3 "$QUICK_VALIDATE" skills/pr-review-to-closure
 python3 -B skills/pr-review-to-closure/scripts/test_evidence.py -v
