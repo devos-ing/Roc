@@ -1,6 +1,7 @@
 import {
   type AgentHarness,
   type FakeScenario,
+  FakeScenarioAttemptSchema,
   FakeScenarioSchema,
   type HarnessDelivery,
   type HarnessStepRequest,
@@ -18,6 +19,13 @@ function keyOf(
 export function createFakeHarness(input: unknown): {
   harness: AgentHarness;
   assertComplete(): void;
+  /**
+   * Upserts one scripted attempt after creation (validated against the same
+   * schema); a later script for an existing key replaces its deliveries.
+   * Lets drivers that script turns just-in-time (conformance suite) reuse the
+   * fake harness unchanged.
+   */
+  scriptAttempt(attempt: unknown): void;
 } {
   const scenario: FakeScenario = FakeScenarioSchema.parse(input);
   const consumed = new Map<string, string>();
@@ -85,6 +93,21 @@ export function createFakeHarness(input: unknown): {
         if (consumed.get(key) !== finalCursor) {
           throw new Error(`Unconsumed fake deliveries for ${key}`);
         }
+      }
+    },
+    /** Upserts one validated scripted attempt, replacing deliveries by key. */
+    scriptAttempt(attempt: unknown): void {
+      const parsed = FakeScenarioAttemptSchema.parse(attempt);
+      const key = keyOf(parsed);
+      const existing = scenario.attempts.findIndex(
+        (candidate) => keyOf(candidate) === key,
+      );
+      if (existing === -1) scenario.attempts.push(parsed);
+      else {
+        scenario.attempts[existing] = parsed;
+        // Drop the replaced script's progress: a reused final cursor must not
+        // let an unconsumed replacement pass assertComplete().
+        consumed.delete(key);
       }
     },
   };

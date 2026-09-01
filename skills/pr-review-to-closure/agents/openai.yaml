@@ -1,0 +1,4 @@
+interface:
+  display_name: "PR Review to Closure"
+  short_description: "Track PR findings through fixes to a stable merge decision"
+  default_prompt: "Use $pr-review-to-closure to re-review this GitHub PR and reconcile every prior finding."

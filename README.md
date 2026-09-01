@@ -69,8 +69,12 @@ Or install the command globally:
 npm install -g roc-it@latest
 ```
 
-Onboard Roc in one project. This creates the local database and installs the
-task-creation skill for Codex, Claude Code, and Cursor:
+The repeat-PR-review skill requires Python 3.9 or later and the authenticated
+GitHub CLI (`gh`). Roc's scheduler and task commands still run on Bun alone.
+
+Onboard Roc in one project. This creates the local database and installs Roc's
+packaged task-creation and repeat-PR-review skills for Codex, Claude Code, and
+Cursor:
 
 ```bash
 npx roc-it@latest onboard
@@ -93,7 +97,7 @@ npx roc-it@latest onboard
 
 Use `NO_COLOR=1 npx roc-it@latest onboard` for plain terminal output.
 
-Use `npx roc-it@latest onboard --global` to install the skill under your user
+Use `npx roc-it@latest onboard --global` to install the skills under your user
 account instead; global onboarding does not create a project database.
 
 ### Agile cycle
@@ -152,6 +156,12 @@ The skill uses `grilling` to agree on the requirement, previews the full task
 list and dependencies, waits for your explicit approval, saves a JSON backlog
 under `.agile/backlog`, and imports it into Roc.
 
+When you ask for another review of the same GitHub pull request, the installed
+`pr-review-to-closure` skill keeps stable finding IDs and verifies the new head
+against the prior review. It reports a merge decision only after the required
+checks pass. Reviewing does not comment, approve, commit, push, or merge unless
+you explicitly request that action.
+
 ### Import approved GitHub Issues
 
 Run `npx roc-it@latest task import-github` inside a Git repository to import
@@ -206,6 +216,30 @@ Run that backlog with Codex:
 ```bash
 npx roc-it@latest scheduler run --base-branch main
 ```
+
+Or with ZCode (the Z.ai desktop app's headless `app-server`). The backend is
+experimental and production-gated — see below:
+
+Run it from the target project's directory (there is no `--repo` flag; Roc
+resolves the project from the current directory):
+
+```bash
+cd /absolute/path/to/project
+ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --backend zcode
+```
+
+ZCode mode expects a signed-in Z.ai desktop app on the same machine: Roc reads
+the enabled provider from `~/.zcode/v2/config.json` and launches the bundled
+CLI through `ZCODE_BIN` (for example
+`/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs` on macOS). The
+ZCode CLI is undocumented and may change across app releases.
+
+The gate exists because ZCode has no protocol-level filesystem sandbox:
+unattended yolo sessions can write outside the task checkout, and requests to
+disable command sandboxing are auto-approved. Only run this backend inside an
+OS sandbox or container that exposes the task checkout, and set
+`ROC_ZCODE_EXPERIMENTAL=1` to acknowledge. Details in
+[docs/architecture.md](docs/architecture.md).
 
 Codex mode creates or reuses a work folder at `<project>.agile-checkout`. Roc
 never switches branches or makes commits in the current project's source
@@ -296,11 +330,12 @@ npx roc-it@latest task import FILE
 npx roc-it@latest task import-github
 npx roc-it@latest task list
 npx roc-it@latest task board [--all]
+npx roc-it@latest tui
 npx roc-it@latest task hook trust <task-id> <prehook|posthook>
 npx roc-it@latest tokens [--no-color]
 
 Run work
-npx roc-it@latest scheduler run --base-branch BRANCH [--base REF]
+npx roc-it@latest scheduler run [--base REF] [--base-branch BRANCH] [--backend <name>]
 npx roc-it@latest scheduler inspect
 
 Get help

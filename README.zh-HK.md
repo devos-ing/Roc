@@ -67,8 +67,11 @@ bunx roc-it@latest help
 npm install -g roc-it@latest
 ```
 
+重複 PR 審查 skill 需要 Python 3.9 或以上版本，以及已驗證登入的 GitHub CLI
+（`gh`）。Roc scheduler 和 task 指令本身仍然只需要 Bun。
+
 在單一專案中啟用 Roc。這會建立本機資料庫，並為 Codex、Claude Code 和
-Cursor 安裝建立任務的 skill：
+Cursor 安裝 Roc 內建的任務建立及重複 PR 審查 skills：
 
 ```bash
 npx roc-it@latest onboard
@@ -90,7 +93,7 @@ npx roc-it@latest onboard
 
 如需純文字終端輸出，使用 `NO_COLOR=1 npx roc-it@latest onboard`。
 
-使用 `npx roc-it@latest onboard --global` 可改為在使用者帳戶下安裝 skill；
+使用 `npx roc-it@latest onboard --global` 可改為在使用者帳戶下安裝 skills；
 全域啟用不會建立專案資料庫。
 
 ### 敏捷週期
@@ -144,6 +147,11 @@ $roc-create-tasks Add team invitations
 
 這個 skill 會使用 `grilling` 釐清需求、預覽完整任務清單和相依關係、等待你的
 明確批准，然後把 JSON backlog 儲存在 `.agile/backlog` 並匯入 Roc。
+
+當你要求再次審查同一個 GitHub pull request 時，已安裝的
+`pr-review-to-closure` skill 會保留穩定的 finding ID，並把新 head 與上次審查
+結果核對。它只會在必要檢查通過後提供 merge 判斷。一般審查不會留言、核准、
+commit、push 或 merge，除非你明確要求該項操作。
 
 ### 匯入已核准的 GitHub Issues
 
@@ -199,6 +207,29 @@ npx roc-it@latest task list
 ```bash
 npx roc-it@latest scheduler run --base-branch main
 ```
+
+也可以使用 ZCode（Z.ai 桌面應用程式的 headless `app-server`）執行。這個
+backend 屬實驗性質，並受閘門保護，詳見下文：
+
+請在目標專案的目錄內執行（沒有 `--repo` 選項；Roc 會從目前目錄解析
+專案）：
+
+```bash
+cd /absolute/path/to/project
+ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --backend zcode
+```
+
+ZCode mode 需要同一部機器上已登入的 Z.ai 桌面應用程式：Roc 會從
+`~/.zcode/v2/config.json` 讀取已啟用的 provider，並透過 `ZCODE_BIN` 啟動
+隨應用程式附帶的 CLI（macOS 上例如
+`/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`）。ZCode CLI 沒有
+公開文件，可能隨應用程式版本變動。
+
+設立閘門是因為 ZCode 沒有協定層級的檔案系統沙箱：無人值守的 yolo session
+可以寫入 task checkout 以外的地方，而停用命令沙箱的要求會自動核准。請只在
+曝露 task checkout 的 OS 沙箱或容器內執行這個 backend，並設定
+`ROC_ZCODE_EXPERIMENTAL=1` 以示知悉。詳情請參閱
+[docs/architecture.md](docs/architecture.md)。
 
 Codex mode 會在 `<project>.agile-checkout` 建立或重用工作資料夾。Roc 不會在
 目前 project 的來源資料夾切換 branch 或建立 commit。
@@ -280,11 +311,12 @@ npx roc-it@latest task import FILE
 npx roc-it@latest task import-github
 npx roc-it@latest task list
 npx roc-it@latest task board [--all]
+npx roc-it@latest tui
 npx roc-it@latest task hook trust <task-id> <prehook|posthook>
 npx roc-it@latest tokens [--no-color]
 
 執行工作
-npx roc-it@latest scheduler run --base-branch BRANCH [--base REF]
+npx roc-it@latest scheduler run [--base REF] [--base-branch BRANCH] [--backend <name>]
 npx roc-it@latest scheduler inspect
 
 取得說明

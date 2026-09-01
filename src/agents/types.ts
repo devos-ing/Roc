@@ -1,5 +1,5 @@
 import type { AgentHarness } from "../harness/contracts";
-import type { CatalogModel } from "../scheduler/model-routing";
+import type { CatalogModel, ModelMapping } from "../scheduler/model-routing";
 import type { TaskBranchManager } from "../workspace/task-branch";
 
 /**
@@ -10,6 +10,12 @@ import type { TaskBranchManager } from "../workspace/task-branch";
  */
 export type BackendRuntime = {
   readonly catalog: readonly CatalogModel[];
+  /**
+   * Explicit profile-to-model routing for providers whose catalog IDs carry
+   * no luna/terra/sol suffix; the shared advisor combines it with the
+   * catalog instead of inferring profiles from provider model names.
+   */
+  readonly modelMapping?: ModelMapping;
   readonly harness: AgentHarness;
   /** Releases the backend's resources; must stay idempotent across repeated calls. */
   close(): Promise<void>;
