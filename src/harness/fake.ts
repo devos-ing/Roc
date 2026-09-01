@@ -103,7 +103,12 @@ export function createFakeHarness(input: unknown): {
         (candidate) => keyOf(candidate) === key,
       );
       if (existing === -1) scenario.attempts.push(parsed);
-      else scenario.attempts[existing] = parsed;
+      else {
+        scenario.attempts[existing] = parsed;
+        // Drop the replaced script's progress: a reused final cursor must not
+        // let an unconsumed replacement pass assertComplete().
+        consumed.delete(key);
+      }
     },
   };
 }
