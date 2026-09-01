@@ -8,305 +8,154 @@
 
 # Roc
 
-Roc is a local command-line tool that guides Codex agents through an agile
-software flow. Each task moves through three steps: **Scout → Implement →
-Review**.
-
-Scout studies the task. Implement writes the code. Review checks the exact
-finished commit. Roc saves progress and token use in SQLite, so work can continue
-after a restart.
-
-If Review rejects the work, Roc closes the original task and creates a linked
-draft task with the code and feedback. It then returns to the ready backlog
-instead of repeating the same task forever.
-
-Roc currently provides:
-
-- model settings that never use `low` thinking effort;
-- a separate Git branch for each task in a dedicated work folder;
-- a read-only Review of the exact commit made by Implement;
-- saved task progress and token use, with restart support;
-- a token-use chart in the terminal;
-- a read-only task board for the current Agile cycle;
-- one-shot import of approved GitHub Issues into the ready backlog;
-- a list of skills that agents are allowed to use.
-
-Roc works on one task at a time. It does not merge or push code, delete task
-branches, run several tasks at once, or limit token use.
-
-## Quick Start
-
-Prerequisites:
-
-- [Bun](https://bun.sh/) 1.3.0 or later
-- Git
-- [GitHub CLI](https://cli.github.com/) for Issue import, authenticated with
-  `gh auth login`
-- [Codex CLI](https://github.com/openai/codex) for Codex mode
-- The `grilling` skill for creating a backlog:
-
-```bash
-npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor
-```
-
-Run without a global install (Roc still requires Bun at runtime):
-
-```bash
-npx roc-it@latest help
-```
-
-You can also use `bunx` as Bun's package runner:
-
-```bash
-bunx roc-it@latest help
-```
-
-Or install the command globally:
-
-```bash
-npm install -g roc-it@latest
-```
-
-Onboard Roc in one project. This creates the local database and installs the
-task-creation skill for Codex, Claude Code, and Cursor:
-
-```bash
-npx roc-it@latest onboard
-```
-
-Onboarding prints the project scope, each completed step, the selected cycle,
-the settings path, and next steps to install `grilling` if needed, create a
-first backlog with the installed task skill, and inspect the resulting tasks. If
-a later step stops, Roc lists the work already completed and gives a retry
-command; it does not claim to roll anything back.
-
-Onboarding shows Roc's installed default agent skills as a checklist. Press Enter to accept the current selection, use Space to toggle a skill, or clear every item to run agents without skills. Roc saves the exact selection globally. A newly installed default stays disabled until you run onboarding again and select it.
-
-Roc does not install a missing `unslop` skill. Install the pstack copy yourself, then rerun onboarding:
-
-```bash
-npx skills add backnotprop/pstack --skill unslop --global --agent codex --agent claude-code --agent cursor
-npx roc-it@latest onboard
-```
-
-Use `NO_COLOR=1 npx roc-it@latest onboard` for plain terminal output.
-
-Use `npx roc-it@latest onboard --global` to install the skill under your user
-account instead; global onboarding does not create a project database.
-
-### Agile cycle
-
-During onboarding, choose Daily, Weekly, or a custom number of days. Roc saves
-the choice for all projects in `~/.config/roc/settings.json`.
-
-```json
-{ "cycle": { "type": "weekly" } }
-```
-
-### Task board
-
-Open the read-only board for the current cycle:
-
-```bash
-npx roc-it@latest task board
-```
-
-Use `--all` to include stored tasks from every cycle. In an interactive terminal,
-the board groups compact task cards into Ready, In progress, Attention, and Done.
-Use Up/Down or J/K to select a card, Space to peek, Enter for full details, D to
-expand Done, R to refresh, ? for controls, Esc to return, and Q or Ctrl-C to exit.
-The board never starts the scheduler or changes tasks, attempts, events, or leases.
-
-When either terminal stream is not interactive, the same command prints one plain,
-ANSI-free snapshot and exits. An empty board shows the usual backlog-creation
-guidance.
-
-Show the active cycle at any time:
-
-```bash
-npx roc-it@latest cycle current
-```
-
-The task-creation skill uses that value in the backlog manifest. For example:
-
-```json
-{ "cycleId": "2026-08-28-P14D" }
-```
-
-Create a backlog from a requirement with the installed skill. In Claude Code or
-Cursor, use:
+Roc runs Codex coding tasks through a small, repeatable workflow:
 
 ```text
-/roc-create-tasks Add team invitations
+Ready task → Scout → Implement → Review → Done
 ```
 
-In Codex, use:
+- Scout reads the task and plans the change.
+- Implement writes the code on a separate Git branch and commits it.
+- Review checks that exact commit without changing it.
+
+Roc saves every task and attempt in SQLite. If you stop the process, you can
+continue later. If Review rejects a change, Roc creates a draft follow-up task
+with the feedback instead of retrying forever.
+
+Roc runs one task at a time. It does not merge, push, or delete branches.
+
+## Quick start
+
+You need [Bun](https://bun.sh/) 1.3 or later, Git, and the
+[Codex CLI](https://github.com/openai/codex).
+
+Run Roc inside a Git project:
+
+```bash
+npx roc-it@latest onboard
+```
+
+Onboarding creates Roc's local database and installs the `roc-create-tasks`
+skill. It also asks how long an Agile cycle should last and which agent skills
+Codex may use.
+
+Create a backlog in Codex:
 
 ```text
 $roc-create-tasks Add team invitations
 ```
 
-The skill uses `grilling` to agree on the requirement, previews the full task
-list and dependencies, waits for your explicit approval, saves a JSON backlog
-under `.agile/backlog`, and imports it into Roc.
+The skill shows you the proposed tasks before it imports anything. It needs the
+`grilling` skill, which you can install with:
 
-### Import approved GitHub Issues
-
-Run `npx roc-it@latest task import-github` inside a Git repository to import
-open Issues carrying the fixed `roc:ready` label. Roc uses `gh` to identify the
-current GitHub repository; the command has no repository or label override.
-
-Every eligible Issue body must use these second-level headings exactly once and
-in this order. List sections require dash-prefixed items.
-
-```markdown
-## Problem
-
-Why this work is needed.
-
-## Desired outcome
-
-What should be true when it is done.
-
-## Scope
-
-- included work
-
-## Non-goals
-
-- None
-
-## Acceptance criteria
-
-- observable completion condition
-
-## Validation
-
-- verification command or check
+```bash
+npx skills add mattpocock/skills --skill grilling --global --agent codex
 ```
 
-Issue `#42` becomes task `github-42` in the active Agile Cycle. Import is
-one-way: later runs skip that ID without reparsing or updating the stored task.
-New tasks are approved and ready immediately. Their `tokenCeiling` defaults to
-`12000` as a planning estimate only—Roc does not stop execution at that value.
-
-A global install also exposes the compatibility alias `agile`, so
-`agile task import-github` runs the same command.
-
-Inspect the resulting tasks:
+Check the tasks, run them, then open the board:
 
 ```bash
 npx roc-it@latest task list
-```
-
-Run that backlog with Codex:
-
-```bash
 npx roc-it@latest scheduler run
+npx roc-it@latest task board
 ```
 
-Codex mode creates or reuses a work folder at `<project>.agile-checkout`. Roc
-never switches branches or makes commits in the current project's source
-folder.
+Roc writes task code in a sibling folder named `<project>.agile-checkout`. Your
+current checkout stays on its existing branch.
 
-## How it works
+## The task board
 
-Roc picks one ready task and passes it through three agent roles.
+The board is a terminal UI. It groups tasks by what needs your attention:
+
+```text
+Cycle 2026-W35 · 4 tasks · 8420/12000 tokens
+
+Ready (1)                   │ In progress (1)             │ Attention (1)               │ Done (1)
+─────────────────────────── │ ─────────────────────────── │ ─────────────────────────── │ ───────────────────────────
+  email  Add email login    │ › ● api  Build auth API     │   tests  Fix auth tests     │   collapsed
+  Status: ready             │   Status: implementing      │   Status: needs_input       │
+  Phase: ready              │   Phase: implement          │   Phase: needs_input        │
+                            │                             │   Blocked: api              │
+
+↑↓ select · Space peek · Enter details · d Done · ? help · q quit
+```
+
+Select a task to see its problem, current phase, model, retry count, token use,
+dependencies, and acceptance criteria. Press `Space` for a quick peek or
+`Enter` for the full view. Press `r` to refresh.
+
+The board is read-only. Opening it never starts the scheduler or changes a
+task. Run `npx roc-it@latest task board --all` to include older cycles.
+
+## What happens during a task
 
 ```mermaid
 flowchart LR
-    S["Scout<br/>Understand the task"] --> I["Implement<br/>Write and commit code"]
-    I --> R["Review<br/>Check the exact commit"]
+    B[Ready] --> S[Scout plans]
+    S --> I[Implement codes and commits]
+    I --> R[Review checks the commit]
+    R -->|Accepted| D[Done]
+    R -->|Rejected| F[Draft follow-up]
 ```
 
-If Review accepts the commit, the task is done. If Review rejects it, Roc
-creates a follow-up ticket and moves on to the next ready task.
+Each task gets its own branch in the dedicated checkout. Review receives the
+commit created by Implement. It cannot edit the working tree.
 
-Roc works on one small task at a time. When Review asks for changes, Roc sends
-the feedback to an unapproved draft follow-up. That follow-up returns to the
-ready backlog only after approval. Roc saves progress so the flow can continue
-after a restart.
+Roc records task state, attempts, events, model choices, and token use. A token
+target is an estimate for planning. It does not stop an agent when the target is
+reached.
 
-### System architecture
+## Other ways to add tasks
 
-Roc stores task state in SQLite and runs Codex work in a dedicated sibling
-checkout. The full diagram maps the scheduler lease, trusted task hooks, agent
-phases, Codex app-server, and branch isolation.
+You can import a Roc backlog JSON file:
 
-[![Roc system architecture](docs/assets/roc-system-architecture.png)](output/archify/roc-system-architecture.html)
+```bash
+npx roc-it@latest task import .agile/backlog/my-backlog.json
+```
 
-[Open the interactive diagram](output/archify/roc-system-architecture.html) or
-[read the architecture notes](docs/architecture.md).
+You can also import open GitHub Issues labelled `roc:ready`:
 
-## Milestones
+```bash
+gh auth login
+npx roc-it@latest task import-github
+```
 
-Roc is growing in small steps.
+GitHub import is one-way. Roc skips an Issue after importing its ID, so later
+edits to the Issue do not update the stored task.
 
-### Product
-
-- [x] **GitHub Issues backlog** — Bring approved GitHub Issues into Roc's ready
-  backlog.
-- [ ] **Visible task board** — See task progress in a terminal UI.
-- [ ] **Parallel task runs** — Run independent tasks at the same time.
-- [ ] **Remote approvals** — Review and approve waiting work remotely.
-- [ ] **Notifications** — Get updates when work finishes, fails, or needs
-  approval.
-
-### Agent support
-
-- [x] **OpenAI Codex** — Available today.
-- [ ] **Pi agents** — Run Roc tasks with Pi.
-- [ ] **Claude Code** — Run Roc tasks with Claude Code.
-- [ ] **Cursor** — Run Roc tasks with Cursor agents.
-
-## Commands
-
-The built-in `npx roc-it@latest help` describes the public command tree:
+## Useful commands
 
 ```text
-Get started
-npx roc-it@latest onboard [--global]
-
-Manage your cycle
-npx roc-it@latest cycle current
-
-Plan work
-npx roc-it@latest task import FILE
-npx roc-it@latest task import-github
-npx roc-it@latest task list
-npx roc-it@latest task board [--all]
-npx roc-it@latest task hook trust <task-id> <prehook|posthook>
-npx roc-it@latest tokens [--no-color]
-
-Run work
-npx roc-it@latest scheduler run [--base REF]
-npx roc-it@latest scheduler inspect
-
-Get help
-npx roc-it@latest help
+npx roc-it@latest onboard                 Set up Roc in this project
+npx roc-it@latest cycle current           Show the current Agile cycle
+npx roc-it@latest task list               List stored tasks
+npx roc-it@latest task board [--all]      Open the read-only board
+npx roc-it@latest scheduler run           Run ready tasks with Codex
+npx roc-it@latest scheduler inspect       Inspect scheduler state
+npx roc-it@latest tokens [--no-color]     Show token use
+npx roc-it@latest help                    Show all commands
 ```
 
-## Contributing
+You can install `roc-it` globally if you prefer a shorter command:
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development and testing instructions.
+```bash
+npm install -g roc-it@latest
+roc-it help
+```
 
-## References
+## Current limits
 
-Roc learns from these projects without including their code:
+Roc supports Codex today. It does not yet run tasks in parallel, ask for remote
+approval, or send notifications. Pi, Claude Code, and Cursor support are
+planned.
 
-| Project | What Roc learned |
-| --- | --- |
-| [OpenAI Codex](https://github.com/openai/codex) | Running agents, tracking token use, and keeping Review separate |
-| [OpenAI Symphony](https://github.com/openai/symphony) | Picking tasks, using separate work folders, and showing run progress |
-| [Pi](https://github.com/earendil-works/pi) | Saving session branches, shortening context, and running other tools |
-| [Beads](https://github.com/gastownhall/beads) | Finding ready tasks, linking tasks, and creating follow-up work |
-| [Gas Town](https://github.com/gastownhall/gastown) | Agent roles, stuck tasks, review steps, and terminal screen ideas |
-| [OpenSpec](https://github.com/Fission-AI/OpenSpec) | Clear plans, designs, and task lists |
+## More detail
 
-See [the project research](docs/research/agent-agile-orchestration-landscape.md)
-for a full comparison and source list.
+- [Architecture notes](docs/architecture.md)
+- [Interactive architecture diagram](output/archify/roc-system-architecture.html)
+- [Contributing guide](CONTRIBUTING.md)
+- [Research and project comparisons](docs/research/agent-agile-orchestration-landscape.md)
 
 ## License
 
-Roc uses the [Apache License 2.0](LICENSE). You may use, change, and share it,
-including for commercial work, as long as you follow the license terms.
+Roc uses the [Apache License 2.0](LICENSE).
