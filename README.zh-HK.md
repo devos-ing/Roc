@@ -207,6 +207,29 @@ npx roc-it@latest task list
 npx roc-it@latest scheduler run
 ```
 
+也可以使用 ZCode（Z.ai 桌面應用程式的 headless `app-server`）執行。這個
+backend 屬實驗性質，並受閘門保護，詳見下文：
+
+請在目標專案的目錄內執行（沒有 `--repo` 選項；Roc 會從目前目錄解析
+專案）：
+
+```bash
+cd /absolute/path/to/project
+ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --backend zcode
+```
+
+ZCode mode 需要同一部機器上已登入的 Z.ai 桌面應用程式：Roc 會從
+`~/.zcode/v2/config.json` 讀取已啟用的 provider，並透過 `ZCODE_BIN` 啟動
+隨應用程式附帶的 CLI（macOS 上例如
+`/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`）。ZCode CLI 沒有
+公開文件，可能隨應用程式版本變動。
+
+設立閘門是因為 ZCode 沒有協定層級的檔案系統沙箱：無人值守的 yolo session
+可以寫入 task checkout 以外的地方，而停用命令沙箱的要求會自動核准。請只在
+曝露 task checkout 的 OS 沙箱或容器內執行這個 backend，並設定
+`ROC_ZCODE_EXPERIMENTAL=1` 以示知悉。詳情請參閱
+[docs/architecture.md](docs/architecture.md)。
+
 Codex mode 會在 `<project>.agile-checkout` 建立或重用工作資料夾。Roc 不會在
 目前 project 的來源資料夾切換 branch 或建立 commit。
 
@@ -270,11 +293,12 @@ npx roc-it@latest task import FILE
 npx roc-it@latest task import-github
 npx roc-it@latest task list
 npx roc-it@latest task board [--all]
+npx roc-it@latest tui
 npx roc-it@latest task hook trust <task-id> <prehook|posthook>
 npx roc-it@latest tokens [--no-color]
 
 執行工作
-npx roc-it@latest scheduler run [--base REF]
+npx roc-it@latest scheduler run [--base REF] [--backend <name>]
 npx roc-it@latest scheduler inspect
 
 取得說明
