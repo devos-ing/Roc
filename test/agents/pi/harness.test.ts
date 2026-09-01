@@ -443,6 +443,67 @@ test("a retried cursor replays the identical pending delivery", async () => {
   });
 });
 
+test("a mutated cursor with the same sequence replays the pending head", async () => {
+  const client = new RecordedPiClient();
+  const harness = createPiHarness({
+    branches: memoryBranches(),
+    startClient: async () => client,
+  });
+
+  const started = await harness.step(makeScoutRequest());
+  if (started.kind !== "event") throw new Error("unreachable");
+  client.enqueue(messageEnd(), { type: "agent_settled" });
+
+  const usage = await harness.step({
+    ...makeScoutRequest(),
+    backendCursor: started.nextCursor,
+  });
+  if (usage.kind !== "event") throw new Error("unreachable");
+
+  // A cursor that keeps the delivered sequence but rewrites another field is
+  // not an acknowledgement: the head must replay unchanged rather than let
+  // the forged cursor skip the unpersisted delivery.
+  const mutated = JSON.parse(usage.nextCursor) as Record<string, unknown>;
+  const mutatedUsage = mutated.usage as Record<string, number>;
+  mutatedUsage.inputTokens = 999_999;
+  const replayed = await harness.step({
+    ...makeScoutRequest(),
+    backendCursor: JSON.stringify(mutated),
+  });
+  expect(replayed).toEqual(usage);
+});
+
+test("a cursor that skips ahead replays the pending head", async () => {
+  const client = new RecordedPiClient();
+  const harness = createPiHarness({
+    branches: memoryBranches(),
+    startClient: async () => client,
+  });
+
+  const started = await harness.step(makeScoutRequest());
+  if (started.kind !== "event") throw new Error("unreachable");
+  client.enqueue(messageEnd(), { type: "agent_settled" });
+
+  const usage = await harness.step({
+    ...makeScoutRequest(),
+    backendCursor: started.nextCursor,
+  });
+  if (usage.kind !== "event") throw new Error("unreachable");
+
+  // A schema-valid cursor whose sequence jumps past every queued delivery is
+  // still not an acknowledgement; the head replays instead of the queue
+  // draining.
+  const skipped = JSON.parse(usage.nextCursor) as {
+    nextSequence?: number;
+  };
+  skipped.nextSequence = (skipped.nextSequence ?? 0) + 100;
+  const replayed = await harness.step({
+    ...makeScoutRequest(),
+    backendCursor: JSON.stringify(skipped),
+  });
+  expect(replayed).toEqual(usage);
+});
+
 test("dispatch fails closed when the state model differs from the routed pair", async () => {
   const client = new RecordedPiClient([], {
     model: { id: "glm-5.3", provider: "bigmodel" },

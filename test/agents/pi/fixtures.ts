@@ -22,6 +22,9 @@ export class RecordedPiClient implements PiClientApi {
       model?: unknown;
       thinkingLevel?: unknown;
     } = {},
+    private readonly onPrompt?: (
+      params?: Record<string, unknown>,
+    ) => void | Promise<void>,
   ) {
     this.events = events;
   }
@@ -44,11 +47,13 @@ export class RecordedPiClient implements PiClientApi {
         isStreaming: false,
       };
     }
-    if (
-      command === "set_thinking_level" ||
-      command === "prompt" ||
-      command === "abort"
-    ) {
+    if (command === "set_thinking_level" || command === "abort") {
+      return undefined;
+    }
+    if (command === "prompt") {
+      // The hook lets a scripted role act on its workspace during the turn,
+      // the way a real implement agent edits the prepared checkout.
+      await this.onPrompt?.(params);
       return undefined;
     }
     if (command === "get_entries") {
@@ -280,4 +285,36 @@ export async function collect(
     current = { ...request, backendCursor: delivery.nextCursor };
   }
   return { events, cursors };
+}
+
+/** A scripted probe client that never reaches the event stream. */
+export class ScriptedProbeClient implements PiClientApi {
+  closeCount = 0;
+
+  constructor(
+    private readonly models: unknown,
+    private readonly stateModel: unknown,
+  ) {}
+
+  async request(command: string): Promise<unknown> {
+    if (command === "get_available_models") return { models: this.models };
+    if (command === "get_state") {
+      return {
+        sessionId: "sess-probe",
+        sessionFile: "/tmp/pi-fixture/sess-probe.jsonl",
+        model: this.stateModel,
+      };
+    }
+    throw new Error(`Unexpected probe command: ${command}`);
+  }
+
+  send(): void {}
+
+  async nextEvent(): Promise<never> {
+    throw new Error("the probe never streams events");
+  }
+
+  async close(): Promise<void> {
+    this.closeCount += 1;
+  }
 }

@@ -21,20 +21,19 @@ function catalogId(model: PiModel): string {
 
 /**
  * Lists the Roc efforts a model supports. Reasoning-disabled models support
- * none. A mapped model supports exactly its explicitly non-null levels; an
- * unmapped reasoning model gets the safe default subset, and xhigh is only
- * ever published from an explicit non-null mapping.
+ * none. Without a thinking-level map the safe default subset is medium and
+ * high; with one, a missing key keeps the default support for medium/high
+ * while an explicit null drops that level, and xhigh is only ever published
+ * from an explicit non-null mapping.
  */
 function supportedEfforts(model: PiModel): string[] {
   if (model.reasoning === false) return [];
-  const levels =
-    model.thinkingLevelMap === undefined
-      ? []
-      : Object.entries(model.thinkingLevelMap)
-          .filter(([, level]) => level != null)
-          .map(([level]) => level);
-  if (levels.length === 0) return ["medium", "high"];
-  return ROC_EFFORTS.filter((effort) => levels.includes(effort));
+  const map = model.thinkingLevelMap;
+  if (map === undefined) return ["medium", "high"];
+  return ROC_EFFORTS.filter((effort) => {
+    const level = map[effort];
+    return effort === "xhigh" ? level != null : level !== null;
+  });
 }
 
 /** Reads the model the Pi process would run into a validated Pi model. */
@@ -146,11 +145,12 @@ export function buildPiBackendFactory(input: {
       }
 
       // The probe process is only a catalog oracle; role attempts spawn
-      // their own children, and every live child is reaped on close. Both
-      // the default and the injected starter are tracked through the same
-      // wrapper so shutdown covers injected clients too, and a client that
-      // closes itself is dropped from tracking instead of accumulating.
+      // their own children.
       const liveClients = new Set<PiClientApi>();
+      /**
+       * Tracks a live attempt client so runtime shutdown closes it, and
+       * drops it from tracking once the client closes itself.
+       */
       const trackAttemptClient = (client: PiClientApi): PiClientApi => {
         liveClients.add(client);
         return {
@@ -166,6 +166,11 @@ export function buildPiBackendFactory(input: {
           },
         };
       };
+      /**
+       * Starts one attempt client through the injected or the default
+       * starter, unified under the same tracking wrapper so shutdown covers
+       * injected clients too.
+       */
       const startAttemptClient = async (cwd: string) =>
         trackAttemptClient(
           input.startAttemptClient

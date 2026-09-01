@@ -816,14 +816,19 @@ export function createPiHarness(input: {
     active: ActiveAttempt,
   ): Promise<HarnessDelivery> {
     const cursor = initialCursor;
-    // Drop queued deliveries the persisted cursor has already confirmed, then
-    // replay the head without shifting it: a retried call with the same cursor
-    // (its repository write failed) must hand out the identical delivery
-    // again, never skip ahead to the next one.
-    active.pendingDeliveries = active.pendingDeliveries.filter(
-      (queued) =>
-        queued.kind !== "event" || queued.event.sequence >= cursor.nextSequence,
-    );
+    // A queued delivery is acknowledged only by the exact cursor string it
+    // handed out: the head shifts solely when the incoming cursor byte-matches
+    // its nextCursor, which proves that delivery's repository write landed.
+    // Any other cursor — a retry of an earlier one, the same sequence with
+    // mutated fields, or a sequence that skips ahead — replays the head
+    // unchanged, so a delivery that was never persisted is never skipped.
+    if (request.backendCursor !== undefined) {
+      while (
+        active.pendingDeliveries[0]?.nextCursor === request.backendCursor
+      ) {
+        active.pendingDeliveries.shift();
+      }
+    }
     const queued = active.pendingDeliveries[0];
     if (queued !== undefined) return queued;
     if (active.outputDelivered) {

@@ -3,7 +3,6 @@ import {
   buildPiBackendFactory,
   startPiBackend,
 } from "../../../src/agents/pi/backend";
-import type { PiClientApi } from "../../../src/agents/pi/client";
 import { backends } from "../../../src/agents/registry";
 import {
   collect,
@@ -13,6 +12,7 @@ import {
   memoryBranches,
   messageEnd,
   RecordedPiClient,
+  ScriptedProbeClient,
 } from "./fixtures";
 
 /** Returns the scripted attempt client recorded at one dispatch index. */
@@ -25,38 +25,6 @@ function clientAt(
     throw new Error(`missing scripted attempt client at ${index}`);
   }
   return client;
-}
-
-/** A scripted probe client that never reaches the event stream. */
-class ScriptedProbeClient implements PiClientApi {
-  closeCount = 0;
-
-  constructor(
-    private readonly models: unknown,
-    private readonly stateModel: unknown,
-  ) {}
-
-  async request(command: string): Promise<unknown> {
-    if (command === "get_available_models") return { models: this.models };
-    if (command === "get_state") {
-      return {
-        sessionId: "sess-probe",
-        sessionFile: "/tmp/pi-fixture/sess-probe.jsonl",
-        model: this.stateModel,
-      };
-    }
-    throw new Error(`Unexpected probe command: ${command}`);
-  }
-
-  send(): void {}
-
-  async nextEvent(): Promise<never> {
-    throw new Error("the probe never streams events");
-  }
-
-  async close(): Promise<void> {
-    this.closeCount += 1;
-  }
 }
 
 const probeModels = [
@@ -234,6 +202,63 @@ test("reasoning-disabled models publish no efforts and null levels are excluded"
       // An unmapped reasoning model gets the safe subset without xhigh.
       expect(runtime.catalog).toContainEqual({
         id: "acme/no-map",
+        supportedReasoningEfforts: ["medium", "high"],
+      });
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    if (previous === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
+    else process.env.ROC_PI_EXPERIMENTAL = previous;
+  }
+});
+
+test("effort maps distinguish absent keys from explicit nulls", async () => {
+  const previous = process.env.ROC_PI_EXPERIMENTAL;
+  const models = [
+    {
+      id: "all-null",
+      provider: "acme",
+      reasoning: true,
+      thinkingLevelMap: { medium: null, high: null, xhigh: null },
+    },
+    {
+      id: "xhigh-only",
+      provider: "acme",
+      reasoning: true,
+      thinkingLevelMap: { xhigh: 3 },
+    },
+    {
+      id: "off-null",
+      provider: "acme",
+      reasoning: true,
+      thinkingLevelMap: { off: null },
+    },
+  ];
+  const probe = new ScriptedProbeClient(models, probeDefaultModel);
+  try {
+    process.env.ROC_PI_EXPERIMENTAL = "1";
+    const factory = buildPiBackendFactory({
+      startProbeClient: async () => probe,
+      startAttemptClient: async () => {
+        throw new Error("no role attempt runs in this test");
+      },
+    });
+    const runtime = await factory({ branches: undefined as never });
+    try {
+      const ids = runtime.catalog.map((model) => model.id);
+      // An all-null map explicitly disables every level; it must not fall
+      // back to the safe default subset.
+      expect(ids).not.toContain("acme/all-null");
+      // A sparse map keeps the default medium/high support for its missing
+      // keys and adds its explicit xhigh mapping.
+      expect(runtime.catalog).toContainEqual({
+        id: "acme/xhigh-only",
+        supportedReasoningEfforts: ["medium", "high", "xhigh"],
+      });
+      // An off-only null map touches no Roc effort, so the defaults hold.
+      expect(runtime.catalog).toContainEqual({
+        id: "acme/off-null",
         supportedReasoningEfforts: ["medium", "high"],
       });
     } finally {
