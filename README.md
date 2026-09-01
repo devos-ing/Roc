@@ -8,26 +8,29 @@
 
 # Roc
 
-Roc runs Codex coding tasks through a small, repeatable workflow:
+Roc runs coding tasks through a small, repeatable workflow:
 
 ```text
-Ready task → Scout → Implement → Review → Done
+Ready → Scout → Implement → Review → Pull request → Done
 ```
 
 - Scout reads the task and plans the change.
 - Implement writes the code on a separate Git branch and commits it.
 - Review checks that exact commit without changing it.
+- Roc publishes an accepted commit as a pull request.
 
 Roc saves every task and attempt in SQLite. If you stop the process, you can
 continue later. If Review rejects a change, Roc creates a draft follow-up task
 with the feedback instead of retrying forever.
 
-Roc runs one task at a time. It does not merge, push, or delete branches.
+Roc runs one task at a time. It pushes accepted task branches and opens or
+updates their pull requests. It does not merge pull requests or delete branches.
 
 ## Quick start
 
-You need [Bun](https://bun.sh/) 1.3 or later, Git, and the
-[Codex CLI](https://github.com/openai/codex).
+You need [Bun](https://bun.sh/) 1.3 or later, Git, the
+[Codex CLI](https://github.com/openai/codex), and the
+[GitHub CLI](https://cli.github.com/) signed in with `gh auth login`.
 
 Run Roc inside a Git project:
 
@@ -35,9 +38,13 @@ Run Roc inside a Git project:
 npx roc-it@latest onboard
 ```
 
-Onboarding creates Roc's local database and installs the `roc-create-tasks`
-skill. It also asks how long an Agile cycle should last and which agent skills
-Codex may use.
+Onboarding creates Roc's local database and installs two skills:
+
+- `roc-create-tasks` turns a requirement into an approved backlog.
+- `pr-review-to-closure` tracks findings across repeated pull-request reviews.
+
+The repeat-review skill needs Python 3.9 or later. Roc's scheduler and task
+commands only need Bun.
 
 Create a backlog in Codex:
 
@@ -56,7 +63,7 @@ Check the tasks, run them, then open the board:
 
 ```bash
 npx roc-it@latest task list
-npx roc-it@latest scheduler run
+npx roc-it@latest scheduler run --base-branch main
 npx roc-it@latest task board
 ```
 
@@ -85,52 +92,92 @@ dependencies, and acceptance criteria. Press `Space` for a quick peek or
 `Enter` for the full view. Press `r` to refresh.
 
 The board is read-only. Opening it never starts the scheduler or changes a
-task. Run `npx roc-it@latest task board --all` to include older cycles.
+task. Run `npx roc-it@latest task board --all` to include older cycles. The
+shorter `npx roc-it@latest tui` command opens the same board.
 
-## What happens during a task
+## How it works
+
+Roc picks one ready task and passes it through three agent roles.
 
 ```mermaid
 flowchart LR
-    B[Ready] --> S[Scout plans]
-    S --> I[Implement codes and commits]
-    I --> R[Review checks the commit]
-    R -->|Accepted| D[Done]
-    R -->|Rejected| F[Draft follow-up]
+    S["Scout<br/>Understand the task"] --> I["Implement<br/>Write and commit code"]
+    I --> R["Review<br/>Check the exact commit"]
+    R -->|Accepted| P["Posthook and pull request"]
+    P --> D["Done"]
 ```
 
 Each task gets its own branch in the dedicated checkout. Review receives the
-commit created by Implement. It cannot edit the working tree.
+commit created by Implement and cannot edit the working tree.
+
+After an accepted Review, Roc runs the trusted posthook and verifies that the
+Implement commit is clean. It then pushes `agile/<task-id>` and creates or updates one
+pull request before the task becomes done. If Review rejects it,
+Roc creates a follow-up ticket and moves on to the next ready task. A publishing
+failure moves the task to `needs_replan` and keeps the local commit for recovery.
+
+Use `--base-branch` to name the GitHub branch that should receive the pull
+request. Use `--base` separately if task branches should start from a particular
+local commit.
 
 Roc records task state, attempts, events, model choices, and token use. A token
 target is an estimate for planning. It does not stop an agent when the target is
 reached.
 
+## Experimental ZCode backend
+
+Roc uses Codex by default. It can also run the Z.ai desktop app's headless ZCode
+server:
+
+```bash
+cd /absolute/path/to/project
+ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --base-branch main --backend zcode
+```
+
+ZCode needs a signed-in Z.ai desktop app on the same machine. Roc reads the
+enabled provider from `~/.zcode/v2/config.json` and launches the app's bundled
+CLI through `ZCODE_BIN`. That CLI is undocumented and may change between app
+versions.
+
+ZCode has no protocol-level filesystem sandbox. An unattended session can write
+outside the task checkout, and requests to disable command sandboxing are
+approved automatically. Only run this backend inside an OS sandbox or container
+that exposes the task checkout. Setting `ROC_ZCODE_EXPERIMENTAL=1` confirms that
+you accept this risk.
+
 ## Other ways to add tasks
 
-You can import a Roc backlog JSON file:
+Import a Roc backlog JSON file:
 
 ```bash
 npx roc-it@latest task import .agile/backlog/my-backlog.json
 ```
 
-You can also import open GitHub Issues labelled `roc:ready`:
+Or import open GitHub Issues labelled `roc:ready`:
 
 ```bash
-gh auth login
 npx roc-it@latest task import-github
 ```
 
 GitHub import is one-way. Roc skips an Issue after importing its ID, so later
 edits to the Issue do not update the stored task.
 
-## Useful commands
+## Repeated pull-request reviews
+
+Ask an agent to use the installed `pr-review-to-closure` skill when reviewing a
+pull request again. It keeps stable finding IDs, compares the new head with the
+previous review, and reports a merge decision after the required checks pass.
+The skill does not comment, approve, commit, push, or merge unless you ask.
+
+## Commands
 
 ```text
 npx roc-it@latest onboard                 Set up Roc in this project
 npx roc-it@latest cycle current           Show the current Agile cycle
 npx roc-it@latest task list               List stored tasks
 npx roc-it@latest task board [--all]      Open the read-only board
-npx roc-it@latest scheduler run           Run ready tasks with Codex
+npx roc-it@latest tui                     Open the read-only board
+npx roc-it@latest scheduler run --base-branch BRANCH [--base REF] [--backend <name>]
 npx roc-it@latest scheduler inspect       Inspect scheduler state
 npx roc-it@latest tokens [--no-color]     Show token use
 npx roc-it@latest help                    Show all commands
@@ -145,9 +192,9 @@ roc-it help
 
 ## Current limits
 
-Roc supports Codex today. It does not yet run tasks in parallel, ask for remote
-approval, or send notifications. Pi, Claude Code, and Cursor support are
-planned.
+Roc supports Codex and an experimental ZCode backend. It does not yet run tasks
+in parallel, ask for remote approval, or send notifications. Pi, Claude Code,
+and Cursor backends are planned.
 
 ## More detail
 

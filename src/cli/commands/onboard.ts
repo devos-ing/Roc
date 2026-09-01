@@ -11,10 +11,7 @@ import {
   activeAgileCycle,
 } from "../../domain/agile-cycle";
 import { loadRocSettingsIfPresent, saveRocSettings } from "../../settings";
-import {
-  installRocCreateTasksSkill,
-  SkillInstallError,
-} from "../../skills/install";
+import { installPackagedSkills, SkillInstallError } from "../../skills/install";
 import { openDatabase } from "../../store/database";
 import {
   commandProjectRoot,
@@ -70,15 +67,7 @@ async function executeOnboard(
 ): Promise<number> {
   const global = options.global === true;
   const retryCommand = onboardingRetryCommand(global);
-  const sourcePath = resolve(
-    import.meta.dir,
-    "..",
-    "..",
-    "..",
-    "skills",
-    "roc-create-tasks",
-    "SKILL.md",
-  );
+  const sourceRoot = resolve(import.meta.dir, "..", "..", "..", "skills");
   const root = global
     ? (context.runtime.homeRoot ?? homedir())
     : await commandProjectRoot(context, { allowCurrentDirectory: true });
@@ -88,12 +77,12 @@ async function executeOnboard(
   const completedSteps: string[] = [];
   context.io.out(renderOnboardingHeader(scope));
   try {
-    let installed: Awaited<ReturnType<typeof installRocCreateTasksSkill>>;
+    let installed: Awaited<ReturnType<typeof installPackagedSkills>>;
     if (global) {
       const databaseStep = renderDatabaseStep({ scope });
       completedSteps.push(databaseStep);
       context.io.out(databaseStep);
-      installed = await installRocCreateTasksSkill({ sourcePath, root });
+      installed = await installPackagedSkills({ sourceRoot, root });
     } else {
       const dbPath = projectDatabasePath(root);
       const db = openDatabase(dbPath);
@@ -101,7 +90,7 @@ async function executeOnboard(
         const databaseStep = renderDatabaseStep({ dbPath, scope });
         completedSteps.push(databaseStep);
         context.io.out(databaseStep);
-        installed = await installRocCreateTasksSkill({ sourcePath, root });
+        installed = await installPackagedSkills({ sourceRoot, root });
       } finally {
         db.close();
       }

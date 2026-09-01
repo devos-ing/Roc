@@ -16,6 +16,7 @@ import {
   HarnessEventSchema,
   HarnessRoleInputSchema,
   type HarnessStepRequest,
+  type ImplementOutput,
   ReasoningEffortSchema,
   RetryIndexSchema,
 } from "../harness/contracts";
@@ -53,6 +54,24 @@ export type HookAttemptStart =
   | { kind: "succeeded" }
   | { kind: "exhausted" }
   | { kind: "started"; attempt: number };
+
+export type TaskPublicationRecord = {
+  taskId: string;
+  branch: string;
+  baseBranch: string;
+  commitSha: string;
+  status: "pending" | "published" | "failed";
+  pullRequestNumber?: number;
+  pullRequestUrl?: string;
+  pullRequestState?: "OPEN" | "MERGED";
+  failureMessage?: string;
+};
+
+export type PublishingTask = {
+  task: z.infer<typeof StoredTaskSchema>;
+  implementation: ImplementOutput;
+  publication?: TaskPublicationRecord;
+};
 
 const NonEmpty = z.string().trim().min(1);
 const CycleIdSchema = NonEmpty;
@@ -199,6 +218,18 @@ type TaskHookRow = {
   workspace_path: string | null;
 };
 
+type TaskPublicationRow = {
+  task_id: string;
+  branch: string;
+  base_branch: string;
+  commit_sha: string;
+  status: string;
+  pull_request_number: number | null;
+  pull_request_url: string | null;
+  pull_request_state: string | null;
+  failure_message: string | null;
+};
+
 /** Converts a database task row into its validated stored-task representation. */
 function storedTask(row: TaskRow) {
   return StoredTaskSchema.parse({
@@ -231,6 +262,33 @@ function taskHookRecord(row: TaskHookRow): TaskHookRecord {
   };
 }
 
+/** Converts one persisted publication row into the scheduler's durable publication receipt. */
+function taskPublicationRecord(row: TaskPublicationRow): TaskPublicationRecord {
+  return {
+    taskId: row.task_id,
+    branch: NonEmpty.parse(row.branch),
+    baseBranch: NonEmpty.parse(row.base_branch),
+    commitSha: NonEmpty.parse(row.commit_sha),
+    status: z.enum(["pending", "published", "failed"]).parse(row.status),
+    pullRequestNumber:
+      row.pull_request_number === null
+        ? undefined
+        : z.number().int().positive().parse(row.pull_request_number),
+    pullRequestUrl:
+      row.pull_request_url === null
+        ? undefined
+        : NonEmpty.parse(row.pull_request_url),
+    pullRequestState:
+      row.pull_request_state === null
+        ? undefined
+        : z.enum(["OPEN", "MERGED"]).parse(row.pull_request_state),
+    failureMessage:
+      row.failure_message === null
+        ? undefined
+        : NonEmpty.parse(row.failure_message),
+  };
+}
+
 export class OrchestrationRepository {
   /** Creates an orchestration repository with injectable time, IDs, faults, and routing. */
   constructor(
@@ -253,7 +311,7 @@ export class OrchestrationRepository {
           AND task.approved = 1
           AND NOT EXISTS (
             SELECT 1 FROM tasks AS active
-            WHERE active.status IN ('claimed', 'scouting', 'implementing', 'reviewing')
+            WHERE active.status IN ('claimed', 'scouting', 'implementing', 'reviewing', 'publishing')
           )
           AND NOT EXISTS (
             SELECT 1
@@ -324,6 +382,225 @@ export class OrchestrationRepository {
       `)
       .all()
       .map(storedTask);
+  }
+
+  /** Returns tasks whose posthooks must settle before a publishing task can reach its final state. */
+  listPosthookTasks(): z.infer<typeof StoredTaskSchema>[] {
+    return this.db
+      .query<TaskRow, []>(`
+        SELECT id, cycle_id, title, spec_json, spec_path, spec_hash, base_commit, status,
+               priority, approval_required, approved, context_id
+        FROM tasks
+        WHERE status IN ('publishing', 'done', 'rejected', 'failed_infra')
+        ORDER BY updated_at ASC, id ASC
+      `)
+      .all()
+      .map(storedTask);
+  }
+
+  /** Returns pending accepted tasks with their durable Implement output and publication state. */
+  listPublishingTasks(): PublishingTask[] {
+    return this.db
+      .query<TaskRow, []>(`
+        SELECT id, cycle_id, title, spec_json, spec_path, spec_hash, base_commit, status,
+               priority, approval_required, approved, context_id
+        FROM tasks
+        WHERE status = 'publishing'
+        ORDER BY updated_at ASC, id ASC
+      `)
+      .all()
+      .map((row) => {
+        const task = storedTask(row);
+        return {
+          task,
+          implementation: this.implementationOutput(task.id),
+          publication: this.getTaskPublication(task.id),
+        };
+      });
+  }
+
+  /** Returns the durable publication receipt for one task when publication has begun. */
+  getTaskPublication(taskId: string): TaskPublicationRecord | undefined {
+    const row = this.db
+      .query<TaskPublicationRow, [string]>(`
+        SELECT task_id, branch, base_branch, commit_sha, status, pull_request_number,
+               pull_request_url, pull_request_state, failure_message
+        FROM task_publications WHERE task_id = ?
+      `)
+      .get(taskId);
+    return row === null ? undefined : taskPublicationRecord(row);
+  }
+
+  /** Creates or resumes a durable publication receipt before any remote publication side effect. */
+  beginPublication(input: {
+    taskId: string;
+    branch: string;
+    baseBranch: string;
+    commitSha: string;
+    leaseOwnerId?: string;
+  }): TaskPublicationRecord {
+    return this.db.transaction(() => {
+      this.assertLeaseOwner(input.leaseOwnerId);
+      const task = this.getTask(input.taskId);
+      if (task === undefined)
+        throw new Error(`Task not found: ${input.taskId}`);
+      if (task.status !== "publishing") {
+        throw new Error(`Task is not publishing: ${input.taskId}`);
+      }
+      const implementation = this.implementationOutput(input.taskId);
+      if (implementation.commitSha !== input.commitSha) {
+        throw new Error(
+          `Publication commit does not match the Implement output: ${input.taskId}`,
+        );
+      }
+      const existing = this.getTaskPublication(input.taskId);
+      if (
+        existing !== undefined &&
+        existing.branch === input.branch &&
+        existing.commitSha === input.commitSha
+      ) {
+        return existing;
+      }
+      if (existing?.status === "published") {
+        throw new Error(
+          `Published task cannot start a new publication: ${input.taskId}`,
+        );
+      }
+      const now = this.now();
+      this.db
+        .query(`
+          INSERT INTO task_publications(
+            task_id, branch, base_branch, commit_sha, status, pull_request_number,
+            pull_request_url, pull_request_state, failure_message, created_at, updated_at
+          ) VALUES(?, ?, ?, ?, 'pending', NULL, NULL, NULL, NULL, ?, ?)
+          ON CONFLICT(task_id) DO UPDATE SET
+            branch = excluded.branch,
+            base_branch = excluded.base_branch,
+            commit_sha = excluded.commit_sha,
+            status = 'pending',
+            pull_request_number = NULL,
+            pull_request_url = NULL,
+            pull_request_state = NULL,
+            failure_message = NULL,
+            updated_at = excluded.updated_at
+        `)
+        .run(
+          input.taskId,
+          NonEmpty.parse(input.branch),
+          NonEmpty.parse(input.baseBranch),
+          NonEmpty.parse(input.commitSha),
+          now,
+          now,
+        );
+      this.db
+        .query(`
+          INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+          VALUES(?, ?, 'task.publication_started', ?, ?)
+        `)
+        .run(
+          this.id("event"),
+          input.taskId,
+          JSON.stringify({
+            branch: input.branch,
+            baseBranch: input.baseBranch,
+            commitSha: input.commitSha,
+          }),
+          now,
+        );
+      const publication = this.getTaskPublication(input.taskId);
+      if (publication === undefined)
+        throw new Error(`Publication was not created: ${input.taskId}`);
+      return publication;
+    })();
+  }
+
+  /** Records a reconciled pull request and atomically completes its publishing task. */
+  completePublication(input: {
+    taskId: string;
+    pullRequest: { number: number; url: string; state: "OPEN" | "MERGED" };
+    leaseOwnerId?: string;
+  }): void {
+    this.db.transaction(() => {
+      this.assertLeaseOwner(input.leaseOwnerId);
+      const task = this.getTask(input.taskId);
+      if (task === undefined)
+        throw new Error(`Task not found: ${input.taskId}`);
+      if (task.status !== "publishing") {
+        throw new Error(`Task is not publishing: ${input.taskId}`);
+      }
+      const publication = this.getTaskPublication(input.taskId);
+      if (publication === undefined)
+        throw new Error(`Publication was not started: ${input.taskId}`);
+      const now = this.now();
+      this.db
+        .query(`
+          UPDATE task_publications
+          SET status = 'published', pull_request_number = ?, pull_request_url = ?,
+              pull_request_state = ?, failure_message = NULL, updated_at = ?
+          WHERE task_id = ?
+        `)
+        .run(
+          z.number().int().positive().parse(input.pullRequest.number),
+          NonEmpty.parse(input.pullRequest.url),
+          input.pullRequest.state,
+          now,
+          input.taskId,
+        );
+      assertTransition(task.status, "done");
+      this.db
+        .query("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?")
+        .run(now, input.taskId);
+      this.db
+        .query(`
+          INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+          VALUES(?, ?, 'task.status_changed', ?, ?)
+        `)
+        .run(
+          this.id("event"),
+          input.taskId,
+          JSON.stringify({ from: task.status, to: "done", publication }),
+          now,
+        );
+    })();
+  }
+
+  /** Records a publishing-stage failure and returns the accepted task to replanning without changing its commit. */
+  failPublishing(
+    taskId: string,
+    failureMessage: string,
+    leaseOwnerId?: string,
+  ): void {
+    this.db.transaction(() => {
+      this.assertLeaseOwner(leaseOwnerId);
+      const task = this.getTask(taskId);
+      if (task === undefined) throw new Error(`Task not found: ${taskId}`);
+      if (task.status !== "publishing") return;
+      const now = this.now();
+      this.db
+        .query(`
+          UPDATE task_publications
+          SET status = 'failed', failure_message = ?, updated_at = ?
+          WHERE task_id = ?
+        `)
+        .run(NonEmpty.parse(failureMessage), now, taskId);
+      assertTransition(task.status, "needs_replan");
+      this.db
+        .query(
+          "UPDATE tasks SET status = 'needs_replan', updated_at = ? WHERE id = ?",
+        )
+        .run(now, taskId);
+      this.db
+        .query(`
+          INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+          VALUES(?, ?, 'task.needs_replan', ?, ?)
+        `)
+        .run(
+          this.id("event"),
+          taskId,
+          JSON.stringify({ from: task.status, failure: failureMessage }),
+          now,
+        );
+    })();
   }
 
   /** Returns the durable receipt for one task hook when one has been trusted or executed. */
@@ -996,10 +1273,10 @@ export class OrchestrationRepository {
           if (status === undefined)
             throw new Error(`Task not found: ${attempt.task_id}`);
           const from = TaskStatusSchema.parse(status);
-          assertTransition(from, "done");
+          assertTransition(from, "publishing");
           this.db
             .query(
-              "UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?",
+              "UPDATE tasks SET status = 'publishing', updated_at = ? WHERE id = ?",
             )
             .run(event.occurredAt, attempt.task_id);
           this.db
@@ -1010,7 +1287,7 @@ export class OrchestrationRepository {
             .run(
               this.id("event"),
               attempt.task_id,
-              JSON.stringify({ from, to: "done" }),
+              JSON.stringify({ from, to: "publishing" }),
               event.occurredAt,
             );
         } else if (
@@ -1779,6 +2056,15 @@ export class OrchestrationRepository {
       throw new Error(`Invalid ${role} output for task ${taskId}`);
     }
     return event.output;
+  }
+
+  /** Returns the latest successful Implement output that supplies a task's publishable commit. */
+  private implementationOutput(taskId: string): ImplementOutput {
+    const output = this.latestRoleOutput(taskId, "implement");
+    if (output.kind !== "implement") {
+      throw new Error(`Invalid Implement output for task ${taskId}`);
+    }
+    return output;
   }
 }
 

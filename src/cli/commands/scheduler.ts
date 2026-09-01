@@ -13,7 +13,7 @@ import type { CliCommandContext, SchedulerRunInput } from "../types";
 /** Runs the public scheduler against a registered backend in the current project. */
 async function executeSchedulerRun(
   context: CliCommandContext,
-  options: { base: string; backend: string },
+  options: { base: string; baseBranch?: string; backend: string },
 ): Promise<number> {
   if (!isRealBackendName(options.backend)) {
     context.io.err(
@@ -34,6 +34,9 @@ async function executeSchedulerRun(
     dbPath,
     repoPath,
     baseRef: options.base,
+    ...(options.baseBranch === undefined
+      ? {}
+      : { baseBranch: options.baseBranch }),
   };
   try {
     context.io.out("Status: Starting");
@@ -79,13 +82,23 @@ export function registerSchedulerCommands(
     .description("Run ready tasks with a registered backend")
     .option("--base <ref>", "Git ref used as the task base", "HEAD")
     .option(
+      "--base-branch <branch>",
+      "GitHub branch targeted by published pull requests",
+    )
+    .option(
       "--backend <name>",
       `Scheduler backend (${Object.keys(backends).join("|")})`,
       "codex",
     )
-    .action(async (options: { base: string; backend: string }) => {
-      context.exitCode = await executeSchedulerRun(context, options);
-    });
+    .action(
+      async (options: {
+        base: string;
+        baseBranch?: string;
+        backend: string;
+      }) => {
+        context.exitCode = await executeSchedulerRun(context, options);
+      },
+    );
   scheduler
     .command("inspect")
     .description("Print the durable scheduler state")

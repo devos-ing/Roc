@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export type SkillInstallResult = {
@@ -58,70 +58,112 @@ async function ensureRealDirectory(path: string): Promise<void> {
   await assertRealDirectory(path);
 }
 
-/** Installs the canonical Roc skill below one root without following symbolic links. */
-export async function installRocCreateTasksSkill(input: {
+type PackagedSkillFile = {
+  relativeComponents: string[];
   sourcePath: string;
+};
+
+/** Collects regular packaged skill files in stable path order without following symbolic links. */
+async function collectPackagedSkillFiles(
+  sourceRoot: string,
+  relativeComponents: string[] = [],
+): Promise<PackagedSkillFile[]> {
+  const directory = join(sourceRoot, ...relativeComponents);
+  await assertRealDirectory(directory);
+  const entries = await readdir(directory, { withFileTypes: true });
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  const files: PackagedSkillFile[] = [];
+  for (const entry of entries) {
+    const components = [...relativeComponents, entry.name];
+    const sourcePath = join(sourceRoot, ...components);
+    const stats = await lstat(sourcePath);
+    if (stats.isSymbolicLink()) {
+      throw new Error(`Skill source path is a symbolic link: ${sourcePath}`);
+    }
+    if (stats.isDirectory()) {
+      files.push(...(await collectPackagedSkillFiles(sourceRoot, components)));
+      continue;
+    }
+    if (!stats.isFile()) {
+      throw new Error(`Skill source path is not a regular file: ${sourcePath}`);
+    }
+    files.push({ relativeComponents: components, sourcePath });
+  }
+  return files;
+}
+
+/** Installs every repository-packaged skill below one root without following symbolic links. */
+export async function installPackagedSkills(input: {
+  sourceRoot: string;
   root: string;
 }): Promise<SkillInstallResult> {
-  const source = await readFile(input.sourcePath);
-  const targets = [
-    {
-      directory: [".agents", "skills", "roc-create-tasks"],
-      file: "SKILL.md",
-    },
-    {
-      directory: [".claude", "skills", "roc-create-tasks"],
-      file: "SKILL.md",
-    },
+  const sources = await collectPackagedSkillFiles(input.sourceRoot);
+  const targetRoots = [
+    [".agents", "skills"],
+    [".claude", "skills"],
   ];
   const result: SkillInstallResult = { created: [], skipped: [] };
 
   await assertRealDirectory(input.root);
-  for (const target of targets) {
-    const destination = join(input.root, ...target.directory, target.file);
-    try {
-      let directory = input.root;
-      for (const component of target.directory) {
-        directory = join(directory, component);
-        await ensureRealDirectory(directory);
-      }
+  for (const targetRoot of targetRoots) {
+    for (const source of sources) {
+      const directoryComponents = [
+        ...targetRoot,
+        ...source.relativeComponents.slice(0, -1),
+      ];
+      const destination = join(
+        input.root,
+        ...targetRoot,
+        ...source.relativeComponents,
+      );
       try {
-        const stats = await lstat(destination);
-        if (stats.isSymbolicLink()) {
-          throw new Error(
-            `Skill destination is a symbolic link: ${destination}`,
-          );
+        let directory = input.root;
+        for (const component of directoryComponents) {
+          directory = join(directory, component);
+          await ensureRealDirectory(directory);
         }
-        if (!stats.isFile()) {
-          throw new Error(`Skill destination is not a file: ${destination}`);
-        }
-        if (!(await readFile(destination)).equals(source)) {
-          throw new Error(`Skill destination differs: ${destination}`);
-        }
-        result.skipped.push(destination);
-      } catch (error) {
-        if (!isMissingPathError(error)) throw error;
-        const file = await open(
-          destination,
-          constants.O_WRONLY |
-            constants.O_CREAT |
-            constants.O_EXCL |
-            constants.O_NOFOLLOW,
-          0o644,
-        );
         try {
-          await file.writeFile(source);
-        } finally {
-          await file.close();
+          const stats = await lstat(destination);
+          if (stats.isSymbolicLink()) {
+            throw new Error(
+              `Skill destination is a symbolic link: ${destination}`,
+            );
+          }
+          if (!stats.isFile()) {
+            throw new Error(`Skill destination is not a file: ${destination}`);
+          }
+          if (
+            !(await readFile(destination)).equals(
+              await readFile(source.sourcePath),
+            )
+          ) {
+            throw new Error(`Skill destination differs: ${destination}`);
+          }
+          result.skipped.push(destination);
+        } catch (error) {
+          if (!isMissingPathError(error)) throw error;
+          const file = await open(
+            destination,
+            constants.O_WRONLY |
+              constants.O_CREAT |
+              constants.O_EXCL |
+              constants.O_NOFOLLOW,
+            0o644,
+          );
+          try {
+            await file.writeFile(await readFile(source.sourcePath));
+          } finally {
+            await file.close();
+          }
+          result.created.push(destination);
         }
-        result.created.push(destination);
+      } catch (error) {
+        throw new SkillInstallError({
+          cause: error,
+          completed: result,
+          destination,
+        });
       }
-    } catch (error) {
-      throw new SkillInstallError({
-        cause: error,
-        completed: result,
-        destination,
-      });
     }
   }
   return result;

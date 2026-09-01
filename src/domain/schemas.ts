@@ -13,6 +13,7 @@ export const TaskStatusSchema = z.enum([
   "scouting",
   "implementing",
   "reviewing",
+  "publishing",
   "done",
   "rejected",
   "failed_infra",

@@ -217,14 +217,71 @@ CREATE TABLE task_hooks (
 );
 `;
 
+const migration6 = `
+CREATE TABLE tasks_v6 (
+  id TEXT PRIMARY KEY NOT NULL,
+  cycle_id TEXT NOT NULL REFERENCES cycles(id),
+  title TEXT NOT NULL,
+  spec_json TEXT NOT NULL,
+  spec_path TEXT,
+  spec_hash TEXT,
+  status TEXT NOT NULL CHECK(status IN (
+    'draft', 'needs_input', 'needs_replan', 'ready', 'claimed', 'scouting',
+    'implementing', 'reviewing', 'publishing', 'done', 'rejected', 'failed_infra'
+  )),
+  priority INTEGER NOT NULL CHECK(priority >= 0),
+  risk TEXT NOT NULL CHECK(risk IN ('low', 'medium', 'high')),
+  token_ceiling INTEGER NOT NULL CHECK(token_ceiling > 0),
+  approval_required INTEGER NOT NULL CHECK(approval_required IN (0, 1)),
+  approved INTEGER NOT NULL CHECK(approved IN (0, 1)),
+  root_task_id TEXT REFERENCES tasks(id) DEFERRABLE INITIALLY DEFERRED,
+  parent_task_id TEXT REFERENCES tasks(id) DEFERRABLE INITIALLY DEFERRED,
+  discovered_from_review_id TEXT REFERENCES reviews(id) DEFERRABLE INITIALLY DEFERRED,
+  context_id TEXT REFERENCES contexts(id) DEFERRABLE INITIALLY DEFERRED,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  base_commit TEXT,
+  UNIQUE(cycle_id, id)
+);
+INSERT INTO tasks_v6(
+  id, cycle_id, title, spec_json, spec_path, spec_hash, status, priority, risk,
+  token_ceiling, approval_required, approved, root_task_id, parent_task_id,
+  discovered_from_review_id, context_id, created_at, updated_at, base_commit
+)
+SELECT
+  id, cycle_id, title, spec_json, spec_path, spec_hash, status, priority, risk,
+  token_ceiling, approval_required, approved, root_task_id, parent_task_id,
+  discovered_from_review_id, context_id, created_at, updated_at, base_commit
+FROM tasks;
+DROP TABLE tasks;
+ALTER TABLE tasks_v6 RENAME TO tasks;
+CREATE UNIQUE INDEX tasks_one_followup_per_review
+  ON tasks(discovered_from_review_id)
+  WHERE discovered_from_review_id IS NOT NULL;
+
+CREATE TABLE task_publications (
+  task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id),
+  branch TEXT NOT NULL,
+  base_branch TEXT NOT NULL,
+  commit_sha TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'published', 'failed')),
+  pull_request_number INTEGER,
+  pull_request_url TEXT,
+  pull_request_state TEXT CHECK(pull_request_state IN ('OPEN', 'MERGED')),
+  failure_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`;
+
 /** Migrates a database transactionally through every supported schema version. */
 export function migrate(db: Database): void {
   let version =
     db.query<{ user_version: number }, []>("PRAGMA user_version").get()
       ?.user_version ?? 0;
-  if (version > 5)
+  if (version > 6)
     throw new Error(
-      `Database version ${version} is newer than supported version 5`,
+      `Database version ${version} is newer than supported version 6`,
     );
   if (version === 0) {
     db.transaction(() => {
@@ -319,5 +376,40 @@ export function migrate(db: Database): void {
       db.exec(migration5);
       db.exec("PRAGMA user_version = 5");
     })();
+    version = 5;
+  }
+  if (version === 5) {
+    const foreignKeys =
+      db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()
+        ?.foreign_keys ?? 0;
+    db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      db.transaction(() => {
+        db.exec(migration6);
+        const violation = db
+          .query<
+            {
+              table: string;
+              rowid: number | null;
+              parent: string;
+              fkid: number;
+            },
+            []
+          >("PRAGMA foreign_key_check")
+          .get();
+        if (violation) {
+          throw new Error(
+            `Foreign key check failed during migration 6: ${violation.table} row ${violation.rowid ?? "unknown"}`,
+          );
+        }
+        db.exec("PRAGMA user_version = 6");
+      })();
+    } finally {
+      db.exec(
+        foreignKeys === 0
+          ? "PRAGMA foreign_keys = OFF"
+          : "PRAGMA foreign_keys = ON",
+      );
+    }
   }
 }

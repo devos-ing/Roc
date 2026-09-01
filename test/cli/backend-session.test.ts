@@ -207,6 +207,35 @@ test("runBackendSession closes the backend when no catalog model is compatible",
   }
 });
 
+test("runBackendSession rejects GitHub preflight before starting the backend", async () => {
+  const root = await createRepository();
+  let started = false;
+  const factory: BackendFactory = async () => {
+    started = true;
+    throw new Error("Backend should not start");
+  };
+  try {
+    await expect(
+      runBackendSession(
+        factory,
+        sessionInput(root, join(root, "state.db")),
+        "run-preflight",
+        {
+          preflight: {
+            async assertReady() {
+              throw new Error("gh auth login is required");
+            },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: "GITHUB_PREFLIGHT_FAILED" });
+    expect(started).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+  }
+});
+
 test("runBackendSession closes the backend when the scheduler database cannot open", async () => {
   const root = await createRepository();
   // A directory cannot back a SQLite database file.

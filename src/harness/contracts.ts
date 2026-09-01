@@ -143,36 +143,47 @@ export const HarnessDeliverySchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
-export const FakeScenarioSchema = z
+export const FakeScenarioAttemptSchema = z
   .object({
-    attempts: z
+    taskId: NonEmpty,
+    role: AgentRoleSchema,
+    retryIndex: RetryIndexSchema,
+    expect: z
+      .object({
+        model: NonEmpty,
+        effort: ReasoningEffortSchema,
+        contextRef: ContextRefSchema.optional(),
+      })
+      .strict(),
+    deliveries: z
       .array(
         z
           .object({
-            taskId: NonEmpty,
-            role: AgentRoleSchema,
-            retryIndex: RetryIndexSchema,
-            expect: z
-              .object({
-                model: NonEmpty,
-                effort: ReasoningEffortSchema,
-                contextRef: ContextRefSchema.optional(),
-              })
-              .strict(),
-            deliveries: z
-              .array(
-                z
-                  .object({
-                    nextCursor: NonEmpty,
-                    event: HarnessEventSchema,
-                  })
-                  .strict(),
-              )
-              .min(1),
+            nextCursor: NonEmpty,
+            event: HarnessEventSchema,
           })
           .strict(),
       )
       .min(1),
+  })
+  .strict()
+  .superRefine((attempt, context) => {
+    const cursors = new Set<string>();
+    attempt.deliveries.forEach((delivery, deliveryIndex) => {
+      if (cursors.has(delivery.nextCursor)) {
+        context.addIssue({
+          code: "custom",
+          path: ["deliveries", deliveryIndex, "nextCursor"],
+          message: `Duplicate fake cursor for ${attempt.taskId}:${attempt.role}:${attempt.retryIndex}: ${delivery.nextCursor}`,
+        });
+      }
+      cursors.add(delivery.nextCursor);
+    });
+  });
+
+export const FakeScenarioSchema = z
+  .object({
+    attempts: z.array(FakeScenarioAttemptSchema).min(1),
   })
   .strict()
   .superRefine((scenario, context) => {
@@ -187,24 +198,6 @@ export const FakeScenarioSchema = z
         });
       }
       attemptKeys.add(attemptKey);
-
-      const cursors = new Set<string>();
-      attempt.deliveries.forEach((delivery, deliveryIndex) => {
-        if (cursors.has(delivery.nextCursor)) {
-          context.addIssue({
-            code: "custom",
-            path: [
-              "attempts",
-              attemptIndex,
-              "deliveries",
-              deliveryIndex,
-              "nextCursor",
-            ],
-            message: `Duplicate fake cursor for ${attemptKey}: ${delivery.nextCursor}`,
-          });
-        }
-        cursors.add(delivery.nextCursor);
-      });
     });
   });
 

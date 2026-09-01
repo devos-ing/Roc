@@ -36,6 +36,8 @@ export type RealSchedulerRunInput = {
   dbPath: string;
   repoPath: string;
   baseRef: string;
+  /** Names the GitHub branch that pull requests target, independently of the local base ref. */
+  baseBranch?: string;
 };
 
 export type SchedulerRunInput =

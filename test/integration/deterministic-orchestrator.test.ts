@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TaskPublisher } from "../../src/github/pr-publisher";
 import type { HarnessEvent } from "../../src/harness/contracts";
 import { createFakeHarness } from "../../src/harness/fake";
 import { Scheduler } from "../../src/scheduler/scheduler";
@@ -158,6 +159,20 @@ function createIds(): IdFactory {
   };
 }
 
+function fakePublisher(calls: string[]): TaskPublisher {
+  return {
+    baseBranch: "main",
+    async publish(input) {
+      calls.push(input.task.id);
+      return {
+        number: calls.length,
+        url: `https://example.test/pull/${calls.length}`,
+        state: "OPEN",
+      };
+    },
+  };
+}
+
 test("three-task deterministic scheduler gate rejects, recovers, and accounts exactly", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-orchestrator-gate-"));
   const databasePath = join(root, "state.db");
@@ -205,7 +220,15 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
       () => "2026-08-25T00:00:05.000Z",
       ids,
     );
-    const first = new Scheduler(repo, fake.harness);
+    const publicationCalls: string[] = [];
+    const publisher = fakePublisher(publicationCalls);
+    const first = new Scheduler(
+      repo,
+      fake.harness,
+      () => {},
+      undefined,
+      publisher,
+    );
     for (
       let tick = 0;
       repo.inspectTask("T1")?.status !== "rejected" && tick < 40;
@@ -260,12 +283,18 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
       attemptId: "attempt-4",
     });
     let crashed = false;
-    const crashing = new Scheduler(repo, fake.harness, (point) => {
-      if (point === "after_delivery_commit" && !crashed) {
-        crashed = true;
-        throw new Error("simulated post-commit crash");
-      }
-    });
+    const crashing = new Scheduler(
+      repo,
+      fake.harness,
+      (point) => {
+        if (point === "after_delivery_commit" && !crashed) {
+          crashed = true;
+          throw new Error("simulated post-commit crash");
+        }
+      },
+      undefined,
+      publisher,
+    );
     await expect(crashing.tick()).rejects.toThrow(
       "simulated post-commit crash",
     );
@@ -278,7 +307,13 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
       () => "2026-08-25T00:00:05.000Z",
       ids,
     );
-    const resumed = new Scheduler(resumedRepo, fake.harness);
+    const resumed = new Scheduler(
+      resumedRepo,
+      fake.harness,
+      () => {},
+      undefined,
+      publisher,
+    );
     await resumed.runUntilIdle(100);
 
     const snapshot = resumedRepo.inspect();
@@ -288,6 +323,14 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
       { id: "T2", status: "done" },
       { id: "T3", status: "done" },
     ]);
+    expect(publicationCalls).toEqual(["T2", "T3"]);
+    expect(
+      db
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM task_publications",
+        )
+        .get()?.count,
+    ).toBe(2);
     expect(
       snapshot.tasks
         .filter((task) => ["T1", "T2", "T3"].includes(task.id))
