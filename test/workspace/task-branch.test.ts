@@ -205,6 +205,9 @@ test("checkpoints interrupted work and folds it into one final task commit", asy
 test("requires Review to inspect the exact clean implementation commit", async () => {
   const root = await createRepository();
   try {
+    const sourceBranch = await git(["branch", "--show-current"], root);
+    const sourceHead = await git(["rev-parse", "HEAD"], root);
+    const sourceStatus = await git(["status", "--porcelain"], root);
     const manager = await createTaskBranchManager(root, "HEAD");
     const workspace = await manager.prepare("T1");
     await writeFile(
@@ -216,6 +219,14 @@ test("requires Review to inspect the exact clean implementation commit", async (
     await expect(
       manager.assertReviewReady("T1", commit, workspace.baseCommit),
     ).resolves.toBeUndefined();
+    expect(
+      await git(["rev-parse", "--verify", "refs/agile-review/T1"], root),
+    ).toBe(commit);
+    expect(await git(["cat-file", "-e", `${commit}^{commit}`], root)).toBe("");
+    expect(await git(["branch", "--list", "agile/T1"], root)).toBe("");
+    expect(await git(["branch", "--show-current"], root)).toBe(sourceBranch);
+    expect(await git(["rev-parse", "HEAD"], root)).toBe(sourceHead);
+    expect(await git(["status", "--porcelain"], root)).toBe(sourceStatus);
 
     await writeFile(join(workspace.path, "implementation.txt"), "dirty\n");
     await expect(
