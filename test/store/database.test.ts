@@ -22,7 +22,23 @@ function createV2Database(model = "luna"): Database {
     CREATE TABLE weeks (id TEXT PRIMARY KEY NOT NULL);
     CREATE TABLE tasks (
       id TEXT PRIMARY KEY NOT NULL,
-      week_id TEXT NOT NULL REFERENCES weeks(id)
+      week_id TEXT NOT NULL REFERENCES weeks(id),
+      title TEXT NOT NULL DEFAULT 'Legacy',
+      spec_json TEXT NOT NULL DEFAULT '{}',
+      spec_path TEXT,
+      spec_hash TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      priority INTEGER NOT NULL DEFAULT 0,
+      risk TEXT NOT NULL DEFAULT 'low',
+      token_ceiling INTEGER NOT NULL DEFAULT 1,
+      approval_required INTEGER NOT NULL DEFAULT 0,
+      approved INTEGER NOT NULL DEFAULT 0,
+      root_task_id TEXT,
+      parent_task_id TEXT,
+      discovered_from_review_id TEXT,
+      context_id TEXT,
+      created_at TEXT NOT NULL DEFAULT 'now',
+      updated_at TEXT NOT NULL DEFAULT 'now'
     );
     CREATE TABLE usage (
       id TEXT PRIMARY KEY NOT NULL,
@@ -84,6 +100,23 @@ function createV3CycleRenameDatabase(): Database {
     CREATE TABLE tasks (
       id TEXT PRIMARY KEY NOT NULL,
       week_id TEXT NOT NULL REFERENCES weeks(id),
+      title TEXT NOT NULL DEFAULT 'Legacy',
+      spec_json TEXT NOT NULL DEFAULT '{}',
+      spec_path TEXT,
+      spec_hash TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      priority INTEGER NOT NULL DEFAULT 0,
+      risk TEXT NOT NULL DEFAULT 'low',
+      token_ceiling INTEGER NOT NULL DEFAULT 1,
+      approval_required INTEGER NOT NULL DEFAULT 0,
+      approved INTEGER NOT NULL DEFAULT 0,
+      root_task_id TEXT,
+      parent_task_id TEXT,
+      discovered_from_review_id TEXT,
+      context_id TEXT,
+      created_at TEXT NOT NULL DEFAULT 'now',
+      updated_at TEXT NOT NULL DEFAULT 'now',
+      base_commit TEXT,
       UNIQUE(week_id, id)
     );
     CREATE TABLE usage (
@@ -119,6 +152,7 @@ test("migration creates every approved table", () => {
     "model_decisions",
     "reviews",
     "scheduler_lease",
+    "task_publications",
     "task_hooks",
     "task_deps",
     "tasks",
@@ -130,7 +164,7 @@ test("migration creates every approved table", () => {
   expect(
     db.query<{ user_version: number }, []>("PRAGMA user_version").get()
       ?.user_version,
-  ).toBe(5);
+  ).toBe(6);
   expect(
     db
       .query<{ name: string }, []>("PRAGMA table_info(tasks)")
@@ -198,7 +232,7 @@ test("v4 migration renames weeks to cycles without losing related data", () => {
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get(),
-    ).toEqual({ user_version: 5 });
+    ).toEqual({ user_version: 6 });
   } finally {
     db.close();
   }
@@ -208,7 +242,28 @@ test("v5 migration adds task hooks to an existing v4 database", () => {
   const db = new Database(":memory:", { strict: true });
   db.exec(`
     PRAGMA foreign_keys = ON;
-    CREATE TABLE tasks (id TEXT PRIMARY KEY NOT NULL);
+    CREATE TABLE cycles (id TEXT PRIMARY KEY NOT NULL);
+    CREATE TABLE tasks (
+      id TEXT PRIMARY KEY NOT NULL,
+      cycle_id TEXT NOT NULL REFERENCES cycles(id),
+      title TEXT NOT NULL DEFAULT 'Legacy',
+      spec_json TEXT NOT NULL DEFAULT '{}',
+      spec_path TEXT,
+      spec_hash TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      priority INTEGER NOT NULL DEFAULT 0,
+      risk TEXT NOT NULL DEFAULT 'low',
+      token_ceiling INTEGER NOT NULL DEFAULT 1,
+      approval_required INTEGER NOT NULL DEFAULT 0,
+      approved INTEGER NOT NULL DEFAULT 0,
+      root_task_id TEXT,
+      parent_task_id TEXT,
+      discovered_from_review_id TEXT,
+      context_id TEXT,
+      created_at TEXT NOT NULL DEFAULT 'now',
+      updated_at TEXT NOT NULL DEFAULT 'now',
+      base_commit TEXT
+    );
     PRAGMA user_version = 4;
   `);
   try {
@@ -223,7 +278,7 @@ test("v5 migration adds task hooks to an existing v4 database", () => {
     ).toEqual({ name: "task_hooks" });
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get(),
-    ).toEqual({ user_version: 5 });
+    ).toEqual({ user_version: 6 });
   } finally {
     db.close();
   }
@@ -269,7 +324,7 @@ test("v3 migration backfills supported model profiles without losing runtime col
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(5);
+    ).toBe(6);
     expect(
       db
         .query<
@@ -633,13 +688,13 @@ test("database initialization closes its handle before rethrowing", () => {
   const directory = mkdtempSync(join(tmpdir(), "agile-agents-db-"));
   const path = join(directory, "future.sqlite");
   const future = new Database(path, { create: true });
-  future.exec("PRAGMA user_version = 6");
+  future.exec("PRAGMA user_version = 7");
   future.close();
 
   const close = spyOn(Database.prototype, "close");
   try {
     expect(() => openDatabase(path)).toThrow(
-      "Database version 6 is newer than supported version 5",
+      "Database version 7 is newer than supported version 6",
     );
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
@@ -674,7 +729,7 @@ test("file databases create parents and enable durable SQLite settings", () => {
         reopened
           .query<{ user_version: number }, []>("PRAGMA user_version")
           .get()?.user_version,
-      ).toBe(5);
+      ).toBe(6);
     } finally {
       reopened.close();
     }

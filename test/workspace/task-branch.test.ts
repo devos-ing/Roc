@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTaskBranchManager } from "../../src/workspace/task-branch";
@@ -38,6 +46,86 @@ test("project ignores Codex sandbox and test artifacts before task commits", asy
   expect(
     (await git(["check-ignore", ...artifacts], process.cwd())).split("\n"),
   ).toEqual(artifacts);
+});
+
+test("preserves a GitHub source origin in new and legacy scheduler checkouts", async () => {
+  const sourceOrigin = "https://github.com/agile-agents/roc.git";
+  const root = await createRepository();
+  try {
+    await git(["remote", "add", "origin", sourceOrigin], root);
+    const manager = await createTaskBranchManager(root, "HEAD");
+    const newCheckout = (await manager.prepare("T1")).path;
+    expect(
+      await git(["config", "--get", "remote.origin.url"], newCheckout),
+    ).toBe(sourceOrigin);
+
+    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+    const legacyCheckout = `${root}.agile-checkout`;
+    await git(["clone", root, legacyCheckout], root);
+    await appendFile(
+      join(legacyCheckout, ".git", "config"),
+      `\n[url "file://${root}"]\n\tinsteadOf = ${sourceOrigin}\n`,
+    );
+    const legacy = await createTaskBranchManager(root, "HEAD");
+    const legacyCheckoutPath = (await legacy.prepare("T1")).path;
+    expect(
+      await git(["config", "--get", "remote.origin.url"], legacyCheckoutPath),
+    ).toBe(sourceOrigin);
+    await expect(
+      (await createTaskBranchManager(root, "HEAD")).prepare("T1"),
+    ).resolves.toMatchObject({ path: legacyCheckoutPath });
+  } finally {
+    await removeRepository(root);
+  }
+}, 30_000);
+
+test("recognizes a no-user SCP SSH alias when restarting a scheduler checkout", async () => {
+  const sourceOrigin = "github-work:agile-agents/roc.git";
+  const root = await createRepository();
+  const sshCommand = join(root, "ssh");
+  const priorPath = process.env.PATH;
+  try {
+    await git(["remote", "add", "origin", sourceOrigin], root);
+    const manager = await createTaskBranchManager(root, "HEAD");
+    const checkout = (await manager.prepare("T1")).path;
+    await writeFile(sshCommand, `#!/bin/sh\nexec git-upload-pack "${root}"\n`);
+    await chmod(sshCommand, 0o755);
+    process.env.PATH = `${root}:${priorPath ?? "/usr/bin:/bin"}`;
+
+    const restarted = await createTaskBranchManager(root, "HEAD");
+    expect((await restarted.prepare("T1")).path).toBe(checkout);
+  } finally {
+    if (priorPath === undefined) delete process.env.PATH;
+    else process.env.PATH = priorPath;
+    await removeRepository(root);
+  }
+});
+
+test("uses global Git configuration when fetching a legacy scheduler checkout", async () => {
+  const sourceOrigin = "https://127.0.0.1:1/agile-agents/roc.git";
+  const root = await createRepository();
+  const globalConfig = join(root, "gitconfig");
+  const priorGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
+  try {
+    await git(["remote", "add", "origin", sourceOrigin], root);
+    const checkout = `${root}.agile-checkout`;
+    await git(["clone", root, checkout], root);
+    await writeFile(
+      globalConfig,
+      `[url "file://${root}"]\n\tinsteadOf = ${sourceOrigin}\n`,
+    );
+    process.env.GIT_CONFIG_GLOBAL = globalConfig;
+
+    const restarted = await createTaskBranchManager(root, "HEAD");
+    expect((await restarted.prepare("T1")).path).toBe(checkout);
+    await expect(
+      (await createTaskBranchManager(root, "HEAD")).prepare("T1"),
+    ).resolves.toMatchObject({ path: checkout });
+  } finally {
+    if (priorGlobalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = priorGlobalConfig;
+    await removeRepository(root);
+  }
 });
 
 test("switches retained task branches in a scheduler-owned checkout", async () => {

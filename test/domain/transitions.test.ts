@@ -9,7 +9,8 @@ describe("task transitions", () => {
   test("allows the happy path", () => {
     expect(canTransition("draft", "ready")).toBe(true);
     expect(canTransition("ready", "claimed")).toBe(true);
-    expect(canTransition("reviewing", "done")).toBe(true);
+    expect(canTransition("reviewing", "publishing")).toBe(true);
+    expect(canTransition("publishing", "done")).toBe(true);
   });
 
   test("permits ready tasks to return for input or replanning", () => {
@@ -23,6 +24,7 @@ describe("task transitions", () => {
       "scouting",
       "implementing",
       "reviewing",
+      "publishing",
     ] as const) {
       expect(canTransition(status, "needs_replan")).toBe(true);
     }

@@ -25,14 +25,16 @@ Roc currently provides:
 - model settings that never use `low` thinking effort;
 - a separate Git branch for each task in a dedicated work folder;
 - a read-only Review of the exact commit made by Implement;
+- automatic pull-request publication for accepted Reviews;
 - saved task progress and token use, with restart support;
 - a token-use chart in the terminal;
 - a read-only task board for the current Agile cycle;
 - one-shot import of approved GitHub Issues into the ready backlog;
 - a list of skills that agents are allowed to use.
 
-Roc works on one task at a time. It does not merge or push code, delete task
-branches, run several tasks at once, or limit token use.
+Roc works on one task at a time. It pushes only accepted task branches to open
+or update pull requests; it does not merge or delete branches, run several
+tasks at once, or limit token use.
 
 ## Quick Start
 
@@ -40,8 +42,8 @@ Prerequisites:
 
 - [Bun](https://bun.sh/) 1.3.0 or later
 - Git
-- [GitHub CLI](https://cli.github.com/) for Issue import, authenticated with
-  `gh auth login`
+- [GitHub CLI](https://cli.github.com/) for Issue import and pull-request
+  publication, authenticated with `gh auth login`
 - [Codex CLI](https://github.com/openai/codex) for Codex mode
 - The `grilling` skill for creating a backlog:
 
@@ -212,7 +214,7 @@ npx roc-it@latest task list
 Run that backlog with Codex:
 
 ```bash
-npx roc-it@latest scheduler run
+npx roc-it@latest scheduler run --base-branch main
 ```
 
 Or with ZCode (the Z.ai desktop app's headless `app-server`). The backend is
@@ -251,10 +253,29 @@ Roc picks one ready task and passes it through three agent roles.
 flowchart LR
     S["Scout<br/>Understand the task"] --> I["Implement<br/>Write and commit code"]
     I --> R["Review<br/>Check the exact commit"]
+    R -->|Accepted| P["Posthook and pull request"]
+    P --> D["Done"]
 ```
 
-If Review accepts the commit, the task is done. If Review rejects it, Roc
-creates a follow-up ticket and moves on to the next ready task.
+If Review accepts the commit, Roc runs its trusted posthook, verifies the exact
+clean Implement commit, pushes `agile/<task-id>`, and creates or updates one
+pull request before the task becomes done. The PR body contains the task title,
+validation commands, reported risks, and limitations. If Review rejects it,
+Roc creates a follow-up ticket and moves on to the next ready task.
+
+### Pull-request publication
+
+Before a real scheduler run, authenticate GitHub CLI with `gh auth login` and
+make sure the token can view the repository and create pull requests. Pass the
+GitHub target branch explicitly with `--base-branch`; it is a remote branch
+name such as `main`, not a local revision such as `HEAD` or `origin/main`.
+`--base` still selects the local commit from which task branches start.
+
+Roc never opens a second PR for the same task branch. On restart it finds the
+existing PR first: an open PR is pushed with the validated commit and marked
+done, while a merged PR is marked done without another push. A failed posthook,
+push, authentication check, PR creation, or closed-unmerged PR moves the task
+to `needs_replan` and keeps its local Implement commit for recovery.
 
 Roc works on one small task at a time. When Review asks for changes, Roc sends
 the feedback to an unapproved draft follow-up. That follow-up returns to the
@@ -314,7 +335,7 @@ npx roc-it@latest task hook trust <task-id> <prehook|posthook>
 npx roc-it@latest tokens [--no-color]
 
 Run work
-npx roc-it@latest scheduler run [--base REF] [--backend <name>]
+npx roc-it@latest scheduler run [--base REF] [--base-branch BRANCH] [--backend <name>]
 npx roc-it@latest scheduler inspect
 
 Get help

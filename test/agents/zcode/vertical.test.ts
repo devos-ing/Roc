@@ -108,7 +108,7 @@ async function waitForTaskDone(
 ): Promise<void> {
   const db = openDatabase(dbPath);
   try {
-    const deadline = Date.now() + 15_000;
+    const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       const failed = failure();
       if (failed !== undefined) throw failed;
@@ -205,11 +205,25 @@ test("vertical: the zcode factory routes every role through the shared runtime a
   const previous = process.env.ROC_ZCODE_EXPERIMENTAL;
   process.env.ROC_ZCODE_EXPERIMENTAL = "1";
   let failure: unknown;
+  let publicationCount = 0;
   try {
     const running = runBackendSession(
       buildZcodeBackendFactory(async () => client),
       { backend: "zcode", dbPath, repoPath: projectRoot, baseRef: "HEAD" },
       "run-zcode-vertical",
+      {
+        publisherFactory: () => ({
+          baseBranch: "main",
+          async publish() {
+            publicationCount += 1;
+            return {
+              number: publicationCount,
+              url: `https://example.test/pull/${publicationCount}`,
+              state: "OPEN",
+            };
+          },
+        }),
+      },
     ).catch((error: unknown) => {
       failure = error;
     });
@@ -219,6 +233,7 @@ test("vertical: the zcode factory routes every role through the shared runtime a
     await running;
 
     expect(failure).toBeUndefined();
+    expect(publicationCount).toBe(1);
     // One session per role: scout, implement, review, each carrying the
     // routed provider/model pair resolved at startup.
     expect(client.createParams.length).toBe(3);

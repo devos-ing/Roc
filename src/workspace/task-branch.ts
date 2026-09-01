@@ -1,4 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { type SimpleGit, simpleGit } from "simple-git";
 import { safeTaskPathComponent } from "../domain/task-path";
@@ -29,8 +30,13 @@ export type TaskBranchManager = {
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const TASK_BRANCH_PREFIX = "agile/";
 
-/** Creates an isolated SimpleGit client with deterministic noninteractive configuration. */
-function gitAt(baseDir: string): SimpleGit {
+/** Returns the deterministic remote branch name owned by a task. */
+export function taskBranchName(taskId: string): string {
+  return `${TASK_BRANCH_PREFIX}${safeTaskPathComponent(taskId)}`;
+}
+
+/** Creates a noninteractive SimpleGit client that can optionally use global credentials. */
+function gitAt(baseDir: string, useGlobalConfig = false): SimpleGit {
   return simpleGit({
     baseDir,
     maxConcurrentProcesses: 1,
@@ -51,7 +57,17 @@ function gitAt(baseDir: string): SimpleGit {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     LC_ALL: "C",
     GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: "/dev/null",
+    ...(useGlobalConfig
+      ? {
+          HOME: process.env.HOME ?? homedir(),
+          ...(process.env.XDG_CONFIG_HOME === undefined
+            ? {}
+            : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+          ...(process.env.GIT_CONFIG_GLOBAL === undefined
+            ? {}
+            : { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL }),
+        }
+      : { GIT_CONFIG_GLOBAL: "/dev/null" }),
     GIT_TERMINAL_PROMPT: "0",
     GIT_AUTHOR_NAME: "Agile Agents",
     GIT_AUTHOR_EMAIL: "agile-agents@local",
@@ -93,6 +109,26 @@ function checkpointMessage(taskId: string): string {
   return `agile(${taskId}): WIP checkpoint`;
 }
 
+/** Reports whether a Git remote uses a URL rather than a local filesystem path. */
+function isRemoteUrl(remote: string): boolean {
+  return (
+    /^[a-z][a-z\d+.-]*:\/\//i.test(remote) ||
+    /^(?:[^/\s:@]+@)?[^/\s:]+:(?![\\/]).+$/.test(remote)
+  );
+}
+
+/** Verifies that a local remote points to the source scheduler repository. */
+async function isSourceRepositoryRemote(
+  remote: string,
+  checkoutPath: string,
+  canonicalRepo: string,
+): Promise<boolean> {
+  if (isRemoteUrl(remote)) return false;
+  return (
+    (await realpath(resolve(dirname(checkoutPath), remote))) === canonicalRepo
+  );
+}
+
 /** Creates a branch manager backed by a dedicated validated scheduler checkout. */
 export async function createTaskBranchManager(
   repoPath: string,
@@ -106,6 +142,13 @@ export async function createTaskBranchManager(
       `Repository path is not the Git checkout root: ${canonicalRepo}`,
     );
   }
+  const sourceOrigin = (await sourceGit.getRemotes()).some(
+    (remote) => remote.name === "origin",
+  )
+    ? (
+        await sourceGit.raw(["config", "--local", "--get", "remote.origin.url"])
+      ).trim()
+    : undefined;
 
   const baseCommit = await fullCommit(sourceGit, baseRef);
   const checkoutPath = `${canonicalRepo}.agile-checkout`;
@@ -120,7 +163,8 @@ export async function createTaskBranchManager(
     await sourceGit.clone(canonicalRepo, checkoutPath, ["--no-checkout"]);
   }
 
-  const checkoutGit = gitAt(checkoutPath);
+  const checkoutGit = gitAt(checkoutPath, true);
+  const checkoutIdentityGit = gitAt(checkoutPath);
   const checkoutRoot = (await checkoutGit.revparse("--show-toplevel")).trim();
   if (checkoutRoot !== checkoutPath) {
     throw new Error(
@@ -128,15 +172,34 @@ export async function createTaskBranchManager(
     );
   }
   const origin = (
-    await checkoutGit.raw(["remote", "get-url", "origin"])
+    await checkoutIdentityGit.raw([
+      "config",
+      "--local",
+      "--get",
+      "remote.origin.url",
+    ])
   ).trim();
-  const canonicalOrigin = await realpath(
-    resolve(dirname(checkoutPath), origin),
+  const sourceRepositoryRemote = await isSourceRepositoryRemote(
+    origin,
+    checkoutPath,
+    canonicalRepo,
   );
-  if (canonicalOrigin !== canonicalRepo) {
+  if (sourceOrigin === undefined && !sourceRepositoryRemote) {
     throw new Error(
       `Scheduler checkout belongs to a different repository: ${checkoutPath}`,
     );
+  }
+  if (
+    sourceOrigin !== undefined &&
+    origin !== sourceOrigin &&
+    !sourceRepositoryRemote
+  ) {
+    throw new Error(
+      `Scheduler checkout belongs to a different repository: ${checkoutPath}`,
+    );
+  }
+  if (sourceOrigin !== undefined && origin !== sourceOrigin) {
+    await checkoutGit.raw(["remote", "set-url", "origin", sourceOrigin]);
   }
 
   if (checkoutKind === "missing") {
@@ -159,7 +222,7 @@ export async function createTaskBranchManager(
     return {
       taskId: safeTaskId,
       path: checkoutPath,
-      branch: `${TASK_BRANCH_PREFIX}${safeTaskId}`,
+      branch: taskBranchName(safeTaskId),
       baseCommit: taskBaseCommit,
     };
   }

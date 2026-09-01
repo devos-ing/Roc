@@ -1,5 +1,7 @@
+import type { TaskPublisher } from "../github/pr-publisher";
 import type { AgentHarness, HarnessStepRequest } from "../harness/contracts";
 import type { OrchestrationRepository } from "../store/orchestration-repository";
+import { taskBranchName } from "../workspace/task-branch";
 import type { TaskHookService } from "./task-hooks";
 
 export type TickResult =
@@ -8,6 +10,8 @@ export type TickResult =
   | { kind: "task_claimed"; taskId: string }
   | { kind: "hook_retry"; taskId: string; phase: "prehook" | "posthook" }
   | { kind: "prehook_failed"; taskId: string }
+  | { kind: "published"; taskId: string; pullRequestNumber: number }
+  | { kind: "publication_failed"; taskId: string }
   | { kind: "idle" };
 
 export type SchedulerFaultPoint = "after_delivery_commit";
@@ -21,6 +25,11 @@ export class TaskPosthookFailedError extends Error {
   }
 }
 
+/** Converts unknown publishing errors into the durable replanning diagnostic. */
+function publicationFailureMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export class Scheduler {
   private readonly reconcile = new Set<string>();
 
@@ -30,6 +39,7 @@ export class Scheduler {
     private readonly harness: AgentHarness,
     private readonly fault: (point: SchedulerFaultPoint) => void = () => {},
     private readonly hooks?: TaskHookService,
+    private readonly publisher?: TaskPublisher,
   ) {
     const active = repo.getRunningAttempt();
     if (active) this.reconcile.add(active.descriptor.attemptId);
@@ -63,13 +73,21 @@ export class Scheduler {
     }
 
     if (this.hooks !== undefined) {
-      for (const task of this.repo.listTerminalTasks()) {
+      for (const task of this.repo.listPosthookTasks()) {
         const posthook = await this.hooks.run(task, "posthook", leaseOwnerId);
         if (posthook.kind === "skipped" || posthook.kind === "succeeded")
           continue;
         if (posthook.kind === "untrusted") return { kind: "idle" };
         if (posthook.kind === "retrying")
           return { kind: "hook_retry", taskId: task.id, phase: "posthook" };
+        if (task.status === "publishing") {
+          this.repo.failPublishing(
+            task.id,
+            `Task posthook failed after 3 attempts: ${task.id}`,
+            leaseOwnerId,
+          );
+          return { kind: "publication_failed", taskId: task.id };
+        }
         throw new TaskPosthookFailedError(task.id);
       }
 
@@ -82,6 +100,48 @@ export class Scheduler {
         if (prehook.kind === "failed") {
           this.repo.failClaimedTaskHook(claimed.id, leaseOwnerId);
           return { kind: "prehook_failed", taskId: claimed.id };
+        }
+      }
+    }
+
+    if (this.publisher !== undefined) {
+      const publishing = this.repo.listPublishingTasks()[0];
+      if (publishing !== undefined) {
+        try {
+          const publication = this.repo.beginPublication({
+            taskId: publishing.task.id,
+            branch: taskBranchName(publishing.task.id),
+            baseBranch: this.publisher.baseBranch,
+            commitSha: publishing.implementation.commitSha,
+            leaseOwnerId,
+          });
+          const pullRequest = await this.publisher.publish({
+            ...publishing,
+            publication,
+          });
+          const pullRequestState = pullRequest.state;
+          if (pullRequestState === "CLOSED") {
+            throw new Error(
+              `Pull request #${pullRequest.number} is closed without merge`,
+            );
+          }
+          this.repo.completePublication({
+            taskId: publishing.task.id,
+            pullRequest: { ...pullRequest, state: pullRequestState },
+            leaseOwnerId,
+          });
+          return {
+            kind: "published",
+            taskId: publishing.task.id,
+            pullRequestNumber: pullRequest.number,
+          };
+        } catch (error) {
+          this.repo.failPublishing(
+            publishing.task.id,
+            publicationFailureMessage(error),
+            leaseOwnerId,
+          );
+          return { kind: "publication_failed", taskId: publishing.task.id };
         }
       }
     }

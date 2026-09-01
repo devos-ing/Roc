@@ -4,6 +4,12 @@ import { CodexClient } from "../agents/codex/client";
 import { listWorkspaceSkills as readWorkspaceSkills } from "../agents/codex/skill-catalog";
 import { backends } from "../agents/registry";
 import type { BackendFactory } from "../agents/types";
+import {
+  GitHubCliPreflight,
+  type GitHubPreflight,
+  GitHubPullRequestPublisher,
+  type TaskPublisher,
+} from "../github/pr-publisher";
 import type { AgentHarness } from "../harness/contracts";
 import { createFakeHarness } from "../harness/fake";
 import { AgileError, normalizeError } from "../runtime/errors";
@@ -17,7 +23,10 @@ import { Scheduler } from "../scheduler/scheduler";
 import { TaskHookService } from "../scheduler/task-hooks";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
-import { createTaskBranchManager } from "../workspace/task-branch";
+import {
+  createTaskBranchManager,
+  type TaskBranchManager,
+} from "../workspace/task-branch";
 import type {
   CliRuntime,
   RealSchedulerRunInput,
@@ -174,9 +183,10 @@ function daemonFor(
   harness: AgentHarness,
   runId: string,
   hooks?: TaskHookService,
+  publisher?: TaskPublisher,
 ): SchedulerDaemon {
   return new SchedulerDaemon(
-    new Scheduler(repo, harness, () => {}, hooks),
+    new Scheduler(repo, harness, () => {}, hooks, publisher),
     repo,
     {
       ownerId: runId,
@@ -189,6 +199,22 @@ function daemonFor(
 /** Supplies the current local directory as the deterministic fake-backend task workspace. */
 async function fakeTaskWorkspace(): Promise<{ path: string }> {
   return { path: process.cwd() };
+}
+
+/** Provides deterministic pull-request receipts for the isolated fake scheduler backend. */
+function fakePublisher(): TaskPublisher {
+  let pullRequestNumber = 0;
+  return {
+    baseBranch: "main",
+    async publish(_input) {
+      pullRequestNumber += 1;
+      return {
+        number: pullRequestNumber,
+        url: `https://example.test/pull/${pullRequestNumber}`,
+        state: "OPEN",
+      };
+    },
+  };
 }
 
 /** Runs a scheduler session against the deterministic fake harness. */
@@ -208,7 +234,7 @@ async function runFake(
     );
     const hooks = new TaskHookService(repo, { prepare: fakeTaskWorkspace });
     await runDaemon({
-      daemon: daemonFor(repo, fake.harness, runId, hooks),
+      daemon: daemonFor(repo, fake.harness, runId, hooks, fakePublisher()),
       repo,
       harness: fake.harness,
       logger: loggerFor({ dbPath: input.dbPath }),
@@ -227,14 +253,36 @@ async function runRealBackend(
   input: RealSchedulerRunInput,
   runId: string,
 ): Promise<void> {
-  await runBackendSession(backends[input.backend], input, runId);
+  if (input.baseBranch === undefined) {
+    throw new AgileError({
+      code: "GITHUB_BASE_BRANCH_REQUIRED",
+      category: "startup",
+      retryable: false,
+      component: "cli",
+      message: "scheduler run requires --base-branch <GitHub branch>",
+      runId,
+    });
+  }
+  const baseBranch = input.baseBranch;
+  await runBackendSession(backends[input.backend], input, runId, {
+    preflight: new GitHubCliPreflight(input.repoPath, baseBranch),
+    publisherFactory: (branches) =>
+      new GitHubPullRequestPublisher(baseBranch, branches),
+  });
 }
+
+/** Supplies optional external publication collaborators to a directly tested backend session. */
+export type BackendSessionOptions = {
+  preflight?: GitHubPreflight;
+  publisherFactory?: (branches: TaskBranchManager) => TaskPublisher;
+};
 
 /** Runs one scheduler session against a started backend factory. */
 export async function runBackendSession(
   startBackend: BackendFactory,
   input: RealSchedulerRunInput,
   runId: string,
+  options: BackendSessionOptions = {},
 ): Promise<void> {
   const backendLabel = input.backend;
   let branches: Awaited<ReturnType<typeof createTaskBranchManager>>;
@@ -247,6 +295,18 @@ export async function runBackendSession(
       retryable: false,
       component: "cli",
       message: `Could not validate the ${backendLabel} repository and base ref`,
+    });
+  }
+
+  try {
+    await options.preflight?.assertReady();
+  } catch (error) {
+    throw attachRunId(error, runId, {
+      code: "GITHUB_PREFLIGHT_FAILED",
+      category: "startup",
+      retryable: false,
+      component: "cli",
+      message: "GitHub authentication or repository access is unavailable",
     });
   }
 
@@ -289,8 +349,9 @@ export async function runBackendSession(
       advisor,
     );
     const hooks = new TaskHookService(repo, branches);
+    const publisher = options.publisherFactory?.(branches);
     await runDaemon({
-      daemon: daemonFor(repo, backend.harness, runId, hooks),
+      daemon: daemonFor(repo, backend.harness, runId, hooks, publisher),
       repo,
       harness: backend.harness,
       logger: loggerFor({ dbPath: input.dbPath, repoPath: input.repoPath }),
