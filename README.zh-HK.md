@@ -293,6 +293,7 @@ npx roc-it@latest task import FILE
 npx roc-it@latest task import-github
 npx roc-it@latest task list
 npx roc-it@latest task board [--all]
+npx roc-it@latest tui
 npx roc-it@latest task hook trust <task-id> <prehook|posthook>
 npx roc-it@latest tokens [--no-color]
 
