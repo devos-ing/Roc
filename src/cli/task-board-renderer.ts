@@ -31,6 +31,7 @@ const colors = {
   active: "\u001B[36m",
   attention: "\u001B[33m",
   done: "\u001B[32m",
+  error: "\u001B[31m",
   muted: "\u001B[90m",
 };
 const narrowWidth = 88;
@@ -147,6 +148,15 @@ function blocker(task: TaskBoardTask): string | undefined {
     : undefined;
 }
 
+/** Maps a task status to its semantic terminal tone when it needs emphasis. */
+function statusTone(task: TaskBoardTask): keyof typeof colors | undefined {
+  if (task.rawStatus === "done") return "done";
+  if (task.rawStatus === "failed_infra" || task.rawStatus === "rejected")
+    return "error";
+  if (task.column === "attention") return "attention";
+  return task.isActive ? "active" : undefined;
+}
+
 /** Returns the four stable renderer columns backed by the canonical record-valued model columns. */
 function boardColumns(snapshot: TaskBoardSnapshot): BoardColumn[] {
   return [
@@ -189,11 +199,9 @@ function renderCard(input: {
   if (blocked) lines.push(fit(`  Blocked: ${blocked}`, input.width));
   const tone = input.selected
     ? "active"
-    : blocked || input.task.column === "attention"
+    : blocked
       ? "attention"
-      : input.task.column === "done"
-        ? "done"
-        : undefined;
+      : statusTone(input.task);
   return tone === undefined
     ? lines
     : lines.map((line) => color(line, tone, input.colorEnabled));
@@ -281,12 +289,21 @@ function wrap(value: string, width: number, prefix = ""): string[] {
   return lines.length > 0 ? lines : [fit(prefix.trimEnd() || "—", limit)];
 }
 
-/** Wraps a labelled detail field while retaining its label on the first line. */
-function detailField(label: string, value: string, width: number): string[] {
+/** Wraps and then optionally colors a labelled detail field without splitting terminal controls. */
+function detailField(
+  label: string,
+  value: string,
+  width: number,
+  tone: keyof typeof colors | undefined = undefined,
+  colorEnabled = false,
+): string[] {
   const prefix = `${label}: `;
-  return visibleWidth(prefix) < Math.max(1, width)
+  const lines = visibleWidth(prefix) < Math.max(1, width)
     ? wrap(value || "—", width, prefix)
     : [fit(label, width), ...wrap(value || "—", width)];
+  return tone === undefined
+    ? lines
+    : lines.map((line) => color(line, tone, colorEnabled));
 }
 
 /** Renders one task's complete details for either a side panel or narrow full-screen view. */
@@ -297,13 +314,20 @@ function renderDetails(
   colorEnabled: boolean,
 ): string[] {
   const attempt = currentAttempt(task, snapshot);
+  const blocked = blocker(task);
   const criteria = task.spec.acceptanceCriteria;
   const dependencies = task.spec.dependencies;
   return [
     color(fit(`Task ${task.id}`, width), "active", colorEnabled),
     ...wrap(task.title, width),
     "",
-    ...detailField("Status", task.rawStatus, width),
+    ...detailField(
+      "Status",
+      task.rawStatus,
+      width,
+      statusTone(task),
+      colorEnabled,
+    ),
     ...detailField("Phase", phase(task, snapshot), width),
     ...detailField("Role", attempt?.role ?? "—", width),
     ...detailField(
@@ -326,7 +350,13 @@ function renderDetails(
       `${tokenCount(task.tokenTotals)}/${task.tokenTarget}`,
       width,
     ),
-    ...detailField("Blocker", blocker(task) ?? "—", width),
+    ...detailField(
+      "Blocker",
+      blocked ?? "—",
+      width,
+      blocked === undefined ? undefined : "attention",
+      colorEnabled,
+    ),
     ...detailField("Dependencies", dependencies.join(", ") || "—", width),
     "",
     ...detailField("Problem", task.spec.problem, width),

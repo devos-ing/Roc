@@ -19,6 +19,8 @@ const showCursor = "\u001B[?25h";
 const enableMouse = "\u001B[?1000h\u001B[?1006h";
 const disableMouse = "\u001B[?1000l\u001B[?1006l";
 const clearScreen = "\u001B[2J\u001B[H";
+const red = "\u001B[31m";
+const reset = "\u001B[0m";
 
 /** Converts an unknown failure into text that is safe to place in the status area. */
 function errorText(error: unknown): string {
@@ -94,8 +96,10 @@ export async function runTaskBoardSession(
         doneExpanded,
       });
     }
-    if (lastError !== undefined)
-      frame = `${frame}\n\n${statusLine(`Error: ${lastError}`, width)}`;
+    if (lastError !== undefined) {
+      const error = statusLine(`Error: ${lastError}`, width);
+      frame = `${frame}\n\n${red}${error}${reset}`;
+    }
     output.write(`${clearScreen}${frame}`);
   };
 

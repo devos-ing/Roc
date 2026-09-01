@@ -197,6 +197,44 @@ test("uses a vertical list and full-screen wrapped detail in narrow terminals", 
   );
 });
 
+test("wraps colored failed statuses and blockers without splitting ANSI controls", () => {
+  const failed = task({
+    id: "failed",
+    rawStatus: "failed_infra",
+    column: "attention",
+    blockingDependencyIds: [
+      "dependency-alpha",
+      "dependency-bravo",
+      "dependency-charlie",
+    ],
+  });
+  const failedSnapshot: TaskBoardSnapshot = {
+    ...snapshot,
+    tasks: [failed],
+    columns: { ready: [], inProgress: [], attention: [failed], done: [] },
+  };
+  const colored = renderTaskBoard(failedSnapshot, {
+    width: 16,
+    color: true,
+    selectedTaskId: failed.id,
+  });
+  const plain = renderTaskBoard(failedSnapshot, {
+    width: 16,
+    color: false,
+    selectedTaskId: failed.id,
+  });
+
+  expect(colored).toContain("\u001B[31m");
+  expect(colored).toContain("\u001B[33m");
+  expect(colored.replace(/\u001B\[[0-9;]*m/g, "")).not.toContain("\u001B");
+  expect(
+    stripVTControlCharacters(colored)
+      .split("\n")
+      .every((line) => displayWidth(line) <= 16),
+  ).toBe(true);
+  expect(stripVTControlCharacters(plain)).toBe(plain);
+});
+
 test("keeps plain Unicode output cell-bounded without splitting graphemes", () => {
   const unicode = task({ id: "unicode", title: "你好e\u0301👩‍💻".repeat(20) });
   const unicodeSnapshot: TaskBoardSnapshot = {

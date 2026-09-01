@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { stripVTControlCharacters } from "node:util";
 import type {
   TaskBoardSnapshot,
   TaskBoardTask,
@@ -170,7 +171,7 @@ test("refreshes serialized snapshots and supports keyboard navigation, detail mo
 
   await waitFor(() => reads === 1);
   input.emit("data", "j");
-  expect(frame(output)).toContain("› second");
+  expect(stripVTControlCharacters(frame(output))).toContain("› second");
   input.emit("data", " ");
   expect(frame(output)).toContain("Task second");
   input.emit("data", "\u001B");
@@ -211,7 +212,7 @@ test("opens clicked cards as full details, toggles Done by mouse, and retains se
   input.emit("data", "j");
   output.columns = 60;
   output.emit("resize");
-  expect(frame(output)).toContain("› second");
+  expect(stripVTControlCharacters(frame(output))).toContain("› second");
   output.columns = 120;
   output.emit("resize");
   input.emit("data", "\u001B[<0;91;3M");
@@ -239,7 +240,11 @@ test("keeps the last valid frame on a transient read failure and retries on dema
   await waitFor(() => reads === 1);
   input.emit("data", "R");
   await waitFor(() => frame(output).includes("temporary read failure"));
-  expect(frame(output)).toContain("first work");
+  expect(frame(output)).toContain("\u001B[31mError: temporary read failure\u001B[0m");
+  expect(stripVTControlCharacters(frame(output))).toContain(
+    "Error: temporary read failure",
+  );
+  expect(stripVTControlCharacters(frame(output))).toContain("first work");
   input.emit("data", "R");
   await waitFor(() => frame(output).includes("recovered work"));
   expect(frame(output)).not.toContain("Error:");
