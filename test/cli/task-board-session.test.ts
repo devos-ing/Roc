@@ -205,11 +205,12 @@ test("opens clicked cards as full details, toggles Done by mouse, and retains se
   });
 
   await waitFor(() => frame(output).includes("Ready · 2"));
-  input.emit("data", "\u001B[<0;1;5M");
-  expect(frame(output)).toContain("Task first");
+  input.emit("data", "\u001B[<0;1;7M");
+  expect(frame(output)).not.toContain("Task first");
+  input.emit("data", "\u001B[<0;1;8M");
+  expect(frame(output)).toContain("Task second");
   input.emit("data", "\u001B");
   await Bun.sleep(25);
-  input.emit("data", "j");
   output.columns = 60;
   output.emit("resize");
   expect(stripVTControlCharacters(frame(output))).toContain("▌   second");
