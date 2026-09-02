@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const projectRoot = resolve(import.meta.dir, "..");
@@ -82,9 +82,16 @@ test("packaged PR review helpers pass their Python suites", async () => {
 });
 
 test("npm archive contains only runtime files", async () => {
+  const npmCache = resolve(projectRoot, ".tmp-agile-tests", "npm-cache");
+  await mkdir(npmCache, { recursive: true });
   const child = Bun.spawn(
     ["npm", "pack", "--dry-run", "--json", "--ignore-scripts"],
-    { cwd: projectRoot, stdout: "pipe", stderr: "pipe" },
+    {
+      cwd: projectRoot,
+      env: { ...process.env, npm_config_cache: npmCache },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
   );
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),
