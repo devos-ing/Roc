@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { stripVTControlCharacters } from "node:util";
 import type {
   TaskBoardSnapshot,
   TaskBoardTask,
@@ -170,7 +171,7 @@ test("refreshes serialized snapshots and supports keyboard navigation, detail mo
 
   await waitFor(() => reads === 1);
   input.emit("data", "j");
-  expect(frame(output)).toContain("› second");
+  expect(stripVTControlCharacters(frame(output))).toContain("▌   second");
   input.emit("data", " ");
   expect(frame(output)).toContain("Task second");
   input.emit("data", "\u001B");
@@ -203,7 +204,7 @@ test("opens clicked cards as full details, toggles Done by mouse, and retains se
     refreshIntervalMs: 1_000,
   });
 
-  await waitFor(() => frame(output).includes("Ready (2)"));
+  await waitFor(() => frame(output).includes("Ready · 2"));
   input.emit("data", "\u001B[<0;1;5M");
   expect(frame(output)).toContain("Task first");
   input.emit("data", "\u001B");
@@ -211,7 +212,7 @@ test("opens clicked cards as full details, toggles Done by mouse, and retains se
   input.emit("data", "j");
   output.columns = 60;
   output.emit("resize");
-  expect(frame(output)).toContain("› second");
+  expect(stripVTControlCharacters(frame(output))).toContain("▌   second");
   output.columns = 120;
   output.emit("resize");
   input.emit("data", "\u001B[<0;91;3M");
@@ -239,7 +240,16 @@ test("keeps the last valid frame on a transient read failure and retries on dema
   await waitFor(() => reads === 1);
   input.emit("data", "R");
   await waitFor(() => frame(output).includes("temporary read failure"));
-  expect(frame(output)).toContain("first work");
+  const errorFrame = frame(output);
+  if (process.env.NO_COLOR === undefined)
+    expect(errorFrame).toContain(
+      "\u001B[31mError: temporary read failure\u001B[0m",
+    );
+  else expect(errorFrame).not.toContain("\u001B[31m");
+  expect(stripVTControlCharacters(errorFrame)).toContain(
+    "Error: temporary read failure",
+  );
+  expect(stripVTControlCharacters(frame(output))).toContain("first work");
   input.emit("data", "R");
   await waitFor(() => frame(output).includes("recovered work"));
   expect(frame(output)).not.toContain("Error:");
@@ -293,7 +303,7 @@ test("restores the terminal after input and output closures", async () => {
       output: output as never,
       read: () => board(),
     });
-    await waitFor(() => frame(output).includes("Ready (2)"));
+    await waitFor(() => frame(output).includes("Ready · 2"));
     if (event === "output close") output.emit("close");
     else input.emit(event);
     await running;
@@ -309,7 +319,7 @@ test("restores the terminal after input, output, and render failures", async () 
     output: inputOutput as never,
     read: () => board(),
   });
-  await waitFor(() => frame(inputOutput).includes("Ready (2)"));
+  await waitFor(() => frame(inputOutput).includes("Ready · 2"));
   inputFailure.emit("error", new Error("input failed"));
   await expect(inputRunning).rejects.toThrow("input failed");
   expectRestored(inputFailure, inputOutput);
@@ -321,7 +331,7 @@ test("restores the terminal after input, output, and render failures", async () 
     output: outputFailure as never,
     read: () => board(),
   });
-  await waitFor(() => frame(outputFailure).includes("Ready (2)"));
+  await waitFor(() => frame(outputFailure).includes("Ready · 2"));
   outputFailure.emit("error", new Error("output failed"));
   await expect(outputRunning).rejects.toThrow("output failed");
   expectRestored(outputInput, outputFailure);
@@ -348,7 +358,7 @@ test("keeps the output error listener through deferred restoration writes", asyn
     read: () => board(),
   });
 
-  await waitFor(() => frame(output).includes("Ready (2)"));
+  await waitFor(() => frame(output).includes("Ready · 2"));
   output.deferWriteCallbacks = true;
   input.emit("data", "q");
   await waitFor(() => output.writes.includes("\u001B[?1000l\u001B[?1006l"));

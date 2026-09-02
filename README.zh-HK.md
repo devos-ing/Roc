@@ -52,31 +52,11 @@ Onboarding 會建立 Roc 的本機資料庫，並安裝兩個 skills：
 $roc-create-tasks 加入團隊邀請功能
 ```
 
-這個 skill 會先顯示建議的任務，得到你批准後才會匯入。安裝以下四個
-skills，就可以使用完整流程：
+這個 skill 會先顯示建議的任務，得到你批准後才會匯入。它需要
+`grilling` skill，你可以用以下指令安裝：
 
 ```bash
-# 把未整理的需求拆成清楚任務
 npx skills add mattpocock/skills --skill grilling --global --agent codex
-
-# 讓 agent 回覆容易閱讀和執行
-codex plugin marketplace add ayghri/i-have-adhd --ref main
-codex plugin add i-have-adhd@i-have-adhd
-
-# 刪走文字中的 AI 語氣和廢話
-npx skills add backnotprop/pstack --skill unslop --global --agent codex
-
-# 優先選擇最簡單而可行的方案
-codex plugin marketplace add DietrichGebert/ponytail
-codex plugin add ponytail@ponytail
-```
-
-建立 backlog 必須使用 `grilling`。另外三個 skills 會引導 agent 怎樣寫作和
-實作任務。安裝後，請再次執行 onboarding，並選擇 Roc agents 可以使用的
-skills：
-
-```bash
-npx roc-it@latest onboard
 ```
 
 查看任務、開始執行，然後打開看板：
@@ -92,28 +72,29 @@ Roc 會在名為 `<project>.agile-checkout` 的相鄰資料夾編寫任務程式
 
 ## 任務看板
 
-看板是 terminal UI，目前使用英文介面。實際畫面如下：
+看板是唯讀 terminal UI，目前使用英文介面。寬版保留四個任務欄和右側預覽；
+窄版會上下排列，並以全畫面顯示詳情。實際畫面如下：
 
 ```text
-Cycle 2026-W35 · 4 tasks · 8420/12000 tokens
+Cycle 2026-W35 · 4 tasks · 8420 / 12000 tok
 
-Ready (1)                   │ In progress (1)             │ Attention (1)               │ Done (1)
+Ready · 1                   │ In progress · 1             │ Attention · 1               │ Done · 1
 ─────────────────────────── │ ─────────────────────────── │ ─────────────────────────── │ ───────────────────────────
-  email  Add email login    │ › ● api  Build auth API     │   tests  Fix auth tests     │   collapsed
-  Status: ready             │   Status: implementing      │   Status: needs_input       │
-  Phase: ready              │   Phase: implement          │   Phase: needs_input        │
-                            │                             │   Blocked: api              │
+    email  Add email login  │ ▌ ● api  Build auth API     │     tests  Fix auth tests   │   d to expand
+    ready                   │     implement · implementing│     needs_input             │
+                            │                             │     blocked by api          │
 
-↑↓ select · Space peek · Enter details · d Done · ? help · q quit
+↑↓ move · Space preview · Enter details · d Done · ? help · q quit
 ```
 
-選取任務後，你可以查看問題、目前階段、使用中的 model、重試次數、token
-用量、相依任務和驗收條件。按 `Space` 快速預覽，按 `Enter` 查看完整資料，
-按 `r` 更新畫面。
+選取色條、語意狀態色和精簡的 token 摘要讓你不用以完整卡片邊框也能看清下一步。
+詳情會按狀態、執行資料、相依關係和任務摘要分類。按 `Space` 快速預覽，按
+`Enter` 查看完整資料。
 
-看板只供查看。打開看板不會啟動 scheduler，也不會改動任務。
-執行 `npx roc-it@latest task board --all` 可以包括舊 cycle 的任務。
-較短的 `npx roc-it@latest tui` 指令會打開同一個看板。
+快捷鍵包括：`↑`/`↓` 或 `J`/`K` 移動、`Space` 預覽、`Enter` 詳情、`D` 展開
+Done、`R` 更新、`?` 說明、`Esc` 返回，以及 `Q` 或 `Ctrl-C` 離開。`task board`
+和較短的 `tui` 指令會打開同一個唯讀看板；兩者都不會啟動 scheduler 或改動
+任務。執行 `npx roc-it@latest task board --all` 可以包括舊 cycle 的任務。
 
 ## 任務怎樣執行
 
@@ -139,6 +120,24 @@ Review 接受結果後，Roc 會執行已信任的 posthook，並確認 Implemen
 
 Roc 會記錄任務狀態、執行次數、事件、model 選擇和 token 用量。Token target
 只用作規劃估算。Agent 用量到達 target 時，Roc 不會強制停止。
+
+## 實驗性 ZCode backend
+
+Roc 預設使用 Codex。它也可以使用 Z.ai 桌面應用程式的 headless ZCode server：
+
+```bash
+cd /absolute/path/to/project
+ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --base-branch main --backend zcode
+```
+
+ZCode 需要同一部電腦上已登入的 Z.ai 桌面應用程式。Roc 會從
+`~/.zcode/v2/config.json` 讀取已啟用的 provider，再透過 `ZCODE_BIN` 啟動
+應用程式附帶的 CLI。該 CLI 沒有公開文件，日後版本可能會改變。
+
+ZCode 沒有協定層級的檔案系統 sandbox。無人看管的 session 可以寫入 task
+checkout 以外的位置，而且停用 command sandbox 的要求會自動獲准。只應在
+僅開放 task checkout 的 OS sandbox 或 container 內使用這個 backend。
+設定 `ROC_ZCODE_EXPERIMENTAL=1` 表示你接受這項風險。
 
 ## 其他加入任務的方法
 
@@ -172,7 +171,7 @@ npx roc-it@latest cycle current           顯示目前 Agile cycle
 npx roc-it@latest task list               列出已儲存的任務
 npx roc-it@latest task board [--all]      打開唯讀看板
 npx roc-it@latest tui                     打開唯讀看板
-npx roc-it@latest scheduler run --base-branch BRANCH [--base REF]
+npx roc-it@latest scheduler run --base-branch BRANCH [--base REF] [--backend <name>]
 npx roc-it@latest scheduler inspect       查看 scheduler 狀態
 npx roc-it@latest tokens [--no-color]     顯示 token 用量
 npx roc-it@latest help                    顯示所有指令
@@ -187,8 +186,8 @@ roc-it help
 
 ## 目前限制
 
-這份說明只介紹 Codex backend。Roc 仍未支援平行執行任務、遠端批准或通知。
-Pi、Claude Code 和 Cursor backend 仍在計劃中。
+Roc 現時支援 Codex 和實驗性 ZCode backend。它仍未支援平行執行任務、
+遠端批准或通知。Pi、Claude Code 和 Cursor backend 仍在計劃中。
 
 ## 詳細資料
 

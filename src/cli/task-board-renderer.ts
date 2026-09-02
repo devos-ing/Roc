@@ -31,6 +31,7 @@ const colors = {
   active: "\u001B[36m",
   attention: "\u001B[33m",
   done: "\u001B[32m",
+  error: "\u001B[31m",
   muted: "\u001B[90m",
 };
 const narrowWidth = 88;
@@ -147,6 +148,32 @@ function blocker(task: TaskBoardTask): string | undefined {
     : undefined;
 }
 
+/** Maps a task status to its semantic terminal tone when it needs emphasis. */
+function statusTone(task: TaskBoardTask): keyof typeof colors | undefined {
+  if (task.rawStatus === "done") return "done";
+  if (task.rawStatus === "failed_infra" || task.rawStatus === "rejected")
+    return "error";
+  if (task.column === "attention") return "attention";
+  return task.isActive ? "active" : undefined;
+}
+
+/** Renders the current phase and status once, coloring only the semantic status. */
+function cardStatus(
+  task: TaskBoardTask,
+  snapshot: TaskBoardSnapshot,
+  colorEnabled: boolean,
+): string {
+  const currentPhase = phase(task, snapshot);
+  const status = color(
+    task.rawStatus,
+    statusTone(task) ?? "muted",
+    colorEnabled,
+  );
+  return currentPhase === task.rawStatus
+    ? status
+    : `${color(currentPhase, "muted", colorEnabled)} · ${status}`;
+}
+
 /** Returns the four stable renderer columns backed by the canonical record-valued model columns. */
 function boardColumns(snapshot: TaskBoardSnapshot): BoardColumn[] {
   return [
@@ -180,23 +207,22 @@ function renderCard(input: {
   const blocked = blocker(input.task);
   const lines = [
     fit(
-      `${input.selected ? "›" : " "} ${input.task.isActive ? "● " : ""}${input.task.id}  ${input.task.title}`,
+      `${input.selected ? color("▌", "active", input.colorEnabled) : " "} ${input.task.isActive ? color("●", "active", input.colorEnabled) : " "} ${input.task.id}  ${input.task.title}`,
       input.width,
     ),
-    fit(`  Status: ${input.task.rawStatus}`, input.width),
-    fit(`  Phase: ${phase(input.task, input.snapshot)}`, input.width),
+    fit(
+      `    ${cardStatus(input.task, input.snapshot, input.colorEnabled)}`,
+      input.width,
+    ),
   ];
-  if (blocked) lines.push(fit(`  Blocked: ${blocked}`, input.width));
-  const tone = input.selected
-    ? "active"
-    : blocked || input.task.column === "attention"
-      ? "attention"
-      : input.task.column === "done"
-        ? "done"
-        : undefined;
-  return tone === undefined
-    ? lines
-    : lines.map((line) => color(line, tone, input.colorEnabled));
+  if (blocked)
+    lines.push(
+      fit(
+        `    ${color(`blocked by ${blocked}`, "attention", input.colorEnabled)}`,
+        input.width,
+      ),
+    );
+  return lines;
 }
 
 /** Renders one width-bounded board column including its collapsed Done state. */
@@ -211,10 +237,13 @@ function renderColumn(input: {
   const collapsed = input.column.name === "Done" && !input.doneExpanded;
   const tasks = collapsed ? [] : input.column.tasks;
   const lines = [
-    fit(`${input.column.name} (${input.column.tasks.length})`, input.width),
+    fit(`${input.column.name} · ${input.column.tasks.length}`, input.width),
     "─".repeat(input.width),
   ];
-  if (collapsed) lines.push(fit("  collapsed", input.width));
+  if (collapsed)
+    lines.push(
+      color(fit("  d to expand", input.width), "muted", input.colorEnabled),
+    );
   for (const task of tasks)
     lines.push(
       ...renderCard({
@@ -232,7 +261,7 @@ function renderColumn(input: {
 
 /** Returns the number of terminal rows occupied by one rendered card. */
 function cardHeight(task: TaskBoardTask): number {
-  return blocker(task) === undefined ? 3 : 4;
+  return blocker(task) === undefined ? 2 : 3;
 }
 
 /** Combines equal-height padded columns into a width-bounded horizontal board. */
@@ -281,12 +310,22 @@ function wrap(value: string, width: number, prefix = ""): string[] {
   return lines.length > 0 ? lines : [fit(prefix.trimEnd() || "—", limit)];
 }
 
-/** Wraps a labelled detail field while retaining its label on the first line. */
-function detailField(label: string, value: string, width: number): string[] {
+/** Wraps and then optionally colors a labelled detail field without splitting terminal controls. */
+function detailField(
+  label: string,
+  value: string,
+  width: number,
+  tone: keyof typeof colors | undefined = undefined,
+  colorEnabled = false,
+): string[] {
   const prefix = `${label}: `;
-  return visibleWidth(prefix) < Math.max(1, width)
-    ? wrap(value || "—", width, prefix)
-    : [fit(label, width), ...wrap(value || "—", width)];
+  const lines =
+    visibleWidth(prefix) < Math.max(1, width)
+      ? wrap(value || "—", width, prefix)
+      : [fit(label, width), ...wrap(value || "—", width)];
+  return tone === undefined
+    ? lines
+    : lines.map((line) => color(line, tone, colorEnabled));
 }
 
 /** Renders one task's complete details for either a side panel or narrow full-screen view. */
@@ -297,14 +336,24 @@ function renderDetails(
   colorEnabled: boolean,
 ): string[] {
   const attempt = currentAttempt(task, snapshot);
+  const blocked = blocker(task);
   const criteria = task.spec.acceptanceCriteria;
   const dependencies = task.spec.dependencies;
   return [
     color(fit(`Task ${task.id}`, width), "active", colorEnabled),
     ...wrap(task.title, width),
     "",
-    ...detailField("Status", task.rawStatus, width),
+    fit("Status", width),
+    ...detailField(
+      "State",
+      task.rawStatus,
+      width,
+      statusTone(task),
+      colorEnabled,
+    ),
     ...detailField("Phase", phase(task, snapshot), width),
+    "",
+    fit("Run", width),
     ...detailField("Role", attempt?.role ?? "—", width),
     ...detailField(
       "Attempt",
@@ -326,12 +375,21 @@ function renderDetails(
       `${tokenCount(task.tokenTotals)}/${task.tokenTarget}`,
       width,
     ),
-    ...detailField("Blocker", blocker(task) ?? "—", width),
+    "",
+    fit("Dependencies", width),
+    ...detailField(
+      "Blocker",
+      blocked ?? "—",
+      width,
+      blocked === undefined ? undefined : "attention",
+      colorEnabled,
+    ),
     ...detailField("Dependencies", dependencies.join(", ") || "—", width),
     "",
+    fit("Brief", width),
     ...detailField("Problem", task.spec.problem, width),
-    ...detailField("Desired outcome", task.spec.desiredOutcome, width),
-    fit("Acceptance criteria:", width),
+    ...detailField("Outcome", task.spec.desiredOutcome, width),
+    fit("Acceptance", width),
     ...(criteria.length
       ? criteria.flatMap((criterion) => wrap(criterion, width, "- "))
       : ["- —"]),
@@ -341,7 +399,7 @@ function renderDetails(
 /** Renders the compact non-interactive shortcut reminder. */
 function footer(width: number): string {
   return fit(
-    "↑↓ select · Space peek · Enter details · d Done · ? help · q quit",
+    "↑↓ move · Space preview · Enter details · d Done · ? help · q quit",
     width,
   );
 }
@@ -365,7 +423,7 @@ function summary(
   const tokens =
     cycle === undefined
       ? ""
-      : ` · ${tokenCount(cycle.actual)}/${cycle.tokenTarget} tokens`;
+      : ` · ${tokenCount(cycle.actual)} / ${cycle.tokenTarget} tok`;
   return fit(
     `Cycle ${snapshot.currentCycleId} · ${taskCount} task${taskCount === 1 ? "" : "s"}${tokens}`,
     width,
@@ -379,7 +437,10 @@ export function renderTaskBoard(
 ): string {
   const width = Math.max(1, Math.floor(options.width ?? 100));
   const colorEnabled =
-    options.color !== false && options.isTTY !== false && options.tty !== false;
+    (options.color === true || process.env.NO_COLOR === undefined) &&
+    options.color !== false &&
+    options.isTTY !== false &&
+    options.tty !== false;
   const taskColumns = boardColumns(snapshot);
   const taskCount = snapshot.tasks.length;
   const selected = taskById(
@@ -412,9 +473,9 @@ export function renderTaskBoard(
   if (width < narrowWidth) {
     const lines = [heading, ""];
     for (const column of taskColumns) {
-      lines.push(fit(`${column.name} (${column.tasks.length})`, width));
+      lines.push(fit(`${column.name} · ${column.tasks.length}`, width));
       if (column.name === "Done" && !doneExpanded)
-        lines.push(fit("  collapsed", width));
+        lines.push(color(fit("  d to expand", width), "muted", colorEnabled));
       else if (column.tasks.length === 0) lines.push(fit("  —", width));
       else
         for (const task of column.tasks)
