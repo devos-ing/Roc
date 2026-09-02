@@ -136,14 +136,16 @@ test("renders canonical model columns, compact state, and a right-side detail pa
     selectedTaskId: "active",
   });
 
-  expect(output).toContain("Cycle 2026-W35 · 5 tasks · 20/1000 tokens");
-  expect(output).toContain("Ready (1)");
-  expect(output).toContain("In progress (1)");
-  expect(output).toContain("Attention (1)");
-  expect(output).toContain("Done (2)");
-  expect(output).toContain("collapsed");
+  expect(output).toContain("Cycle 2026-W35 · 5 tasks · 20 / 1000 tok");
+  expect(output).toContain("Ready · 1");
+  expect(output).toContain("In progress · 1");
+  expect(output).toContain("Attention · 1");
+  expect(output).toContain("Done · 2");
+  expect(output).toContain("d to expand");
   expect(output).toContain("● active");
-  expect(output).toContain("Blocked: ready");
+  expect(output).toContain("blocked by re");
+  expect(output).toContain("Status");
+  expect(output).toContain("State: implementing");
   expect(output).toContain("Attempt: attempt-active");
   expect(output).toContain("Model: gpt-5");
   expect(output).toContain("Retry: 1");
@@ -153,6 +155,7 @@ test("renders canonical model columns, compact state, and a right-side detail pa
 test("pads colored wide columns and keeps ANSI resets intact", () => {
   const output = renderTaskBoard(snapshot, {
     width: 120,
+    color: true,
     selectedTaskId: "active",
     doneExpanded: true,
   });
@@ -184,17 +187,73 @@ test("uses a vertical list and full-screen wrapped detail in narrow terminals", 
     list.indexOf("Second finished work"),
   );
   expect(detail).toStartWith("Task active");
-  expect(detail).not.toContain("Ready (1)");
+  expect(detail).not.toContain("Ready · 1");
   expect(detail).toContain(
     "Problem: No readable board with a deliberately long",
   );
-  expect(detail).toContain(
-    "Desired outcome: A readable board with detailed task",
-  );
-  expect(detail).toContain("Acceptance criteria:");
+  expect(detail).toContain("Outcome: A readable board with detailed task");
+  expect(detail).toContain("Acceptance");
   expect(detail.split("\n").every((line) => displayWidth(line) <= 60)).toBe(
     true,
   );
+});
+
+test("wraps colored failed statuses and blockers without splitting ANSI controls", () => {
+  const failed = task({
+    id: "failed",
+    rawStatus: "failed_infra",
+    column: "attention",
+    blockingDependencyIds: [
+      "dependency-alpha",
+      "dependency-bravo",
+      "dependency-charlie",
+    ],
+  });
+  const failedSnapshot: TaskBoardSnapshot = {
+    ...snapshot,
+    tasks: [failed],
+    columns: { ready: [], inProgress: [], attention: [failed], done: [] },
+  };
+  const colored = renderTaskBoard(failedSnapshot, {
+    width: 16,
+    color: true,
+    selectedTaskId: failed.id,
+  });
+  const plain = renderTaskBoard(failedSnapshot, {
+    width: 16,
+    color: false,
+    selectedTaskId: failed.id,
+  });
+
+  expect(colored).toContain("\u001B[31m");
+  expect(colored).toContain("\u001B[33m");
+  const ansiColorPattern = new RegExp(
+    `${String.fromCharCode(27)}\\[[0-9;]*m`,
+    "g",
+  );
+  expect(colored.replace(ansiColorPattern, "")).not.toContain("\u001B");
+  expect(
+    stripVTControlCharacters(colored)
+      .split("\n")
+      .every((line) => displayWidth(line) <= 16),
+  ).toBe(true);
+  expect(stripVTControlCharacters(plain)).toBe(plain);
+});
+
+test("honors NO_COLOR even when an interactive frame requests color", () => {
+  const previous = process.env.NO_COLOR;
+  process.env.NO_COLOR = "1";
+  try {
+    const output = renderTaskBoard(snapshot, {
+      width: 120,
+      selectedTaskId: "active",
+    });
+
+    expect(stripVTControlCharacters(output)).toBe(output);
+  } finally {
+    if (previous === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = previous;
+  }
 });
 
 test("keeps plain Unicode output cell-bounded without splitting graphemes", () => {
@@ -259,14 +318,14 @@ test("keeps widths below forty bounded and frames empty boards completely", () =
   const output = renderTaskBoard(empty, { width: 24, color: false });
 
   expect(output).toContain("Cycle 2026-W35");
-  expect(output).toContain("Ready (0)");
-  expect(output).toContain("In progress (0)");
-  expect(output).toContain("Attention (0)");
-  expect(output).toContain("Done (0)");
+  expect(output).toContain("Ready · 0");
+  expect(output).toContain("In progress · 0");
+  expect(output).toContain("Attention · 0");
+  expect(output).toContain("Done · 0");
   expect(output).toContain("No tasks.");
   expect(output).toContain("/roc-create-tasks");
   expect(output).toContain("$roc-create-tasks");
-  expect(output).toContain("↑↓ select");
+  expect(output).toContain("↑↓ move");
   expect(output.split("\n").every((line) => displayWidth(line) <= 24)).toBe(
     true,
   );
