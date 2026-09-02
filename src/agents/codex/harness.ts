@@ -15,6 +15,10 @@ import type {
   TaskBranchManager,
   TaskWorkspace,
 } from "../../workspace/task-branch";
+import {
+  implementationCommitFailureMessage,
+  restoreApprovedSourceCommit,
+} from "../source-commit";
 import type { CodexClientApi } from "./client";
 import {
   ImplementDraftOutputJsonSchema,
@@ -462,6 +466,12 @@ export function createCodexHarness(input: {
       request.attempt.taskId,
       request.input.ticket.baseCommit,
     );
+    await restoreApprovedSourceCommit({
+      branches: input.branches,
+      request,
+      baseCommit: workspace.baseCommit,
+      component: "codex-harness",
+    });
     let reviewStatusBefore: string | undefined;
     if (request.attempt.role === "review") {
       try {
@@ -930,7 +940,7 @@ export function createCodexHarness(input: {
           } catch (error) {
             throw protocolError(
               "invalid_implementation_commit",
-              "The trusted Harness could not create or reuse the implementation commit",
+              implementationCommitFailureMessage(error),
               request,
               active.threadId,
               error,
@@ -1166,12 +1176,12 @@ export function createCodexHarness(input: {
           recovered.taskId,
           recovered.baseCommit || undefined,
         );
-      } catch {
+      } catch (error) {
         return failedDelivery(
           cursor,
           recovered,
           "invalid_implementation_commit",
-          "The trusted Harness could not create or reuse the implementation commit",
+          implementationCommitFailureMessage(error),
         );
       }
       output = ImplementOutputSchema.parse({ ...draft.data, commitSha });

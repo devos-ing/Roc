@@ -52,6 +52,10 @@ export const TicketSpecSchema = z
     risk: z.enum(["low", "medium", "high"]),
     contextCandidates: z.array(ContextRefSchema),
     tokenCeiling: z.number().int().positive(),
+    sourceCommit: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/)
+      .optional(),
     prehook: TaskHookSchema.optional(),
     posthook: TaskHookSchema.optional(),
   })

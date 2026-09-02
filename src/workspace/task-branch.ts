@@ -13,6 +13,12 @@ export type TaskWorkspace = {
 
 export type TaskBranchManager = {
   prepare(taskId: string, baseCommit?: string): Promise<TaskWorkspace>;
+  /** Restores an approved source commit as uncommitted task work when the branch is untouched. */
+  restoreChanges(
+    taskId: string,
+    sourceCommit: string,
+    baseCommit?: string,
+  ): Promise<void>;
   commitChanges(taskId: string, baseCommit?: string): Promise<string>;
   assertCommit(
     taskId: string,
@@ -29,6 +35,52 @@ export type TaskBranchManager = {
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const TASK_BRANCH_PREFIX = "agile/";
+
+/** Parses Git's NUL-delimited path output without losing whitespace in filenames. */
+function nulDelimitedPaths(output: string): string[] {
+  return output.split("\0").filter((path) => path !== "");
+}
+
+/** Applies a trusted patch to the scheduler checkout without invoking a shell. */
+async function applySourcePatch(
+  checkoutPath: string,
+  patch: string,
+): Promise<void> {
+  const subprocess = Bun.spawn({
+    cmd: [
+      "git",
+      "-c",
+      "core.hooksPath=/dev/null",
+      "-c",
+      "core.fsmonitor=false",
+      "apply",
+      "--3way",
+      "--index",
+      "-",
+    ],
+    cwd: checkoutPath,
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      LC_ALL: "C",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_TERMINAL_PROMPT: "0",
+    },
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  await subprocess.stdin.write(patch);
+  await subprocess.stdin.end();
+  const [exitCode] = await Promise.all([
+    subprocess.exited,
+    new Response(subprocess.stdout).text(),
+    new Response(subprocess.stderr).text(),
+  ]);
+  if (exitCode !== 0) {
+    throw new Error("Approved source commit patch did not apply cleanly");
+  }
+}
 
 /** Returns the deterministic remote branch name owned by a task. */
 export function taskBranchName(taskId: string): string {
@@ -400,6 +452,109 @@ export async function createTaskBranchManager(
       }
       await assertActive(candidate);
       return candidate;
+    },
+
+    /** Restores an approved source commit into an untouched task branch without creating a commit. */
+    async restoreChanges(
+      taskId: string,
+      sourceCommit: string,
+      persistedBaseCommit?: string,
+    ): Promise<void> {
+      const candidate = workspace(taskId, persistedBaseCommit);
+      await assertActive(candidate);
+      if (!FULL_SHA.test(sourceCommit)) {
+        throw new Error(`Invalid full source commit SHA: ${sourceCommit}`);
+      }
+      await sourceGit.raw(["cat-file", "-e", `${sourceCommit}^{commit}`]);
+      const sourceRef = `refs/agile-source/${candidate.taskId}`;
+      const recordedSourceCommit = await fullCommit(
+        checkoutGit,
+        sourceRef,
+      ).catch(() => undefined);
+      if (
+        (await taskCommitCount(candidate)) !== 0 ||
+        (await porcelainStatus()) !== ""
+      ) {
+        if (recordedSourceCommit === sourceCommit) return;
+        throw new Error(
+          `Task branch ${candidate.branch} has unmarked work before approved source restoration`,
+        );
+      }
+      const ancestry = (
+        await sourceGit.raw(["rev-list", "--parents", "-n", "1", sourceCommit])
+      )
+        .trim()
+        .split(/\s+/);
+      if (ancestry.length !== 2 || ancestry[0] !== sourceCommit) {
+        throw new Error(
+          `Source commit ${sourceCommit} must have exactly one parent`,
+        );
+      }
+      const sourceParent = ancestry[1];
+      if (sourceParent === undefined || !FULL_SHA.test(sourceParent)) {
+        throw new Error(`Source commit ${sourceCommit} has an invalid parent`);
+      }
+
+      const sourceChangedPaths = new Set(
+        nulDelimitedPaths(
+          await sourceGit.raw([
+            "diff",
+            "--name-only",
+            "-z",
+            sourceParent,
+            sourceCommit,
+            "--",
+          ]),
+        ),
+      );
+      const changedPaths = nulDelimitedPaths(
+        await sourceGit.raw([
+          "diff",
+          "--name-only",
+          "-z",
+          candidate.baseCommit,
+          sourceCommit,
+          "--",
+        ]),
+      ).filter((path) => sourceChangedPaths.has(path));
+      if (changedPaths.length === 0) {
+        throw new Error(
+          `Source commit ${sourceCommit} has no changes from task base ${candidate.baseCommit}`,
+        );
+      }
+
+      const patch = await sourceGit.raw([
+        "diff",
+        "--binary",
+        sourceParent,
+        sourceCommit,
+        "--",
+        ...changedPaths,
+      ]);
+      if (patch === "") {
+        throw new Error(`Source commit ${sourceCommit} produced no patch`);
+      }
+
+      await checkoutGit.raw([
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        canonicalRepo,
+        sourceCommit,
+      ]);
+      try {
+        await applySourcePatch(checkoutPath, patch);
+        await checkoutGit.raw(["update-ref", sourceRef, sourceCommit]);
+      } catch (error) {
+        await checkoutGit.raw(["reset", "--hard", "HEAD"]);
+        await checkoutGit.raw(["update-ref", "-d", sourceRef]);
+        throw error;
+      }
+      if ((await porcelainStatus()) === "") {
+        throw new Error(
+          `Source commit ${sourceCommit} did not restore task changes`,
+        );
+      }
     },
 
     /** Converts task changes or a checkpoint into the single trusted final commit. */

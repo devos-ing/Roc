@@ -210,6 +210,7 @@ export function memoryBranches(
         baseCommit: "a".repeat(40),
       };
     },
+    async restoreChanges() {},
     async commitChanges() {
       return "b".repeat(40);
     },

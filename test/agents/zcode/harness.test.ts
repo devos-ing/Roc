@@ -193,6 +193,7 @@ function memoryBranches(
     async commitChanges() {
       return "b".repeat(40);
     },
+    async restoreChanges() {},
     async assertCommit() {},
     async assertReviewReady() {},
     async status() {
@@ -361,6 +362,35 @@ test("implement commits through the trusted harness and tolerates fences", async
     kind: "implement",
     commitSha: "b".repeat(40),
   });
+});
+
+test("restores a ticket source commit before starting Implement", async () => {
+  const restored: string[] = [];
+  const client = new RecordedZcodeClient();
+  const harness = createZcodeHarness({
+    client,
+    branches: memoryBranches({
+      async restoreChanges(_taskId, sourceCommit) {
+        restored.push(sourceCommit);
+      },
+    }),
+  });
+  const request = makeImplementRequest("attempt-source-restore");
+  if (request.input.role !== "implement") throw new Error("unreachable");
+  request.input.ticket = {
+    ...request.input.ticket,
+    baseCommit: "a".repeat(40),
+    spec: {
+      ...request.input.ticket.spec,
+      sourceCommit: "c".repeat(40),
+    },
+  };
+
+  await expect(harness.step(request)).resolves.toMatchObject({
+    kind: "event",
+    event: { type: "attempt.started" },
+  });
+  expect(restored).toEqual(["c".repeat(40)]);
 });
 
 test("review verifies the workspace stayed untouched and completes", async () => {

@@ -234,6 +234,7 @@ function memoryBranches(): TaskBranchManager {
     async commitChanges() {
       return "b".repeat(40);
     },
+    async restoreChanges() {},
     async assertCommit() {},
     async assertReviewReady() {},
     async status() {
@@ -535,7 +536,10 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
       ),
     ).toBe("1");
     expect(implementPrompt(implementInput)).toContain(
-      "Do not run Git metadata commands",
+      "You may run read-only Git inspection commands such as git status, git diff, and git show",
+    );
+    expect(implementPrompt(implementInput)).toContain(
+      "Do not change Git history, switch branches, stage files, or create commits",
     );
     expect(implementPrompt(implementInput)).toContain(
       "trusted Harness will create the commit",
@@ -1020,10 +1024,79 @@ test("normalizes an invalid trusted Implement commit into task failure", async (
     event: {
       type: "attempt.failed_infra",
       code: "invalid_implementation_commit",
+      message:
+        "The trusted Harness found no uncommitted implementation changes",
       retryable: true,
       attemptId: "attempt-invalid-commit",
     },
   });
+});
+
+test("restores a ticket source commit before starting Implement", async () => {
+  const sourceCommit = "c".repeat(40);
+  const restored: Array<{
+    taskId: string;
+    sourceCommit: string;
+    baseCommit?: string;
+  }> = [];
+  const branches = memoryBranches();
+  branches.restoreChanges = async (taskId, source, baseCommit) => {
+    restored.push({ taskId, sourceCommit: source, baseCommit });
+  };
+  const client = new RecordedCodexClient([]);
+  const harness = createCodexHarness({ client, branches });
+  const request = makeImplementRequest("attempt-source-restore");
+  if (request.input.role !== "implement") throw new Error("unreachable");
+  request.input.ticket = {
+    ...request.input.ticket,
+    baseCommit: "a".repeat(40),
+    spec: {
+      ...request.input.ticket.spec,
+      sourceCommit,
+    },
+  };
+
+  await expect(harness.step(request)).resolves.toMatchObject({
+    kind: "event",
+    event: { type: "attempt.started" },
+  });
+  expect(restored).toEqual([
+    {
+      taskId: ticket.id,
+      sourceCommit,
+      baseCommit: "a".repeat(40),
+    },
+  ]);
+});
+
+test("normalizes source commit restoration failures before starting Codex", async () => {
+  const branches = memoryBranches();
+  branches.restoreChanges = async () => {
+    throw new Error("missing approved source");
+  };
+  const client = new RecordedCodexClient([]);
+  const harness = createCodexHarness({ client, branches });
+  const request = makeImplementRequest("attempt-source-restore-failure");
+  if (request.input.role !== "implement") throw new Error("unreachable");
+  request.input.ticket = {
+    ...request.input.ticket,
+    baseCommit: "a".repeat(40),
+    spec: {
+      ...request.input.ticket.spec,
+      sourceCommit: "c".repeat(40),
+    },
+  };
+
+  await expect(harness.step(request)).resolves.toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.failed_infra",
+      code: "source_commit_restore_failed",
+      message: "Could not restore the approved source commit",
+      retryable: true,
+    },
+  });
+  expect(client.requests).toEqual([]);
 });
 
 test("drains a policy-interrupted terminal before progressing the next fresh attempt", async () => {

@@ -65,6 +65,9 @@ function branches(calls: string[]): TaskBranchManager {
     async commitChanges() {
       throw new Error("not used");
     },
+    async restoreChanges() {
+      throw new Error("not used");
+    },
     async assertCommit() {
       throw new Error("not used");
     },
