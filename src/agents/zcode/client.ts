@@ -53,6 +53,7 @@ export type ZcodeSessionModel = Readonly<{
 
 type ProviderConfig = {
   enabled?: boolean;
+  kind?: string;
   options?: { baseURL?: string; apiKey?: string };
   models?: Record<string, unknown>;
 };
@@ -73,7 +74,11 @@ function loadCredentials(configPath: string): {
     )) {
       if (provider?.enabled) {
         return {
-          providerId,
+          // The app-server model catalog addresses providers by their kind
+          // (e.g. "anthropic/GLM-5.3"), not by the desktop config key, so a
+          // custom-keyed enabled provider (builtin:bigmodel-coding-plan) must
+          // publish its kind as the protocol provider id.
+          providerId: provider.kind ?? providerId,
           model: Object.keys(provider.models ?? {})[0],
           baseURL: provider.options?.baseURL,
           apiKey: provider.options?.apiKey,
