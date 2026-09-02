@@ -99,6 +99,18 @@ and `Q` or `Ctrl-C` to quit. Opening either `task board` or the shorter `tui`
 never starts the scheduler or changes a task; both show the same read-only
 board. Run `npx roc-it@latest task board --all` to include older cycles.
 
+Retire an obsolete draft, input, replan, or ready task without deleting its
+history:
+
+```bash
+npx roc-it@latest task retire TASK_ID --reason "obsolete approach" [--replacement TASK_ID]
+```
+
+Roc calls this Archived when there is no replacement and Superseded when there
+is one. Retired tasks are hidden from normal task lists and boards; use
+`task list --history` or `task board --history` to inspect their retained reason,
+replacement, and retirement time.
+
 ## How it works
 
 Roc picks one ready task and passes it through three agent roles.
@@ -178,8 +190,9 @@ The skill does not comment, approve, commit, push, or merge unless you ask.
 ```text
 npx roc-it@latest onboard                 Set up Roc in this project
 npx roc-it@latest cycle current           Show the current Agile cycle
-npx roc-it@latest task list               List stored tasks
-npx roc-it@latest task board [--all]      Open the read-only board
+npx roc-it@latest task list [--history]   List active tasks or retained history
+npx roc-it@latest task retire TASK_ID --reason TEXT [--replacement TASK_ID]
+npx roc-it@latest task board [--all] [--history] Open the read-only board
 npx roc-it@latest tui                     Open the read-only board
 npx roc-it@latest scheduler run --base-branch BRANCH [--base REF] [--backend <name>]
 npx roc-it@latest scheduler inspect       Inspect scheduler state

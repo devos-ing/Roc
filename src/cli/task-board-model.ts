@@ -35,10 +35,14 @@ export type TaskBoardTask = {
   roles: InspectionRole[];
   tokenTarget: number;
   tokenTotals: TokenTotals;
+  retirementReason?: string | null;
+  replacementTaskId?: string | null;
+  retiredAt?: string | null;
 };
 
 export type TaskBoardSnapshot = {
   currentCycleId: string;
+  history?: boolean;
   scheduler: InspectionScheduler;
   active?: TaskBoardActiveState;
   cycles: InspectionCycle[];
@@ -51,11 +55,12 @@ export type TaskBoardSnapshotInput = {
   inspection: InspectionSnapshot;
   currentCycleId: string;
   allCycles?: boolean;
+  history?: boolean;
 };
 
 /** Maps a raw task status into its task-board column. */
 function boardColumn(status: TaskStatus): TaskBoardColumn {
-  if (status === "done") return "done";
+  if (status === "done" || status === "retired") return "done";
   if (
     status === "claimed" ||
     status === "scouting" ||
@@ -87,9 +92,12 @@ function compareTasks(left: TaskBoardTask, right: TaskBoardTask): number {
 export function buildTaskBoardSnapshot(
   input: TaskBoardSnapshotInput,
 ): TaskBoardSnapshot {
-  const tasks = input.allCycles
+  const cycleTasks = input.allCycles
     ? input.tasks
     : input.tasks.filter((task) => task.cycleId === input.currentCycleId);
+  const tasks = input.history
+    ? cycleTasks
+    : cycleTasks.filter((task) => task.status !== "retired");
   const inspectedTasks = new Map(
     input.inspection.tasks.map((task) => [task.id, task]),
   );
@@ -117,6 +125,9 @@ export function buildTaskBoardSnapshot(
       roles: inspected.roles,
       tokenTarget: inspected.tokenTarget,
       tokenTotals: inspected.actual,
+      retirementReason: task.retirementReason,
+      replacementTaskId: task.replacementTaskId,
+      retiredAt: task.retiredAt,
     };
   });
   const activeTask = taskBoard.find((task) => task.isActive);
@@ -152,6 +163,7 @@ export function buildTaskBoardSnapshot(
 
   return {
     currentCycleId: input.currentCycleId,
+    ...(input.history === true ? { history: true } : {}),
     scheduler: input.inspection.scheduler,
     ...(active === undefined ? {} : { active }),
     cycles: input.allCycles

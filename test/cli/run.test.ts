@@ -960,6 +960,105 @@ test("task list reuses create-backlog guidance when empty", async () => {
   }
 });
 
+test("task retirement flows from the CLI through persistence, history views, board, and ready-only claiming", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-retire-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-retire-home-"));
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
+  const output: string[] = [];
+  const errors: string[] = [];
+  const taskSpec = {
+    problem: "Retire obsolete work",
+    desiredOutcome: "Keep its history",
+    scope: ["task retirement"],
+    nonGoals: [],
+    acceptanceCriteria: ["retirement is preserved"],
+    validation: ["bun test"],
+    dependencies: [],
+    risk: "low" as const,
+    contextCandidates: [],
+    tokenCeiling: 1_000,
+  };
+
+  try {
+    await saveRocSettings({ cycle: { type: "daily" } }, home);
+    const db = openDatabase(dbPath);
+    const planning = new PlanningRepository(db);
+    planning.createCycle({
+      id: "2026-08-30",
+      goal: "Retire obsolete work",
+      nonGoals: [],
+      tokenBudget: 2_000,
+      ticketIds: [],
+    });
+    for (const [id, priority] of [
+      ["obsolete", 0],
+      ["replacement", 1],
+    ] as const) {
+      planning.createTask({
+        id,
+        cycleId: "2026-08-30",
+        title: id,
+        spec: taskSpec,
+        priority,
+        approvalRequired: false,
+        approved: true,
+      });
+      planning.transitionTask(id, "ready", `test:${id}:ready`);
+    }
+    db.close();
+    const runtime = {
+      runScheduler: async () => {},
+      projectRoot: root,
+      homeRoot: home,
+      now: () => new Date(2026, 7, 30),
+    };
+    const io = {
+      out: (text: string) => output.push(text),
+      err: (text: string) => errors.push(text),
+    };
+
+    expect(
+      await runCli(
+        [
+          "task",
+          "retire",
+          "obsolete",
+          "--reason",
+          "replaced implementation",
+          "--replacement",
+          "replacement",
+        ],
+        io,
+        runtime,
+      ),
+    ).toBe(0);
+    expect(output.at(-1)).toBe('Superseded "obsolete" by "replacement".');
+    expect(await runCli(["task", "list"], io, runtime)).toBe(0);
+    expect(output.at(-1)).not.toContain("obsolete");
+    expect(await runCli(["task", "list", "--history"], io, runtime)).toBe(0);
+    expect(output.at(-1)).toContain('[retired] "obsolete"');
+    expect(output.at(-1)).toContain('Superseded by "replacement"');
+    expect(await runCli(["task", "board"], io, runtime)).toBe(0);
+    expect(output.at(-1)).not.toContain("obsolete");
+    expect(await runCli(["task", "board", "--history"], io, runtime)).toBe(0);
+    expect(output.at(-1)).toContain("retired");
+    expect(output.at(-1)).toContain("replaced implementation");
+
+    const retiredDb = openDatabase(dbPath);
+    try {
+      expect(new OrchestrationRepository(retiredDb).claimNext()).toEqual({
+        taskId: "replacement",
+      });
+    } finally {
+      retiredDb.close();
+    }
+    expect(errors).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("task board prints an unchanged, plain current-cycle snapshot and supports --all", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-board-"));
   const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
@@ -1141,7 +1240,7 @@ test("operational database failures report an error, return 1, and close the dat
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, ".agile", "runtime", "agile.db");
   const future = openDatabase(dbPath);
-  future.exec("PRAGMA user_version = 7");
+  future.exec("PRAGMA user_version = 8");
   future.close();
   const output: string[] = [];
   const errors: string[] = [];
@@ -1160,7 +1259,7 @@ test("operational database failures report an error, return 1, and close the dat
     ).toBe(1);
     expect(output).toEqual([]);
     expect(errors).toEqual([
-      "Database version 7 is newer than supported version 6",
+      "Database version 8 is newer than supported version 7",
     ]);
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
@@ -1179,7 +1278,7 @@ test("task board reports database failures without emitting a snapshot", async (
   try {
     await saveRocSettings({ cycle: { type: "daily" } }, home);
     const future = openDatabase(dbPath);
-    future.exec("PRAGMA user_version = 7");
+    future.exec("PRAGMA user_version = 8");
     future.close();
     expect(
       await runCli(
@@ -1198,7 +1297,7 @@ test("task board reports database failures without emitting a snapshot", async (
     ).toBe(1);
     expect(output).toEqual([]);
     expect(errors).toEqual([
-      "TASK_BOARD_FAILED: Database version 7 is newer than supported version 6",
+      "TASK_BOARD_FAILED: Database version 8 is newer than supported version 7",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1452,7 +1551,7 @@ test("tokens rejects scheduler-only options and reports read failures through th
   const dbPath = join(root, ".agile", "runtime", "agile.db");
   await saveRocSettings({ cycle: { type: "weekly" } }, root);
   const future = openDatabase(dbPath);
-  future.exec("PRAGMA user_version = 7");
+  future.exec("PRAGMA user_version = 8");
   future.close();
   try {
     expect(

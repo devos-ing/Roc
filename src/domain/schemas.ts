@@ -17,6 +17,7 @@ export const TaskStatusSchema = z.enum([
   "done",
   "rejected",
   "failed_infra",
+  "retired",
 ]);
 
 export const ContextRefSchema = z
@@ -115,6 +116,9 @@ export const BacklogManifestSchema = z
 
 export const StoredTaskSchema = TaskCreateSchema.extend({
   status: TaskStatusSchema,
+  retirementReason: z.string().nullable().optional(),
+  replacementTaskId: NonEmpty.nullable().optional(),
+  retiredAt: NonEmpty.nullable().optional(),
   specPath: NonEmpty.optional(),
   specHash: NonEmpty.optional(),
   baseCommit: z

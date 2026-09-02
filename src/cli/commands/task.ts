@@ -93,22 +93,77 @@ async function executeGitHubImport(
   }
 }
 
-/** Lists the current project's stored tasks. */
-async function executeTaskList(context: CliCommandContext): Promise<number> {
+/** Renders one retired task's preserved retirement history for the task list. */
+function renderRetirementHistory(task: {
+  retirementReason?: string | null;
+  replacementTaskId?: string | null;
+  retiredAt?: string | null;
+}): string {
+  const label = task.replacementTaskId == null ? "Archived" : "Superseded";
+  const replacement =
+    task.replacementTaskId == null
+      ? ""
+      : ` by ${JSON.stringify(task.replacementTaskId)}`;
+  return `  ${label}${replacement}: ${JSON.stringify(task.retirementReason)} at ${task.retiredAt}`;
+}
+
+/** Lists current-project tasks, optionally including preserved retirement history. */
+async function executeTaskList(
+  context: CliCommandContext,
+  history = false,
+): Promise<number> {
   try {
     const projectRoot = await commandProjectRoot(context);
     const db = openDatabase(projectDatabasePath(projectRoot));
     try {
-      const tasks = new PlanningRepository(db).listTasks();
+      const tasks = new PlanningRepository(db)
+        .listTasks()
+        .filter((task) => history || task.status !== "retired");
       context.io.out(
         tasks.length
           ? tasks
-              .map(
-                (task) =>
+              .map((task) =>
+                [
                   `- ${JSON.stringify(task.id)} [${task.status}] ${JSON.stringify(task.title)}`,
+                  ...(task.status === "retired"
+                    ? [renderRetirementHistory(task)]
+                    : []),
+                ].join("\n"),
               )
               .join("\n")
           : renderEmptyTaskList(),
+      );
+      return 0;
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    context.io.err(errorMessage(error));
+    return 1;
+  }
+}
+
+/** Retires one obsolete task while preserving its history and optional replacement link. */
+async function executeTaskRetire(
+  context: CliCommandContext,
+  taskId: string,
+  options: { reason: string; replacement?: string },
+): Promise<number> {
+  try {
+    const projectRoot = await commandProjectRoot(context);
+    const db = openDatabase(projectDatabasePath(projectRoot));
+    try {
+      const result = new PlanningRepository(db).retireTask({
+        taskId,
+        reason: options.reason,
+        ...(options.replacement === undefined
+          ? {}
+          : { replacementTaskId: options.replacement }),
+      });
+      context.io.out(
+        result.replacementTaskId === undefined
+          ? `Archived ${JSON.stringify(result.taskId)}.`
+          : `Superseded ${JSON.stringify(result.taskId)} by ${JSON.stringify(result.replacementTaskId)}.`,
       );
       return 0;
     } finally {
@@ -176,15 +231,38 @@ export function registerTaskCommands(
   task
     .command("list")
     .description("List the current project's tasks")
-    .action(async () => {
-      context.exitCode = await executeTaskList(context);
+    .option("--history", "include retired tasks and their history")
+    .action(async (options: { history?: boolean }) => {
+      context.exitCode = await executeTaskList(
+        context,
+        options.history === true,
+      );
     });
+  task
+    .command("retire")
+    .description("Retire an obsolete task while preserving its history")
+    .argument("<task-id>", "task identifier")
+    .requiredOption("--reason <text>", "why this task is obsolete")
+    .option("--replacement <task-id>", "task that replaces this one")
+    .action(
+      async (
+        taskId: string,
+        options: { reason: string; replacement?: string },
+      ) => {
+        context.exitCode = await executeTaskRetire(context, taskId, options);
+      },
+    );
   task
     .command("board")
     .description("Open the read-only task board")
     .option("--all", "include tasks from every cycle")
-    .action(async (options: { all?: boolean }) => {
-      context.exitCode = await executeTaskBoard(context, options.all === true);
+    .option("--history", "include retired tasks and their history")
+    .action(async (options: { all?: boolean; history?: boolean }) => {
+      context.exitCode = await executeTaskBoard(
+        context,
+        options.all === true,
+        options.history === true,
+      );
     });
   task
     .command("hook")

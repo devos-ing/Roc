@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { BacklogManifest } from "../../src/domain/schemas";
 import { openDatabase } from "../../src/store/database";
+import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
 
 const spec = {
@@ -399,6 +400,170 @@ test("rejects a malformed task record read from storage", () => {
     });
 
     expect(() => repo.listTasks()).toThrow();
+  } finally {
+    db.close();
+  }
+});
+
+test("retires a task atomically, prioritizes generated children over overlapping dependents, and leaves grandchildren alone", () => {
+  const { db, repo } = createRepository();
+  try {
+    for (const id of ["F1", "F2", "F3", "F4", "F5", "F6"]) createTask(repo, id);
+    for (const id of ["F1", "F2", "F3"])
+      repo.transitionTask(id, "ready", `test:${id}:ready`);
+    db.exec(`
+      INSERT INTO task_deps(task_id, depends_on_task_id, kind) VALUES ('F3', 'F1', 'blocks');
+      INSERT INTO task_deps(task_id, depends_on_task_id, kind) VALUES ('F6', 'F1', 'blocks');
+      UPDATE tasks SET parent_task_id = 'F1', approved = 0 WHERE id = 'F4';
+      UPDATE tasks SET parent_task_id = 'F6' WHERE id = 'F5';
+      UPDATE tasks SET parent_task_id = 'F1', approved = 0 WHERE id = 'F6';
+    `);
+
+    expect(
+      repo.retireTask({
+        taskId: "F1",
+        reason: "  obsolete design  ",
+        replacementTaskId: "F4",
+      }),
+    ).toEqual({
+      taskId: "F1",
+      replacementTaskId: "F4",
+      retiredAt: "2026-08-24T00:00:00.000Z",
+    });
+    expect(repo.listTasks()).toMatchObject([
+      {
+        id: "F1",
+        status: "retired",
+        retirementReason: "obsolete design",
+        replacementTaskId: "F4",
+        retiredAt: "2026-08-24T00:00:00.000Z",
+      },
+      { id: "F2", status: "ready" },
+      { id: "F3", status: "needs_replan" },
+      { id: "F4", status: "draft" },
+      { id: "F5", status: "draft" },
+      {
+        id: "F6",
+        status: "retired",
+        retirementReason: "obsolete design",
+        replacementTaskId: "F4",
+      },
+    ]);
+    expect(
+      db.query("SELECT task_id, depends_on_task_id FROM task_deps").all(),
+    ).toEqual([
+      { task_id: "F3", depends_on_task_id: "F1" },
+      { task_id: "F6", depends_on_task_id: "F1" },
+    ]);
+    expect(
+      db
+        .query<{ task_id: string | null }, []>(`
+          SELECT task_id FROM events
+          WHERE type = 'task.needs_replan' ORDER BY task_id
+        `)
+        .all(),
+    ).toEqual([{ task_id: "F3" }]);
+    expect(
+      db
+        .query<{ task_id: string; type: string; payload_json: string }, []>(`
+          SELECT task_id, type, payload_json FROM events
+          WHERE type = 'task.retired' ORDER BY task_id
+        `)
+        .all(),
+    ).toEqual([
+      {
+        task_id: "F1",
+        type: "task.retired",
+        payload_json: JSON.stringify({
+          from: "ready",
+          reason: "obsolete design",
+          replacementTaskId: "F4",
+          retiredAt: "2026-08-24T00:00:00.000Z",
+        }),
+      },
+      {
+        task_id: "F6",
+        type: "task.retired",
+        payload_json: JSON.stringify({
+          from: "draft",
+          reason: "obsolete design",
+          replacementTaskId: "F4",
+          retiredAt: "2026-08-24T00:00:00.000Z",
+          initiatingTaskId: "F1",
+        }),
+      },
+    ]);
+
+    expect(() =>
+      repo.retireTask({
+        taskId: "F1",
+        reason: "obsolete design",
+        replacementTaskId: "F4",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      repo.retireTask({
+        taskId: "F1",
+        reason: "changed reason",
+        replacementTaskId: "F4",
+      }),
+    ).toThrow("Retirement conflict: F1");
+    expect(new OrchestrationRepository(db).claimNext()).toEqual({
+      taskId: "F2",
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test("rejects unsafe retirement inputs without partially changing task history", () => {
+  const { db, repo } = createRepository();
+  try {
+    for (const id of ["F1", "F2", "F3", "F4"]) createTask(repo, id);
+    for (const id of ["F1", "F2", "F3", "F4"])
+      repo.transitionTask(id, "ready", `test:${id}:ready`);
+    db.exec(`
+      INSERT INTO task_deps(task_id, depends_on_task_id, kind) VALUES ('F3', 'F1', 'blocks');
+      UPDATE tasks SET status = 'claimed' WHERE id = 'F3';
+      UPDATE tasks SET parent_task_id = 'F1' WHERE id = 'F4';
+    `);
+
+    for (const input of [
+      { taskId: "F1", reason: "obsolete", replacementTaskId: "missing" },
+      { taskId: "F1", reason: "obsolete", replacementTaskId: "F1" },
+      { taskId: "F1", reason: "obsolete", replacementTaskId: "F2" },
+    ]) {
+      expect(() => repo.retireTask(input)).toThrow();
+      expect(
+        repo.listTasks().filter((task) => ["F1", "F3", "F4"].includes(task.id)),
+      ).toMatchObject([
+        { id: "F1", status: "ready" },
+        { id: "F3", status: "claimed" },
+        { id: "F4", status: "ready" },
+      ]);
+      expect(
+        db
+          .query<{ count: number }, []>(
+            "SELECT COUNT(*) AS count FROM events WHERE type = 'task.retired'",
+          )
+          .get()?.count,
+      ).toBe(0);
+    }
+    db.exec("UPDATE tasks SET status = 'needs_replan' WHERE id = 'F3'");
+    expect(() =>
+      repo.retireTask({
+        taskId: "F1",
+        reason: "obsolete",
+        replacementTaskId: "F2",
+      }),
+    ).toThrow("Generated child blocks retirement: F4");
+    expect(
+      repo.listTasks().filter((task) => ["F1", "F3", "F4"].includes(task.id)),
+    ).toMatchObject([
+      { id: "F1", status: "ready" },
+      { id: "F3", status: "needs_replan" },
+      { id: "F4", status: "ready" },
+    ]);
   } finally {
     db.close();
   }
