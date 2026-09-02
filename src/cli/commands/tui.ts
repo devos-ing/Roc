@@ -18,6 +18,7 @@ import type { CliCommandContext } from "../types";
 export async function executeTaskBoard(
   context: CliCommandContext,
   allCycles = false,
+  history = false,
 ): Promise<number> {
   let dbPath: string;
   try {
@@ -38,6 +39,7 @@ export async function executeTaskBoard(
           inspection: orchestration.inspect(),
           currentCycleId: cycle.id,
           allCycles,
+          history,
         });
       const { input, output } = context.io;
       if (input?.isTTY === true && output?.isTTY === true) {

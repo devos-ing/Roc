@@ -13,9 +13,15 @@ const allowed: Record<TaskStatus, readonly TaskStatus[]> = {
   done: [],
   rejected: [],
   failed_infra: [],
+  retired: [],
 };
 
-const terminal = new Set<TaskStatus>(["done", "rejected", "failed_infra"]);
+const terminal = new Set<TaskStatus>([
+  "done",
+  "rejected",
+  "failed_infra",
+  "retired",
+]);
 
 /** Reports whether a task status may transition directly to another status. */
 export function canTransition(from: TaskStatus, to: TaskStatus): boolean {

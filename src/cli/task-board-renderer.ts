@@ -148,6 +148,14 @@ function blocker(task: TaskBoardTask): string | undefined {
     : undefined;
 }
 
+/** Summarizes a retired task's preserved history in the compact board card. */
+function retirementSummary(task: TaskBoardTask): string {
+  const label = task.replacementTaskId == null ? "Archived" : "Superseded";
+  const replacement =
+    task.replacementTaskId == null ? "" : ` by ${task.replacementTaskId}`;
+  return `${label}${replacement}: ${task.retirementReason ?? "—"} · ${task.retiredAt ?? "—"}`;
+}
+
 /** Maps a task status to its semantic terminal tone when it needs emphasis. */
 function statusTone(task: TaskBoardTask): keyof typeof colors | undefined {
   if (task.rawStatus === "done") return "done";
@@ -222,6 +230,8 @@ function renderCard(input: {
         input.width,
       ),
     );
+  if (input.task.rawStatus === "retired")
+    lines.push(fit(`    ${retirementSummary(input.task)}`, input.width));
   return lines;
 }
 
@@ -263,7 +273,11 @@ function renderColumn(input: {
 
 /** Returns the number of terminal rows occupied by one rendered card. */
 function cardHeight(task: TaskBoardTask): number {
-  return blocker(task) === undefined ? 2 : 3;
+  return (
+    2 +
+    Number(blocker(task) !== undefined) +
+    Number(task.rawStatus === "retired")
+  );
 }
 
 /** Combines equal-height padded columns into a width-bounded horizontal board. */
@@ -399,6 +413,19 @@ function renderDetails(
           ...criteria.flatMap((criterion) => wrap(criterion, width, "- ")),
         ]),
   ].flat();
+  const retirement =
+    task.rawStatus !== "retired"
+      ? []
+      : [
+          "",
+          detailSection("Retirement", width, colorEnabled),
+          ...detailField("Reason", task.retirementReason ?? "—", width),
+          ...(task.replacementTaskId === null ||
+          task.replacementTaskId === undefined
+            ? []
+            : detailField("Replacement", task.replacementTaskId, width)),
+          ...detailField("Retired at", task.retiredAt ?? "—", width),
+        ];
   return [
     color(fit(`Task ${task.id}`, width), "active", colorEnabled),
     ...wrap(task.title, width),
@@ -424,6 +451,7 @@ function renderDetails(
     ...(brief.length === 0
       ? []
       : ["", detailSection("Brief", width, colorEnabled), ...brief]),
+    ...retirement,
   ];
 }
 
@@ -487,7 +515,9 @@ export function renderTaskBoard(
       (options.detailMode === undefined ? selectedId : undefined),
   );
   const doneExpanded =
-    options.doneExpanded === true || options.expandedDone === true;
+    options.doneExpanded === true ||
+    options.expandedDone === true ||
+    snapshot.history === true;
 
   if (
     detail !== undefined &&
@@ -574,7 +604,9 @@ export function taskBoardHitTest(
   const width = Math.max(1, Math.floor(options.width ?? 100));
   const columns = boardColumns(snapshot);
   const doneExpanded =
-    options.doneExpanded === true || options.expandedDone === true;
+    options.doneExpanded === true ||
+    options.expandedDone === true ||
+    snapshot.history === true;
   if (options.detailMode === "full") return undefined;
 
   if (width < narrowWidth) {

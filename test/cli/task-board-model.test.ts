@@ -60,12 +60,14 @@ function snapshot(input: {
   planning: PlanningRepository;
   orchestration: OrchestrationRepository;
   allCycles?: boolean;
+  history?: boolean;
 }) {
   return buildTaskBoardSnapshot({
     tasks: input.planning.listTasks(),
     inspection: input.orchestration.inspect(),
     currentCycleId: "2026-W35",
     ...(input.allCycles === undefined ? {} : { allCycles: input.allCycles }),
+    ...(input.history === undefined ? {} : { history: input.history }),
   });
 }
 
@@ -106,13 +108,25 @@ test("maps every raw status to one board column while retaining it", () => {
       "done",
       "rejected",
       "failed_infra",
+      "retired",
     ] as const;
     for (const [priority, status] of statuses.entries()) {
       createTask(planning, { id: status, priority });
-      db.query("UPDATE tasks SET status = ? WHERE id = ?").run(status, status);
+      if (status === "retired") {
+        db.query(`
+          UPDATE tasks
+          SET status = 'retired', retirement_reason = 'obsolete', retired_at = 'now'
+          WHERE id = ?
+        `).run(status);
+      } else {
+        db.query("UPDATE tasks SET status = ? WHERE id = ?").run(
+          status,
+          status,
+        );
+      }
     }
 
-    const board = snapshot({ planning, orchestration });
+    const board = snapshot({ planning, orchestration, history: true });
     expect(board.columns.ready.map((task) => task.rawStatus)).toEqual([
       "draft",
       "ready",
@@ -129,7 +143,10 @@ test("maps every raw status to one board column while retaining it", () => {
       "rejected",
       "failed_infra",
     ]);
-    expect(board.columns.done.map((task) => task.rawStatus)).toEqual(["done"]);
+    expect(board.columns.done.map((task) => task.rawStatus)).toEqual([
+      "done",
+      "retired",
+    ]);
     expect(board.tasks.map((task) => task.id).sort()).toEqual(
       [...statuses].sort(),
     );

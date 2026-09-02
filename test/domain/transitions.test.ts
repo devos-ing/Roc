@@ -31,7 +31,12 @@ describe("task transitions", () => {
   });
 
   test("never reopens terminal tasks", () => {
-    for (const status of ["done", "rejected", "failed_infra"] as const) {
+    for (const status of [
+      "done",
+      "rejected",
+      "failed_infra",
+      "retired",
+    ] as const) {
       expect(isTerminal(status)).toBe(true);
       expect(canTransition(status, "ready")).toBe(false);
     }

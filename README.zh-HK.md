@@ -96,6 +96,16 @@ Done、`R` 更新、`?` 說明、`Esc` 返回，以及 `Q` 或 `Ctrl-C` 離開�
 和較短的 `tui` 指令會打開同一個唯讀看板；兩者都不會啟動 scheduler 或改動
 任務。執行 `npx roc-it@latest task board --all` 可以包括舊 cycle 的任務。
 
+要保留歷史但停用過時的 draft、needs_input、needs_replan 或 ready 任務，可執行：
+
+```bash
+npx roc-it@latest task retire TASK_ID --reason "已過時的方案" [--replacement TASK_ID]
+```
+
+沒有 replacement 時 Roc 會顯示 Archived；有 replacement 時則顯示 Superseded。
+一般 task list 和 board 會隱藏 retired 任務；使用 `task list --history` 或
+`task board --history` 可查看保留的原因、replacement 和退休時間。
+
 ## 任務怎樣執行
 
 ```mermaid
@@ -168,8 +178,9 @@ skill 不會留言、批准、commit、push 或 merge。
 ```text
 npx roc-it@latest onboard                 在目前專案設定 Roc
 npx roc-it@latest cycle current           顯示目前 Agile cycle
-npx roc-it@latest task list               列出已儲存的任務
-npx roc-it@latest task board [--all]      打開唯讀看板
+npx roc-it@latest task list [--history]   列出目前任務或保留歷史
+npx roc-it@latest task retire TASK_ID --reason TEXT [--replacement TASK_ID]
+npx roc-it@latest task board [--all] [--history] 打開唯讀看板
 npx roc-it@latest tui                     打開唯讀看板
 npx roc-it@latest scheduler run --base-branch BRANCH [--base REF] [--backend <name>]
 npx roc-it@latest scheduler inspect       查看 scheduler 狀態

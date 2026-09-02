@@ -136,6 +136,79 @@ function createV3CycleRenameDatabase(): Database {
   return db;
 }
 
+/** Creates a populated released version-6 database for retirement migration coverage. */
+function createV6RetirementDatabase(): Database {
+  const db = new Database(":memory:", { strict: true });
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE cycles (
+      id TEXT PRIMARY KEY NOT NULL,
+      goal TEXT NOT NULL,
+      token_budget INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE contexts (id TEXT PRIMARY KEY NOT NULL);
+    CREATE TABLE reviews (id TEXT PRIMARY KEY NOT NULL);
+    CREATE TABLE tasks (
+      id TEXT PRIMARY KEY NOT NULL,
+      cycle_id TEXT NOT NULL REFERENCES cycles(id),
+      title TEXT NOT NULL,
+      spec_json TEXT NOT NULL,
+      spec_path TEXT,
+      spec_hash TEXT,
+      status TEXT NOT NULL CHECK(status IN (
+        'draft', 'needs_input', 'needs_replan', 'ready', 'claimed', 'scouting',
+        'implementing', 'reviewing', 'publishing', 'done', 'rejected', 'failed_infra'
+      )),
+      priority INTEGER NOT NULL,
+      risk TEXT NOT NULL,
+      token_ceiling INTEGER NOT NULL,
+      approval_required INTEGER NOT NULL,
+      approved INTEGER NOT NULL,
+      root_task_id TEXT REFERENCES tasks(id) DEFERRABLE INITIALLY DEFERRED,
+      parent_task_id TEXT REFERENCES tasks(id) DEFERRABLE INITIALLY DEFERRED,
+      discovered_from_review_id TEXT REFERENCES reviews(id) DEFERRABLE INITIALLY DEFERRED,
+      context_id TEXT REFERENCES contexts(id) DEFERRABLE INITIALLY DEFERRED,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      base_commit TEXT,
+      UNIQUE(cycle_id, id)
+    );
+    CREATE TABLE task_deps (
+      task_id TEXT NOT NULL REFERENCES tasks(id),
+      depends_on_task_id TEXT NOT NULL REFERENCES tasks(id),
+      kind TEXT NOT NULL,
+      PRIMARY KEY(task_id, depends_on_task_id, kind)
+    );
+    CREATE TABLE events (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      task_id TEXT REFERENCES tasks(id),
+      type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      occurred_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX tasks_one_followup_per_review
+      ON tasks(discovered_from_review_id)
+      WHERE discovered_from_review_id IS NOT NULL;
+    INSERT INTO cycles(id, goal, token_budget, status, created_at)
+    VALUES('cycle-1', 'Preserve history', 100, 'draft', 'now');
+    INSERT INTO tasks(
+      id, cycle_id, title, spec_json, status, priority, risk, token_ceiling,
+      approval_required, approved, created_at, updated_at
+    ) VALUES
+      ('legacy', 'cycle-1', 'Legacy task', '{}', 'needs_replan', 0, 'low', 1, 0, 0, 'now', 'now'),
+      ('dependent', 'cycle-1', 'Dependent task', '{}', 'ready', 1, 'low', 1, 0, 1, 'now', 'now');
+    INSERT INTO task_deps(task_id, depends_on_task_id, kind)
+    VALUES('dependent', 'legacy', 'blocks');
+    INSERT INTO events(idempotency_key, task_id, type, payload_json, occurred_at)
+    VALUES('legacy:event', 'legacy', 'task.status_changed', '{}', 'now');
+    PRAGMA user_version = 6;
+  `);
+  return db;
+}
+
 test("migration creates every approved table", () => {
   const db = openDatabase(":memory:");
   const rows = db
@@ -164,7 +237,7 @@ test("migration creates every approved table", () => {
   expect(
     db.query<{ user_version: number }, []>("PRAGMA user_version").get()
       ?.user_version,
-  ).toBe(6);
+  ).toBe(7);
   expect(
     db
       .query<{ name: string }, []>("PRAGMA table_info(tasks)")
@@ -207,6 +280,63 @@ test("migration creates every approved table", () => {
   db.close();
 });
 
+test("migration v7 preserves populated v6 history without inferring retirement", () => {
+  const db = createV6RetirementDatabase();
+  try {
+    migrate(db);
+    expect(
+      db
+        .query<
+          {
+            id: string;
+            status: string;
+            retirement_reason: string | null;
+            replacement_task_id: string | null;
+            retired_at: string | null;
+          },
+          []
+        >(`
+          SELECT id, status, retirement_reason, replacement_task_id, retired_at
+          FROM tasks WHERE id = 'legacy'
+        `)
+        .get(),
+    ).toEqual({
+      id: "legacy",
+      status: "needs_replan",
+      retirement_reason: null,
+      replacement_task_id: null,
+      retired_at: null,
+    });
+    expect(
+      db.query("SELECT task_id, depends_on_task_id, kind FROM task_deps").all(),
+    ).toEqual([
+      {
+        task_id: "dependent",
+        depends_on_task_id: "legacy",
+        kind: "blocks",
+      },
+    ]);
+    expect(
+      db.query("SELECT idempotency_key, task_id, type FROM events").all(),
+    ).toEqual([
+      {
+        idempotency_key: "legacy:event",
+        task_id: "legacy",
+        type: "task.status_changed",
+      },
+    ]);
+    expect(() =>
+      db.exec("UPDATE tasks SET status = 'retired' WHERE id = 'legacy'"),
+    ).toThrow();
+    expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(
+      db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get(),
+    ).toEqual({ foreign_keys: 1 });
+  } finally {
+    db.close();
+  }
+});
+
 test("v4 migration renames weeks to cycles without losing related data", () => {
   const db = createV3CycleRenameDatabase();
   try {
@@ -232,7 +362,7 @@ test("v4 migration renames weeks to cycles without losing related data", () => {
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get(),
-    ).toEqual({ user_version: 6 });
+    ).toEqual({ user_version: 7 });
   } finally {
     db.close();
   }
@@ -278,7 +408,7 @@ test("v5 migration adds task hooks to an existing v4 database", () => {
     ).toEqual({ name: "task_hooks" });
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get(),
-    ).toEqual({ user_version: 6 });
+    ).toEqual({ user_version: 7 });
   } finally {
     db.close();
   }
@@ -324,7 +454,7 @@ test("v3 migration backfills supported model profiles without losing runtime col
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(6);
+    ).toBe(7);
     expect(
       db
         .query<
@@ -688,13 +818,13 @@ test("database initialization closes its handle before rethrowing", () => {
   const directory = mkdtempSync(join(tmpdir(), "agile-agents-db-"));
   const path = join(directory, "future.sqlite");
   const future = new Database(path, { create: true });
-  future.exec("PRAGMA user_version = 7");
+  future.exec("PRAGMA user_version = 8");
   future.close();
 
   const close = spyOn(Database.prototype, "close");
   try {
     expect(() => openDatabase(path)).toThrow(
-      "Database version 7 is newer than supported version 6",
+      "Database version 8 is newer than supported version 7",
     );
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
@@ -729,7 +859,7 @@ test("file databases create parents and enable durable SQLite settings", () => {
         reopened
           .query<{ user_version: number }, []>("PRAGMA user_version")
           .get()?.user_version,
-      ).toBe(6);
+      ).toBe(7);
     } finally {
       reopened.close();
     }
