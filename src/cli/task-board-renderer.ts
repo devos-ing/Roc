@@ -242,9 +242,10 @@ function renderColumn(input: {
   ];
   if (collapsed)
     lines.push(
-      color(fit("  d to expand", input.width), "muted", input.colorEnabled),
+      color(fit("  [d] expand", input.width), "muted", input.colorEnabled),
     );
-  for (const task of tasks)
+  for (const [index, task] of tasks.entries()) {
+    if (index > 0) lines.push("");
     lines.push(
       ...renderCard({
         task,
@@ -254,6 +255,7 @@ function renderColumn(input: {
         colorEnabled: input.colorEnabled,
       }),
     );
+  }
   if (!collapsed && tasks.length === 0)
     lines.push(color(fit("  —", input.width), "muted", input.colorEnabled));
   return lines;
@@ -328,6 +330,15 @@ function detailField(
     : lines.map((line) => color(line, tone, colorEnabled));
 }
 
+/** Renders a subdued heading for one non-empty detail group. */
+function detailSection(
+  label: string,
+  width: number,
+  colorEnabled: boolean,
+): string {
+  return color(fit(label, width), "muted", colorEnabled);
+}
+
 /** Renders one task's complete details for either a side panel or narrow full-screen view. */
 function renderDetails(
   task: TaskBoardTask,
@@ -339,11 +350,60 @@ function renderDetails(
   const blocked = blocker(task);
   const criteria = task.spec.acceptanceCriteria;
   const dependencies = task.spec.dependencies;
+  const remainingDependencies = dependencies.filter(
+    (dependency) => !task.blockingDependencyIds.includes(dependency),
+  );
+  const model = attempt?.model ?? task.modelDecisions.at(-1)?.model;
+  const execution = [
+    ...(attempt?.role === undefined
+      ? []
+      : [detailField("Role", attempt.role, width)]),
+    ...(attempt?.id === undefined
+      ? []
+      : [detailField("Attempt", attempt.id, width)]),
+    ...(model === undefined ? [] : [detailField("Model", model, width)]),
+    ...(attempt === undefined
+      ? []
+      : [detailField("Retry", String(attempt.retryIndex), width)]),
+    detailField(
+      "Tokens",
+      `${tokenCount(task.tokenTotals)}/${task.tokenTarget}`,
+      width,
+    ),
+  ].flat();
+  const dependencyDetails = [
+    ...(blocked === undefined
+      ? []
+      : [detailField("Blocked by", blocked, width, "attention", colorEnabled)]),
+    ...(remainingDependencies.length === 0
+      ? []
+      : [
+          detailField(
+            blocked === undefined ? "Depends on" : "Also needs",
+            remainingDependencies.join(", "),
+            width,
+          ),
+        ]),
+  ].flat();
+  const brief = [
+    ...(task.spec.problem.trim().length === 0
+      ? []
+      : [detailField("Problem", task.spec.problem, width)]),
+    ...(task.spec.desiredOutcome.trim().length === 0
+      ? []
+      : [detailField("Outcome", task.spec.desiredOutcome, width)]),
+    ...(criteria.length === 0
+      ? []
+      : [
+          detailSection("Acceptance", width, colorEnabled),
+          ...criteria.flatMap((criterion) => wrap(criterion, width, "- ")),
+        ]),
+  ].flat();
   return [
     color(fit(`Task ${task.id}`, width), "active", colorEnabled),
     ...wrap(task.title, width),
     "",
-    fit("Status", width),
+    detailSection("Status", width, colorEnabled),
     ...detailField(
       "State",
       task.rawStatus,
@@ -351,48 +411,19 @@ function renderDetails(
       statusTone(task),
       colorEnabled,
     ),
-    ...detailField("Phase", phase(task, snapshot), width),
     "",
-    fit("Run", width),
-    ...detailField("Role", attempt?.role ?? "—", width),
-    ...detailField(
-      "Attempt",
-      attempt?.id ?? String(task.attempts.length || "—"),
-      width,
-    ),
-    ...detailField(
-      "Model",
-      attempt?.model ?? task.modelDecisions.at(-1)?.model ?? "—",
-      width,
-    ),
-    ...detailField(
-      "Retry",
-      attempt === undefined ? "—" : String(attempt.retryIndex),
-      width,
-    ),
-    ...detailField(
-      "Tokens",
-      `${tokenCount(task.tokenTotals)}/${task.tokenTarget}`,
-      width,
-    ),
-    "",
-    fit("Dependencies", width),
-    ...detailField(
-      "Blocker",
-      blocked ?? "—",
-      width,
-      blocked === undefined ? undefined : "attention",
-      colorEnabled,
-    ),
-    ...detailField("Dependencies", dependencies.join(", ") || "—", width),
-    "",
-    fit("Brief", width),
-    ...detailField("Problem", task.spec.problem, width),
-    ...detailField("Outcome", task.spec.desiredOutcome, width),
-    fit("Acceptance", width),
-    ...(criteria.length
-      ? criteria.flatMap((criterion) => wrap(criterion, width, "- "))
-      : ["- —"]),
+    detailSection("Execution", width, colorEnabled),
+    ...execution,
+    ...(dependencyDetails.length === 0
+      ? []
+      : [
+          "",
+          detailSection("Dependencies", width, colorEnabled),
+          ...dependencyDetails,
+        ]),
+    ...(brief.length === 0
+      ? []
+      : ["", detailSection("Brief", width, colorEnabled), ...brief]),
   ];
 }
 
@@ -424,8 +455,10 @@ function summary(
     cycle === undefined
       ? ""
       : ` · ${tokenCount(cycle.actual)} / ${cycle.tokenTarget} tok`;
+  const activeCount = snapshot.tasks.filter((task) => task.isActive).length;
+  const activity = activeCount === 0 ? "" : ` · ${activeCount} active`;
   return fit(
-    `Cycle ${snapshot.currentCycleId} · ${taskCount} task${taskCount === 1 ? "" : "s"}${tokens}`,
+    `Cycle ${snapshot.currentCycleId} · ${taskCount} task${taskCount === 1 ? "" : "s"}${activity}${tokens}`,
     width,
   );
 }
@@ -475,10 +508,11 @@ export function renderTaskBoard(
     for (const column of taskColumns) {
       lines.push(fit(`${column.name} · ${column.tasks.length}`, width));
       if (column.name === "Done" && !doneExpanded)
-        lines.push(color(fit("  d to expand", width), "muted", colorEnabled));
+        lines.push(color(fit("  [d] expand", width), "muted", colorEnabled));
       else if (column.tasks.length === 0) lines.push(fit("  —", width));
       else
-        for (const task of column.tasks)
+        for (const [index, task] of column.tasks.entries()) {
+          if (index > 0) lines.push("");
           lines.push(
             ...renderCard({
               task,
@@ -488,6 +522,7 @@ export function renderTaskBoard(
               colorEnabled,
             }),
           );
+        }
     }
     if (taskCount === 0) lines.push("", ...emptyBoardGuidance(width));
     return plainSnapshot(
@@ -555,11 +590,11 @@ export function taskBoardHitTest(
         row += 1;
         continue;
       }
-      for (const task of column.tasks) {
+      for (const [index, task] of column.tasks.entries()) {
         const height = cardHeight(task);
         if (point.y >= row && point.y < row + height)
           return { kind: "task", taskId: task.id };
-        row += height;
+        row += height + (index < column.tasks.length - 1 ? 1 : 0);
       }
     }
     return undefined;
@@ -589,11 +624,11 @@ export function taskBoardHitTest(
   if (point.y <= 4 || (column.name === "Done" && !doneExpanded))
     return undefined;
   let row = 5;
-  for (const task of column.tasks) {
+  for (const [index, task] of column.tasks.entries()) {
     const height = cardHeight(task);
     if (point.y >= row && point.y < row + height)
       return { kind: "task", taskId: task.id };
-    row += height;
+    row += height + (index < column.tasks.length - 1 ? 1 : 0);
   }
   return undefined;
 }

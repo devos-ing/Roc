@@ -4,7 +4,10 @@ import type {
   TaskBoardSnapshot,
   TaskBoardTask,
 } from "../../src/cli/task-board-model";
-import { renderTaskBoard } from "../../src/cli/task-board-renderer";
+import {
+  renderTaskBoard,
+  taskBoardHitTest,
+} from "../../src/cli/task-board-renderer";
 
 const tokens = {
   inputTokens: 12,
@@ -136,20 +139,93 @@ test("renders canonical model columns, compact state, and a right-side detail pa
     selectedTaskId: "active",
   });
 
-  expect(output).toContain("Cycle 2026-W35 · 5 tasks · 20 / 1000 tok");
+  expect(output).toContain(
+    "Cycle 2026-W35 · 5 tasks · 1 active · 20 / 1000 tok",
+  );
   expect(output).toContain("Ready · 1");
   expect(output).toContain("In progress · 1");
   expect(output).toContain("Attention · 1");
   expect(output).toContain("Done · 2");
-  expect(output).toContain("d to expand");
+  expect(output).toContain("[d] expand");
   expect(output).toContain("● active");
   expect(output).toContain("blocked by re");
   expect(output).toContain("Status");
   expect(output).toContain("State: implementing");
+  expect(output).not.toContain("Phase: implement");
+  expect(output).toContain("Execution");
   expect(output).toContain("Attempt: attempt-active");
   expect(output).toContain("Model: gpt-5");
   expect(output).toContain("Retry: 1");
   expect(output).toContain("Tokens: 20/100");
+});
+
+test("separates cards while retaining their narrow and wide mouse rows", () => {
+  const first = task({ id: "first" });
+  const second = task({ id: "second" });
+  const twoReady: TaskBoardSnapshot = {
+    ...snapshot,
+    tasks: [first, second],
+    columns: {
+      ready: [first, second],
+      inProgress: [],
+      attention: [],
+      done: [],
+    },
+  };
+
+  const wide = renderTaskBoard(twoReady, { width: 120, color: false });
+  const narrow = renderTaskBoard(twoReady, { width: 60, color: false });
+
+  expect(wide).toContain("first work");
+  expect(narrow).toContain("second work");
+  expect(
+    taskBoardHitTest(twoReady, { x: 1, y: 7 }, { width: 120 }),
+  ).toBeUndefined();
+  expect(taskBoardHitTest(twoReady, { x: 1, y: 8 }, { width: 120 })).toEqual({
+    kind: "task",
+    taskId: "second",
+  });
+  expect(
+    taskBoardHitTest(twoReady, { x: 1, y: 6 }, { width: 60 }),
+  ).toBeUndefined();
+  expect(taskBoardHitTest(twoReady, { x: 1, y: 7 }, { width: 60 })).toEqual({
+    kind: "task",
+    taskId: "second",
+  });
+});
+
+test("omits empty optional detail groups without placeholder noise", () => {
+  const sparse = task({
+    id: "sparse",
+    spec: {
+      ...spec,
+      problem: "",
+      desiredOutcome: "",
+      acceptanceCriteria: [],
+      dependencies: [],
+    },
+  });
+  const sparseSnapshot: TaskBoardSnapshot = {
+    ...snapshot,
+    tasks: [sparse],
+    columns: { ready: [sparse], inProgress: [], attention: [], done: [] },
+  };
+  const detail = renderTaskBoard(sparseSnapshot, {
+    width: 60,
+    color: false,
+    detailTaskId: sparse.id,
+    detailMode: "full",
+  });
+
+  expect(detail).toContain("Status");
+  expect(detail).toContain("State: ready");
+  expect(detail).toContain("Execution");
+  expect(detail).toContain("Tokens: 20/100");
+  expect(detail).not.toContain("Dependencies");
+  expect(detail).not.toContain("Brief");
+  expect(detail).not.toContain("Role:");
+  expect(detail).not.toContain("Attempt:");
+  expect(detail).not.toContain("—");
 });
 
 test("pads colored wide columns and keeps ANSI resets intact", () => {
