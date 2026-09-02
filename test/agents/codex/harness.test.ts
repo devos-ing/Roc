@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CodexClientApi } from "../../../src/agents/codex/client";
@@ -25,6 +25,7 @@ import {
 import { git } from "../../helpers/git";
 
 type ServerMessage = Awaited<ReturnType<CodexClientApi["nextServerMessage"]>>;
+const memoryWorkspacePath = join(tmpdir(), "agile-harness-T1");
 
 async function createRepository(): Promise<string> {
   const root = await realpath(
@@ -226,7 +227,7 @@ function memoryBranches(): TaskBranchManager {
     async prepare(taskId) {
       return {
         taskId,
-        path: `/tmp/agile-harness-${taskId}`,
+        path: join(tmpdir(), `agile-harness-${taskId}`),
         branch: `agile/${taskId}`,
         baseCommit: "a".repeat(40),
       };
@@ -344,7 +345,7 @@ function observed(events: HarnessEvent[]): unknown[] {
 }
 
 test("applies the default skill-source allowlist before starting a role thread", async () => {
-  const cwd = "/tmp/agile-harness-T1";
+  const cwd = memoryWorkspacePath;
   const skills = [
     {
       name: "tdd",
@@ -504,6 +505,9 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
     };
 
     const implement = await collect(harness, implementRequest);
+    expect((await lstat(join(tmpdir(), "roc-it-tests"))).isDirectory()).toBe(
+      true,
+    );
     const commitSha = await git(["rev-parse", "HEAD"], workspace.path);
     const implementOutput = { ...implementDraft, commitSha };
     expect(observed(implement.events)).toEqual([
@@ -651,7 +655,7 @@ test("dispatches fresh Scout, Implement, and detached Review with normalized usa
           effort: "xhigh",
           sandboxPolicy: {
             type: "workspaceWrite",
-            writableRoots: [workspace.path],
+            writableRoots: [workspace.path, join(tmpdir(), "roc-it-tests")],
             networkAccess: false,
             excludeTmpdirEnvVar: true,
             excludeSlashTmp: true,
@@ -1272,7 +1276,7 @@ test("uses the exact fail-closed response for every supported server request", a
         itemId: "permission-1",
         environmentId: null,
         startedAtMs: 1_777_000_000_000,
-        cwd: "/tmp/agile-harness-T1",
+        cwd: memoryWorkspacePath,
         reason: null,
         permissions: {},
       },

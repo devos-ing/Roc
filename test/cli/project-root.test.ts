@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveProjectRoot } from "../../src/cli/project-root";
 import { git } from "../helpers/git";
@@ -8,7 +9,7 @@ const roots: string[] = [];
 
 /** Creates an isolated directory outside the checkout and records it for cleanup. */
 async function temporaryDirectory(): Promise<string> {
-  const root = await mkdtemp(join("/tmp", "roc-project-root-"));
+  const root = await mkdtemp(join(tmpdir(), "roc-project-root-"));
   roots.push(root);
   return root;
 }

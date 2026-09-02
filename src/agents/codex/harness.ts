@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { lstat, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import {
   type AgentHarness,
@@ -200,6 +203,23 @@ function threadSandbox(
   return role === "implement" ? "workspace-write" : "read-only";
 }
 
+/** Returns the dedicated system temporary directory reserved for sandboxed tests. */
+function sandboxTestTempRoot(): string {
+  return join(tmpdir(), "roc-it-tests");
+}
+
+/** Creates and validates the dedicated test directory before sandbox entry. */
+async function prepareSandboxTestTempRoot(): Promise<void> {
+  const root = sandboxTestTempRoot();
+  await mkdir(root, { recursive: true });
+  const stat = await lstat(root);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(
+      `Sandbox test temporary path is not a real directory: ${root}`,
+    );
+  }
+}
+
 /** Builds the turn-level sandbox policy for Scout or Implement execution. */
 function turnSandbox(
   role: "scout" | "implement",
@@ -208,7 +228,7 @@ function turnSandbox(
   if (role === "scout") return { type: "readOnly", networkAccess: false };
   return {
     type: "workspaceWrite",
-    writableRoots: [workspace.path],
+    writableRoots: [workspace.path, sandboxTestTempRoot()],
     networkAccess: false,
     excludeTmpdirEnvVar: true,
     excludeSlashTmp: true,
@@ -472,6 +492,21 @@ export function createCodexHarness(input: {
       baseCommit: workspace.baseCommit,
       component: "codex-harness",
     });
+    if (request.attempt.role === "implement") {
+      try {
+        await prepareSandboxTestTempRoot();
+      } catch (error) {
+        throw normalizeError(error, {
+          code: "codex_test_temp_root_failed",
+          category: "infra",
+          retryable: true,
+          component: "codex-harness",
+          message: "Could not prepare the sandbox test temporary directory",
+          taskId: request.attempt.taskId,
+          attemptId: request.attempt.attemptId,
+        });
+      }
+    }
     let reviewStatusBefore: string | undefined;
     if (request.attempt.role === "review") {
       try {
