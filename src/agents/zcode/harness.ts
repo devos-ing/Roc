@@ -17,7 +17,12 @@ import {
   restoreApprovedSourceCommit,
 } from "../source-commit";
 import type { ZcodeClientApi } from "./client";
-import { implementPrompt, reviewPrompt, scoutPrompt } from "./prompts";
+import {
+  implementPrompt,
+  reviewPrompt,
+  scoutPrompt,
+  structuredOutputRetryPrompt,
+} from "./prompts";
 import {
   classifyZcodeTurnFailure,
   mapZcodeUsage,
@@ -61,7 +66,11 @@ type ActiveAttempt = {
   reviewStatusBefore?: string;
   reconciledCompletion?: boolean;
   pendingDeliveries: HarnessDelivery[];
+  structuredRetries: number;
 };
+
+/** In-session corrections allowed before a JSON-less turn terminalizes the attempt. */
+const maxStructuredOutputRetries = 2;
 
 const zeroUsage: Usage = {
   inputTokens: 0,
@@ -91,6 +100,16 @@ function extractJsonObject(text: string): unknown {
     }
   }
   throw new Error("Response does not contain a JSON object");
+}
+
+/** Reports whether a final model response contains an extractable JSON object. */
+function responseContainsJsonObject(text: string): boolean {
+  try {
+    extractJsonObject(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Creates a task-scoped protocol error with optional session context and cause. */
@@ -259,6 +278,7 @@ export function createZcodeHarness(input: {
       outputDelivered: false,
       startedAt: now(),
       pendingDeliveries: [],
+      structuredRetries: 0,
     };
     const failureCursor: BackendCursor = cursor ?? {
       version: 1,
@@ -526,6 +546,7 @@ export function createZcodeHarness(input: {
       startedAt,
       reviewStatusBefore,
       pendingDeliveries: [],
+      structuredRetries: 0,
     };
     activeAttempts.set(active.attemptId, active);
     const cursor: BackendCursor = {
@@ -809,6 +830,34 @@ export function createZcodeHarness(input: {
               active.sessionId,
             );
           }
+          // A successful turn whose response carries no JSON object gets an
+          // in-session correction round instead of terminalizing the attempt;
+          // the retry counter is ephemeral because a restart already abandons
+          // the in-flight turn (see reconcile).
+          if (
+            active.structuredRetries < maxStructuredOutputRetries &&
+            !responseContainsJsonObject(event.data.response)
+          ) {
+            active.structuredRetries += 1;
+            try {
+              await input.client.request("session/send", {
+                sessionId: active.sessionId,
+                content: structuredOutputRetryPrompt(active.role),
+              });
+            } catch (error) {
+              throw normalizeError(error, {
+                code: "zcode_retry_send_failed",
+                category: "infra",
+                retryable: true,
+                component: "zcode-harness",
+                message: "ZCode did not accept the structured-output retry",
+                taskId: request.attempt.taskId,
+                attemptId: request.attempt.attemptId,
+                threadId: active.sessionId,
+              });
+            }
+            continue;
+          }
           const deliveries = await completeFromTurn(
             request,
             cursor,
@@ -872,6 +921,7 @@ export function createZcodeHarness(input: {
       startedAt: now(),
       reviewStatusBefore: cursor.reviewStatusBefore,
       pendingDeliveries: [],
+      structuredRetries: 0,
     };
     if (request.attempt.role === "review") {
       try {

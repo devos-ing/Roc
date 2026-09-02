@@ -94,3 +94,23 @@ export function reviewPrompt(
     JSON.stringify(validated.implementation, null, 2),
   ].join("\n");
 }
+
+/** Builds the in-session correction sent when a completed turn carries no JSON object. */
+export function structuredOutputRetryPrompt(
+  role: "scout" | "implement" | "review",
+): string {
+  const schema =
+    role === "scout"
+      ? ScoutOutputJsonSchema
+      : role === "implement"
+        ? ImplementDraftOutputJsonSchema
+        : ReviewOutputJsonSchema;
+  return [
+    "Your previous final message contained no JSON object, so it could not be parsed.",
+    "Reply again with your final answer for the same task.",
+    "Your final message must be exactly one JSON object and nothing else.",
+    "The JSON object must match this exact schema:",
+    JSON.stringify(schema),
+    "Output the JSON object without markdown fences or any surrounding prose.",
+  ].join("\n");
+}

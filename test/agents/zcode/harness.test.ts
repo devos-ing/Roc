@@ -210,9 +210,10 @@ function turnCompleted(
     fence?: boolean;
     resultType?: string;
     usage?: Record<string, number>;
+    rawResponse?: string;
   } = {},
 ): ServerMessage {
-  let response = JSON.stringify(output);
+  let response = options.rawResponse ?? JSON.stringify(output);
   if (options.fence) {
     response = "```json\n" + response + "\n```";
   }
@@ -582,4 +583,73 @@ test("provider rpc rejection text never reaches the durable failure event", asyn
   // The serialized durable event never carries the provider's raw text, and
   // stderr renders the same fixed message field.
   expect(JSON.stringify(failed.event)).not.toContain("zcode-secret-sentinel");
+});
+
+test("a JSON-less final response gets an in-session retry before completing", async () => {
+  const client = new RecordedZcodeClient();
+  const harness = createZcodeHarness({
+    client,
+    branches: memoryBranches(),
+    now: () => "2026-08-27T00:00:00.000Z",
+  });
+
+  const started = await harness.step(makeScoutRequest());
+  if (started.kind !== "event") throw new Error("unreachable");
+
+  client.enqueue(
+    turnCompleted("sess-1", undefined, {
+      rawResponse:
+        "The repository inspection went well.\nNo structured payload in this reply.",
+    }),
+  );
+  client.enqueue(turnCompleted("sess-1", scoutOutput));
+  const { events } = await collect(harness, {
+    ...makeScoutRequest(),
+    backendCursor: started.nextCursor,
+  });
+  expect(events.map((event) => event.type)).toEqual([
+    "attempt.usage_delta",
+    "attempt.output",
+    "attempt.completed",
+  ]);
+
+  const sends = client.requests.filter((r) => r.method === "session/send");
+  expect(sends).toHaveLength(2);
+  const correction = sends[1]?.params as { sessionId?: string; content?: string };
+  expect(correction.sessionId).toBe("sess-1");
+  expect(correction.content).toContain("no JSON object");
+  expect(correction.content).toContain("exactly one JSON object");
+});
+
+test("persistently JSON-less responses exhaust retries and fail the attempt", async () => {
+  const client = new RecordedZcodeClient();
+  const harness = createZcodeHarness({
+    client,
+    branches: memoryBranches(),
+    now: () => "2026-08-27T00:00:00.000Z",
+  });
+
+  const started = await harness.step(makeScoutRequest());
+  if (started.kind !== "event") throw new Error("unreachable");
+
+  for (let index = 0; index < 3; index += 1) {
+    client.enqueue(
+      turnCompleted("sess-1", undefined, {
+        rawResponse: `Prose report ${index}: findings in paragraph form only.`,
+      }),
+    );
+  }
+  const { events } = await collect(harness, {
+    ...makeScoutRequest(),
+    backendCursor: started.nextCursor,
+  });
+  expect(events.map((event) => event.type)).toEqual(["attempt.failed_infra"]);
+  const failure = events[0] as Extract<
+    HarnessEvent,
+    { type: "attempt.failed_infra" }
+  >;
+  expect(failure.code).toBe("invalid_structured_output");
+
+  const sends = client.requests.filter((r) => r.method === "session/send");
+  expect(sends).toHaveLength(3); // prompt + two corrections, then give up
 });
