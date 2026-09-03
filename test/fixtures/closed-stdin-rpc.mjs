@@ -11,17 +11,19 @@ while (!input.includes("\n")) {
 }
 const message = JSON.parse(input);
 closeSync(0);
-writeSync(
-  1,
-  `${JSON.stringify({
-    id: message.id,
-    type: "response",
-    command: message.type,
-    success: true,
-  })}\n`,
-);
-if (message.exitDelayMs !== undefined) {
-  setTimeout(() => process.exit(0), message.exitDelayMs);
+const response =
+  message.method === undefined
+    ? {
+        id: message.id,
+        type: "response",
+        command: message.type,
+        success: true,
+      }
+    : { id: message.id, result: {} };
+writeSync(1, `${JSON.stringify(response)}\n`);
+const exitDelayMs = message.params?.exitDelayMs ?? message.exitDelayMs;
+if (exitDelayMs !== undefined) {
+  setTimeout(() => process.exit(0), exitDelayMs);
 } else {
   // Keep the child alive until the client terminates the broken transport.
   setInterval(() => {}, 1000);

@@ -72,6 +72,58 @@ test("child exit rejects future message reads instead of exposing queued message
   }
 });
 
+test("a write racing stdin closure waits for the pending child exit", async () => {
+  const client = await ZcodeClient.start({
+    command: [
+      "node",
+      join(import.meta.dir, "../../fixtures/closed-stdin-rpc.mjs"),
+    ],
+  });
+  try {
+    await client.request("fixture/closeStdin", { exitDelayMs: 25 });
+    const messageFailure = client
+      .nextServerMessage()
+      .catch((error: unknown) => error);
+    await expect(client.request("session/list", {})).rejects.toMatchObject({
+      code: "ZCODE_APP_SERVER_EXITED",
+      category: "infra",
+      retryable: true,
+    });
+    expect(await messageFailure).toMatchObject({
+      code: "ZCODE_APP_SERVER_EXITED",
+    });
+  } finally {
+    await client.close();
+  }
+});
+
+test("closed stdin on a live child fails promptly with a sanitized write error", async () => {
+  const client = await ZcodeClient.start({
+    command: [
+      "node",
+      join(import.meta.dir, "../../fixtures/closed-stdin-rpc.mjs"),
+    ],
+  });
+  try {
+    await client.request("fixture/closeStdin", {});
+    const messageFailure = client
+      .nextServerMessage()
+      .catch((error: unknown) => error);
+    client.notify("fixture/notify", { secret: "zcode-secret-sentinel" });
+    expect(await messageFailure).toMatchObject({
+      code: "ZCODE_APP_SERVER_WRITE_FAILED",
+      category: "infra",
+      retryable: true,
+      message: "Could not write to the ZCode app-server",
+    });
+    await expect(client.request("session/list", {})).rejects.toMatchObject({
+      code: "ZCODE_APP_SERVER_WRITE_FAILED",
+    });
+  } finally {
+    await client.close();
+  }
+}, 2_000);
+
 /** Writes one desktop-style enabled-provider credentials fixture. */
 async function writeCredentials(root: string): Promise<string> {
   const path = join(root, "zcode-config.json");

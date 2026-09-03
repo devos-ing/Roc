@@ -94,7 +94,7 @@ test("child exit rejects future requests and event reads", async () => {
 
 test("a write racing stdin closure waits for the pending child exit", async () => {
   const { client, cleanup } = await startFixtureClient(
-    join(import.meta.dir, "../../fixtures/closed-stdin-pi-rpc.mjs"),
+    join(import.meta.dir, "../../fixtures/closed-stdin-rpc.mjs"),
     "node",
   );
   try {
@@ -113,7 +113,7 @@ test("a write racing stdin closure waits for the pending child exit", async () =
 
 test("closed stdin on a live child fails promptly with a sanitized write error", async () => {
   const { client, cleanup } = await startFixtureClient(
-    join(import.meta.dir, "../../fixtures/closed-stdin-pi-rpc.mjs"),
+    join(import.meta.dir, "../../fixtures/closed-stdin-rpc.mjs"),
     "node",
   );
   try {
