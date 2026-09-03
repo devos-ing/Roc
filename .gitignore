@@ -1,7 +1,7 @@
 .superpowers/
 .scratch/
 .worktrees/
-.agile/runtime/
+.agile/
 .tmp-agile-tests/
 .tmp-agile-*.db-shm
 .tmp-agile-*.db-wal

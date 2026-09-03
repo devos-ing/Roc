@@ -194,6 +194,46 @@ test("separates cards while retaining their narrow and wide mouse rows", () => {
   });
 });
 
+test("compacts numeric card IDs without changing canonical hit-test IDs", () => {
+  const numeric = task({ id: "phase7-TASK-012", title: "Numeric work" });
+  const allZero = task({ id: "all-000", title: "Zero work" });
+  const longNumeric = task({
+    id: "batch-000123456789012345678901234567890",
+    title: "Long work",
+  });
+  const noDigits = task({ id: "no-digits", title: "Fallback work" });
+  const compactSnapshot: TaskBoardSnapshot = {
+    ...snapshot,
+    tasks: [numeric, allZero, longNumeric, noDigits],
+    columns: {
+      ready: [numeric, allZero, longNumeric, noDigits],
+      inProgress: [],
+      attention: [],
+      done: [],
+    },
+  };
+
+  const wide = renderTaskBoard(compactSnapshot, { width: 200, color: false });
+  const narrow = renderTaskBoard(compactSnapshot, {
+    width: 80,
+    color: false,
+  });
+
+  for (const output of [wide, narrow]) {
+    expect(output).toContain("12  Numeric work");
+    expect(output).toContain("0  Zero work");
+    expect(output).toContain("no-digits  Fallback work");
+    expect(output).not.toContain("phase7-TASK-012  Numeric work");
+  }
+  expect(narrow).toContain("123456789012345678901234567890  Long work");
+  expect(
+    taskBoardHitTest(compactSnapshot, { x: 1, y: 5 }, { width: 200 }),
+  ).toEqual({ kind: "task", taskId: "phase7-TASK-012" });
+  expect(
+    taskBoardHitTest(compactSnapshot, { x: 1, y: 4 }, { width: 80 }),
+  ).toEqual({ kind: "task", taskId: "phase7-TASK-012" });
+});
+
 test("omits empty optional detail groups without placeholder noise", () => {
   const sparse = task({
     id: "sparse",

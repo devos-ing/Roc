@@ -204,6 +204,12 @@ function taskById(
         .find((task) => task.id === id);
 }
 
+/** Returns the final ASCII digit segment without leading zeroes, or the canonical ID when absent. */
+function compactCardId(id: string): string {
+  const digits = id.match(/[0-9]+/gu)?.at(-1);
+  return digits === undefined ? id : digits.replace(/^0+(?=[0-9])/u, "");
+}
+
 /** Renders one compact task card for a board column or vertical list. */
 function renderCard(input: {
   task: TaskBoardTask;
@@ -215,7 +221,7 @@ function renderCard(input: {
   const blocked = blocker(input.task);
   const lines = [
     fit(
-      `${input.selected ? color("▌", "active", input.colorEnabled) : " "} ${input.task.isActive ? color("●", "active", input.colorEnabled) : " "} ${input.task.id}  ${input.task.title}`,
+      `${input.selected ? color("▌", "active", input.colorEnabled) : " "} ${input.task.isActive ? color("●", "active", input.colorEnabled) : " "} ${compactCardId(input.task.id)}  ${input.task.title}`,
       input.width,
     ),
     fit(

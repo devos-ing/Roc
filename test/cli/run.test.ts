@@ -895,11 +895,12 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
     const listed = output.at(-1) ?? "";
     expect(listed).toBe(
       [
-        `- ${JSON.stringify(firstTask.id)} [ready] ${JSON.stringify(firstTask.title)}`,
-        `- ${JSON.stringify(secondTask.id)} [ready] ${JSON.stringify(secondTask.title)}`,
+        `ID${" ".repeat(15)}STATUS  TITLE`,
+        `${JSON.stringify(firstTask.id)}  ready   ${JSON.stringify(firstTask.title)}`,
+        `${JSON.stringify(secondTask.id)}  ready   ${JSON.stringify(secondTask.title)}`,
       ].join("\n"),
     );
-    expect(listed.split("\n")).toHaveLength(2);
+    expect(listed.split("\n")).toHaveLength(3);
     expect(listed).not.toContain("\u001B");
     expect(await runCli(["task", "import", manifestPath], io, runtime)).toBe(0);
     expect(output.at(-1)).toContain("Created: 0");
@@ -1034,10 +1035,21 @@ test("task retirement flows from the CLI through persistence, history views, boa
     ).toBe(0);
     expect(output.at(-1)).toBe('Superseded "obsolete" by "replacement".');
     expect(await runCli(["task", "list"], io, runtime)).toBe(0);
-    expect(output.at(-1)).not.toContain("obsolete");
+    expect(output.at(-1)).toBe(
+      [
+        "ID             STATUS  TITLE",
+        '"replacement"  ready   "replacement"',
+      ].join("\n"),
+    );
     expect(await runCli(["task", "list", "--history"], io, runtime)).toBe(0);
-    expect(output.at(-1)).toContain('[retired] "obsolete"');
-    expect(output.at(-1)).toContain('Superseded by "replacement"');
+    expect((output.at(-1) ?? "").split("\n")).toEqual([
+      "ID             STATUS   TITLE",
+      '"obsolete"     retired  "obsolete"',
+      expect.stringMatching(
+        /^ {2}Superseded by "replacement": "replaced implementation" at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+      ),
+      '"replacement"  ready    "replacement"',
+    ]);
     expect(await runCli(["task", "board"], io, runtime)).toBe(0);
     expect(output.at(-1)).not.toContain("obsolete");
     expect(await runCli(["task", "board", "--history"], io, runtime)).toBe(0);

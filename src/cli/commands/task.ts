@@ -107,6 +107,55 @@ function renderRetirementHistory(task: {
   return `  ${label}${replacement}: ${JSON.stringify(task.retirementReason)} at ${task.retiredAt}`;
 }
 
+/** Pads a task-list cell to the requested terminal display width. */
+function padTaskListCell(value: string, width: number): string {
+  return `${value}${" ".repeat(Math.max(0, width - Bun.stringWidth(value)))}`;
+}
+
+/** Renders task records as a display-width-aware, left-aligned CLI table. */
+function renderTaskList(
+  tasks: Array<{
+    id: string;
+    status: string;
+    title: string;
+    retirementReason?: string | null;
+    replacementTaskId?: string | null;
+    retiredAt?: string | null;
+  }>,
+): string {
+  const rows = tasks.map((task) => ({
+    task,
+    id: JSON.stringify(task.id),
+    status: task.status,
+    title: JSON.stringify(task.title),
+  }));
+  const idWidth = Math.max(
+    Bun.stringWidth("ID"),
+    ...rows.map((row) => Bun.stringWidth(row.id)),
+  );
+  const statusWidth = Math.max(
+    Bun.stringWidth("STATUS"),
+    ...rows.map((row) => Bun.stringWidth(row.status)),
+  );
+  return [
+    [
+      padTaskListCell("ID", idWidth),
+      padTaskListCell("STATUS", statusWidth),
+      "TITLE",
+    ].join("  "),
+    ...rows.flatMap((row) => [
+      [
+        padTaskListCell(row.id, idWidth),
+        padTaskListCell(row.status, statusWidth),
+        row.title,
+      ].join("  "),
+      ...(row.task.status === "retired"
+        ? [renderRetirementHistory(row.task)]
+        : []),
+    ]),
+  ].join("\n");
+}
+
 /** Lists current-project tasks, optionally including preserved retirement history. */
 async function executeTaskList(
   context: CliCommandContext,
@@ -120,18 +169,7 @@ async function executeTaskList(
         .listTasks()
         .filter((task) => history || task.status !== "retired");
       context.io.out(
-        tasks.length
-          ? tasks
-              .map((task) =>
-                [
-                  `- ${JSON.stringify(task.id)} [${task.status}] ${JSON.stringify(task.title)}`,
-                  ...(task.status === "retired"
-                    ? [renderRetirementHistory(task)]
-                    : []),
-                ].join("\n"),
-              )
-              .join("\n")
-          : renderEmptyTaskList(),
+        tasks.length ? renderTaskList(tasks) : renderEmptyTaskList(),
       );
       return 0;
     } finally {
