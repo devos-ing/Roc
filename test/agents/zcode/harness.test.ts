@@ -653,3 +653,87 @@ test("persistently JSON-less responses exhaust retries and fail the attempt", as
   const sends = client.requests.filter((r) => r.method === "session/send");
   expect(sends).toHaveLength(3); // prompt + two corrections, then give up
 });
+
+test("a schema-violating JSON final response gets an in-session retry before completing", async () => {
+  const client = new RecordedZcodeClient();
+  const harness = createZcodeHarness({
+    client,
+    branches: memoryBranches(),
+    now: () => "2026-08-27T00:00:00.000Z",
+  });
+
+  const started = await harness.step(makeScoutRequest());
+  if (started.kind !== "event") throw new Error("unreachable");
+
+  // Observed live failure shape: the model embeds the prompt's JSON-schema
+  // metadata as a "$schema" key, which the strict role schema rejects.
+  const polluted = {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    ...scoutOutput,
+  };
+  client.enqueue(turnCompleted("sess-1", undefined, {
+    rawResponse: JSON.stringify(polluted),
+  }));
+  client.enqueue(turnCompleted("sess-1", scoutOutput));
+  const { events } = await collect(harness, {
+    ...makeScoutRequest(),
+    backendCursor: started.nextCursor,
+  });
+  expect(events.map((event) => event.type)).toEqual([
+    "attempt.usage_delta",
+    "attempt.output",
+    "attempt.completed",
+  ]);
+
+  const sends = client.requests.filter((r) => r.method === "session/send");
+  expect(sends).toHaveLength(2);
+  const correction = sends[1]?.params as { sessionId?: string; content?: string };
+  expect(correction.sessionId).toBe("sess-1");
+  expect(correction.content).toContain("no JSON object");
+  expect(correction.content).toContain('"$schema"');
+});
+
+test("mixed JSON-less and schema-violating responses exhaust retries and fail the attempt", async () => {
+  const client = new RecordedZcodeClient();
+  const harness = createZcodeHarness({
+    client,
+    branches: memoryBranches(),
+    now: () => "2026-08-27T00:00:00.000Z",
+  });
+
+  const started = await harness.step(makeScoutRequest());
+  if (started.kind !== "event") throw new Error("unreachable");
+
+  client.enqueue(
+    turnCompleted("sess-1", undefined, {
+      rawResponse: "Prose report: findings in paragraph form only.",
+    }),
+  );
+  client.enqueue(
+    turnCompleted("sess-1", undefined, {
+      rawResponse: JSON.stringify({
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        ...scoutOutput,
+      }),
+    }),
+  );
+  client.enqueue(
+    turnCompleted("sess-1", undefined, {
+      rawResponse: JSON.stringify({ kind: "scout" }), // missing required fields
+    }),
+  );
+  const { events } = await collect(harness, {
+    ...makeScoutRequest(),
+    backendCursor: started.nextCursor,
+  });
+  expect(events.map((event) => event.type)).toEqual(["attempt.failed_infra"]);
+  const failure = events[0] as Extract<
+    HarnessEvent,
+    { type: "attempt.failed_infra" }
+  >;
+  expect(failure.code).toBe("invalid_structured_output");
+
+  // Both failure shapes share one retry budget: prompt + two corrections.
+  const sends = client.requests.filter((r) => r.method === "session/send");
+  expect(sends).toHaveLength(3);
+});

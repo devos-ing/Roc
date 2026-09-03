@@ -526,10 +526,17 @@ export function defineNormalizedConformance(
       "output before completion",
       "invalid structured output fails closed without output or completion",
       async (fixture) => {
-        fixture.driver.scriptSuccessfulTurn("scout", {
-          usage: scriptedUsage,
-          invalidOutput: true,
-        });
+        // Backends that retry invalid structured output in-session (the
+        // ZCode backend sends up to two schema-restating corrections) consume
+        // one scripted invalid turn per correction round before failing;
+        // backends without the retry fail on the first turn and ignore the
+        // extra scripted turns.
+        for (let index = 0; index < 3; index += 1) {
+          fixture.driver.scriptSuccessfulTurn("scout", {
+            usage: scriptedUsage,
+            invalidOutput: true,
+          });
+        }
         const { events } = await collect(
           fixture.harness,
           conformanceRequest("scout", { attemptId: "attempt-invalid" }),

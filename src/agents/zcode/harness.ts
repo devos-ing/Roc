@@ -102,14 +102,41 @@ function extractJsonObject(text: string): unknown {
   throw new Error("Response does not contain a JSON object");
 }
 
-/** Reports whether a final model response contains an extractable JSON object. */
-function responseContainsJsonObject(text: string): boolean {
+/** One decoded, schema-valid role output; commit resolution is excluded. */
+type DecodedRoleOutput =
+  | z.infer<typeof ScoutOutputSchema>
+  | Omit<z.infer<typeof ImplementOutputSchema>, "commitSha">
+  | z.infer<typeof ReviewOutputSchema>;
+
+/**
+ * Decodes a final model response into a schema-valid role output, or returns
+ * undefined when the response carries no extractable JSON object or the JSON
+ * object does not satisfy the role's strict schema. Implement commit
+ * resolution is deliberately excluded: a schema-valid draft whose commit
+ * cannot be resolved is a workspace problem that restating the schema cannot
+ * correct.
+ */
+function decodeStructuredOutput(
+  role: "scout" | "implement" | "review",
+  text: string,
+): DecodedRoleOutput | undefined {
+  let decoded: unknown;
   try {
-    extractJsonObject(text);
-    return true;
+    decoded = extractJsonObject(text);
   } catch {
-    return false;
+    return undefined;
   }
+  if (role === "implement") {
+    const draft = ImplementOutputSchema.omit({
+      commitSha: true,
+    }).safeParse(decoded);
+    return draft.success ? draft.data : undefined;
+  }
+  const parsed =
+    role === "scout"
+      ? ScoutOutputSchema.safeParse(decoded)
+      : ReviewOutputSchema.safeParse(decoded);
+  return parsed.success ? parsed.data : undefined;
 }
 
 /** Creates a task-scoped protocol error with optional session context and cause. */
@@ -830,13 +857,19 @@ export function createZcodeHarness(input: {
               active.sessionId,
             );
           }
-          // A successful turn whose response carries no JSON object gets an
-          // in-session correction round instead of terminalizing the attempt;
-          // the retry counter is ephemeral because a restart already abandons
-          // the in-flight turn (see reconcile).
+          // A successful turn whose response carries no schema-valid JSON
+          // object gets an in-session correction round instead of
+          // terminalizing the attempt; the correction restates the schema, so
+          // it covers both a JSON-less prose reply and a JSON reply that
+          // violates the schema (e.g. an injected "$schema" key). The retry
+          // counter is ephemeral because a restart already abandons the
+          // in-flight turn (see reconcile).
           if (
             active.structuredRetries < maxStructuredOutputRetries &&
-            !responseContainsJsonObject(event.data.response)
+            decodeStructuredOutput(
+              active.role,
+              event.data.response,
+            ) === undefined
           ) {
             active.structuredRetries += 1;
             try {
