@@ -66,7 +66,15 @@ type ActiveAttempt = {
   reviewStatusBefore?: string;
   reconciledCompletion?: boolean;
   pendingDeliveries: HarnessDelivery[];
+  /** Deferred terminal delivery handed out after queued deliveries drain. */
+  pendingTerminal?: () => HarnessDelivery;
   structuredRetries: number;
+  /**
+   * Sum of every per-turn usage the native protocol has reported for this
+   * attempt, seeded from the persisted cursor baseline so a resumed attempt
+   * never re-counts usage that a prior delivery already published.
+   */
+  accumulatedUsage: Usage;
 };
 
 /** In-session corrections allowed before a JSON-less turn terminalizes the attempt. */
@@ -78,6 +86,29 @@ const zeroUsage: Usage = {
   outputTokens: 0,
   reasoningOutputTokens: 0,
 };
+
+/** Adds one native per-turn usage report onto a running attempt total. */
+function addUsage(total: Usage, turn: Usage): Usage {
+  return {
+    inputTokens: total.inputTokens + turn.inputTokens,
+    cachedInputTokens: total.cachedInputTokens + turn.cachedInputTokens,
+    outputTokens: total.outputTokens + turn.outputTokens,
+    reasoningOutputTokens:
+      total.reasoningOutputTokens + turn.reasoningOutputTokens,
+  };
+}
+
+/** Returns the not-yet-published usage delta against a cursor baseline. */
+function usageDelta(accumulated: Usage, baseline: Usage): Usage {
+  return {
+    inputTokens: accumulated.inputTokens - baseline.inputTokens,
+    cachedInputTokens:
+      accumulated.cachedInputTokens - baseline.cachedInputTokens,
+    outputTokens: accumulated.outputTokens - baseline.outputTokens,
+    reasoningOutputTokens:
+      accumulated.reasoningOutputTokens - baseline.reasoningOutputTokens,
+  };
+}
 
 /** Extracts a JSON object from a final model response, tolerating fences and prose. */
 function extractJsonObject(text: string): unknown {
@@ -268,6 +299,38 @@ export function createZcodeHarness(input: {
     });
   }
 
+  /**
+   * Publishes any turn usage the attempt consumed but the persisted cursor
+   * baseline does not carry yet, then hands out the first delivery of the
+   * terminal chain. The terminal delivery itself is deferred: building it
+   * eagerly would terminalize the attempt while the queued usage delivery
+   * has not been consumed yet, so it is armed on the attempt and built when
+   * the delivery queue drains.
+   */
+  function terminalDeliveryChain(
+    cursor: BackendCursor,
+    active: ActiveAttempt,
+    build: (cursor: BackendCursor) => HarnessDelivery,
+  ): HarnessDelivery {
+    const delta = usageDelta(active.accumulatedUsage, cursor.usage);
+    if (Object.values(delta).every((value) => value === 0)) {
+      return build(cursor);
+    }
+    const running: BackendCursor = {
+      ...cursor,
+      usage: active.accumulatedUsage,
+    };
+    active.pendingTerminal = () =>
+      build({ ...running, nextSequence: running.nextSequence + 1 });
+    return delivery(running, {
+      type: "attempt.usage_delta",
+      eventId: `${active.attemptId}:${active.sessionId}:usage:${cumulativeHash(running.usage)}`,
+      attemptId: active.attemptId,
+      occurredAt: now(),
+      ...delta,
+    });
+  }
+
   /** Converts task-scoped operational failures into policy or infrastructure deliveries. */
   function taskFailure(
     request: SupportedRequest,
@@ -306,6 +369,7 @@ export function createZcodeHarness(input: {
       startedAt: now(),
       pendingDeliveries: [],
       structuredRetries: 0,
+      accumulatedUsage: cursor?.usage ?? zeroUsage,
     };
     const failureCursor: BackendCursor = cursor ?? {
       version: 1,
@@ -314,22 +378,26 @@ export function createZcodeHarness(input: {
       usage: zeroUsage,
     };
     if (normalized.category === "policy") {
-      terminalize(active);
-      return delivery(withoutTerminalMarkers(failureCursor), {
-        type: "attempt.blocked_policy",
-        eventId: `${active.attemptId}:${active.sessionId}:blocked_policy:${normalized.code}`,
-        attemptId: active.attemptId,
-        occurredAt: now(),
-        code: normalized.code,
-        message: normalized.message,
+      return terminalDeliveryChain(failureCursor, active, (terminalCursor) => {
+        terminalize(active);
+        return delivery(withoutTerminalMarkers(terminalCursor), {
+          type: "attempt.blocked_policy",
+          eventId: `${active.attemptId}:${active.sessionId}:blocked_policy:${normalized.code}`,
+          attemptId: active.attemptId,
+          occurredAt: now(),
+          code: normalized.code,
+          message: normalized.message,
+        });
       });
     }
-    return failedDelivery(
-      failureCursor,
-      active,
-      normalized.code,
-      normalized.message,
-      normalized.retryable,
+    return terminalDeliveryChain(failureCursor, active, (terminalCursor) =>
+      failedDelivery(
+        terminalCursor,
+        active,
+        normalized.code,
+        normalized.message,
+        normalized.retryable,
+      ),
     );
   }
 
@@ -356,22 +424,26 @@ export function createZcodeHarness(input: {
   ): HarnessDelivery {
     const failure = classifyZcodeTurnFailure(resultType, errorText);
     if (failure.category === "policy") {
-      terminalize(active);
-      return delivery(withoutTerminalMarkers(cursor), {
-        type: "attempt.blocked_policy",
-        eventId: `${active.attemptId}:${active.sessionId}:blocked_policy:${failure.code}`,
-        attemptId: active.attemptId,
-        occurredAt: now(),
-        code: failure.code,
-        message: failure.message,
+      return terminalDeliveryChain(cursor, active, (terminalCursor) => {
+        terminalize(active);
+        return delivery(withoutTerminalMarkers(terminalCursor), {
+          type: "attempt.blocked_policy",
+          eventId: `${active.attemptId}:${active.sessionId}:blocked_policy:${failure.code}`,
+          attemptId: active.attemptId,
+          occurredAt: now(),
+          code: failure.code,
+          message: failure.message,
+        });
       });
     }
-    return failedDelivery(
-      cursor,
-      active,
-      failure.code,
-      failure.message,
-      failure.retryable,
+    return terminalDeliveryChain(cursor, active, (terminalCursor) =>
+      failedDelivery(
+        terminalCursor,
+        active,
+        failure.code,
+        failure.message,
+        failure.retryable,
+      ),
     );
   }
 
@@ -574,6 +646,7 @@ export function createZcodeHarness(input: {
       reviewStatusBefore,
       pendingDeliveries: [],
       structuredRetries: 0,
+      accumulatedUsage: zeroUsage,
     };
     activeAttempts.set(active.attemptId, active);
     const cursor: BackendCursor = {
@@ -672,11 +745,13 @@ export function createZcodeHarness(input: {
         );
       } catch {
         return [
-          failedDelivery(
-            cursor,
-            active,
-            "review_status_snapshot_failed",
-            "Could not verify the Review workspace",
+          terminalDeliveryChain(cursor, active, (terminalCursor) =>
+            failedDelivery(
+              terminalCursor,
+              active,
+              "review_status_snapshot_failed",
+              "Could not verify the Review workspace",
+            ),
           ),
         ];
       }
@@ -685,26 +760,24 @@ export function createZcodeHarness(input: {
         statusAfter !== active.reviewStatusBefore
       ) {
         return [
-          failedDelivery(
-            cursor,
-            active,
-            "review_mutated_workspace",
-            "Review changed the task checkout",
+          terminalDeliveryChain(cursor, active, (terminalCursor) =>
+            failedDelivery(
+              terminalCursor,
+              active,
+              "review_mutated_workspace",
+              "Review changed the task checkout",
+            ),
           ),
         ];
       }
     }
 
     const deliveries: HarnessDelivery[] = [];
-    const cumulative = mapZcodeUsage(payload.usage);
-    const delta: Usage = {
-      inputTokens: cumulative.inputTokens - cursor.usage.inputTokens,
-      cachedInputTokens:
-        cumulative.cachedInputTokens - cursor.usage.cachedInputTokens,
-      outputTokens: cumulative.outputTokens - cursor.usage.outputTokens,
-      reasoningOutputTokens:
-        cumulative.reasoningOutputTokens - cursor.usage.reasoningOutputTokens,
-    };
+    // The attempt total already includes this turn's usage — it accumulates
+    // when the completion event arrives — so correction rounds stay
+    // accounted instead of being replaced by the final turn alone.
+    const cumulative = active.accumulatedUsage;
+    const delta: Usage = usageDelta(cumulative, cursor.usage);
     if (Object.values(delta).some((value) => value < 0)) {
       throw protocolError(
         "non_monotonic_token_usage",
@@ -758,6 +831,11 @@ export function createZcodeHarness(input: {
     if (active.pendingDeliveries.length > 0) {
       const queued = active.pendingDeliveries.shift();
       if (queued !== undefined) return queued;
+    }
+    if (active.pendingTerminal !== undefined) {
+      const terminal = active.pendingTerminal;
+      active.pendingTerminal = undefined;
+      return terminal();
     }
     if (active.outputDelivered) {
       // The turn's structured output was already delivered; hand out the
@@ -857,6 +935,14 @@ export function createZcodeHarness(input: {
               active.sessionId,
             );
           }
+          // The native protocol reports usage per turn, so every completion
+          // — including one that only earns a correction round — adds to the
+          // attempt total. Dropping it here would under-report corrected
+          // attempts and zero out retry-exhausted ones.
+          active.accumulatedUsage = addUsage(
+            active.accumulatedUsage,
+            mapZcodeUsage(event.data.usage),
+          );
           // A successful turn whose response carries no schema-valid JSON
           // object gets an in-session correction round instead of
           // terminalizing the attempt; the correction restates the schema, so
@@ -866,10 +952,8 @@ export function createZcodeHarness(input: {
           // in-flight turn (see reconcile).
           if (
             active.structuredRetries < maxStructuredOutputRetries &&
-            decodeStructuredOutput(
-              active.role,
-              event.data.response,
-            ) === undefined
+            decodeStructuredOutput(active.role, event.data.response) ===
+              undefined
           ) {
             active.structuredRetries += 1;
             try {
@@ -955,6 +1039,7 @@ export function createZcodeHarness(input: {
       reviewStatusBefore: cursor.reviewStatusBefore,
       pendingDeliveries: [],
       structuredRetries: 0,
+      accumulatedUsage: cursor.usage,
     };
     if (request.attempt.role === "review") {
       try {
