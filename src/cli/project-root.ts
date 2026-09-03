@@ -1,5 +1,5 @@
 import { realpath, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { AgileError } from "../runtime/errors";
 
 const gitRepositoryEnvironmentVariables = [
@@ -29,6 +29,28 @@ function gitPathResolutionEnvironment(): NodeJS.ProcessEnv {
   return environment;
 }
 
+/** Runs a local Git command without inheriting repository-local Git overrides. */
+async function gitOutput(
+  projectRoot: string,
+  args: string[],
+): Promise<string | undefined> {
+  try {
+    const child = Bun.spawn(["git", "-C", projectRoot, ...args], {
+      env: gitPathResolutionEnvironment(),
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const [output, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      child.exited,
+    ]);
+    const value = output.trim();
+    return exitCode === 0 && value.length > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Returns whether a path names an existing directory. */
 async function isDirectory(path: string): Promise<boolean> {
   try {
@@ -52,25 +74,70 @@ async function findRocRoot(startPath: string): Promise<string | undefined> {
 
 /** Resolves the containing Git checkout root or returns undefined outside Git. */
 async function findGitRoot(startPath: string): Promise<string | undefined> {
+  const root = await gitOutput(startPath, ["rev-parse", "--show-toplevel"]);
+  if (root === undefined) return undefined;
   try {
-    const child = Bun.spawn(
-      ["git", "-C", startPath, "rev-parse", "--show-toplevel"],
-      {
-        env: gitPathResolutionEnvironment(),
-        stdout: "pipe",
-        stderr: "ignore",
-      },
-    );
-    const [output, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      child.exited,
-    ]);
-    if (exitCode !== 0) return undefined;
-    const root = output.trim();
-    return root.length === 0 ? undefined : await realpath(root);
+    return await realpath(root);
   } catch {
     return undefined;
   }
+}
+
+/** Normalizes a repository or directory name into a stable display slug. */
+export function normalizeProjectSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+}
+
+/** Extracts the final repository path component from a Git remote origin. */
+function originRepositoryName(origin: string): string | undefined {
+  const path = origin.trim().replace(/\/+$/gu, "");
+  if (path.length === 0) return undefined;
+  const slash = path.lastIndexOf("/");
+  const firstColon = path.indexOf(":");
+  const bracketedHostStart = path.startsWith("[") ? 0 : path.indexOf("@[");
+  const closingBracket =
+    bracketedHostStart === -1 ? -1 : path.indexOf("]", bracketedHostStart);
+  const hasBracketedIpv6Host =
+    bracketedHostStart !== -1 &&
+    closingBracket !== -1 &&
+    firstColon > bracketedHostStart &&
+    firstColon < closingBracket;
+  const bracketedHostSeparator = hasBracketedIpv6Host
+    ? path.indexOf(":", closingBracket)
+    : -1;
+  if (slash === -1 && hasBracketedIpv6Host && bracketedHostSeparator === -1)
+    return undefined;
+  const separator =
+    slash === -1
+      ? hasBracketedIpv6Host
+        ? bracketedHostSeparator
+        : firstColon
+      : slash;
+  const name = path.slice(separator + 1).replace(/\.git$/u, "");
+  return name.length === 0 ? undefined : name;
+}
+
+/** Chooses a display-safe project slug from an origin or local project directory. */
+export function projectDisplaySlug(
+  origin: string | undefined,
+  projectRoot: string,
+): string {
+  const originSlug = normalizeProjectSlug(
+    originRepositoryName(origin ?? "") ?? "",
+  );
+  const rootSlug = normalizeProjectSlug(basename(projectRoot));
+  return originSlug || rootSlug || "project";
+}
+
+/** Resolves a display-safe project slug from origin or the local project directory without network access. */
+export async function resolveProjectDisplaySlug(
+  projectRoot: string,
+): Promise<string> {
+  const origin = await gitOutput(projectRoot, ["remote", "get-url", "origin"]);
+  return projectDisplaySlug(origin, projectRoot);
 }
 
 /** Resolves the Roc project that owns a command invocation. */

@@ -1647,6 +1647,20 @@ export class OrchestrationRepository {
     );
   }
 
+  /** Returns the highest-priority task in an active scheduler state. */
+  activeTaskId(): string | undefined {
+    return (
+      this.db
+        .query<{ id: string }, []>(`
+          SELECT id FROM tasks
+          WHERE status IN ('claimed', 'scouting', 'implementing', 'reviewing')
+          ORDER BY priority ASC, created_at ASC, id ASC
+          LIMIT 1
+        `)
+        .get()?.id ?? undefined
+    );
+  }
+
   /** Aggregates a cycle's persisted token usage by normalized category. */
   getCycleCategoryUsage(cycleId: string): CycleCategoryUsage | undefined {
     const id = CycleIdSchema.parse(cycleId);
@@ -1855,14 +1869,7 @@ export class OrchestrationRepository {
         id ASC
     `)
       .all();
-    const activeTask = this.db
-      .query<{ id: string }, []>(`
-      SELECT id FROM tasks
-      WHERE status IN ('claimed', 'scouting', 'implementing', 'reviewing')
-      ORDER BY priority ASC, created_at ASC, id ASC
-      LIMIT 1
-    `)
-      .get();
+    const activeTaskId = this.activeTaskId();
     const activeAttempt = this.db
       .query<{ id: string }, []>(`
       SELECT id FROM attempts
@@ -1925,7 +1932,7 @@ export class OrchestrationRepository {
 
     return InspectionSnapshotSchema.parse({
       scheduler: {
-        ...(activeTask == null ? {} : { activeTaskId: activeTask.id }),
+        ...(activeTaskId === undefined ? {} : { activeTaskId }),
         ...(activeAttempt == null ? {} : { activeAttemptId: activeAttempt.id }),
       },
       cycles,

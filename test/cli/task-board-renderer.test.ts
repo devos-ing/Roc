@@ -116,6 +116,20 @@ const snapshot: TaskBoardSnapshot = {
   },
 };
 
+test("keeps ordinary nonactive detail state uncolored", () => {
+  const output = renderTaskBoard(snapshot, {
+    width: 120,
+    color: true,
+    detailTaskId: ready.id,
+    detailMode: "full",
+  });
+  const stateLine = output
+    .split("\n")
+    .find((line) => stripVTControlCharacters(line).trim() === "State: ready");
+
+  expect(stateLine?.trim()).toBe("State: ready");
+});
+
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 /** Counts terminal cells for the CJK and emoji cases exercised below. */
@@ -194,7 +208,7 @@ test("separates cards while retaining their narrow and wide mouse rows", () => {
   });
 });
 
-test("compacts numeric card IDs without changing canonical hit-test IDs", () => {
+test("renders project-scoped numeric card IDs without changing canonical hit-test IDs", () => {
   const numeric = task({ id: "phase7-TASK-012", title: "Numeric work" });
   const allZero = task({ id: "all-000", title: "Zero work" });
   const longNumeric = task({
@@ -213,25 +227,58 @@ test("compacts numeric card IDs without changing canonical hit-test IDs", () => 
     },
   };
 
-  const wide = renderTaskBoard(compactSnapshot, { width: 200, color: false });
+  const wide = renderTaskBoard(compactSnapshot, {
+    width: 200,
+    color: false,
+    projectSlug: "roc",
+  });
   const narrow = renderTaskBoard(compactSnapshot, {
     width: 80,
     color: false,
+    projectSlug: "roc",
   });
 
   for (const output of [wide, narrow]) {
-    expect(output).toContain("12  Numeric work");
-    expect(output).toContain("0  Zero work");
+    expect(output).toContain("#roc-12  Numeric work");
+    expect(output).toContain("#roc-0  Zero work");
     expect(output).toContain("no-digits  Fallback work");
     expect(output).not.toContain("phase7-TASK-012  Numeric work");
   }
-  expect(narrow).toContain("123456789012345678901234567890  Long work");
+  expect(narrow).toContain("#roc-123456789012345678901234567890  Long work");
   expect(
     taskBoardHitTest(compactSnapshot, { x: 1, y: 5 }, { width: 200 }),
   ).toEqual({ kind: "task", taskId: "phase7-TASK-012" });
   expect(
     taskBoardHitTest(compactSnapshot, { x: 1, y: 4 }, { width: 80 }),
   ).toEqual({ kind: "task", taskId: "phase7-TASK-012" });
+});
+
+test("keeps colliding display labels mapped to their distinct canonical card IDs", () => {
+  const first = task({ id: "alpha-7", title: "First collision" });
+  const second = task({ id: "beta-007", title: "Second collision" });
+  const collisionSnapshot: TaskBoardSnapshot = {
+    ...snapshot,
+    tasks: [first, second],
+    columns: {
+      ready: [first, second],
+      inProgress: [],
+      attention: [],
+      done: [],
+    },
+  };
+
+  const output = renderTaskBoard(collisionSnapshot, {
+    width: 80,
+    color: false,
+    projectSlug: "roc",
+  });
+  expect(output.match(/#roc-7/g)).toHaveLength(2);
+  expect(
+    taskBoardHitTest(collisionSnapshot, { x: 1, y: 4 }, { width: 80 }),
+  ).toEqual({ kind: "task", taskId: "alpha-7" });
+  expect(
+    taskBoardHitTest(collisionSnapshot, { x: 1, y: 7 }, { width: 80 }),
+  ).toEqual({ kind: "task", taskId: "beta-007" });
 });
 
 test("omits empty optional detail groups without placeholder noise", () => {

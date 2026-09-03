@@ -1,6 +1,11 @@
 import { stripVTControlCharacters } from "node:util";
 import { renderEmptyTaskList } from "./presentation";
 import type { TaskBoardSnapshot, TaskBoardTask } from "./task-board-model";
+import {
+  formatTaskDisplayId,
+  taskDisplayColors,
+  taskStatusTone,
+} from "./task-display";
 
 export type { TaskBoardSnapshot, TaskBoardTask } from "./task-board-model";
 
@@ -15,6 +20,7 @@ export type TaskBoardRenderOptions = {
   detailMode?: "peek" | "full" | "none";
   doneExpanded?: boolean;
   expandedDone?: boolean;
+  projectSlug?: string;
 };
 
 export type TaskBoardHit = { kind: "task"; taskId: string } | { kind: "done" };
@@ -27,13 +33,7 @@ const reset = "\u001B[0m";
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matches terminal SGR sequences emitted below.
 const ansiSgrPattern = /\u001B\[[0-9;]*m/g;
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-const colors = {
-  active: "\u001B[36m",
-  attention: "\u001B[33m",
-  done: "\u001B[32m",
-  error: "\u001B[31m",
-  muted: "\u001B[90m",
-};
+const colors = taskDisplayColors;
 const narrowWidth = 88;
 
 /** Splits text into user-perceived characters without separating combining or ZWJ sequences. */
@@ -158,6 +158,17 @@ function retirementSummary(task: TaskBoardTask): string {
 
 /** Maps a task status to its semantic terminal tone when it needs emphasis. */
 function statusTone(task: TaskBoardTask): keyof typeof colors | undefined {
+  return taskStatusTone(
+    task.rawStatus,
+    task.id,
+    task.isActive ? task.id : undefined,
+  );
+}
+
+/** Maps a task status to the detail tone while leaving ordinary states uncolored. */
+function detailStatusTone(
+  task: TaskBoardTask,
+): keyof typeof colors | undefined {
   if (task.rawStatus === "done") return "done";
   if (task.rawStatus === "failed_infra" || task.rawStatus === "rejected")
     return "error";
@@ -204,12 +215,6 @@ function taskById(
         .find((task) => task.id === id);
 }
 
-/** Returns the final ASCII digit segment without leading zeroes, or the canonical ID when absent. */
-function compactCardId(id: string): string {
-  const digits = id.match(/[0-9]+/gu)?.at(-1);
-  return digits === undefined ? id : digits.replace(/^0+(?=[0-9])/u, "");
-}
-
 /** Renders one compact task card for a board column or vertical list. */
 function renderCard(input: {
   task: TaskBoardTask;
@@ -217,11 +222,12 @@ function renderCard(input: {
   selected: boolean;
   width: number;
   colorEnabled: boolean;
+  projectSlug: string;
 }): string[] {
   const blocked = blocker(input.task);
   const lines = [
     fit(
-      `${input.selected ? color("▌", "active", input.colorEnabled) : " "} ${input.task.isActive ? color("●", "active", input.colorEnabled) : " "} ${compactCardId(input.task.id)}  ${input.task.title}`,
+      `${input.selected ? color("▌", "active", input.colorEnabled) : " "} ${input.task.isActive ? color("●", "active", input.colorEnabled) : " "} ${formatTaskDisplayId(input.task.id, input.projectSlug)}  ${input.task.title}`,
       input.width,
     ),
     fit(
@@ -249,6 +255,7 @@ function renderColumn(input: {
   width: number;
   doneExpanded: boolean;
   colorEnabled: boolean;
+  projectSlug: string;
 }): string[] {
   const collapsed = input.column.name === "Done" && !input.doneExpanded;
   const tasks = collapsed ? [] : input.column.tasks;
@@ -269,6 +276,7 @@ function renderColumn(input: {
         selected: task.id === input.selectedId,
         width: input.width,
         colorEnabled: input.colorEnabled,
+        projectSlug: input.projectSlug,
       }),
     );
   }
@@ -441,7 +449,7 @@ function renderDetails(
       "State",
       task.rawStatus,
       width,
-      statusTone(task),
+      detailStatusTone(task),
       colorEnabled,
     ),
     "",
@@ -503,6 +511,7 @@ export function renderTaskBoard(
   options: TaskBoardRenderOptions = {},
 ): string {
   const width = Math.max(1, Math.floor(options.width ?? 100));
+  const projectSlug = options.projectSlug ?? "project";
   const colorEnabled =
     (options.color === true || process.env.NO_COLOR === undefined) &&
     options.color !== false &&
@@ -556,6 +565,7 @@ export function renderTaskBoard(
               selected: task.id === selectedId,
               width,
               colorEnabled,
+              projectSlug,
             }),
           );
         }
@@ -579,6 +589,7 @@ export function renderTaskBoard(
         width: cellWidth,
         doneExpanded,
         colorEnabled,
+        projectSlug,
       }),
     ),
     cellWidth,

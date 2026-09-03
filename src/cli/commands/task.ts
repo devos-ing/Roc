@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { Argument, type Command } from "commander";
 import { BacklogManifestSchema } from "../../domain/schemas";
 import { safeTaskPathComponent } from "../../domain/task-path";
@@ -15,6 +16,12 @@ import {
   projectDatabasePath,
 } from "../command-context";
 import { renderEmptyTaskList } from "../presentation";
+import { resolveProjectDisplaySlug } from "../project-root";
+import {
+  colorTaskDisplay,
+  formatTaskDisplayId,
+  taskStatusTone,
+} from "../task-display";
 import type { CliCommandContext } from "../types";
 import { executeTaskBoard } from "./tui";
 
@@ -109,7 +116,9 @@ function renderRetirementHistory(task: {
 
 /** Pads a task-list cell to the requested terminal display width. */
 function padTaskListCell(value: string, width: number): string {
-  return `${value}${" ".repeat(Math.max(0, width - Bun.stringWidth(value)))}`;
+  return `${value}${" ".repeat(
+    Math.max(0, width - Bun.stringWidth(stripVTControlCharacters(value))),
+  )}`;
 }
 
 /** Renders task records as a display-width-aware, left-aligned CLI table. */
@@ -122,10 +131,15 @@ function renderTaskList(
     replacementTaskId?: string | null;
     retiredAt?: string | null;
   }>,
+  options: {
+    projectSlug: string;
+    activeTaskId: string | undefined;
+    colorEnabled: boolean;
+  },
 ): string {
   const rows = tasks.map((task) => ({
     task,
-    id: JSON.stringify(task.id),
+    id: JSON.stringify(formatTaskDisplayId(task.id, options.projectSlug)),
     status: task.status,
     title: JSON.stringify(task.title),
   }));
@@ -146,7 +160,14 @@ function renderTaskList(
     ...rows.flatMap((row) => [
       [
         padTaskListCell(row.id, idWidth),
-        padTaskListCell(row.status, statusWidth),
+        padTaskListCell(
+          colorTaskDisplay(
+            row.status,
+            taskStatusTone(row.status, row.task.id, options.activeTaskId),
+            options.colorEnabled,
+          ),
+          statusWidth,
+        ),
         row.title,
       ].join("  "),
       ...(row.task.status === "retired"
@@ -163,13 +184,23 @@ async function executeTaskList(
 ): Promise<number> {
   try {
     const projectRoot = await commandProjectRoot(context);
+    const projectSlug = await resolveProjectDisplaySlug(projectRoot);
     const db = openDatabase(projectDatabasePath(projectRoot));
     try {
       const tasks = new PlanningRepository(db)
         .listTasks()
         .filter((task) => history || task.status !== "retired");
+      const activeTaskId = new OrchestrationRepository(db).activeTaskId();
       context.io.out(
-        tasks.length ? renderTaskList(tasks) : renderEmptyTaskList(),
+        tasks.length
+          ? renderTaskList(tasks, {
+              projectSlug,
+              activeTaskId,
+              colorEnabled:
+                context.io.output?.isTTY === true &&
+                process.env.NO_COLOR === undefined,
+            })
+          : renderEmptyTaskList(),
       );
       return 0;
     } finally {

@@ -222,6 +222,38 @@ test("claims the first approved ready task once", () => {
   }
 });
 
+test("shares the exact active-task query between lightweight reads and inspection", () => {
+  const { db, repo } = setup();
+  try {
+    db.exec(`
+      UPDATE tasks
+      SET status = CASE id WHEN 'T1' THEN 'publishing' ELSE 'implementing' END,
+          priority = 0,
+          created_at = CASE id
+            WHEN 'T1' THEN '2026-08-25T00:00:00.000Z'
+            ELSE '2026-08-25T00:00:01.000Z'
+          END
+    `);
+    expect(
+      new PlanningRepository(db).listTasks().map((task) => task.id),
+    ).toEqual(["T1", "T2"]);
+    expect(repo.activeTaskId()).toBe("T2");
+    expect(repo.inspect().scheduler.activeTaskId).toBe("T2");
+
+    db.exec(`
+      UPDATE tasks
+      SET status = 'scouting', created_at = CASE id
+        WHEN 'T1' THEN '2026-08-25T00:00:02.000Z'
+        ELSE '2026-08-25T00:00:01.000Z'
+      END
+    `);
+    expect(repo.activeTaskId()).toBe("T2");
+    expect(repo.inspect().scheduler.activeTaskId).toBe("T2");
+  } finally {
+    db.close();
+  }
+});
+
 test("a stale lease owner cannot claim or consume generated IDs after takeover", () => {
   let currentNow = "2026-08-25T00:00:01.000Z";
   const { db, repo, counters } = setup(

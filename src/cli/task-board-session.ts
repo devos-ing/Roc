@@ -7,6 +7,8 @@ export type TaskBoardSessionOptions = {
   output: CliTerminalOutput;
   /** Reads the next immutable board snapshot. */
   read(): TaskBoardSnapshot | Promise<TaskBoardSnapshot>;
+  /** Optionally supplies the project-scoped label prefix resolved for this session. */
+  projectSlug?: string;
   refreshIntervalMs?: number;
 };
 
@@ -89,6 +91,7 @@ export async function runTaskBoardSession(
       frame = renderTaskBoard(snapshot, {
         width,
         isTTY: output.isTTY,
+        projectSlug: options.projectSlug,
         selectedTaskId,
         ...(detailMode === "none"
           ? { detailMode: "none" as const }

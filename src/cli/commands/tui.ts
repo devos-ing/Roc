@@ -9,6 +9,7 @@ import {
   projectDatabasePath,
   reportOperationalError,
 } from "../command-context";
+import { resolveProjectDisplaySlug } from "../project-root";
 import { buildTaskBoardSnapshot } from "../task-board-model";
 import { renderTaskBoard } from "../task-board-renderer";
 import { runTaskBoardSession } from "../task-board-session";
@@ -21,8 +22,11 @@ export async function executeTaskBoard(
   history = false,
 ): Promise<number> {
   let dbPath: string;
+  let projectSlug: string;
   try {
-    dbPath = projectDatabasePath(await commandProjectRoot(context));
+    const projectRoot = await commandProjectRoot(context);
+    dbPath = projectDatabasePath(projectRoot);
+    projectSlug = await resolveProjectDisplaySlug(projectRoot);
   } catch (error) {
     context.io.err(errorMessage(error));
     return 1;
@@ -43,12 +47,13 @@ export async function executeTaskBoard(
         });
       const { input, output } = context.io;
       if (input?.isTTY === true && output?.isTTY === true) {
-        await runTaskBoardSession({ input, output, read });
+        await runTaskBoardSession({ input, output, read, projectSlug });
       } else {
         context.io.out(
           renderTaskBoard(read(), {
             width: output?.columns ?? 80,
             isTTY: false,
+            projectSlug,
           }),
         );
       }

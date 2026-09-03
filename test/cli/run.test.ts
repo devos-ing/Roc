@@ -11,7 +11,9 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import type { DefaultSkillCandidate } from "../../src/agents/codex/skill-policy";
+import { normalizeProjectSlug } from "../../src/cli/project-root";
 import { runCli } from "../../src/cli/run";
 import type { CliRuntime } from "../../src/cli/types";
 import { taskHookConfigHash } from "../../src/scheduler/task-hooks";
@@ -893,13 +895,14 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
     }
     expect(await runCli(["task", "list"], io, runtime)).toBe(0);
     const listed = output.at(-1) ?? "";
-    expect(listed).toBe(
-      [
-        `ID${" ".repeat(15)}STATUS  TITLE`,
-        `${JSON.stringify(firstTask.id)}  ready   ${JSON.stringify(firstTask.title)}`,
-        `${JSON.stringify(secondTask.id)}  ready   ${JSON.stringify(secondTask.title)}`,
-      ].join("\n"),
-    );
+    const displaySlug = normalizeProjectSlug(root.split("/").at(-1) ?? "");
+    const firstDisplayId = JSON.stringify(`#${displaySlug}-1`);
+    const secondDisplayId = JSON.stringify(`#${displaySlug}-2`);
+    expect(listed.split("\n")).toEqual([
+      expect.stringMatching(/^ID +STATUS {2}TITLE$/),
+      `${firstDisplayId}  ready   ${JSON.stringify(firstTask.title)}`,
+      `${secondDisplayId}  ready   ${JSON.stringify(secondTask.title)}`,
+    ]);
     expect(listed.split("\n")).toHaveLength(3);
     expect(listed).not.toContain("\u001B");
     expect(await runCli(["task", "import", manifestPath], io, runtime)).toBe(0);
@@ -958,6 +961,138 @@ test("task list reuses create-backlog guidance when empty", async () => {
     expect(empty).toContain("$roc-create-tasks <requirement>");
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("task list and board share display IDs while preserving plain output and canonical storage", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-cli-display-"));
+  const home = await mkdtemp(join(tmpdir(), "agile-cli-display-home-"));
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
+  const plainOutput: string[] = [];
+  const coloredOutput: string[] = [];
+  const boardOutput: string[] = [];
+  const slug = normalizeProjectSlug(root.split("/").at(-1) ?? "");
+  const taskSpec = {
+    problem: "Display task labels",
+    desiredOutcome: "One label on each surface",
+    scope: ["task display"],
+    nonGoals: [],
+    acceptanceCriteria: ["display IDs agree"],
+    validation: ["bun test"],
+    dependencies: [],
+    risk: "low" as const,
+    contextCandidates: [],
+    tokenCeiling: 1_000,
+  };
+  const runtime = {
+    runScheduler: async () => {},
+    projectRoot: root,
+    homeRoot: home,
+    now: () => new Date(2026, 7, 30),
+  };
+  const previousNoColor = process.env.NO_COLOR;
+
+  try {
+    await saveRocSettings({ cycle: { type: "daily" } }, home);
+    const db = openDatabase(dbPath);
+    const planning = new PlanningRepository(db);
+    planning.createCycle({
+      id: "2026-08-30",
+      goal: "Display task labels",
+      nonGoals: [],
+      tokenBudget: 1_000,
+      ticketIds: [],
+    });
+    for (const [id, priority, title] of [
+      ["work-0008", 0, 'active "title"'],
+      ["issue-0007", 1, "ready title"],
+    ] as const) {
+      planning.createTask({
+        id,
+        cycleId: "2026-08-30",
+        title,
+        spec: taskSpec,
+        priority,
+        approvalRequired: false,
+        approved: true,
+      });
+      planning.transitionTask(id, "ready", `${id}:ready`);
+    }
+    expect(new OrchestrationRepository(db).claimNext()).toEqual({
+      taskId: "work-0008",
+    });
+    db.close();
+
+    delete process.env.NO_COLOR;
+    expect(
+      await runCli(
+        ["task", "list"],
+        { out: (text) => plainOutput.push(text), err: () => {} },
+        runtime,
+      ),
+    ).toBe(0);
+    expect(plainOutput.at(-1)).toContain(`"#${slug}-8"`);
+    expect(plainOutput.at(-1)).toContain(`"#${slug}-7"`);
+    expect(plainOutput.at(-1)).toContain('"active \\"title\\""');
+    expect(plainOutput.at(-1)).not.toContain("\u001B");
+
+    expect(
+      await runCli(
+        ["task", "list"],
+        {
+          out: (text) => coloredOutput.push(text),
+          err: () => {},
+          output: { isTTY: true } as NodeJS.WriteStream,
+        },
+        runtime,
+      ),
+    ).toBe(0);
+    expect(stripVTControlCharacters(coloredOutput.at(-1) ?? "")).toBe(
+      plainOutput.at(-1) ?? "",
+    );
+    expect(coloredOutput.at(-1)).toContain("\u001B[36mclaimed\u001B[0m");
+
+    process.env.NO_COLOR = "";
+    const noColorOutput: string[] = [];
+    expect(
+      await runCli(
+        ["task", "list"],
+        {
+          out: (text) => noColorOutput.push(text),
+          err: () => {},
+          output: { isTTY: true } as NodeJS.WriteStream,
+        },
+        runtime,
+      ),
+    ).toBe(0);
+    expect(noColorOutput.at(-1)).toBe(plainOutput.at(-1));
+
+    expect(
+      await runCli(
+        ["task", "board"],
+        { out: (text) => boardOutput.push(text), err: () => {} },
+        runtime,
+      ),
+    ).toBe(0);
+    expect(boardOutput.at(-1)).toContain(`#${slug}-8`);
+    expect(boardOutput.at(-1)).toContain(`#${slug}-7`);
+    expect(boardOutput.at(-1)).not.toContain("\u001B");
+
+    const verificationDb = openDatabase(dbPath);
+    try {
+      expect(
+        verificationDb
+          .query<{ id: string }, []>("SELECT id FROM tasks ORDER BY id")
+          .all(),
+      ).toEqual([{ id: "issue-0007" }, { id: "work-0008" }]);
+    } finally {
+      verificationDb.close();
+    }
+  } finally {
+    if (previousNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = previousNoColor;
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });
 
