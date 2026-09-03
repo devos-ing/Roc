@@ -180,6 +180,11 @@ export class PiClient implements PiClientApi {
         await this.process.stdin.write(line);
         await this.process.stdin.flush();
       } catch (error) {
+        // Pipe closure can arrive before Bun observes the child's exit. Give
+        // that notification a bounded chance to settle before classifying it.
+        if (this.process.exitCode === null) {
+          await this.waitForExit(100);
+        }
         throw this.normalizeWriteFailure(error);
       }
     });

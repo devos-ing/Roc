@@ -14,7 +14,10 @@ const fixturePath = join(
 );
 
 /** Starts a client against the scripted fixture rooted at a temp cwd. */
-async function startFixtureClient(): Promise<{
+async function startFixtureClient(
+  fixture = fixturePath,
+  runtime = process.execPath,
+): Promise<{
   client: PiClient;
   cwd: string;
   cleanup: () => Promise<void>;
@@ -23,7 +26,7 @@ async function startFixtureClient(): Promise<{
   const cwd = await realpath(root);
   const client = await PiClient.start({
     cwd,
-    command: [process.execPath, fixturePath],
+    command: [runtime, fixture],
   });
   return {
     client,
@@ -88,6 +91,48 @@ test("child exit rejects future requests and event reads", async () => {
     await cleanup();
   }
 });
+
+test("a write racing stdin closure waits for the pending child exit", async () => {
+  const { client, cleanup } = await startFixtureClient(
+    join(import.meta.dir, "../../fixtures/closed-stdin-pi-rpc.mjs"),
+    "node",
+  );
+  try {
+    await client.request("fixture/closeStdin", { exitDelayMs: 25 });
+    const eventFailure = client.nextEvent().catch((error: unknown) => error);
+    await expect(client.request("get_state")).rejects.toMatchObject({
+      code: "PI_RPC_EXITED",
+      category: "infra",
+      retryable: true,
+    });
+    expect(await eventFailure).toMatchObject({ code: "PI_RPC_EXITED" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("closed stdin on a live child fails promptly with a sanitized write error", async () => {
+  const { client, cleanup } = await startFixtureClient(
+    join(import.meta.dir, "../../fixtures/closed-stdin-pi-rpc.mjs"),
+    "node",
+  );
+  try {
+    await client.request("fixture/closeStdin");
+    const eventFailure = client.nextEvent().catch((error: unknown) => error);
+    client.send({ type: "extension_ui_response", id: "pi-secret-sentinel" });
+    expect(await eventFailure).toMatchObject({
+      code: "PI_RPC_WRITE_FAILED",
+      category: "infra",
+      retryable: true,
+      message: "Could not write to the Pi RPC process",
+    });
+    await expect(client.request("get_state")).rejects.toMatchObject({
+      code: "PI_RPC_WRITE_FAILED",
+    });
+  } finally {
+    await cleanup();
+  }
+}, 2_000);
 
 test("command rejection text never reaches the durable error message", async () => {
   const { client, cleanup } = await startFixtureClient();
