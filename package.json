@@ -1,6 +1,6 @@
 {
   "name": "roc-it",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Run Codex agents through a durable Scout, Implement, and Review flow.",
   "license": "Apache-2.0",
   "type": "module",
