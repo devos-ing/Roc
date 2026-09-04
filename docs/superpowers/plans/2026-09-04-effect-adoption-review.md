@@ -67,27 +67,13 @@ TestClock 測試確認 29,999ms 時尚未關閉，再推進 1ms 才完成 drain 
 
 先以未實作版本確認基本測試失敗，再完成 happy path。加入生命週期情境後出現 8 個預期失敗，再補齊兩個實作；最後加入 close deadline、雙重錯誤與 TestClock 檢查。
 
-目前 production 的 daemon、backend session、CLI scheduler 與 deterministic orchestrator 回歸測試為 20 pass、0 fail、107 assertions。它們驗證既有程式，沒有跑在 Effect 替代版本上。
+Controller provided the pre-dependency formal-worktree evidence: frozen install completed, the existing daemon/backend-session/CLI-scheduler/deterministic-orchestrator regression set passed with 20 pass, 0 fail, 107 assertions, and typecheck exited 0. This validates the unchanged starting point only; it was recorded before `effect` was added. The dependency task separately reran that same checked-in suite after installation with the same result.
 
-## 實驗檔案與重跑方式
+## Historical experiment artifacts
 
-全部保留在本機忽略目錄，沒有加入正式 dependency，也沒有刪除試驗。
+The native-vs-Effect comparison was a local, ignored-directory experiment. Its source, fixture, and TestClock results are historical evidence for the decision above, not checked-in runnable inputs. A fresh checkout cannot reproduce that experiment from this document alone, and no claim is made that the ignored files are available to other machines.
 
-- [共同契約](/Users/roy/Documents/ChatGPT/agile-agents/.scratch/effect-lifecycle-comparison/contracts.ts)
-- [原生實作](/Users/roy/Documents/ChatGPT/agile-agents/.scratch/effect-lifecycle-comparison/native.ts)
-- [Effect 實作](/Users/roy/Documents/ChatGPT/agile-agents/.scratch/effect-lifecycle-comparison/effect.ts)
-- [共同測試與 TestClock](/Users/roy/Documents/ChatGPT/agile-agents/.scratch/effect-lifecycle-comparison/comparison.test.ts)
-- [上游查核筆記](/Users/roy/Documents/ChatGPT/agile-agents/.scratch/effect-pi-omp-references.md)
-
-在 /Users/roy/Documents/ChatGPT/agile-agents/.scratch/effect-lifecycle-comparison 執行：
-
-```bash
-rtk bun install --frozen-lockfile
-rtk bun test comparison.test.ts
-rtk bun run typecheck
-```
-
-預期 19 pass、0 fail，typecheck exit 0。實驗自己的 package.json 與 bun.lock 固定依賴；.scratch 不會隨一般 git commit 分享，需要保留這些檔案才能在另一台機器重跑。
+Formal integration validation uses the checked-in `src/` and `test/` files and the approved [Effect session integration plan](/Users/roy/Documents/ChatGPT/agile-agents/docs/superpowers/plans/2026-09-04-effect-session-integration.md). The experiment did not change production runtime code or formally validate the integration.
 
 在 repository root 執行：
 
@@ -105,7 +91,7 @@ rtk proxy git diff --check
 - [x] 為原生 async 與 Effect 設定相同契約。
 - [x] 實作兩個隔離版本，使用相同真實 SQLite fixture。
 - [x] 驗證 9 個共同情境與 Effect TestClock。
-- [x] 重跑 4 個既有測試檔，確認 production 與根目錄 dependency 未改動。
+- [x] 由 controller 在加入 dependency 前重跑 4 個既有測試檔，確認 production 與根目錄 dependency 未改動。
 - [x] 更新結論，保留可重跑的實驗。
 
 ## 下一步整合計畫

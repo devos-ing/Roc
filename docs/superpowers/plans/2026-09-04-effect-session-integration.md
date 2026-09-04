@@ -62,7 +62,7 @@ Heartbeat 在停止派發時結束，不在 250ms drain 期間繼續續租。正
 
 - [ ] 用 using-git-worktrees 建立 `codex/effect-session-lifecycle`。先檢查同名分支是否已存在；存在時確認用途，不覆蓋。保留 `.DS_Store`、`.codegraph/` 與使用者所有未提交變更。
 - [ ] 將此計畫與對照結果納入可分享的文件，不依賴原工作目錄的 `.scratch`。不要自動 commit 其他未追蹤檔案。
-- [ ] 在隔離工作區執行基線。
+- [ ] 在隔離工作區執行基線；controller 已提供加入 dependency 前的 frozen-install、20 pass/0 fail/107 assertions 與 typecheck exit 0 證據，完成後另記錄加入 dependency 後的相同檢查結果。
 
 ```bash
 rtk bun install --frozen-lockfile
