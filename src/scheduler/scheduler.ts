@@ -45,8 +45,9 @@ export class Scheduler {
     if (active) this.reconcile.add(active.descriptor.attemptId);
   }
 
-  /** Advances orchestration by one delivery, attempt start, task claim, or idle result. */
-  async tick(leaseOwnerId?: string): Promise<TickResult> {
+  /** Advances one orchestration step unless its owning session has sealed continuation. */
+  async tick(leaseOwnerId?: string, signal?: AbortSignal): Promise<TickResult> {
+    signal?.throwIfAborted();
     const running = this.repo.getRunningAttempt();
     if (running) {
       const attemptId = running.descriptor.attemptId;
@@ -57,6 +58,7 @@ export class Scheduler {
         backendCursor: running.backendCursor,
       };
       const delivery = await this.harness.step(request);
+      signal?.throwIfAborted();
       if (delivery.kind === "idle") return { kind: "idle" };
       if (delivery.kind === "closed")
         throw new Error(
@@ -74,7 +76,13 @@ export class Scheduler {
 
     if (this.hooks !== undefined) {
       for (const task of this.repo.listPosthookTasks()) {
-        const posthook = await this.hooks.run(task, "posthook", leaseOwnerId);
+        const posthook = await this.hooks.run(
+          task,
+          "posthook",
+          leaseOwnerId,
+          signal,
+        );
+        signal?.throwIfAborted();
         if (posthook.kind === "skipped" || posthook.kind === "succeeded")
           continue;
         if (posthook.kind === "untrusted") return { kind: "idle" };
@@ -93,7 +101,13 @@ export class Scheduler {
 
       const claimed = this.repo.getClaimedTask();
       if (claimed !== undefined) {
-        const prehook = await this.hooks.run(claimed, "prehook", leaseOwnerId);
+        const prehook = await this.hooks.run(
+          claimed,
+          "prehook",
+          leaseOwnerId,
+          signal,
+        );
+        signal?.throwIfAborted();
         if (prehook.kind === "untrusted") return { kind: "idle" };
         if (prehook.kind === "retrying")
           return { kind: "hook_retry", taskId: claimed.id, phase: "prehook" };
@@ -119,6 +133,7 @@ export class Scheduler {
             ...publishing,
             publication,
           });
+          signal?.throwIfAborted();
           const pullRequestState = pullRequest.state;
           if (pullRequestState === "CLOSED") {
             throw new Error(
@@ -136,6 +151,7 @@ export class Scheduler {
             pullRequestNumber: pullRequest.number,
           };
         } catch (error) {
+          signal?.throwIfAborted();
           this.repo.failPublishing(
             publishing.task.id,
             publicationFailureMessage(error),
