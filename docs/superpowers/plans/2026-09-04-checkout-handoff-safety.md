@@ -63,8 +63,9 @@ await next.release();
   finally cleanup. A separate controlled Bun process must prove exclusion does
   not rely on an in-memory map and its exit does not automatically steal a lock.
 - [ ] Run `rtk bun test test/workspace/checkout-ownership.test.ts` and record actual RED.
-- [ ] Implement atomic `open(lockPath, "wx", 0o600)`, immutable owner metadata,
-  realpath canonicalization and owner-checked unlink. Existing paths fail with
+- [ ] Implement atomic `open(lockPath, "wx", 0o600)`, immutable owner metadata
+  (including the owning process PID), realpath canonicalization and
+  owner-checked unlink. Existing paths fail with
   `SCHEDULER_CHECKOUT_IN_USE`, category startup, retryable false, component
   workspace, supplied runId, fixed message. Release verification failures use
   `SCHEDULER_CHECKOUT_OWNERSHIP_LOST`, category infra, retryable false,
@@ -72,7 +73,8 @@ await next.release();
   expose arbitrary existing lock contents in error text. Creation/release errors
   must not delete another file. Always close handles, including failed writes;
   partial creation may safely retain a guard. `release` is idempotent for its
-  own completed release.
+  own completed release and shares one retained release attempt across concurrent
+  calls, including a settled failure.
 - [ ] Run focused tests, typecheck, changed-file Biome and diff check; self-review.
 - [ ] Commit only the new module/test and spec/plan with the normal hook. Write
   `task-1-report.md` under this plan's SDD directory, with RED/GREEN evidence.

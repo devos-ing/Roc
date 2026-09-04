@@ -28,14 +28,16 @@ fail-closed restart behavior. There is no age-based or PID-based lock takeover.
 - Canonicalize the requested repository using realpath. Atomically create
   `${canonicalRepo}.agile-checkout.lock` with exclusive creation and mode 0600.
   The lock is outside the Git checkout, so task commits cannot include it.
-- Record version, runId, parent PID and acquisition time for inspection. Treat
+- Record version, runId, owning process PID and acquisition time for inspection. Treat
   existing files, directories and symlinks at that path as occupied. A second
   session fails with a sanitized non-retryable `SCHEDULER_CHECKOUT_IN_USE`
   AgileError before branch setup, backend startup or database acquisition.
 - Release only the file this owner created. Check filesystem identity and its
   owner token before unlinking. Replaced or malformed ownership evidence fails
   closed with a sanitized non-retryable `SCHEDULER_CHECKOUT_OWNERSHIP_LOST`
-  infrastructure error. Do not recursively delete a path. Never automatically
+  infrastructure error. Concurrent release callers share one retained release
+  attempt and its settled result, so an older caller cannot unlink a successor
+  after clean release. Do not recursively delete a path. Never automatically
   recover locks using PID liveness, elapsed time or SQLite lease expiry.
 - All `runBackendSession` calls use the guard, independent of backend and DB
   path. Fake runtime without a dedicated checkout remains unchanged. Direct

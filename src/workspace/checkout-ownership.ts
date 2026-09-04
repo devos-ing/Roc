@@ -19,7 +19,7 @@ export type CheckoutOwnership = {
 type OwnerRecord = {
   version: 1;
   runId: string;
-  parentPid: number;
+  ownerPid: number;
   acquiredAt: string;
   ownerToken: string;
 };
@@ -128,7 +128,7 @@ export async function acquireCheckoutOwnership(
   const metadata: OwnerRecord = {
     version: 1,
     runId,
-    parentPid: process.ppid,
+    ownerPid: process.pid,
     acquiredAt: new Date().toISOString(),
     ownerToken: randomUUID(),
   };
@@ -143,11 +143,10 @@ export async function acquireCheckoutOwnership(
   if (identity.isSymbolicLink() || !identity.isFile()) {
     throw ownershipLostError(runId);
   }
-  let released = false;
+  let releasePromise: Promise<void> | undefined;
 
   /** Removes the guard only after proving the original owner file remains in place. */
-  async function release(): Promise<void> {
-    if (released) return;
+  async function releaseOwnedFile(): Promise<void> {
     if (!(await verifyOwnerFile(lockPath, identity, serializedMetadata))) {
       throw ownershipLostError(runId);
     }
@@ -156,7 +155,12 @@ export async function acquireCheckoutOwnership(
     } catch {
       throw ownershipLostError(runId);
     }
-    released = true;
+  }
+
+  /** Returns the sole release attempt so concurrent callers cannot unlink a successor guard. */
+  function release(): Promise<void> {
+    releasePromise ??= releaseOwnedFile();
+    return releasePromise;
   }
 
   return { repoPath: canonicalRepo, lockPath, release };

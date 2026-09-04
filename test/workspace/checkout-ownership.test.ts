@@ -35,6 +35,11 @@ test("excludes canonical repository aliases until the owner releases", async () 
   try {
     const owner = await acquireCheckoutOwnership(repo, "owner-a");
     expect((await stat(owner.lockPath)).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(await readFile(owner.lockPath, "utf8"))).toMatchObject({
+      version: 1,
+      runId: "owner-a",
+      ownerPid: process.pid,
+    });
     await expect(
       acquireCheckoutOwnership(alias, "owner-b"),
     ).rejects.toMatchObject({
@@ -97,14 +102,46 @@ test("does not delete a lock file replaced after acquisition", async () => {
     await rm(lockPath);
     await writeFile(lockPath, "replacement owner");
 
-    await expect(owner.release()).rejects.toMatchObject({
+    const failedRelease = owner.release();
+    await expect(failedRelease).rejects.toMatchObject({
       code: "SCHEDULER_CHECKOUT_OWNERSHIP_LOST",
       category: "infra",
       retryable: false,
       component: "workspace",
       runId: "owner-a",
     });
+    expect(owner.release()).toBe(failedRelease);
+    await expect(owner.release()).rejects.toMatchObject({
+      code: "SCHEDULER_CHECKOUT_OWNERSHIP_LOST",
+    });
     expect(await readFile(lockPath, "utf8")).toBe("replacement owner");
+  } finally {
+    await removeRepositoryRoot(root);
+  }
+});
+
+test("serializes concurrent release calls before a successor acquires", async () => {
+  const { root, repo } = await createRepositoryRoot();
+  try {
+    const owner = await acquireCheckoutOwnership(repo, "owner-a");
+    const firstRelease = owner.release();
+    const concurrentRelease = owner.release();
+    const sharesReleasePromise = concurrentRelease === firstRelease;
+    await expect(
+      Promise.all([firstRelease, concurrentRelease, owner.release()]),
+    ).resolves.toEqual([undefined, undefined, undefined]);
+    expect(sharesReleasePromise).toBe(true);
+
+    const successor = await acquireCheckoutOwnership(repo, "owner-b");
+    await expect(
+      Promise.all([owner.release(), owner.release()]),
+    ).resolves.toEqual([undefined, undefined]);
+    await expect(
+      acquireCheckoutOwnership(repo, "owner-c"),
+    ).rejects.toMatchObject({
+      code: "SCHEDULER_CHECKOUT_IN_USE",
+    });
+    await successor.release();
   } finally {
     await removeRepositoryRoot(root);
   }
