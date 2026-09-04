@@ -94,3 +94,28 @@ export function reviewPrompt(
     JSON.stringify(validated.implementation, null, 2),
   ].join("\n");
 }
+
+/**
+ * Builds the in-session correction sent when a completed turn carries no
+ * schema-valid structured output: either no extractable JSON object at all,
+ * or a JSON object that violates the role's strict schema (for example an
+ * injected "$schema" key or a missing required field).
+ */
+export function structuredOutputRetryPrompt(
+  role: "scout" | "implement" | "review",
+): string {
+  const schema =
+    role === "scout"
+      ? ScoutOutputJsonSchema
+      : role === "implement"
+        ? ImplementDraftOutputJsonSchema
+        : ReviewOutputJsonSchema;
+  return [
+    "Your previous final message contained no JSON object matching the required schema, so it could not be accepted.",
+    "Reply again with your final answer for the same task.",
+    "Your final message must be exactly one JSON object and nothing else.",
+    "The JSON object must match this exact schema:",
+    JSON.stringify(schema),
+    "Output the JSON object without markdown fences or any surrounding prose.",
+  ].join("\n");
+}
