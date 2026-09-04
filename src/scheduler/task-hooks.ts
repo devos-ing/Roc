@@ -198,7 +198,9 @@ export class TaskHookService {
     task: StoredTask,
     phase: TaskHookPhase,
     leaseOwnerId?: string,
+    signal?: AbortSignal,
   ): Promise<TaskHookOutcome> {
+    signal?.throwIfAborted();
     const hook = task.spec[phase];
     if (hook === undefined) return { kind: "skipped" };
     const configHash = taskHookConfigHash(hook);
@@ -211,7 +213,9 @@ export class TaskHookService {
     let workspace: TaskHookWorkspace;
     try {
       workspace = await this.workspaces.prepare(task.id, task.baseCommit);
+      signal?.throwIfAborted();
     } catch (error) {
+      signal?.throwIfAborted();
       return this.recordWorkspaceFailure(
         task,
         phase,
@@ -242,6 +246,7 @@ export class TaskHookService {
         stderr: error instanceof Error ? error.message : String(error),
       };
     }
+    signal?.throwIfAborted();
     this.repo.finishTaskHook({
       taskId: task.id,
       phase,

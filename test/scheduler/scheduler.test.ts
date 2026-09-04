@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Effect } from "effect";
 import type { TaskPublisher } from "../../src/github/pr-publisher";
 import type {
   AgentHarness,
@@ -9,10 +10,12 @@ import type {
   HarnessStepRequest,
 } from "../../src/harness/contracts";
 import { createFakeHarness } from "../../src/harness/fake";
+import { SchedulerDaemon } from "../../src/scheduler/daemon";
 import { Scheduler } from "../../src/scheduler/scheduler";
 import {
   type TaskHookRunner,
   TaskHookService,
+  type TaskHookWorkspaceProvider,
   taskHookConfigHash,
 } from "../../src/scheduler/task-hooks";
 import { openDatabase } from "../../src/store/database";
@@ -178,6 +181,7 @@ function setupAcceptedTask(
     posthook?: { command: string; args: string[]; timeoutSeconds: number };
     runner: TaskHookRunner;
     workspacePath?: string;
+    workspace?: TaskHookWorkspaceProvider;
   },
 ) {
   const db = openDatabase(":memory:");
@@ -312,7 +316,7 @@ function setupAcceptedTask(
       ? undefined
       : new TaskHookService(
           repo,
-          {
+          hooks.workspace ?? {
             async prepare() {
               return { path: hooks.workspacePath ?? "/workspace/T1" };
             },
@@ -361,6 +365,240 @@ function scriptedHookRunner(
     async stop() {},
   };
 }
+
+test("sealed delivery does not touch a closed database", async () => {
+  const { db, repo, fake } = setupAcceptedTask();
+  repo.claimNext();
+  repo.beginNextAttempt();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const seal = new AbortController();
+  const reason = new Error("Scheduler session sealed");
+  const scheduler = new Scheduler(repo, {
+    async step(request) {
+      const delivery = await fake.harness.step(request);
+      entered.resolve();
+      await release.promise;
+      return delivery;
+    },
+    cancel: (id) => fake.harness.cancel(id),
+  });
+  const pending = scheduler.tick(undefined, seal.signal);
+  const outcome = pending.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    await entered.promise;
+    seal.abort(reason);
+    db.close();
+    release.resolve();
+    expect(await outcome).toBe(reason);
+  } finally {
+    release.resolve();
+    await outcome;
+    db.close();
+  }
+});
+
+test("sealed workspace rejection does not touch a closed database", async () => {
+  const prehook = { command: "prepare-task", args: [], timeoutSeconds: 1 };
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const seal = new AbortController();
+  const reason = new Error("Scheduler session sealed");
+  const { db, repo, scheduler } = setupAcceptedTask(reviewOutput, {
+    prehook,
+    runner: scriptedHookRunner([], []),
+    workspace: {
+      async prepare() {
+        entered.resolve();
+        await release.promise;
+        throw new Error("workspace unavailable");
+      },
+    },
+  });
+  repo.trustTaskHook("T1", "prehook", taskHookConfigHash(prehook));
+  repo.claimNext();
+  const pending = scheduler.tick(undefined, seal.signal);
+  const outcome = pending.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    await entered.promise;
+    seal.abort(reason);
+    db.close();
+    release.resolve();
+    expect(await outcome).toBe(reason);
+  } finally {
+    release.resolve();
+    await outcome;
+    db.close();
+  }
+});
+
+test("sealed hook runner result does not touch a closed database", async () => {
+  const prehook = { command: "prepare-task", args: [], timeoutSeconds: 1 };
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const seal = new AbortController();
+  const reason = new Error("Scheduler session sealed");
+  const runner: TaskHookRunner = {
+    async run() {
+      entered.resolve();
+      await release.promise;
+      return {
+        succeeded: true,
+        exitCode: 0,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+      };
+    },
+    async stop() {},
+  };
+  const { db, repo, scheduler } = setupAcceptedTask(reviewOutput, {
+    prehook,
+    runner,
+  });
+  repo.trustTaskHook("T1", "prehook", taskHookConfigHash(prehook));
+  repo.claimNext();
+  const pending = scheduler.tick(undefined, seal.signal);
+  const outcome = pending.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    await entered.promise;
+    seal.abort(reason);
+    db.close();
+    release.resolve();
+    expect(await outcome).toBe(reason);
+  } finally {
+    release.resolve();
+    await outcome;
+    db.close();
+  }
+});
+
+test("sealed publication resolution does not touch a closed database", async () => {
+  const { db, repo, scheduler, fake } = setupAcceptedTask();
+  for (
+    let ticks = 0;
+    ticks < 20 && repo.listPublishingTasks().length === 0;
+    ticks += 1
+  )
+    await scheduler.tick();
+  expect(repo.listPublishingTasks()).toHaveLength(1);
+
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const seal = new AbortController();
+  const reason = new Error("Scheduler session sealed");
+  const lateScheduler = new Scheduler(repo, fake.harness, () => {}, undefined, {
+    baseBranch: "main",
+    async publish() {
+      entered.resolve();
+      await release.promise;
+      return {
+        number: 1,
+        url: "https://example.test/pull/1",
+        state: "OPEN",
+      };
+    },
+  });
+  const pending = lateScheduler.tick(undefined, seal.signal);
+  const outcome = pending.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    await entered.promise;
+    seal.abort(reason);
+    db.close();
+    release.resolve();
+    expect(await outcome).toBe(reason);
+  } finally {
+    release.resolve();
+    await outcome;
+    db.close();
+  }
+});
+
+test("sealed publication rejection does not touch a closed database", async () => {
+  const { db, repo, scheduler, fake } = setupAcceptedTask();
+  for (
+    let ticks = 0;
+    ticks < 20 && repo.listPublishingTasks().length === 0;
+    ticks += 1
+  )
+    await scheduler.tick();
+  expect(repo.listPublishingTasks()).toHaveLength(1);
+
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const seal = new AbortController();
+  const reason = new Error("Scheduler session sealed");
+  const lateScheduler = new Scheduler(repo, fake.harness, () => {}, undefined, {
+    baseBranch: "main",
+    async publish() {
+      entered.resolve();
+      await release.promise;
+      throw new Error("publisher unavailable");
+    },
+  });
+  const pending = lateScheduler.tick(undefined, seal.signal);
+  const outcome = pending.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    await entered.promise;
+    seal.abort(reason);
+    db.close();
+    release.resolve();
+    expect(await outcome).toBe(reason);
+  } finally {
+    release.resolve();
+    await outcome;
+    db.close();
+  }
+});
+
+test("Effect daemon completes the accepted Fake Harness flow", async () => {
+  const { db, repo, scheduler, publisher } = setupAcceptedTask();
+  const stop = new AbortController();
+  const publish = publisher.publish.bind(publisher);
+  publisher.publish = async (input) => {
+    const receipt = await publish(input);
+    stop.abort();
+    return receipt;
+  };
+  const daemon = new SchedulerDaemon(scheduler, repo, {
+    ownerId: "effect-vertical",
+  });
+  try {
+    await Effect.runPromise(
+      daemon.runEffect({ stop: stop.signal, async cancel() {} }),
+    );
+    const task = db
+      .query<{ status: string }, [string]>(
+        "SELECT status FROM tasks WHERE id = ?",
+      )
+      .get("T1");
+    expect(task?.status).toBe("done");
+    const lease = db
+      .query<{ owner_id: string }, []>(
+        "SELECT owner_id FROM scheduler_lease WHERE lease_key = 'scheduler'",
+      )
+      .get();
+    expect(lease).toBeNull();
+  } finally {
+    stop.abort();
+    db.close();
+  }
+});
 
 test("runs Scout, Implement, Review, and publication to done", async () => {
   const { db, repo, scheduler, fake, requests, publicationCalls } =

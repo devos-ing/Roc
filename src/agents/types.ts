@@ -17,7 +17,7 @@ export type BackendRuntime = {
    */
   readonly modelMapping?: ModelMapping;
   readonly harness: AgentHarness;
-  /** Releases the backend's resources; must stay idempotent across repeated calls. */
+  /** Releases owned resources idempotently, rejecting if child exit or cleanup cannot be confirmed. */
   close(): Promise<void>;
 };
 
