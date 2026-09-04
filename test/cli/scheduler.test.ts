@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { backends } from "../../src/agents/registry";
-import { runCli, runDaemon, schedulerSleep } from "../../src/cli/run";
+import { runCli } from "../../src/cli/run";
 import { defaultRuntime } from "../../src/cli/runtime";
 import type { SchedulerRunInput } from "../../src/cli/types";
 import { AgileError } from "../../src/runtime/errors";
@@ -143,66 +143,6 @@ test("the internal fake runtime binds authored events to generated attempts", as
     await running?.catch(() => {});
     await rm(root, { recursive: true, force: true });
   }
-});
-
-test("production sleep cancels heartbeat waits and preserves the idle delay", async () => {
-  const stop = new AbortController();
-  const heartbeat = schedulerSleep(3_000, stop.signal);
-  stop.abort(new Error("tick finished"));
-  await expect(heartbeat).rejects.toThrow("tick finished");
-
-  const idleStartedAt = Date.now();
-  await schedulerSleep(1_000);
-  const idleElapsed = Date.now() - idleStartedAt;
-  expect(idleElapsed).toBeGreaterThanOrEqual(900);
-  expect(idleElapsed).toBeLessThan(2_000);
-});
-
-test("signal shutdown bounds cancellation and closes a blocked backend", async () => {
-  let releaseDaemon: (() => void) | undefined;
-  let released = false;
-  let cancelCalled = false;
-  let closeCalled = false;
-  const running = runDaemon({
-    daemon: {
-      async run() {
-        await new Promise<void>((resolve) => {
-          releaseDaemon = () => {
-            released = true;
-            resolve();
-          };
-        });
-      },
-    },
-    repo: {
-      getRunningAttempt() {
-        return { descriptor: { attemptId: "attempt-blocked" } } as never;
-      },
-    },
-    harness: {
-      async step() {
-        throw new Error("not used");
-      },
-      async cancel() {
-        cancelCalled = true;
-        await new Promise(() => {});
-      },
-    },
-    closeBackend: async () => {
-      closeCalled = true;
-      releaseDaemon?.();
-    },
-    shutdownTimeoutMs: 25,
-    logger: { async write() {}, async error() {} },
-    runId: "run-signal-test",
-  });
-
-  process.emit("SIGTERM");
-  await running;
-
-  expect(cancelCalled).toBe(true);
-  expect(closeCalled).toBe(true);
-  expect(released).toBe(true);
 });
 
 test("prints a stable project scheduler snapshot", async () => {

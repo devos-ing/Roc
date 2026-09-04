@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { Cause, Effect, Exit, Fiber, TestClock, TestContext } from "effect";
 import type {
   AgentHarness,
   HarnessDelivery,
@@ -9,46 +10,147 @@ import { openDatabase } from "../../src/store/database";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
 
-type ControlledWait = {
-  milliseconds: number;
-  wake(): void;
-};
-
-function controlledHeartbeatWaits() {
-  const pending: ControlledWait[] = [];
-  return {
-    pending,
-    sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
-      if (!signal) throw new Error("Expected a cancellable heartbeat wait");
-      return new Promise((resolve, reject) => {
-        let settled = false;
-        const remove = () => {
-          const index = pending.indexOf(wait);
-          if (index !== -1) pending.splice(index, 1);
-          signal.removeEventListener("abort", abort);
-        };
-        const abort = () => {
-          if (settled) return;
-          settled = true;
-          remove();
-          reject(signal.reason);
-        };
-        const wait: ControlledWait = {
-          milliseconds,
-          wake() {
-            if (settled) return;
-            settled = true;
-            remove();
-            resolve();
-          },
-        };
-        pending.push(wait);
-        signal.addEventListener("abort", abort, { once: true });
-        if (signal.aborted) abort();
-      });
+test("a primary heartbeat failure survives a tick failure during drain", async () => {
+  const primary = new Error("heartbeat failed");
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<never>();
+  let released = false;
+  const daemon = new SchedulerDaemon(
+    {
+      tick() {
+        entered.resolve();
+        return finish.promise;
+      },
     },
-  };
-}
+    {
+      acquireLease: () => true,
+      heartbeatLease: () => {
+        throw primary;
+      },
+      releaseLease: () => {
+        released = true;
+        return true;
+      },
+    },
+    { ownerId: "owner-1" },
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.fork(
+        daemon.runEffect({
+          stop: new AbortController().signal,
+          cancel: async () => {
+            finish.reject(new Error("secondary tick failure"));
+          },
+        }),
+      );
+      yield* Effect.promise(() => entered.promise);
+      yield* TestClock.adjust(3_000);
+      const exit = yield* Fiber.await(fiber);
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(primary);
+      expect(released).toBe(true);
+    }).pipe(Effect.provide(TestContext.TestContext)),
+  );
+});
+
+test("preserves a tick failure during stop grace even when cancellation stays pending", async () => {
+  const primary = new Error("tick failed during grace");
+  const entered = Promise.withResolvers<void>();
+  const cancelling = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<never>();
+  const stop = new AbortController();
+  let released = false;
+  const daemon = new SchedulerDaemon(
+    {
+      tick() {
+        entered.resolve();
+        return finish.promise;
+      },
+    },
+    {
+      acquireLease: () => true,
+      heartbeatLease: () => true,
+      releaseLease: () => {
+        released = true;
+        return true;
+      },
+    },
+    { ownerId: "owner-1" },
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.fork(
+        daemon.runEffect({
+          stop: stop.signal,
+          cancel: () => {
+            cancelling.resolve();
+            return new Promise(() => {});
+          },
+        }),
+      );
+      yield* Effect.promise(() => entered.promise);
+      stop.abort();
+      yield* Effect.promise(() => cancelling.promise);
+      finish.reject(primary);
+      yield* TestClock.adjust(250);
+      const exit = yield* Fiber.await(fiber);
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(primary);
+      expect(released).toBe(true);
+    }).pipe(Effect.provide(TestContext.TestContext)),
+  );
+});
+
+test("Effect drain seals a stuck tick at the configured deadline", async () => {
+  const entered = Promise.withResolvers<void>();
+  const cancelling = Promise.withResolvers<void>();
+  const stop = new AbortController();
+  let tickSignal: AbortSignal | undefined;
+  let released = false;
+  const daemon = new SchedulerDaemon(
+    {
+      async tick(_owner, signal) {
+        tickSignal = signal;
+        entered.resolve();
+        return new Promise(() => {});
+      },
+    },
+    {
+      acquireLease: () => true,
+      heartbeatLease: () => true,
+      releaseLease: () => {
+        released = true;
+        return true;
+      },
+    },
+    { ownerId: "test-owner" },
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.fork(
+        daemon.runEffect({
+          stop: stop.signal,
+          cancel: () => {
+            cancelling.resolve();
+            return new Promise(() => {});
+          },
+          drainMs: 250,
+        }),
+      );
+      yield* Effect.promise(() => entered.promise);
+      stop.abort();
+      yield* Effect.promise(() => cancelling.promise);
+      yield* TestClock.adjust(249);
+      expect(tickSignal?.aborted).toBe(false);
+      expect(released).toBe(false);
+      yield* TestClock.adjust(1);
+      yield* Fiber.join(fiber);
+      expect(tickSignal?.aborted).toBe(true);
+      expect(released).toBe(true);
+    }).pipe(Effect.provide(TestContext.TestContext)),
+  );
+});
 
 test("allows one lease owner and takeover only after expiry", () => {
   const db = openDatabase(":memory:");
@@ -91,165 +193,180 @@ test("allows one lease owner and takeover only after expiry", () => {
 
 test("polls after idle and releases its lease on stop", async () => {
   const calls: string[] = [];
-  const heartbeatWaits = controlledHeartbeatWaits();
-  let stop = false;
-  const scheduler = {
-    async tick() {
-      calls.push("tick");
-      return { kind: "idle" as const };
+  const entered = Promise.withResolvers<void>();
+  const second = Promise.withResolvers<void>();
+  const cancelling = Promise.withResolvers<void>();
+  const stop = new AbortController();
+  let ticks = 0;
+  const daemon = new SchedulerDaemon(
+    {
+      async tick() {
+        calls.push("tick");
+        ticks += 1;
+        if (ticks === 1) entered.resolve();
+        else second.resolve();
+        return { kind: "idle" };
+      },
     },
-  };
-  const lease = {
-    acquireLease() {
-      calls.push("acquire");
-      return true;
+    {
+      acquireLease() {
+        calls.push("acquire");
+        return true;
+      },
+      heartbeatLease() {
+        calls.push("heartbeat");
+        return true;
+      },
+      releaseLease() {
+        calls.push("release");
+        return true;
+      },
     },
-    heartbeatLease() {
-      calls.push("heartbeat");
-      return true;
-    },
-    releaseLease() {
-      calls.push("release");
-      return true;
-    },
-  };
-  const daemon = new SchedulerDaemon(scheduler, lease, {
-    ownerId: "owner-1",
-    now: () => new Date("2026-08-25T00:00:00.000Z"),
-    sleep: async (milliseconds, signal) => {
-      if (signal) return heartbeatWaits.sleep(milliseconds, signal);
-      expect(milliseconds).toBe(1_000);
-      stop = true;
-    },
-  });
-
-  await daemon.run(() => stop);
-
-  expect(calls).toEqual(["acquire", "tick", "release"]);
-  expect(heartbeatWaits.pending).toHaveLength(0);
+    { ownerId: "owner-1" },
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.fork(
+        daemon.runEffect({
+          stop: stop.signal,
+          cancel: async () => {
+            cancelling.resolve();
+          },
+        }),
+      );
+      yield* Effect.promise(() => entered.promise);
+      yield* TestClock.adjust(999);
+      expect(ticks).toBe(1);
+      yield* TestClock.adjust(1);
+      yield* Effect.promise(() => second.promise);
+      stop.abort();
+      yield* Effect.promise(() => cancelling.promise);
+      yield* TestClock.adjust(250);
+      yield* Fiber.join(fiber);
+      expect(calls).toEqual(["acquire", "tick", "tick", "release"]);
+    }).pipe(Effect.provide(TestContext.TestContext)),
+  );
 });
 
 test("heartbeats every three seconds with a ten-second lease", async () => {
-  const calls: string[] = [];
-  const heartbeatWaits = controlledHeartbeatWaits();
-  let now = Date.parse("2026-08-25T00:00:00.000Z");
-  let stop = false;
-  const scheduler = {
-    async tick() {
-      calls.push("tick");
-      now += 1_000;
-      return { kind: "task_claimed" as const, taskId: "T1" };
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<{
+    kind: "task_claimed";
+    taskId: string;
+  }>();
+  const stop = new AbortController();
+  const leases: string[][] = [];
+  const daemon = new SchedulerDaemon(
+    {
+      tick() {
+        entered.resolve();
+        return finish.promise;
+      },
     },
-  };
-  const lease = {
-    acquireLease(ownerId: string, acquiredAt: string, expiresAt: string) {
-      calls.push("acquire");
-      expect({ ownerId, acquiredAt, expiresAt }).toEqual({
-        ownerId: "owner-1",
-        acquiredAt: "2026-08-25T00:00:00.000Z",
-        expiresAt: "2026-08-25T00:00:10.000Z",
-      });
-      return true;
+    {
+      acquireLease(...args) {
+        leases.push(args);
+        return true;
+      },
+      heartbeatLease(...args) {
+        leases.push(args);
+        return true;
+      },
+      releaseLease() {
+        return true;
+      },
     },
-    heartbeatLease(ownerId: string, heartbeatAt: string, expiresAt: string) {
-      calls.push("heartbeat");
-      expect({ ownerId, heartbeatAt, expiresAt }).toEqual({
-        ownerId: "owner-1",
-        heartbeatAt: "2026-08-25T00:00:03.000Z",
-        expiresAt: "2026-08-25T00:00:13.000Z",
-      });
-      stop = true;
-      return true;
-    },
-    releaseLease() {
-      calls.push("release");
-      return true;
-    },
-  };
-  const daemon = new SchedulerDaemon(scheduler, lease, {
-    ownerId: "owner-1",
-    now: () => new Date(now),
-    sleep: heartbeatWaits.sleep,
-  });
-
-  await daemon.run(() => stop);
-
-  expect(calls).toEqual([
-    "acquire",
-    "tick",
-    "tick",
-    "tick",
-    "heartbeat",
-    "release",
-  ]);
-  expect(heartbeatWaits.pending).toHaveLength(0);
+    { ownerId: "owner-1" },
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-08-25T00:00:00.000Z"));
+      const fiber = yield* Effect.fork(
+        daemon.runEffect({
+          stop: stop.signal,
+          cancel: async () => {
+            finish.resolve({ kind: "task_claimed", taskId: "T1" });
+          },
+        }),
+      );
+      yield* Effect.promise(() => entered.promise);
+      yield* TestClock.adjust(2_999);
+      expect(leases).toEqual([
+        ["owner-1", "2026-08-25T00:00:00.000Z", "2026-08-25T00:00:10.000Z"],
+      ]);
+      yield* TestClock.adjust(1);
+      expect(leases[1]).toEqual([
+        "owner-1",
+        "2026-08-25T00:00:03.000Z",
+        "2026-08-25T00:00:13.000Z",
+      ]);
+      yield* TestClock.adjust(3_000);
+      expect(leases[2]).toEqual([
+        "owner-1",
+        "2026-08-25T00:00:06.000Z",
+        "2026-08-25T00:00:16.000Z",
+      ]);
+      stop.abort();
+      yield* Fiber.join(fiber);
+    }).pipe(Effect.provide(TestContext.TestContext)),
+  );
 });
 
 test("heartbeats while a tick is pending and prevents lease takeover", async () => {
   const db = openDatabase(":memory:");
   const repo = new OrchestrationRepository(db);
-  const heartbeatWaits = controlledHeartbeatWaits();
-  const epoch = Date.parse("2026-08-25T00:00:00.000Z");
-  let now = epoch;
-  let stop = false;
-  let tickCount = 0;
-  let finishTick:
-    | ((result: { kind: "task_claimed"; taskId: string }) => void)
-    | undefined;
-  const scheduler = {
-    tick() {
-      tickCount += 1;
-      return new Promise<{ kind: "task_claimed"; taskId: string }>(
-        (resolve) => {
-          finishTick = resolve;
-        },
-      );
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<{
+    kind: "task_claimed";
+    taskId: string;
+  }>();
+  const stop = new AbortController();
+  let ticks = 0;
+  const daemon = new SchedulerDaemon(
+    {
+      tick() {
+        ticks += 1;
+        entered.resolve();
+        return finish.promise;
+      },
     },
-  };
-  const daemon = new SchedulerDaemon(scheduler, repo, {
-    ownerId: "owner-1",
-    now: () => new Date(now),
-    sleep: heartbeatWaits.sleep,
-  });
-  const running = daemon.run(() => stop);
-
+    repo,
+    { ownerId: "owner-1" },
+  );
   try {
-    expect(tickCount).toBe(1);
-    expect(heartbeatWaits.pending[0]?.milliseconds).toBe(3_000);
-    for (const elapsed of [3_000, 6_000, 9_000]) {
-      now = epoch + elapsed;
-      heartbeatWaits.pending[0]?.wake();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(heartbeatWaits.pending[0]?.milliseconds).toBe(3_000);
-    }
-
-    now = epoch + 11_000;
-    expect(
-      repo.acquireLease(
-        "owner-2",
-        "2026-08-25T00:00:11.000Z",
-        "2026-08-25T00:00:21.000Z",
-      ),
-    ).toBe(false);
-
-    stop = true;
-    finishTick?.({ kind: "task_claimed", taskId: "T1" });
-    await running;
-    expect(tickCount).toBe(1);
-    expect(heartbeatWaits.pending).toHaveLength(0);
-    expect(
-      repo.acquireLease(
-        "owner-2",
-        "2026-08-25T00:00:11.000Z",
-        "2026-08-25T00:00:21.000Z",
-      ),
-    ).toBe(true);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-08-25T00:00:00.000Z"));
+        const fiber = yield* Effect.fork(
+          daemon.runEffect({
+            stop: stop.signal,
+            cancel: async () => {
+              finish.resolve({ kind: "task_claimed", taskId: "T1" });
+            },
+          }),
+        );
+        yield* Effect.promise(() => entered.promise);
+        yield* TestClock.adjust(11_000);
+        expect(
+          repo.acquireLease(
+            "owner-2",
+            "2026-08-25T00:00:11.000Z",
+            "2026-08-25T00:00:21.000Z",
+          ),
+        ).toBe(false);
+        stop.abort();
+        yield* Fiber.join(fiber);
+        expect(ticks).toBe(1);
+        expect(
+          repo.acquireLease(
+            "owner-2",
+            "2026-08-25T00:00:11.000Z",
+            "2026-08-25T00:00:21.000Z",
+          ),
+        ).toBe(true);
+      }).pipe(Effect.provide(TestContext.TestContext)),
+    );
   } finally {
-    stop = true;
-    finishTick?.({ kind: "task_claimed", taskId: "T1" });
-    await running.catch(() => {});
-    repo.releaseLease("owner-2");
     db.close();
   }
 });
@@ -257,52 +374,55 @@ test("heartbeats while a tick is pending and prevents lease takeover", async () 
 test("surfaces lease loss during a pending tick without starting another tick", async () => {
   const db = openDatabase(":memory:");
   const repo = new OrchestrationRepository(db);
-  const heartbeatWaits = controlledHeartbeatWaits();
-  const epoch = Date.parse("2026-08-25T00:00:00.000Z");
-  let now = epoch;
-  let stop = false;
-  let tickCount = 0;
-  let finishTick:
-    | ((result: { kind: "task_claimed"; taskId: string }) => void)
-    | undefined;
-  const scheduler = {
-    tick() {
-      tickCount += 1;
-      return new Promise<{ kind: "task_claimed"; taskId: string }>(
-        (resolve) => {
-          finishTick = resolve;
-        },
-      );
+  const entered = Promise.withResolvers<void>();
+  const cancelling = Promise.withResolvers<void>();
+  let ticks = 0;
+  const daemon = new SchedulerDaemon(
+    {
+      async tick() {
+        ticks += 1;
+        entered.resolve();
+        return new Promise(() => {});
+      },
     },
-  };
-  const daemon = new SchedulerDaemon(scheduler, repo, {
-    ownerId: "owner-1",
-    now: () => new Date(now),
-    sleep: heartbeatWaits.sleep,
-  });
-  const running = daemon.run(() => stop);
-
+    repo,
+    { ownerId: "owner-1" },
+  );
   try {
-    expect(tickCount).toBe(1);
-    expect(heartbeatWaits.pending[0]?.milliseconds).toBe(3_000);
-    now = epoch + 11_000;
-    expect(
-      repo.acquireLease(
-        "owner-2",
-        "2026-08-25T00:00:11.000Z",
-        "2026-08-25T00:00:21.000Z",
-      ),
-    ).toBe(true);
-    heartbeatWaits.pending[0]?.wake();
-
-    await expect(running).rejects.toThrow("Scheduler lease was lost");
-    expect(tickCount).toBe(1);
-    expect(heartbeatWaits.pending).toHaveLength(0);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-08-25T00:00:00.000Z"));
+        const fiber = yield* Effect.fork(
+          daemon.runEffect({
+            stop: new AbortController().signal,
+            cancel: async () => {
+              cancelling.resolve();
+            },
+          }),
+        );
+        yield* Effect.promise(() => entered.promise);
+        expect(
+          repo.acquireLease(
+            "owner-2",
+            "2026-08-25T00:00:11.000Z",
+            "2026-08-25T00:00:21.000Z",
+          ),
+        ).toBe(true);
+        yield* TestClock.adjust(3_000);
+        yield* Effect.promise(() => cancelling.promise);
+        yield* TestClock.adjust(250);
+        const exit = yield* Fiber.await(fiber);
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit))
+          expect(Cause.squash(exit.cause)).toMatchObject({
+            message: "Scheduler lease was lost",
+          });
+        expect(ticks).toBe(1);
+        expect(repo.releaseLease("owner-1")).toBe(false);
+        expect(repo.releaseLease("owner-2")).toBe(true);
+      }).pipe(Effect.provide(TestContext.TestContext)),
+    );
   } finally {
-    stop = true;
-    finishTick?.({ kind: "task_claimed", taskId: "T1" });
-    await running.catch(() => {});
-    repo.releaseLease("owner-2");
     db.close();
   }
 });
@@ -311,7 +431,6 @@ test("rejects a stale pending delivery after lease takeover without writes", asy
   const db = openDatabase(":memory:");
   const epoch = Date.parse("2026-08-25T00:00:00.000Z");
   let now = epoch;
-  let stop = false;
   const planning = new PlanningRepository(db, () => "2026-08-25T00:00:00.000Z");
   planning.createCycle({
     id: "2026-W35",
@@ -354,21 +473,18 @@ test("rejects a stale pending delivery after lease takeover without writes", asy
   repo.claimNext();
   repo.beginNextAttempt();
 
-  let finishDelivery: ((delivery: HarnessDelivery) => void) | undefined;
+  const entered = Promise.withResolvers<void>();
+  const delivery = Promise.withResolvers<HarnessDelivery>();
   const harness: AgentHarness = {
     step() {
-      return new Promise<HarnessDelivery>((resolve) => {
-        finishDelivery = resolve;
-      });
+      entered.resolve();
+      return delivery.promise;
     },
     async cancel() {},
   };
-  const heartbeatWaits = controlledHeartbeatWaits();
   const scheduler = new Scheduler(repo, harness);
   const daemon = new SchedulerDaemon(scheduler, repo, {
     ownerId: "owner-1",
-    now: () => new Date(now),
-    sleep: heartbeatWaits.sleep,
   });
   const event = {
     type: "attempt.started" as const,
@@ -378,45 +494,56 @@ test("rejects a stale pending delivery after lease takeover without writes", asy
     occurredAt: "2026-08-25T00:00:11.000Z",
     threadId: "thread-stale",
   };
-  const running = daemon.run(() => stop);
-
   try {
-    expect(heartbeatWaits.pending[0]?.milliseconds).toBe(3_000);
-    now = epoch + 11_000;
-    expect(
-      repo.acquireLease(
-        "owner-2",
-        "2026-08-25T00:00:11.000Z",
-        "2026-08-25T00:00:21.000Z",
-      ),
-    ).toBe(true);
-    finishDelivery?.({ kind: "event", nextCursor: "cursor-stale", event });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(epoch);
+        const fiber = yield* Effect.fork(
+          daemon.runEffect({
+            stop: new AbortController().signal,
+            cancel: async () => {},
+          }),
+        );
+        yield* Effect.promise(() => entered.promise);
+        now = epoch + 11_000;
+        expect(
+          repo.acquireLease(
+            "owner-2",
+            "2026-08-25T00:00:11.000Z",
+            "2026-08-25T00:00:21.000Z",
+          ),
+        ).toBe(true);
+        delivery.resolve({ kind: "event", nextCursor: "cursor-stale", event });
 
-    await expect(running).rejects.toThrow("Scheduler lease was lost");
-    expect(
-      db
-        .query<{ count: number }, [string]>(`
+        const exit = yield* Fiber.await(fiber);
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit))
+          expect(Cause.squash(exit.cause)).toMatchObject({
+            message: "Scheduler lease was lost",
+          });
+        expect(
+          db
+            .query<{ count: number }, [string]>(`
       SELECT COUNT(*) AS count FROM events WHERE idempotency_key = ?
     `)
-        .get(event.eventId)?.count,
-    ).toBe(0);
-    expect(
-      db
-        .query<
-          { thread_id: string | null; backend_cursor: string | null },
-          [string]
-        >(`
+            .get(event.eventId)?.count,
+        ).toBe(0);
+        expect(
+          db
+            .query<
+              { thread_id: string | null; backend_cursor: string | null },
+              [string]
+            >(`
       SELECT thread_id, backend_cursor FROM attempts WHERE id = ?
     `)
-        .get(event.attemptId),
-    ).toEqual({
-      thread_id: null,
-      backend_cursor: null,
-    });
+            .get(event.attemptId),
+        ).toEqual({
+          thread_id: null,
+          backend_cursor: null,
+        });
+      }).pipe(Effect.provide(TestContext.TestContext)),
+    );
   } finally {
-    stop = true;
-    finishDelivery?.({ kind: "event", nextCursor: "cursor-stale", event });
-    await running.catch(() => {});
     repo.releaseLease("owner-2");
     db.close();
   }

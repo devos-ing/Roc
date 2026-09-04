@@ -12,7 +12,10 @@ import { join } from "node:path";
 import type { BackendFactory, BackendRuntime } from "../../src/agents/types";
 import { runBackendSession } from "../../src/cli/runtime";
 import type { RealSchedulerRunInput } from "../../src/cli/types";
-import type { HarnessStepRequest } from "../../src/harness/contracts";
+import type {
+  HarnessDelivery,
+  HarnessStepRequest,
+} from "../../src/harness/contracts";
 import { openDatabase } from "../../src/store/database";
 import { PlanningRepository } from "../../src/store/planning-repository";
 import { git } from "../helpers/git";
@@ -85,12 +88,14 @@ function fakeBackend(catalog: typeof compatibleCatalog): {
   branchSeen: () => boolean;
   closeCounts: () => { closeCalls: number; cleanupCalls: number };
   stepRequests: () => HarnessStepRequest[];
+  firstStep: Promise<void>;
 } {
   let closeCalls = 0;
   let cleanupCalls = 0;
   let closePromise: Promise<void> | undefined;
   let sawBranches = false;
   const requests: HarnessStepRequest[] = [];
+  const firstStep = Promise.withResolvers<void>();
   const factory: BackendFactory = async ({ branches }) => {
     sawBranches = branches !== undefined;
     const runtime: BackendRuntime = {
@@ -98,6 +103,7 @@ function fakeBackend(catalog: typeof compatibleCatalog): {
       harness: {
         async step(request) {
           requests.push(request);
+          firstStep.resolve();
           return { kind: "idle" };
         },
         async cancel() {},
@@ -118,6 +124,7 @@ function fakeBackend(catalog: typeof compatibleCatalog): {
     branchSeen: () => sawBranches,
     closeCounts: () => ({ closeCalls, cleanupCalls }),
     stepRequests: () => requests,
+    firstStep: firstStep.promise,
   };
 }
 
@@ -125,39 +132,15 @@ function sessionInput(repoPath: string, dbPath: string): RealSchedulerRunInput {
   return { backend: "codex", dbPath, repoPath, baseRef: "HEAD" };
 }
 
-/** Waits until the run log records the daemon start, so SIGTERM lands late enough. */
-async function waitForRunStarted(logFile: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    try {
-      const logged = await readFile(logFile, "utf8");
-      if (logged.includes("SCHEDULER_RUN_STARTED")) return;
-    } catch {
-      // The logger creates the file on the first write.
-    }
-    await Bun.sleep(10);
-  }
-  throw new Error("Timed out waiting for SCHEDULER_RUN_STARTED");
-}
-
-/** Waits until the daemon has driven the factory-provided harness once. */
-async function waitForFirstStep(
-  stepRequests: () => HarnessStepRequest[],
-): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    if (stepRequests().length > 0) return;
-    await Bun.sleep(10);
-  }
-  throw new Error("Timed out waiting for the first harness step");
-}
-
 test("runBackendSession dispatches a ready task through the factory harness and closes it exactly once", async () => {
   const root = await createRepository();
   const dbPath = join(root, ".agile", "runtime", "agile.db");
-  const logFile = join(root, ".agile", "runtime", "agile.log");
+  const before = [
+    process.listenerCount("SIGINT"),
+    process.listenerCount("SIGTERM"),
+  ];
   await seedReadyTask(dbPath);
-  const { factory, closed, branchSeen, closeCounts, stepRequests } =
+  const { factory, closed, branchSeen, closeCounts, stepRequests, firstStep } =
     fakeBackend(compatibleCatalog);
   try {
     const running = runBackendSession(
@@ -165,8 +148,8 @@ test("runBackendSession dispatches a ready task through the factory harness and 
       sessionInput(root, dbPath),
       "run-session-startup",
     );
-    await waitForRunStarted(logFile);
-    await waitForFirstStep(stepRequests);
+    await firstStep;
+    process.emit("SIGINT");
     process.emit("SIGTERM");
     await running;
 
@@ -177,9 +160,12 @@ test("runBackendSession dispatches a ready task through the factory harness and 
     expect(request?.attempt.role).toBe("scout");
     // The advisor picked the model from the catalog the factory returned.
     expect(request?.attempt.model).toBe("fake-terra");
-    // Signal shutdown and the session finally block both request a close,
-    // but the idempotent handle cleans the backend up only once.
-    expect(closeCounts().closeCalls).toBe(2);
+    expect(stepRequests()).toHaveLength(1);
+    expect([
+      process.listenerCount("SIGINT"),
+      process.listenerCount("SIGTERM"),
+    ]).toEqual(before);
+    expect(closeCounts().closeCalls).toBe(1);
     expect(closeCounts().cleanupCalls).toBe(1);
     expect(closed()).toBe(true);
   } finally {
@@ -251,6 +237,187 @@ test("runBackendSession closes the backend when the scheduler database cannot op
       ),
     ).rejects.toMatchObject({ code: "SCHEDULER_DATABASE_OPEN_FAILED" });
     expect(closed()).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+  }
+});
+
+for (const late of [false, true]) {
+  test(
+    late
+      ? "runBackendSession bounds stuck cancellation and seals late delivery before closing SQLite"
+      : "runBackendSession commits delivery during grace and safely records cancellation failure",
+    async () => {
+      const root = await createRepository();
+      const dbPath = join(root, ".agile", "runtime", "agile.db");
+      await seedReadyTask(dbPath);
+      const entered = Promise.withResolvers<HarnessStepRequest>();
+      const finish = Promise.withResolvers<HarnessDelivery>();
+      const cancelling = Promise.withResolvers<void>();
+      const closing = Promise.withResolvers<void>();
+      const returned = Promise.withResolvers<void>();
+      const unhandled: unknown[] = [];
+      const onUnhandled = (error: unknown) => {
+        unhandled.push(error);
+      };
+      process.on("unhandledRejection", onUnhandled);
+      const before = [
+        process.listenerCount("SIGINT"),
+        process.listenerCount("SIGTERM"),
+      ];
+      let cancelCalls = 0;
+      let closeCalls = 0;
+      let stepCalls = 0;
+      let delivery: HarnessDelivery = { kind: "idle" };
+      const factory: BackendFactory = async () => ({
+        catalog: compatibleCatalog,
+        harness: {
+          async step(request) {
+            stepCalls += 1;
+            entered.resolve(request);
+            try {
+              return await finish.promise;
+            } finally {
+              returned.resolve();
+            }
+          },
+          cancel() {
+            cancelCalls += 1;
+            cancelling.resolve();
+            if (late) return new Promise(() => {});
+            finish.resolve(delivery);
+            throw new Error("cancellation secret-token");
+          },
+        },
+        async close() {
+          closeCalls += 1;
+          closing.resolve();
+        },
+      });
+      let running: Promise<void> | undefined;
+      try {
+        running = runBackendSession(
+          factory,
+          sessionInput(root, dbPath),
+          "run-drain",
+        );
+        const request = await entered.promise;
+        delivery = {
+          kind: "event",
+          nextCursor: "cursor-drain",
+          event: {
+            type: "attempt.started",
+            eventId: "drain:started",
+            attemptId: request.attempt.attemptId,
+            sequence: 1,
+            occurredAt: new Date().toISOString(),
+            threadId: "thread-drain",
+          },
+        };
+        process.emit("SIGINT");
+        process.emit("SIGTERM");
+        await cancelling.promise;
+        await closing.promise;
+        await running;
+        expect(cancelCalls).toBe(1);
+        expect(closeCalls).toBe(1);
+        expect(stepCalls).toBe(1);
+        expect([
+          process.listenerCount("SIGINT"),
+          process.listenerCount("SIGTERM"),
+        ]).toEqual(before);
+        if (late) {
+          finish.resolve(delivery);
+          await returned.promise;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        const inspected = openDatabase(dbPath);
+        try {
+          expect(
+            inspected.query("SELECT owner_id FROM scheduler_lease").all(),
+          ).toEqual([]);
+          expect(
+            inspected
+              .query<{ count: number }, []>(
+                "SELECT COUNT(*) AS count FROM events WHERE idempotency_key = 'drain:started'",
+              )
+              .get()?.count,
+          ).toBe(late ? 0 : 1);
+          expect(
+            inspected
+              .query<{ backend_cursor: string | null }, [string]>(
+                "SELECT backend_cursor FROM attempts WHERE id = ?",
+              )
+              .get(request.attempt.attemptId)?.backend_cursor,
+          ).toBe(late ? null : "cursor-drain");
+        } finally {
+          inspected.close();
+        }
+        if (!late) {
+          const log = await readFile(
+            join(root, ".agile", "runtime", "agile.log"),
+            "utf8",
+          );
+          expect(log).toContain("SCHEDULER_CANCELLATION_FAILED");
+          expect(log).not.toContain("secret-token");
+        }
+        expect(unhandled).toEqual([]);
+      } finally {
+        finish.resolve(delivery);
+        process.emit("SIGTERM");
+        await running?.catch(() => {});
+        process.off("unhandledRejection", onUnhandled);
+        await rm(root, { recursive: true, force: true });
+        await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+      }
+    },
+  );
+}
+
+test("a signal during backend startup closes the acquired backend without opening SQLite", async () => {
+  const root = await createRepository();
+  const entered = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<BackendRuntime>();
+  const before = [
+    process.listenerCount("SIGINT"),
+    process.listenerCount("SIGTERM"),
+  ];
+  let closes = 0;
+  // Opening this path would fail, so successful shutdown proves startup did not continue.
+  const dbPath = join(root, "directory.db");
+  await mkdir(dbPath);
+  const factory: BackendFactory = () => {
+    entered.resolve();
+    return started.promise;
+  };
+  try {
+    const running = runBackendSession(
+      factory,
+      sessionInput(root, dbPath),
+      "run-startup-stop",
+    );
+    await entered.promise;
+    process.emit("SIGINT");
+    process.emit("SIGTERM");
+    started.resolve({
+      catalog: compatibleCatalog,
+      harness: {
+        async step() {
+          throw new Error("must not dispatch");
+        },
+        async cancel() {},
+      },
+      async close() {
+        closes += 1;
+      },
+    });
+    await running;
+    expect(closes).toBe(1);
+    expect([
+      process.listenerCount("SIGINT"),
+      process.listenerCount("SIGTERM"),
+    ]).toEqual(before);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(`${root}.agile-checkout`, { recursive: true, force: true });
