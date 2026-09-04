@@ -10,7 +10,12 @@
 
 ---
 
-## 狀態與範圍
+## 歷史狀態與範圍（pre-implementation snapshot）
+
+以下內容是實作前的原始計畫快照，不描述目前狀態。請先閱讀本文底部的
+[Execution receipt — 2026-09-04](#execution-receipt--2026-09-04)：本機
+deterministic 驗證已完成，Real Codex smoke 仍未驗證，且 P1 checkout
+quiescence 風險仍阻擋 integration acceptance/merge。
 
 這是待執行計畫。此次只新增文件，未安裝正式 dependency、建立分支或修改 production code。前置證據見 [對照結果](/Users/roy/Documents/ChatGPT/agile-agents/docs/superpowers/plans/2026-09-04-effect-adoption-review.md)，不能把隔離實驗的 19 個通過測試算作正式整合通過。
 
