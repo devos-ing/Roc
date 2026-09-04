@@ -142,6 +142,38 @@ function sessionInput(repoPath: string, dbPath: string): RealSchedulerRunInput {
   return { backend: "codex", dbPath, repoPath, baseRef: "HEAD" };
 }
 
+test("a missing repository preserves the sanitized branch-startup error before backend startup", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-missing-repository-"));
+  let backendStarted = false;
+  try {
+    const failure = await runBackendSession(
+      async () => {
+        backendStarted = true;
+        throw new Error("backend must not start");
+      },
+      sessionInput(
+        join(root, "missing-private-repository"),
+        join(root, "state.db"),
+      ),
+      "missing-repository-run",
+    ).catch((error: unknown) => error);
+    expect(backendStarted).toBe(false);
+    expect(failure).toMatchObject({
+      code: "BACKEND_BRANCH_STARTUP_FAILED",
+      category: "startup",
+      retryable: false,
+      component: "cli",
+      runId: "missing-repository-run",
+      message: "Could not validate the codex repository and base ref",
+    });
+    expect(failure).not.toMatchObject({
+      message: expect.stringContaining(root),
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a real client child can write after session return but cannot hand its checkout to a successor", async () => {
   const root = await createRepository();
   const dbPath = join(root, ".agile", "runtime", "agile.db");

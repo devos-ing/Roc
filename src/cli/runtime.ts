@@ -273,7 +273,14 @@ export function runBackendSession(
       const ownership = yield* Effect.acquireRelease(
         Effect.tryPromise({
           try: () => acquireCheckoutOwnership(input.repoPath, runId),
-          catch: (error) => error,
+          catch: (error) =>
+            attachRunId(error, runId, {
+              code: "BACKEND_BRANCH_STARTUP_FAILED",
+              category: "startup",
+              retryable: false,
+              component: "cli",
+              message: `Could not validate the ${backendLabel} repository and base ref`,
+            }),
         }),
         (owner, exit) =>
           Effect.gen(function* () {
