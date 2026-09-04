@@ -1,4 +1,4 @@
-import { Cause, Clock, Effect, Exit, Fiber } from "effect";
+import { Cause, Clock, Deferred, Effect, Exit, Fiber, Option } from "effect";
 import type { Scheduler } from "./scheduler";
 
 export type LeaseStore = {
@@ -22,6 +22,7 @@ export class SchedulerDaemon {
     stop: AbortSignal;
     cancel(): Promise<void>;
     drainMs?: number;
+    onDrainTimeout?: () => void;
   }): Effect.Effect<void, unknown> {
     const self = this;
     return Effect.scoped(
@@ -46,6 +47,7 @@ export class SchedulerDaemon {
             Effect.sync(() => self.leases.releaseLease(self.runtime.ownerId)),
         );
         const seal = new AbortController();
+        const draining = yield* Deferred.make<void>();
         let admitting = true;
         const worker = yield* Effect.gen(function* () {
           while (admitting && !input.stop.aborted) {
@@ -53,7 +55,11 @@ export class SchedulerDaemon {
               try: () => self.scheduler.tick(self.runtime.ownerId, seal.signal),
               catch: (error) => error,
             });
-            if (result.kind === "idle") yield* Effect.sleep(1_000);
+            if (result.kind === "idle")
+              yield* Effect.raceFirst(
+                Effect.sleep(1_000),
+                Deferred.await(draining),
+              );
             else yield* Effect.yieldNow();
           }
         }).pipe(Effect.forkScoped);
@@ -61,9 +67,10 @@ export class SchedulerDaemon {
         yield* Effect.addFinalizer((sessionExit) =>
           Effect.gen(function* () {
             admitting = false;
+            yield* Deferred.succeed(draining, undefined);
             // Keep a completed tick's failure even if cancellation consumes the remaining grace.
             let drained: Exit.Exit<void, unknown> | undefined;
-            yield* Effect.all(
+            const completed = yield* Effect.all(
               [
                 Fiber.await(worker).pipe(
                   Effect.tap((exit) =>
@@ -84,6 +91,7 @@ export class SchedulerDaemon {
               Effect.interruptible,
               Effect.timeoutOption(input.drainMs ?? 250),
             );
+            if (Option.isNone(completed)) input.onDrainTimeout?.();
             seal.abort(new Error("Scheduler session sealed"));
             yield* Fiber.interrupt(worker);
             if (

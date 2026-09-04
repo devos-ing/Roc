@@ -415,12 +415,21 @@ export class CodexClient implements CodexClientApi {
       stdinEnd = Promise.resolve();
     }
 
-    const exited = await this.waitForExit(2_000);
+    let exited = await this.waitForExit(2_000);
     if (!exited) {
       this.process.kill("SIGKILL");
-      await this.waitForExit(1_000);
+      exited = await this.waitForExit(1_000);
     }
     await this.waitForCloseTasks(stdinEnd, 1_000);
+    if (!exited) {
+      throw new AgileError({
+        code: "CODEX_PROCESS_EXIT_UNCONFIRMED",
+        category: "infra",
+        retryable: false,
+        component: "codex-client",
+        message: "Codex process exit could not be confirmed",
+      });
+    }
   }
 
   /** Waits for client I/O tasks to settle up to a fixed timeout. */
@@ -463,7 +472,7 @@ export class CodexClient implements CodexClientApi {
       const timer = setTimeout(() => finish(false), timeoutMs);
       void this.process.exited.then(
         () => finish(true),
-        () => finish(true),
+        () => finish(false),
       );
     });
   }

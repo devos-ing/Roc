@@ -51,12 +51,13 @@ export function reportCleanup(logger: Logger, runId: string, code: string) {
   );
 }
 
-/** Bounds backend cleanup and preserves a pre-existing session failure. */
+/** Confirms cleanup only within its deadline, marking uncertainty before diagnostics and preserving primary failure. */
 export function closeBackendEffect(
   close: () => Promise<void>,
   sessionExit: Exit.Exit<unknown, unknown>,
   logger: Logger,
   runId: string,
+  onIncomplete?: () => void,
 ) {
   return Effect.gen(function* () {
     const result = yield* Effect.exit(
@@ -66,11 +67,16 @@ export function closeBackendEffect(
       }).pipe(Effect.interruptible, Effect.timeoutOption(250)),
     );
     if (Exit.isFailure(result)) {
+      onIncomplete?.();
       yield* reportCleanup(logger, runId, "SCHEDULER_BACKEND_CLOSE_FAILED");
       if (Exit.isSuccess(sessionExit))
         yield* Effect.die(Cause.squash(result.cause));
     } else if (Option.isNone(result.value)) {
+      onIncomplete?.();
       yield* reportCleanup(logger, runId, "SCHEDULER_BACKEND_CLOSE_TIMEOUT");
+    } else {
+      return true;
     }
+    return false;
   });
 }

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { watch } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -9,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CodexClient } from "../../src/agents/codex/client";
 import type { BackendFactory, BackendRuntime } from "../../src/agents/types";
 import { runBackendSession } from "../../src/cli/runtime";
 import type { RealSchedulerRunInput } from "../../src/cli/types";
@@ -16,6 +18,7 @@ import type {
   HarnessDelivery,
   HarnessStepRequest,
 } from "../../src/harness/contracts";
+import { AgileError } from "../../src/runtime/errors";
 import { openDatabase } from "../../src/store/database";
 import { PlanningRepository } from "../../src/store/planning-repository";
 import { git } from "../helpers/git";
@@ -29,6 +32,13 @@ async function createRepository(): Promise<string> {
   await git(["add", "README.md"], root);
   await git(["commit", "-m", "chore: seed"], root);
   return realpath(root);
+}
+
+/** Removes only the explicit repository and sibling paths owned by this test. */
+async function cleanupRepository(root: string): Promise<void> {
+  await rm(root, { recursive: true, force: true });
+  await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+  await rm(`${root}.agile-checkout.lock`, { force: true });
 }
 
 /** Seeds one approved, ready task so the daemon dispatches a real attempt. */
@@ -132,6 +142,222 @@ function sessionInput(repoPath: string, dbPath: string): RealSchedulerRunInput {
   return { backend: "codex", dbPath, repoPath, baseRef: "HEAD" };
 }
 
+test("a real client child can write after session return but cannot hand its checkout to a successor", async () => {
+  const root = await createRepository();
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
+  await seedReadyTask(dbPath);
+  const fake = fakeBackend(compatibleCatalog);
+  let client: CodexClient | undefined;
+  let closeFinished = false;
+  let closing: Promise<void> | undefined;
+  let running: Promise<void> | undefined;
+  let watcher: ReturnType<typeof watch> | undefined;
+  let writeDeadline: ReturnType<typeof setTimeout> | undefined;
+  let child: Bun.Subprocess<"pipe", "pipe", "pipe"> | undefined;
+  try {
+    running = runBackendSession(
+      async (context) => {
+        const startedClient = await CodexClient.start({
+          command: [
+            process.execPath,
+            join(import.meta.dir, "../fixtures/checkout-late-writer.ts"),
+            root,
+          ],
+        });
+        client = startedClient;
+        child = Reflect.get(startedClient, "process");
+        expect(await client.request("fixture/arm", {})).toMatchObject({
+          armed: true,
+        });
+        const backend = await fake.factory(context);
+        return {
+          ...backend,
+          close: () => {
+            closing = startedClient.close().then(() => {
+              closeFinished = true;
+            });
+            return closing;
+          },
+        };
+      },
+      sessionInput(root, dbPath),
+      "late-child",
+    );
+    await fake.firstStep;
+    process.emit("SIGINT");
+    await running;
+    expect(closeFinished).toBe(false);
+    expect(child?.exitCode).toBeNull();
+    const written = Promise.withResolvers<void>();
+    writeDeadline = setTimeout(
+      () =>
+        written.reject(
+          new Error("controlled child did not acknowledge the late write"),
+        ),
+      1_500,
+    );
+    watcher = watch(`${root}.agile-checkout`, (_event, file) => {
+      if (file === "late-child-write.txt") written.resolve();
+    });
+    // The write is causally after session return, not a sleep-based timing guess.
+    await writeFile(join(root, "allow-late-write"), "go\n");
+    await written.promise;
+    clearTimeout(writeDeadline);
+    expect(
+      await readFile(
+        join(`${root}.agile-checkout`, "late-child-write.txt"),
+        "utf8",
+      ),
+    ).toBe("old child wrote after session return\n");
+    let successorStarted = false;
+    const successor: BackendFactory = async () => {
+      successorStarted = true;
+      throw new Error("successor must not start");
+    };
+    // Invalid baseRef proves exclusion precedes even checkout validation, not just the factory.
+    await expect(
+      runBackendSession(
+        successor,
+        {
+          ...sessionInput(root, join(root, "another.db")),
+          baseRef: "missing-ref",
+        },
+        "next",
+      ),
+    ).rejects.toMatchObject({ code: "SCHEDULER_CHECKOUT_IN_USE" });
+    expect(successorStarted).toBe(false);
+    expect(await Bun.file(`${root}.agile-checkout.lock`).exists()).toBe(true);
+    await closing;
+    expect(closeFinished).toBe(true);
+    expect(await Bun.file(`${root}.agile-checkout.lock`).exists()).toBe(true);
+  } finally {
+    clearTimeout(writeDeadline);
+    watcher?.close();
+    process.emit("SIGTERM");
+    await running?.catch(() => {});
+    await client?.close().catch(() => {});
+    if (child) {
+      if (child.exitCode === null) child.kill("SIGKILL");
+      await child.exited;
+    }
+    await cleanupRepository(root);
+  }
+});
+
+for (const timeout of [false, true]) {
+  test(`backend close ${timeout ? "timeout" : "failure"} retains ownership even when cleanup logging fails`, async () => {
+    const root = await createRepository();
+    const dbPath = join(root, "state.db");
+    await seedReadyTask(dbPath);
+    const fake = fakeBackend(compatibleCatalog);
+    const finish = Promise.withResolvers<void>();
+    let closing: Promise<void> | undefined;
+    let running: Promise<void> | undefined;
+    const failure = new Error("close failure secret");
+    try {
+      running = runBackendSession(
+        async (context) => {
+          const backend = await fake.factory(context);
+          return {
+            ...backend,
+            close: () => {
+              closing = (async () => {
+                // Only corrupt this test's log target after ordinary stop logging completed.
+                const log = join(root, ".agile", "runtime", "agile.log");
+                await rm(log, { force: true });
+                await mkdir(log);
+                if (timeout) await finish.promise;
+                else throw failure;
+              })();
+              return closing;
+            },
+          };
+        },
+        sessionInput(root, dbPath),
+        "close-incomplete",
+      );
+      await fake.firstStep;
+      process.emit("SIGINT");
+      if (timeout) await running;
+      else await expect(running).rejects.toBe(failure);
+      expect(await Bun.file(`${root}.agile-checkout.lock`).exists()).toBe(true);
+      finish.resolve();
+      await closing?.catch(() => {});
+      expect(await Bun.file(`${root}.agile-checkout.lock`).exists()).toBe(true);
+    } finally {
+      finish.resolve();
+      process.emit("SIGTERM");
+      await running?.catch(() => {});
+      await closing?.catch(() => {});
+      await cleanupRepository(root);
+    }
+  });
+}
+
+test("failed factory startup retains checkout ownership", async () => {
+  const root = await createRepository();
+  const failure = new Error("factory failed");
+  try {
+    await expect(
+      runBackendSession(
+        async () => {
+          throw failure;
+        },
+        sessionInput(root, join(root, "state.db")),
+        "failed-start",
+      ),
+    ).rejects.toBe(failure);
+    expect(await Bun.file(`${root}.agile-checkout.lock`).exists()).toBe(true);
+  } finally {
+    await cleanupRepository(root);
+  }
+});
+
+for (const primaryFailure of [false, true]) {
+  test(`ownership release fails closed ${primaryFailure ? "without replacing the primary error" : "with its own error"}`, async () => {
+    const root = await createRepository();
+    const primary = new AgileError({
+      code: "TEST_PREFLIGHT",
+      category: "startup",
+      retryable: false,
+      component: "test",
+      message: "preflight failed",
+      runId: "release-test",
+    });
+    try {
+      const running = runBackendSession(
+        async () => {
+          throw new Error("must not start");
+        },
+        sessionInput(root, join(root, "state.db")),
+        "release-test",
+        {
+          preflight: {
+            async assertReady() {
+              await writeFile(
+                `${root}.agile-checkout.lock`,
+                "changed ownership evidence\n",
+              );
+              if (primaryFailure) throw primary;
+              process.emit("SIGINT");
+            },
+          },
+        },
+      );
+      if (primaryFailure) await expect(running).rejects.toBe(primary);
+      else
+        await expect(running).rejects.toMatchObject({
+          code: "SCHEDULER_CHECKOUT_OWNERSHIP_LOST",
+        });
+      expect(await readFile(`${root}.agile-checkout.lock`, "utf8")).toBe(
+        "changed ownership evidence\n",
+      );
+    } finally {
+      await cleanupRepository(root);
+    }
+  });
+}
+
 test("runBackendSession dispatches a ready task through the factory harness and closes it exactly once", async () => {
   const root = await createRepository();
   const dbPath = join(root, ".agile", "runtime", "agile.db");
@@ -149,10 +375,14 @@ test("runBackendSession dispatches a ready task through the factory harness and 
       "run-session-startup",
     );
     await firstStep;
+    const ownedWhileRunning = await Bun.file(
+      `${root}.agile-checkout.lock`,
+    ).exists();
     process.emit("SIGINT");
     process.emit("SIGTERM");
     await running;
 
+    expect(ownedWhileRunning).toBe(true);
     expect(branchSeen()).toBe(true);
     const [request] = stepRequests();
     expect(request).toBeDefined();
@@ -168,9 +398,19 @@ test("runBackendSession dispatches a ready task through the factory harness and 
     expect(closeCounts().closeCalls).toBe(1);
     expect(closeCounts().cleanupCalls).toBe(1);
     expect(closed()).toBe(true);
+    expect(await Bun.file(`${root}.agile-checkout.lock`).exists()).toBe(false);
+    const second = fakeBackend(compatibleCatalog);
+    const restarted = runBackendSession(
+      second.factory,
+      sessionInput(root, dbPath),
+      "second",
+    );
+    await second.firstStep;
+    process.emit("SIGINT");
+    await restarted;
+    expect(await Bun.file(`${root}.agile-checkout.lock`).exists()).toBe(false);
   } finally {
-    await rm(root, { recursive: true, force: true });
-    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+    await cleanupRepository(root);
   }
 });
 
@@ -188,8 +428,7 @@ test("runBackendSession closes the backend when no catalog model is compatible",
     ).rejects.toMatchObject({ code: "BACKEND_MODEL_CATALOG_INCOMPATIBLE" });
     expect(closed()).toBe(true);
   } finally {
-    await rm(root, { recursive: true, force: true });
-    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+    await cleanupRepository(root);
   }
 });
 
@@ -216,9 +455,9 @@ test("runBackendSession rejects GitHub preflight before starting the backend", a
       ),
     ).rejects.toMatchObject({ code: "GITHUB_PREFLIGHT_FAILED" });
     expect(started).toBe(false);
+    expect(await Bun.file(`${root}.agile-checkout.lock`).exists()).toBe(false);
   } finally {
-    await rm(root, { recursive: true, force: true });
-    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+    await cleanupRepository(root);
   }
 });
 
@@ -238,8 +477,7 @@ test("runBackendSession closes the backend when the scheduler database cannot op
     ).rejects.toMatchObject({ code: "SCHEDULER_DATABASE_OPEN_FAILED" });
     expect(closed()).toBe(true);
   } finally {
-    await rm(root, { recursive: true, force: true });
-    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+    await cleanupRepository(root);
   }
 });
 
@@ -320,6 +558,22 @@ for (const late of [false, true]) {
         await cancelling.promise;
         await closing.promise;
         await running;
+        expect(await Bun.file(`${root}.agile-checkout.lock`).exists()).toBe(
+          true,
+        );
+        let successorStarted = false;
+        const successor: BackendFactory = async () => {
+          successorStarted = true;
+          throw new Error("successor must not start");
+        };
+        await expect(
+          runBackendSession(
+            successor,
+            sessionInput(root, join(root, "another.db")),
+            "next",
+          ),
+        ).rejects.toMatchObject({ code: "SCHEDULER_CHECKOUT_IN_USE" });
+        expect(successorStarted).toBe(false);
         expect(cancelCalls).toBe(1);
         expect(closeCalls).toBe(1);
         expect(stepCalls).toBe(1);
@@ -363,13 +617,15 @@ for (const late of [false, true]) {
           expect(log).not.toContain("secret-token");
         }
         expect(unhandled).toEqual([]);
+        expect(await Bun.file(`${root}.agile-checkout.lock`).exists()).toBe(
+          true,
+        );
       } finally {
         finish.resolve(delivery);
         process.emit("SIGTERM");
         await running?.catch(() => {});
         process.off("unhandledRejection", onUnhandled);
-        await rm(root, { recursive: true, force: true });
-        await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+        await cleanupRepository(root);
       }
     },
   );
@@ -419,7 +675,6 @@ test("a signal during backend startup closes the acquired backend without openin
       process.listenerCount("SIGTERM"),
     ]).toEqual(before);
   } finally {
-    await rm(root, { recursive: true, force: true });
-    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+    await cleanupRepository(root);
   }
 });

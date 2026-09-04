@@ -34,7 +34,7 @@ seam; adding one means a factory plus a registry entry, and the shared run
 loop owns branch-manager setup, the database, model advising, the daemon,
 logging, and cleanup.
 
-The session runtime uses Effect scopes for backend and database ownership.
+The session runtime uses Effect scopes for checkout, backend and database ownership.
 The daemon owns its lease, heartbeat and tick worker in a nested scope.
 Signals close admission immediately; pending work has a bounded grace period
 before a separate continuation signal prevents late scheduler, hook and
@@ -45,10 +45,49 @@ Backend startup remains uncancellable while a `BackendFactory` Promise is
 pending because that interface has no `AbortSignal`; a late startup may only be
 cleaned once its Promise returns.
 
-This lifecycle protects SQLite continuation safety, but does not establish
-checkout quiescence after a backend-close timeout. A backend child can still
-outlive the bounded wait, so real-backend integration acceptance remains
-blocked until teardown prevents reuse of its stable checkout while it persists.
+Every backend session first acquires an exclusive persistent ownership file at
+`<canonical-repo>.agile-checkout.lock`, before checkout setup, backend startup
+or SQLite acquisition. Repository aliases and different database paths share
+the same guard. Its 0600 metadata records the run ID, owning process PID and
+acquisition time; existing or malformed locks fail closed with
+`SCHEDULER_CHECKOUT_IN_USE`. The pure Fake runtime does not use a dedicated
+checkout and does not acquire this guard.
+
+Cleanup order is drain, seal, worker interruption, lease release, backend close,
+database close, then owner-verified guard release. Idle polling wakes on any
+drain reason without interrupting an active tick's grace period. Existing 250ms
+drain and backend-close waits, 100ms diagnostic wait, 3s heartbeat and 10s lease
+remain unchanged. Guard release requires confirmed backend close inside the
+deadline and no cancellation rejection or drain timeout. A failed or pending
+backend factory, failed or timed-out close, or uncertain work retains ownership;
+late successful completion never unlocks it. Bounded safe diagnostics use
+`SCHEDULER_CHECKOUT_RETAINED`. Ownership verification failure preserves the
+lock and reports `SCHEDULER_CHECKOUT_OWNERSHIP_LOST` without replacing an existing
+primary error. No PID-, age- or lease-based automatic takeover is permitted.
+
+Codex, Pi and ZCode client close reject with a sanitized
+`*_PROCESS_EXIT_UNCONFIRMED` error when the final exit wait cannot confirm their
+owned child's exit. Rejected exit observation is not success. Pi also preserves
+earlier client-close failures and attempts all remaining clients and its probe
+before propagating cleanup failure. These are direct-child lifecycle contracts,
+not a guarantee against hostile detached descendants or out-of-sandbox writers.
+
+A retained guard intentionally quarantines the checkout. Before upgrading,
+stop all pre-guard Roc sessions for the repository; older versions do not obey
+this ownership boundary. For manual recovery, stop every Roc session, inspect
+the exact lock's metadata, verify and terminate remaining owned backend/hook
+and checkout-mutating child work, and inspect the dedicated checkout. Only then
+manually remove the exact `<canonical-repo>.agile-checkout.lock` file. PID absence
+alone is insufficient because descendants can survive. Never remove a live
+owner's lock, the checkout, database or task branches as a recovery shortcut.
+This is cooperative local ownership, not a hostile-user or distributed-filesystem
+security boundary. A crash can require the same manual recovery.
+
+Deterministic validation includes an actual CodexClient with a controlled
+non-agent child writing after session return: a successor is refused before
+checkout validation, and the lock remains after eventual child exit. Real Codex
+smoke has not been run; independent integration review and final user review
+remain separate from these local checks.
 
 The Codex backend never changes the resolved project checkout. A
 `TaskBranchManager` creates or reuses one sibling checkout at

@@ -201,3 +201,65 @@ Task reviews cover spec and quality. Then review the whole integration branch
 from `061c489` through final HEAD, including the old P1 and this resolution.
 Controller runs fresh final-tree checks. Leave branch/worktree and review
 receipts intact for user review; do not merge, push or remove any user's files.
+
+## Task 2 execution receipt — 2026-09-04
+
+Implemented locally from `7f32dde`; independent task/branch review and final
+user review remain pending. No merge, push or real external agent execution.
+
+- Outer checkout ownership is acquired before branch setup. Guard release is
+  the last resource finalizer; uncertain startup, cancellation rejection, drain
+  timeout and incomplete backend close retain it permanently for manual recovery.
+- `closeBackendEffect` now returns a boolean confirmation and accepts optional
+  `onIncomplete`; the daemon accepts optional `onDrainTimeout`. Uncertainty is
+  recorded synchronously before diagnostics. Late Promise resolution cannot
+  grant release permission. Public CLI and backend signatures are unchanged.
+- An Effect Deferred wakes idle polling on any drain reason, including heartbeat
+  failure, without interrupting an active tick before grace expires. Original
+  worker failure and primary-heartbeat precedence are retained.
+- All three clients reject unconfirmed exit; Pi preserves earlier close failures
+  and attempts every tracked client plus its probe before reporting failure.
+- The actual CodexClient controlled non-agent child writes only after the session
+  has returned. A different-DB successor with an invalid base ref is refused by
+  ownership before checkout validation; the lock remains after eventual child
+  exit. This proves cooperative exclusion, not containment of hostile descendants.
+
+Actual validation:
+
+```text
+rtk proxy env AGILE_REAL_CODEX=0 bun test test/cli/backend-session.test.ts test/cli/session-lifecycle.test.ts test/scheduler/daemon.test.ts
+# initial corrected RED: 13 pass, 8 fail, 0 errors, 65 assertions
+# initial lifecycle GREEN: 21 pass, 0 fail, 106 assertions
+
+rtk proxy env AGILE_REAL_CODEX=0 bun test test/agents/codex/client.test.ts test/agents/pi/backend.test.ts --test-name-pattern 'exit observation|client close failure'
+# corrected provider RED: 0 pass, 5 fail, 0 errors; GREEN: 5 pass, 0 fail
+
+rtk proxy env AGILE_REAL_CODEX=0 bun test test/cli/backend-session.test.ts --test-name-pattern 'real client child|backend close .*retains'
+# counterfactual guard bypass: 0 pass, 3 fail, 0 errors
+# exact guard restoration in finally: 3 pass, 0 fail, 14 assertions
+
+rtk proxy env AGILE_REAL_CODEX=0 bun test test/workspace test/cli test/scheduler/daemon.test.ts test/agents/codex test/agents/pi test/agents/zcode
+# 295 pass, 0 fail, 1,137 assertions, 34 files
+
+rtk proxy env AGILE_REAL_CODEX=0 bun run check
+# exit 0; 448 pass, 1 opt-in Real Codex skip, 0 fail, 1,746 assertions, 58 files
+# lint unchanged: 30 warnings / 9 infos; typecheck passed
+
+rtk bun run typecheck
+# exit 0
+rtk proxy git diff --check
+# exit 0
+```
+
+Changed-file Biome checked all 14 changed/new TypeScript files without diagnostics.
+No timeout was increased. The detailed SDD task report records fixture corrections
+and cleanup audit; only explicitly identified test-owned paths were removed after
+their controlled children were reaped.
+
+Recovery is intentionally conservative even after eventual child exit: stop all
+Roc sessions, inspect lock metadata, verify and terminate remaining owned
+backend/hook/checkout-mutating children, inspect the dedicated checkout, then
+remove only the exact `<canonical-repo>.agile-checkout.lock` file. Never remove
+a live owner's lock or infer takeover permission from PID absence, age or SQLite
+lease expiry. Stop every pre-guard Roc session before upgrading. Preserve the
+checkout, database and task branches. Real Codex smoke remains unrun.

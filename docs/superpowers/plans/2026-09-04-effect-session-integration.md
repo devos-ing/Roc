@@ -14,8 +14,8 @@
 
 以下內容是實作前的原始計畫快照，不描述目前狀態。請先閱讀本文底部的
 [Execution receipt — 2026-09-04](#execution-receipt--2026-09-04)：本機
-deterministic 驗證已完成，Real Codex smoke 仍未驗證，且 P1 checkout
-quiescence 風險仍阻擋 integration acceptance/merge。
+deterministic 驗證已完成，Real Codex smoke 仍未驗證。原 P1 checkout
+handoff 風險已有下述 fail-closed ownership follow-up，仍待獨立整合審查與使用者 review。
 
 這是待執行計畫。此次只新增文件，未安裝正式 dependency、建立分支或修改 production code。前置證據見 [對照結果](/Users/roy/Documents/ChatGPT/agile-agents/docs/superpowers/plans/2026-09-04-effect-adoption-review.md)，不能把隔離實驗的 19 個通過測試算作正式整合通過。
 
@@ -595,7 +595,8 @@ Rollback 不需要 DB migration。未合併時保留整合分支即可；已合�
 ## Execution receipt — 2026-09-04
 
 Local deterministic validation complete; Real Codex smoke unverified;
-integration acceptance/merge blocked by P1.
+the historical P1 below has a checkout-ownership follow-up implemented locally,
+pending independent integration review and final user review. No merge is authorized.
 
 The acceptance test `Effect daemon completes the accepted Fake Harness flow`
 uses the real in-memory SQLite repository and the existing accepted-task Fake
@@ -633,10 +634,34 @@ or retained shutdown-Promise owner path. The only Promise execution boundary is
 `Effect.runPromiseExit` in `src/cli/session-lifecycle.ts`; no feature flag
 keeps a second lifecycle path.
 
-P1 remains open: a backend close may return from the session's 250ms wait while
+Historical P1 finding before the follow-up: a backend close may return from the session's 250ms wait while
 the Codex child continues its existing two-second graceful-exit period before
 SIGKILL. The stable dedicated checkout can then be reused before that child is
 quiescent. SQLite sealing prevents late database continuations but cannot stop
 late child filesystem writes. Backend startup is likewise not cancellable while
 the `BackendFactory` Promise is pending because the interface has no
 `AbortSignal`. No provider policy, interface, or timeout was changed here.
+
+### Current checkout-handoff follow-up
+
+The [checkout handoff safety plan](2026-09-04-checkout-handoff-safety.md) adds a
+persistent exclusive guard before checkout setup. Clean teardown releases it
+last; factory uncertainty, cancellation rejection, drain timeout and failed or
+timed-out backend close retain it even after late completion. Different DB paths
+cannot bypass it. The controlled CodexClient/non-agent child test observes a
+write after session return and then proves successor refusal before checkout
+validation, with the lock still retained after child exit. This resolves reuse
+through the cooperative session API; it does not claim that a deadline kills
+all writers or that hostile detached descendants cannot exist.
+
+Stop all pre-guard Roc sessions before upgrading. A retained lock requires
+manual recovery: stop every session, inspect the exact lock metadata, verify
+and terminate remaining backend/hook/checkout-mutating children, inspect the
+checkout, then remove only the exact `<canonical-repo>.agile-checkout.lock`.
+Never delete a live owner's guard or use PID absence, elapsed time or SQLite
+lease expiry as automatic takeover proof. Preserve checkout, DB and task branches.
+See [architecture](../../architecture.md) for the full recovery contract.
+
+The follow-up execution receipt records current checks separately from the
+historical numbers above. Real external agents remain disabled; Real Codex
+smoke is unverified. Independent branch review and user acceptance remain pending.

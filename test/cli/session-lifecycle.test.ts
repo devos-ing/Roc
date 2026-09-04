@@ -17,6 +17,25 @@ function recordingLogger(records: LogInput[]): Logger {
   };
 }
 
+test("successful close confirms quiescence without marking incomplete", async () => {
+  let incomplete = 0;
+  const warnings: LogInput[] = [];
+  const confirmed = await Effect.runPromise(
+    closeBackendEffect(
+      async () => {},
+      Exit.void,
+      recordingLogger(warnings),
+      "clean",
+      () => {
+        incomplete += 1;
+      },
+    ),
+  );
+  expect(confirmed).toBe(true);
+  expect(incomplete).toBe(0);
+  expect(warnings).toEqual([]);
+});
+
 test("session failure survives failed cleanup and removes signal listeners", async () => {
   const primary = new Error("primary");
   const warnings: LogInput[] = [];
@@ -26,6 +45,7 @@ test("session failure survives failed cleanup and removes signal listeners", asy
     process.listenerCount("SIGTERM"),
   ];
   let closes = 0;
+  let incomplete = 0;
   await expect(
     runSession(() =>
       Effect.gen(function* () {
@@ -38,6 +58,9 @@ test("session failure survives failed cleanup and removes signal listeners", asy
             exit,
             logger,
             "run-cleanup",
+            () => {
+              incomplete += 1;
+            },
           ),
         );
         yield* Effect.fail(primary);
@@ -45,6 +68,7 @@ test("session failure survives failed cleanup and removes signal listeners", asy
     ),
   ).rejects.toBe(primary);
   expect(closes).toBe(1);
+  expect(incomplete).toBe(1);
   expect(warnings).toEqual([
     {
       level: "warn",
@@ -103,6 +127,7 @@ test("a stuck backend close times out at 250ms before the database finalizer run
   const warnings: LogInput[] = [];
   const db = openDatabase(":memory:");
   let dbClosed = false;
+  let incomplete = 0;
   await Effect.runPromise(
     Effect.gen(function* () {
       const fiber = yield* Effect.fork(
@@ -124,6 +149,9 @@ test("a stuck backend close times out at 250ms before the database finalizer run
                 exit,
                 recordingLogger(warnings),
                 "run-timeout",
+                () => {
+                  incomplete += 1;
+                },
               ),
             );
           }),
@@ -136,6 +164,7 @@ test("a stuck backend close times out at 250ms before the database finalizer run
       yield* TestClock.adjust(1);
       yield* Fiber.join(fiber);
       expect(dbClosed).toBe(true);
+      expect(incomplete).toBe(1);
       expect(warnings.map((record) => record.code)).toEqual([
         "SCHEDULER_BACKEND_CLOSE_TIMEOUT",
       ]);
@@ -147,6 +176,7 @@ test("a stuck diagnostic is bounded and does not replace the primary failure", a
   const primary = new Error("primary");
   const writing = Promise.withResolvers<void>();
   let finalized = false;
+  let incomplete = false;
   await Effect.runPromise(
     Effect.gen(function* () {
       const fiber = yield* Effect.fork(
@@ -165,12 +195,16 @@ test("a stuck diagnostic is bounded and does not replace the primary failure", a
                 exit,
                 {
                   write() {
+                    expect(incomplete).toBe(true);
                     writing.resolve();
                     return new Promise(() => {});
                   },
                   async error() {},
                 },
                 "run-stuck-diagnostic",
+                () => {
+                  incomplete = true;
+                },
               ),
             );
             yield* Effect.fail(primary);

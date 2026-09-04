@@ -1,5 +1,5 @@
 import { dirname, join } from "node:path";
-import { Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
 import { loadSchedulerSkillPolicy } from "../agents/codex/backend";
 import { CodexClient } from "../agents/codex/client";
 import { listWorkspaceSkills as readWorkspaceSkills } from "../agents/codex/skill-catalog";
@@ -24,11 +24,16 @@ import { Scheduler } from "../scheduler/scheduler";
 import { TaskHookService } from "../scheduler/task-hooks";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
+import { acquireCheckoutOwnership } from "../workspace/checkout-ownership";
 import {
   createTaskBranchManager,
   type TaskBranchManager,
 } from "../workspace/task-branch";
-import { closeBackendEffect, runSession } from "./session-lifecycle";
+import {
+  closeBackendEffect,
+  reportCleanup,
+  runSession,
+} from "./session-lifecycle";
 import type {
   CliRuntime,
   RealSchedulerRunInput,
@@ -254,8 +259,51 @@ export function runBackendSession(
   return runSession((stop) =>
     Effect.gen(function* () {
       const backendLabel = input.backend;
+      const logger = loggerFor({
+        dbPath: input.dbPath,
+        repoPath: input.repoPath,
+      });
+      let backendStarted = false;
+      let backendClosed = false;
+      let incompleteWork = false;
+      /** Retains ownership because old work can still mutate the checkout. */
+      const retainCheckout = (): void => {
+        incompleteWork = true;
+      };
+      const ownership = yield* Effect.acquireRelease(
+        Effect.tryPromise({
+          try: () => acquireCheckoutOwnership(input.repoPath, runId),
+          catch: (error) => error,
+        }),
+        (owner, exit) =>
+          Effect.gen(function* () {
+            if (incompleteWork || (backendStarted && !backendClosed)) {
+              yield* reportCleanup(
+                logger,
+                runId,
+                "SCHEDULER_CHECKOUT_RETAINED",
+              );
+              return;
+            }
+            const released = yield* Effect.exit(
+              Effect.tryPromise({
+                try: () => owner.release(),
+                catch: (error) => error,
+              }),
+            );
+            if (Exit.isFailure(released)) {
+              yield* reportCleanup(
+                logger,
+                runId,
+                "SCHEDULER_CHECKOUT_RETAINED",
+              );
+              if (Exit.isSuccess(exit))
+                yield* Effect.die(Cause.squash(released.cause));
+            }
+          }),
+      );
       const branches = yield* Effect.tryPromise({
-        try: () => createTaskBranchManager(input.repoPath, input.baseRef),
+        try: () => createTaskBranchManager(ownership.repoPath, input.baseRef),
         catch: (error) =>
           attachRunId(error, runId, {
             code: "BACKEND_BRANCH_STARTUP_FAILED",
@@ -281,20 +329,31 @@ export function runBackendSession(
           }),
       });
       if (stop.aborted) return;
-      const logger = loggerFor({
-        dbPath: input.dbPath,
-        repoPath: input.repoPath,
-      });
       let db: ReturnType<typeof openDatabase> | undefined;
       // Register first so the later-acquired backend closes before SQLite on every exit.
       yield* Effect.addFinalizer(() => Effect.sync(() => db?.close()));
       const backend = yield* Effect.acquireRelease(
         Effect.tryPromise({
-          try: () => startBackend({ branches }),
+          try: () => {
+            backendStarted = true;
+            return startBackend({ branches });
+          },
           catch: (error) => error,
         }),
         (resource, exit) =>
-          closeBackendEffect(() => resource.close(), exit, logger, runId),
+          closeBackendEffect(
+            () => resource.close(),
+            exit,
+            logger,
+            runId,
+            retainCheckout,
+          ).pipe(
+            Effect.tap((closed) =>
+              Effect.sync(() => {
+                backendClosed = closed;
+              }),
+            ),
+          ),
       );
       if (stop.aborted) return;
       const advisor = yield* Effect.try({
@@ -371,6 +430,7 @@ export function runBackendSession(
         publisher,
       ).runEffect({
         stop,
+        onDrainTimeout: retainCheckout,
         /** Requests both agent and hook cancellation while recording only safe diagnostics. */
         async cancel() {
           const active = repo.getRunningAttempt();
@@ -383,8 +443,9 @@ export function runBackendSession(
               ),
               Promise.resolve().then(() => hooks.stop()),
             ].map((action) =>
-              action.catch(() =>
-                logger.write({
+              action.catch(() => {
+                retainCheckout();
+                return logger.write({
                   level: "warn",
                   code: "SCHEDULER_CANCELLATION_FAILED",
                   category: "infra",
@@ -392,8 +453,8 @@ export function runBackendSession(
                   retryable: false,
                   runId,
                   message: "Scheduler cancellation did not finish normally",
-                }),
-              ),
+                });
+              }),
             ),
           );
         },

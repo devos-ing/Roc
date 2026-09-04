@@ -2,6 +2,54 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { CodexClient } from "../../../src/agents/codex/client";
 import { ModelListResponseSchema } from "../../../src/agents/codex/protocol";
+import { PiClient } from "../../../src/agents/pi/client";
+import { ZcodeClient } from "../../../src/agents/zcode/client";
+
+for (const provider of ["codex", "pi", "zcode"] as const) {
+  test(`${provider} close rejects when owned-child exit observation rejects`, async () => {
+    const fixture = join(
+      import.meta.dir,
+      "../../fixtures",
+      provider === "codex"
+        ? "scripted-app-server.ts"
+        : provider === "pi"
+          ? "scripted-pi-rpc.ts"
+          : "scripted-zcode-app-server.ts",
+    );
+    const input = {
+      command: [process.execPath, fixture],
+      cwd: process.cwd(),
+      credentialsPath: join(import.meta.dir, "missing-test-credentials.json"),
+    };
+    const client = await (provider === "codex"
+      ? CodexClient.start(input)
+      : provider === "pi"
+        ? PiClient.start(input)
+        : ZcodeClient.start(input));
+    const child: Bun.Subprocess<"pipe", "pipe", "pipe"> = Reflect.get(
+      client,
+      "process",
+    );
+    // Keep real child I/O and killing; only the OS exit-observation failure is injected.
+    Reflect.set(client, "process", {
+      stdin: child.stdin,
+      exitCode: null,
+      exited: Promise.reject(new Error("exit observer secret")),
+      kill: (signal: number | NodeJS.Signals) => child.kill(signal),
+    });
+    try {
+      await expect(client.close()).rejects.toMatchObject({
+        code: `${provider.toUpperCase()}_PROCESS_EXIT_UNCONFIRMED`,
+        category: "infra",
+        retryable: false,
+      });
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+      await client.close().catch(() => {});
+    }
+  });
+}
 
 test("initializes the app server and correlates requests while preserving inbound messages", async () => {
   const fixturePath = join(

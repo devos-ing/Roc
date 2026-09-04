@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { Cause, Effect, Exit, Fiber, TestClock, TestContext } from "effect";
+import {
+  Cause,
+  Effect,
+  Exit,
+  Fiber,
+  Option,
+  TestClock,
+  TestContext,
+} from "effect";
 import type {
   AgentHarness,
   HarnessDelivery,
@@ -9,6 +17,50 @@ import { Scheduler } from "../../src/scheduler/scheduler";
 import { openDatabase } from "../../src/store/database";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
+
+test("heartbeat failure wakes idle polling without consuming the drain deadline", async () => {
+  const primary = new Error("idle heartbeat failure");
+  const entered = Promise.withResolvers<void>();
+  let timedOut = false;
+  const daemon = new SchedulerDaemon(
+    {
+      async tick() {
+        entered.resolve();
+        return { kind: "idle" };
+      },
+    },
+    {
+      acquireLease: () => true,
+      heartbeatLease: () => {
+        throw primary;
+      },
+      releaseLease: () => true,
+    },
+    { ownerId: "idle-heartbeat" },
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.fork(
+        daemon.runEffect({
+          stop: new AbortController().signal,
+          cancel: async () => {},
+          onDrainTimeout: () => {
+            timedOut = true;
+          },
+        }),
+      );
+      yield* Effect.promise(() => entered.promise);
+      yield* TestClock.adjust(3_000);
+      const immediate = yield* Fiber.poll(fiber);
+      yield* TestClock.adjust(250);
+      const exit = yield* Fiber.await(fiber);
+      expect(Option.isSome(immediate)).toBe(true);
+      expect(timedOut).toBe(false);
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(primary);
+    }).pipe(Effect.provide(TestContext.TestContext)),
+  );
+});
 
 test("a primary heartbeat failure survives a tick failure during drain", async () => {
   const primary = new Error("heartbeat failed");
@@ -108,6 +160,7 @@ test("Effect drain seals a stuck tick at the configured deadline", async () => {
   const stop = new AbortController();
   let tickSignal: AbortSignal | undefined;
   let released = false;
+  let incomplete = 0;
   const daemon = new SchedulerDaemon(
     {
       async tick(_owner, signal) {
@@ -136,6 +189,10 @@ test("Effect drain seals a stuck tick at the configured deadline", async () => {
             return new Promise(() => {});
           },
           drainMs: 250,
+          onDrainTimeout: () => {
+            expect(tickSignal?.aborted).toBe(false);
+            incomplete += 1;
+          },
         }),
       );
       yield* Effect.promise(() => entered.promise);
@@ -148,6 +205,7 @@ test("Effect drain seals a stuck tick at the configured deadline", async () => {
       yield* Fiber.join(fiber);
       expect(tickSignal?.aborted).toBe(true);
       expect(released).toBe(true);
+      expect(incomplete).toBe(1);
     }).pipe(Effect.provide(TestContext.TestContext)),
   );
 });
@@ -241,8 +299,11 @@ test("polls after idle and releases its lease on stop", async () => {
       yield* Effect.promise(() => second.promise);
       stop.abort();
       yield* Effect.promise(() => cancelling.promise);
-      yield* TestClock.adjust(250);
+      yield* TestClock.adjust(1);
+      const idleExit = yield* Fiber.poll(fiber);
+      yield* TestClock.adjust(249);
       yield* Fiber.join(fiber);
+      expect(Option.isSome(idleExit)).toBe(true);
       expect(calls).toEqual(["acquire", "tick", "tick", "release"]);
     }).pipe(Effect.provide(TestContext.TestContext)),
   );
