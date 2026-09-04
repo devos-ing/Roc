@@ -513,7 +513,7 @@ rtk bun run typecheck
 
 ## Task 6: 正式驗收、文件與提交
 
-- [ ] 保留現有 deterministic-orchestrator 的三任務 rejection/recovery/dedup 測試。再於 scheduler.test.ts 加入下列完整 Fake Harness 測試，新增 Effect 與 SchedulerDaemon imports。publication receipt 返回時請求 stop，grace 讓同一 tick 完成 transaction。直接 runUntilIdle 的舊測試不能替代這條整合路徑。
+- [x] 保留現有 deterministic-orchestrator 的三任務 rejection/recovery/dedup 測試。再於 scheduler.test.ts 加入下列完整 Fake Harness 測試，新增 Effect 與 SchedulerDaemon imports。publication receipt 返回時請求 stop，grace 讓同一 tick 完成 transaction。直接 runUntilIdle 的舊測試不能替代這條整合路徑。
 
 ```ts
 test("Effect daemon completes the accepted Fake Harness flow", async () => {
@@ -542,7 +542,7 @@ test("Effect daemon completes the accepted Fake Harness flow", async () => {
   }
 });
 ```
-- [ ] 跑受影響範圍，確認 Codex/Pi/ZCode 的既有 fake-client vertical tests 沒有介面回歸，不啟用實際 Pi/ZCode 不安全 backend。
+- [x] 跑受影響範圍，確認 Codex/Pi/ZCode 的既有 fake-client vertical tests 沒有介面回歸，不啟用實際 Pi/ZCode 不安全 backend。
 
 ```bash
 rtk bun test test/scheduler test/cli test/store/orchestration-repository.test.ts test/runtime/errors-and-logging.test.ts test/integration/deterministic-orchestrator.test.ts test/agents/codex test/agents/pi/vertical.test.ts test/agents/zcode/vertical.test.ts
@@ -552,8 +552,8 @@ rtk proxy git diff --check
 
 `bun run check` 包含 lint、typecheck、repository test script。外部測試保持原有 opt-in guard，不能因缺少權限而自行啟用。若失敗，報告確切 command/test 與是否基線已有，不提高 timeout 掩蓋 lifecycle hang。
 
-- [ ] 列出所有變更後的 await→repository 續行點，逐一確認 Task 2 的 guards 覆蓋到；並用 literal search 確認舊 nextHeartbeat、tickWithHeartbeats、shutdown Promise 和 schedulerSleep 已不在 production lifecycle。
-- [ ] 在 docs/architecture.md 加入下列段落，只有整合通過後才能寫入。
+- [x] 列出所有變更後的 await→repository 續行點，逐一確認 Task 2 的 guards 覆蓋到；並用 literal search 確認舊 nextHeartbeat、tickWithHeartbeats、shutdown Promise 和 schedulerSleep 已不在 production lifecycle。
+- [x] 在 docs/architecture.md 加入下列段落，只有整合通過後才能寫入。
 
 ```text
 The session runtime uses Effect scopes for backend and database ownership.
@@ -565,8 +565,8 @@ remains authoritative. Backend close is requested once before database close;
 a close timeout reports incomplete cleanup rather than confirmed process exit.
 ```
 
-- [ ] 檢查實际刪除與新增的 ownership code。不能保留兩套 production paths 或加 feature flag 掩蓋尚未完成的遷移。
-- [ ] 按相依順序提交 safety guards、Effect lifecycle 整合、驗證/文件。每個 commit 必須可編譯與測試；Task 3–5 尚未完全接通時不要提交 broken intermediate state。只 stage 本計畫檔案，不使用 git add .。
+- [x] 檢查實际刪除與新增的 ownership code。不能保留兩套 production paths 或加 feature flag 掩蓋尚未完成的遷移。
+- [x] 按相依順序提交 safety guards、Effect lifecycle 整合、驗證/文件。每個 commit 必須可編譯與測試；Task 3–5 尚未完全接通時不要提交 broken intermediate state。只 stage 本計畫檔案，不使用 git add .。
 
 ## 合併條件與停止條件
 
@@ -585,4 +585,53 @@ Rollback 不需要 DB migration。未合併時保留整合分支即可；已合�
 - [x] 區分 admission stop、grace drain、continuation seal、resource close。
 - [x] 列出 startup 不可取消、external side effect 不可撤回及 backend close timeout 的限制。
 - [x] 列出先失敗後實作的測試、命令、驗收與回退方式。
-- [ ] 執行時用 compiler/tests 驗證文件內的候選程式碼，完成後填入真實結果。
+- [x] 執行時用 compiler/tests 驗證文件內的候選程式碼，完成後填入真實結果。
+
+## Execution receipt — 2026-09-04
+
+Local deterministic validation complete; Real Codex smoke unverified;
+integration acceptance/merge blocked by P1.
+
+The acceptance test `Effect daemon completes the accepted Fake Harness flow`
+uses the real in-memory SQLite repository and the existing accepted-task Fake
+Harness fixture. It invokes `SchedulerDaemon.runEffect`, requests stop only
+after the real publication receipt returns, and proves that `T1` reaches
+`done` and the scheduler lease row is absent. This is a post-implementation
+integration acceptance test, not a retroactive RED/GREEN feature test.
+
+Actual commands, all with real external agents disabled:
+
+```text
+rtk bun test test/scheduler/scheduler.test.ts
+# 17 pass, 0 fail, 68 assertions
+
+rtk proxy env AGILE_REAL_CODEX=0 bun test test/scheduler test/cli test/store/orchestration-repository.test.ts test/runtime/errors-and-logging.test.ts test/integration/deterministic-orchestrator.test.ts test/agents/codex test/agents/pi/vertical.test.ts test/agents/zcode/vertical.test.ts
+# 218 pass, 0 fail, 1,071 assertions, 28 files; includes the deterministic three-task rejection/recovery/dedup flow and Codex/Pi/ZCode fake-client vertical coverage
+
+rtk proxy env AGILE_REAL_CODEX=0 bun run check
+# exit 0: 429 pass, 1 opt-in Real Codex skip, 0 fail, 1,668 assertions, 57 files
+```
+
+The unchanged lint baseline remains exit 0 with 30 warnings and 9 infos; this
+work added no diagnostics. The first full check found one import-order error
+in the newly edited scheduler test, which was fixed before the recorded clean
+run. No timeout was increased.
+
+Await-to-repository audit: `Scheduler.tick` checks the continuation seal after
+each external await before repository work: `harness.step` before
+`applyHarnessEvent`; `hooks.run` for posthook and prehook before their durable
+outcomes; and `publisher.publish` before `completePublication` or
+`failPublishing`. `TaskHookService` also checks after workspace preparation and
+hook runner completion before writing hook receipts. Literal production search
+found no `nextHeartbeat`, `tickWithHeartbeats`, `schedulerSleep`, `runDaemon`,
+or retained shutdown-Promise owner path. The only Promise execution boundary is
+`Effect.runPromiseExit` in `src/cli/session-lifecycle.ts`; no feature flag
+keeps a second lifecycle path.
+
+P1 remains open: a backend close may return from the session's 250ms wait while
+the Codex child continues its existing two-second graceful-exit period before
+SIGKILL. The stable dedicated checkout can then be reused before that child is
+quiescent. SQLite sealing prevents late database continuations but cannot stop
+late child filesystem writes. Backend startup is likewise not cancellable while
+the `BackendFactory` Promise is pending because the interface has no
+`AbortSignal`. No provider policy, interface, or timeout was changed here.

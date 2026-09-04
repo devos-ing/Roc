@@ -34,6 +34,22 @@ seam; adding one means a factory plus a registry entry, and the shared run
 loop owns branch-manager setup, the database, model advising, the daemon,
 logging, and cleanup.
 
+The session runtime uses Effect scopes for backend and database ownership.
+The daemon owns its lease, heartbeat and tick worker in a nested scope.
+Signals close admission immediately; pending work has a bounded grace period
+before a separate continuation signal prevents late scheduler, hook and
+publication callbacks from accessing the database. SQLite lease fencing
+remains authoritative. Backend close is requested once before database close;
+a close timeout reports incomplete cleanup rather than confirmed process exit.
+Backend startup remains uncancellable while a `BackendFactory` Promise is
+pending because that interface has no `AbortSignal`; a late startup may only be
+cleaned once its Promise returns.
+
+This lifecycle protects SQLite continuation safety, but does not establish
+checkout quiescence after a backend-close timeout. A backend child can still
+outlive the bounded wait, so real-backend integration acceptance remains
+blocked until teardown prevents reuse of its stable checkout while it persists.
+
 The Codex backend never changes the resolved project checkout. A
 `TaskBranchManager` creates or reuses one sibling checkout at
 `<repo>.agile-checkout`. It runs one task at a time and switches that checkout

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Effect } from "effect";
 import type { TaskPublisher } from "../../src/github/pr-publisher";
 import type {
   AgentHarness,
@@ -9,6 +10,7 @@ import type {
   HarnessStepRequest,
 } from "../../src/harness/contracts";
 import { createFakeHarness } from "../../src/harness/fake";
+import { SchedulerDaemon } from "../../src/scheduler/daemon";
 import { Scheduler } from "../../src/scheduler/scheduler";
 import {
   type TaskHookRunner,
@@ -560,6 +562,40 @@ test("sealed publication rejection does not touch a closed database", async () =
   } finally {
     release.resolve();
     await outcome;
+    db.close();
+  }
+});
+
+test("Effect daemon completes the accepted Fake Harness flow", async () => {
+  const { db, repo, scheduler, publisher } = setupAcceptedTask();
+  const stop = new AbortController();
+  const publish = publisher.publish.bind(publisher);
+  publisher.publish = async (input) => {
+    const receipt = await publish(input);
+    stop.abort();
+    return receipt;
+  };
+  const daemon = new SchedulerDaemon(scheduler, repo, {
+    ownerId: "effect-vertical",
+  });
+  try {
+    await Effect.runPromise(
+      daemon.runEffect({ stop: stop.signal, async cancel() {} }),
+    );
+    const task = db
+      .query<{ status: string }, [string]>(
+        "SELECT status FROM tasks WHERE id = ?",
+      )
+      .get("T1");
+    expect(task?.status).toBe("done");
+    const lease = db
+      .query<{ owner_id: string }, []>(
+        "SELECT owner_id FROM scheduler_lease WHERE lease_key = 'scheduler'",
+      )
+      .get();
+    expect(lease).toBeNull();
+  } finally {
+    stop.abort();
     db.close();
   }
 });
