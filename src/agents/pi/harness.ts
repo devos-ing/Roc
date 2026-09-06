@@ -12,6 +12,7 @@ import {
 } from "../../harness/contracts";
 import { AgileError, normalizeError } from "../../runtime/errors";
 import type { TaskBranchManager } from "../../workspace/task-branch";
+import { restoreApprovedSourceCommit } from "../source-commit";
 import { PiClient, type PiClientApi } from "./client";
 import { implementPrompt, reviewPrompt, scoutPrompt } from "./prompts";
 import {
@@ -455,6 +456,12 @@ export function createPiHarness(input: {
       request.attempt.taskId,
       request.input.ticket.baseCommit,
     );
+    await restoreApprovedSourceCommit({
+      branches: input.branches,
+      request,
+      baseCommit: workspace.baseCommit,
+      component: "pi-harness",
+    });
     let reviewStatusBefore: string | undefined;
     if (request.attempt.role === "review") {
       try {

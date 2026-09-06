@@ -5,6 +5,7 @@ import { BacklogManifestSchema } from "../../domain/schemas";
 import { safeTaskPathComponent } from "../../domain/task-path";
 import { importApprovedGitHubIssues } from "../../github/import-service";
 import { readApprovedGitHubIssueCandidates } from "../../github/import-source";
+import { GitHubTaskPublisher } from "../../github/remote-tasks";
 import { taskHookConfigHash } from "../../scheduler/task-hooks";
 import { openDatabase } from "../../store/database";
 import { OrchestrationRepository } from "../../store/orchestration-repository";
@@ -64,6 +65,32 @@ async function executeTaskImport(
     } finally {
       db.close();
     }
+  } catch (error) {
+    context.io.err(errorMessage(error));
+    return 1;
+  }
+}
+
+/** Publishes one approved backlog manifest without importing it into the local queue. */
+async function executeGitHubPublish(
+  context: CliCommandContext,
+  manifestPath: string,
+): Promise<number> {
+  try {
+    const input: unknown = await Bun.file(resolve(manifestPath)).json();
+    if (usesLegacyWeekId(input)) {
+      throw new Error("Manifest uses weekId; replace it with cycleId");
+    }
+    const manifest = BacklogManifestSchema.parse(input);
+    for (const task of manifest.tasks) safeTaskPathComponent(task.id);
+    const projectRoot = await commandProjectRoot(context);
+    const published = context.runtime.publishGitHubTasks
+      ? await context.runtime.publishGitHubTasks(manifest, projectRoot)
+      : await new GitHubTaskPublisher(projectRoot).publish(manifest);
+    context.io.out(
+      published.map((task) => `${task.taskId}: ${task.issueUrl}`).join("\n"),
+    );
+    return 0;
   } catch (error) {
     context.io.err(errorMessage(error));
     return 1;
@@ -296,6 +323,13 @@ export function registerTaskCommands(
     .description("Import approved GitHub Issues")
     .action(async () => {
       context.exitCode = await executeGitHubImport(context);
+    });
+  task
+    .command("publish-github")
+    .description("Publish an approved backlog as GitHub Issues")
+    .argument("<file>", "approved backlog JSON file")
+    .action(async (file: string) => {
+      context.exitCode = await executeGitHubPublish(context, file);
     });
   task
     .command("list")

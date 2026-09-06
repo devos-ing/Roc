@@ -27,6 +27,8 @@ CLI -> Scheduler -> AgentHarness -> FakeHarness
                  \-> PiHarness -> PiClient -> pi --mode rpc
                               \-> TaskBranchManager -> simple-git -> system Git
                  \-> TaskHookService -> Bun argv subprocess
+GitHub Issues -> RemoteSchedulerSource -> SQLite -> Scheduler
+SQLite -> GitHubRemoteTaskWriter -> GitHub Issues
 ```
 
 Backends register in `src/agents/registry.ts` behind a `BackendFactory`
@@ -59,6 +61,63 @@ exhausts three attempts before failing the task; a failed publishing posthook
 returns the task to `needs_replan` while a terminal posthook failure preserves
 the task outcome and fails the scheduler invocation. Hooks use direct argv
 execution rather than a shell and are cancelled with the scheduler on shutdown.
+
+## Remote GitHub task source
+
+`task publish-github` turns one strict backlog manifest into managed GitHub
+Issues without importing it locally. The embedded v1 task envelope contains the
+complete plan and a repository-stable plan identity. Publication reconciles all
+task identities before adding dependency links, an approval comment containing
+the exact envelope hash, and `roc:ready`. Commands use argv and bounded wall
+clock execution; ambiguous creates are resolved by reading the stable identity
+back before another create is allowed.
+
+`scheduler run --source github` makes GitHub the admission authority for one
+worker. `GitHubRemoteTaskSource` polls every managed Issue, groups complete
+plans, validates their dependency graph and trusted publisher approval, and
+atomically imports a plan with its frozen remote bindings. The ready label is an
+initial claim signal. Later boundaries revalidate the immutable envelope hash
+and approval author/hash without requiring the label after Roc changes it to
+running. A changed or withdrawn approval pauses the task at the next safe role
+boundary. Missing approved context becomes `needs_input`; invalid plans remain
+isolated from valid plans.
+
+The daemon performs GitHub and Git I/O outside SQLite transactions while
+renewing its scheduler lease. A poll outage blocks idle advancement and new
+claims, but lets an already-running harness delivery persist locally. Polling
+uses bounded exponential retry and returns to the 30-second interval after a
+successful read. Validation and network diagnostics pass through the existing
+structured logger with controlled, sanitized messages.
+
+The `remote_tasks` table holds the immutable remote identity, approval snapshot,
+status-comment receipt, and pending synchronization state. Local SQLite updates
+are authoritative. `GitHubRemoteTaskWriter` retries Roc-owned status labels and
+one comment owned by the authenticated worker, preserving human labels and
+comments. It acknowledges the exact projected local revision, so a concurrent
+newer transition remains pending. Rejected tasks keep their outcome and their
+one existing local draft child; the writer publishes that child once without
+approval, and a later matching trusted approval promotes the same child.
+
+Remote dependency release is stricter than local `done`. Immediately before a
+claim, `GitHubRemoteDependencyGate` requires each named dependency's pull request
+to be merged into the configured target branch, fetches that branch, verifies it
+contains GitHub's actual merge commit, and pins the fetched target commit. The
+pin survives claim and recovery. Open pull requests wait; closed-unmerged pull
+requests, target mismatches, and retired dependencies require explicit replan.
+The gate does not infer a replacement dependency from retirement metadata.
+
+Publisher and worker clones may share a physical host while retaining separate
+databases and task checkouts. CLI project discovery checks for `.agile` only
+within the containing Git checkout; an outer Roc project cannot capture a nested
+worker clone that has not initialized its own database.
+
+One process owns a project worker. There is no multi-worker claim protocol, hot
+failover, automatic merge, or automatic provider switching. Issue discovery has
+a 1,000-managed-Issue safety bound and fails visibly at that bound rather than
+assuming an absent identity. Comment recovery uses complete paginated REST
+reads. Live GitHub, real-provider, and two-machine behavior is operator release
+evidence; deterministic local tests exercise the same publication, admission,
+scheduler, writeback, and dependency seams.
 
 ## ZCode backend
 
@@ -130,7 +189,9 @@ becomes the single attributed session model, catalog ids are
 `provider/modelId` pairs, and each attempt re-asserts its routed pair with
 `set_model` plus `set_thinking_level` (Roc efforts map one-to-one onto Pi
 thinking levels). A probe with no resolvable default model fails startup
-with `PI_MODEL_UNRESOLVED` instead of running an unobservable default.
+with `PI_MODEL_UNRESOLVED` instead of running an unobservable default. The
+resolved default must advertise `high` reasoning; otherwise startup fails with
+`PI_MODEL_UNSUPPORTED` rather than selecting a different model or provider.
 
 **Recovery.** The Pi session file is an append-only entry tree on disk, and
 the backend cursor persists `{sessionId, sessionFile, entryAnchor}`, where

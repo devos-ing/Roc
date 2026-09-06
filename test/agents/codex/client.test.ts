@@ -35,7 +35,12 @@ test("initializes the app server and correlates requests while preserving inboun
       method: "warning",
     });
 
-    await client.request("fixture/exit", {});
+    await expect(
+      client.request("fixture/exitWithoutResponse", {}),
+    ).rejects.toMatchObject({
+      code: "CODEX_APP_SERVER_EXITED",
+      category: "infra",
+    });
     await expect(client.request("model/list", {})).rejects.toMatchObject({
       code: "CODEX_APP_SERVER_EXITED",
       category: "infra",
@@ -63,7 +68,12 @@ test("child exit rejects future message reads instead of exposing queued message
   });
 
   try {
-    await client.request("fixture/exit", {});
+    await expect(
+      client.request("fixture/exitWithoutResponse", {}),
+    ).rejects.toMatchObject({
+      code: "CODEX_APP_SERVER_EXITED",
+      category: "infra",
+    });
     await expect(client.request("model/list", {})).rejects.toMatchObject({
       code: "CODEX_APP_SERVER_EXITED",
       category: "infra",

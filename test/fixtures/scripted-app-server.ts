@@ -71,6 +71,9 @@ function handleMessage(message: IncomingMessage): boolean {
     case "fixture/exit":
       write({ id: requestId(message), result: {} }, () => process.exit(0));
       return false;
+    case "fixture/exitWithoutResponse":
+      process.exit(0);
+      return false;
     case "fixture/modelUnavailable":
       write({
         id: requestId(message),

@@ -155,6 +155,38 @@ test("the factory fails closed and closes the probe when no default model resolv
   }
 });
 
+test("the factory rejects a default model without high reasoning instead of switching", async () => {
+  const previous = process.env.ROC_PI_EXPERIMENTAL;
+  const unsupportedDefault = {
+    id: "medium-only",
+    provider: "acme",
+    reasoning: true,
+    thinkingLevelMap: { medium: 1, high: null, xhigh: null },
+  };
+  const probe = new ScriptedProbeClient(
+    [unsupportedDefault, ...probeModels],
+    unsupportedDefault,
+  );
+  try {
+    process.env.ROC_PI_EXPERIMENTAL = "1";
+    const factory = buildPiBackendFactory({
+      startProbeClient: async () => probe,
+    });
+    await expect(
+      factory({ branches: undefined as never }),
+    ).rejects.toMatchObject({
+      code: "PI_MODEL_UNSUPPORTED",
+      category: "startup",
+      retryable: false,
+      component: "pi-backend",
+    });
+    expect(probe.closeCount).toBe(1);
+  } finally {
+    if (previous === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
+    else process.env.ROC_PI_EXPERIMENTAL = previous;
+  }
+});
+
 test("the registry exposes the gated pi factory under one name", () => {
   expect(backends.pi).toBe(startPiBackend);
 });

@@ -12,12 +12,18 @@ type Runtime = {
   sleep(milliseconds: number, signal?: AbortSignal): Promise<void>;
 };
 
+export type SchedulerSource = {
+  beforeTick(): Promise<boolean>;
+  afterTick?(result: TickResult): Promise<void>;
+};
+
 export class SchedulerDaemon {
   /** Creates a daemon from scheduler, lease-store, and runtime dependencies. */
   constructor(
     private readonly scheduler: Pick<Scheduler, "tick">,
     private readonly leases: LeaseStore,
     private readonly runtime: Runtime,
+    private readonly source?: SchedulerSource,
   ) {}
 
   /** Runs scheduler ticks while holding and heartbeating the exclusive scheduler lease. */
@@ -56,9 +62,11 @@ export class SchedulerDaemon {
       }
       nextHeartbeat = times.timestamp + 3_000;
     };
-    /** Executes one scheduler tick while maintaining lease heartbeats in parallel. */
-    const tickWithHeartbeats = async (): Promise<TickResult> => {
-      const tick = this.scheduler.tick(this.runtime.ownerId);
+    /** Executes one asynchronous operation while maintaining lease heartbeats in parallel. */
+    const withHeartbeats = async <T>(
+      operation: () => Promise<T>,
+    ): Promise<T> => {
+      const work = operation();
       let stopHeartbeats = false;
       let activeWait: AbortController | undefined;
       const heartbeats = (async () => {
@@ -82,7 +90,7 @@ export class SchedulerDaemon {
       })();
       try {
         // The Harness call cannot be cancelled; its eventual write is fenced by the lease owner ID.
-        return await Promise.race([tick, heartbeats as Promise<never>]);
+        return await Promise.race([work, heartbeats as Promise<never>]);
       } finally {
         stopHeartbeats = true;
         activeWait?.abort();
@@ -91,9 +99,28 @@ export class SchedulerDaemon {
     };
     try {
       while (!shouldStop()) {
-        const result = await tickWithHeartbeats();
+        const source = this.source;
+        const mayAdvance =
+          source === undefined
+            ? true
+            : await withHeartbeats(() => source.beforeTick());
+        if (!mayAdvance) {
+          await withHeartbeats(() => this.runtime.sleep(1_000));
+          if (this.runtime.now().getTime() >= nextHeartbeat) heartbeat();
+          continue;
+        }
+        const result = await withHeartbeats(() =>
+          this.scheduler.tick(this.runtime.ownerId),
+        );
+        if (source?.afterTick !== undefined) {
+          await withHeartbeats(async () => {
+            await source.afterTick?.(result);
+          });
+        }
+        if (result.kind === "idle") {
+          await withHeartbeats(() => this.runtime.sleep(1_000));
+        }
         if (this.runtime.now().getTime() >= nextHeartbeat) heartbeat();
-        if (result.kind === "idle") await this.runtime.sleep(1_000);
       }
     } finally {
       this.leases.releaseLease(this.runtime.ownerId);

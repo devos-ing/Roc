@@ -6,7 +6,7 @@ type SourceCommitRestoration = {
   branches: TaskBranchManager;
   request: HarnessStepRequest;
   baseCommit: string;
-  component: "codex-harness" | "zcode-harness";
+  component: "codex-harness" | "pi-harness" | "zcode-harness";
 };
 
 /** Restores an approved source commit before Implement while preserving existing task work. */

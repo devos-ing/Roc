@@ -15,6 +15,7 @@ import type { RealSchedulerRunInput } from "../../src/cli/types";
 import type { HarnessStepRequest } from "../../src/harness/contracts";
 import { openDatabase } from "../../src/store/database";
 import { PlanningRepository } from "../../src/store/planning-repository";
+import { RemoteTaskRepository } from "../../src/store/remote-task-repository";
 import { git } from "../helpers/git";
 
 async function createRepository(): Promise<string> {
@@ -201,6 +202,69 @@ test("runBackendSession closes the backend when no catalog model is compatible",
       ),
     ).rejects.toMatchObject({ code: "BACKEND_MODEL_CATALOG_INCOMPATIBLE" });
     expect(closed()).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+  }
+});
+
+test("runBackendSession requires the GitHub source to recover an active remote task", async () => {
+  const root = await createRepository();
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
+  await seedReadyTask(dbPath);
+  const db = openDatabase(dbPath);
+  try {
+    new RemoteTaskRepository(db).add({
+      taskId: "T1",
+      repository: "owner/repo",
+      planId: "plan-1",
+      issueNumber: 1,
+      issueUrl: "https://example.test/issues/1",
+      envelopeHash: "a".repeat(64),
+      approvalAuthor: "trusted",
+      approvalHash: "a".repeat(64),
+      remoteState: "OPEN",
+    });
+    db.query("UPDATE tasks SET status = 'claimed' WHERE id = 'T1'").run();
+  } finally {
+    db.close();
+  }
+  const { factory, closed } = fakeBackend(compatibleCatalog);
+  try {
+    await expect(
+      runBackendSession(
+        factory,
+        sessionInput(root, dbPath),
+        "run-session-remote-recovery",
+      ),
+    ).rejects.toMatchObject({ code: "REMOTE_TASK_SOURCE_REQUIRED" });
+    expect(closed()).toBeTrue();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+  }
+});
+
+test("runBackendSession requires the local source to recover an active local task", async () => {
+  const root = await createRepository();
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
+  await seedReadyTask(dbPath);
+  const db = openDatabase(dbPath);
+  try {
+    db.query("UPDATE tasks SET status = 'claimed' WHERE id = 'T1'").run();
+  } finally {
+    db.close();
+  }
+  const { factory, closed } = fakeBackend(compatibleCatalog);
+  try {
+    await expect(
+      runBackendSession(
+        factory,
+        { ...sessionInput(root, dbPath), source: "github" },
+        "run-session-local-recovery",
+      ),
+    ).rejects.toMatchObject({ code: "LOCAL_TASK_SOURCE_REQUIRED" });
+    expect(closed()).toBeTrue();
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(`${root}.agile-checkout`, { recursive: true, force: true });

@@ -5,16 +5,29 @@ import { listWorkspaceSkills as readWorkspaceSkills } from "../agents/codex/skil
 import { backends } from "../agents/registry";
 import type { BackendFactory } from "../agents/types";
 import {
+  BunGitHubCommandRunner,
   GitHubCliPreflight,
   type GitHubPreflight,
   GitHubPullRequestPublisher,
   type TaskPublisher,
 } from "../github/pr-publisher";
+import { GitHubRemoteDependencyGate } from "../github/remote-dependencies";
+import {
+  GitHubRemoteIssueReader,
+  GitHubRemoteTaskSource,
+  RemoteSchedulerSource,
+  trustedGitHubPublishers,
+} from "../github/remote-source";
+import { GitHubTaskPublisher } from "../github/remote-tasks";
+import {
+  GitHubRemoteTaskWriter,
+  sanitizeRemoteDiagnostic,
+} from "../github/remote-writeback";
 import type { AgentHarness } from "../harness/contracts";
 import { createFakeHarness } from "../harness/fake";
 import { AgileError, normalizeError } from "../runtime/errors";
 import { createJsonlLogger, type Logger } from "../runtime/logger";
-import { SchedulerDaemon } from "../scheduler/daemon";
+import { SchedulerDaemon, type SchedulerSource } from "../scheduler/daemon";
 import {
   createModelAdvisor,
   createStaticModelAdvisor,
@@ -23,6 +36,8 @@ import { Scheduler } from "../scheduler/scheduler";
 import { TaskHookService } from "../scheduler/task-hooks";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
+import { PlanningRepository } from "../store/planning-repository";
+import { RemoteTaskRepository } from "../store/remote-task-repository";
 import {
   createTaskBranchManager,
   type TaskBranchManager,
@@ -184,15 +199,25 @@ function daemonFor(
   runId: string,
   hooks?: TaskHookService,
   publisher?: TaskPublisher,
+  source?: SchedulerSource,
 ): SchedulerDaemon {
   return new SchedulerDaemon(
-    new Scheduler(repo, harness, () => {}, hooks, publisher),
+    new Scheduler(
+      repo,
+      harness,
+      () => {},
+      hooks,
+      publisher,
+      source !== undefined,
+      source === undefined,
+    ),
     repo,
     {
       ownerId: runId,
       now: () => new Date(),
       sleep: schedulerSleep,
     },
+    source,
   );
 }
 
@@ -348,13 +373,101 @@ export async function runBackendSession(
       () => {},
       advisor,
     );
+    if (input.source !== "github" && repo.hasActiveRemoteTask()) {
+      throw new AgileError({
+        code: "REMOTE_TASK_SOURCE_REQUIRED",
+        category: "startup",
+        retryable: false,
+        component: "cli",
+        message:
+          "An active remote task requires scheduler run --source github for approval recovery",
+        runId,
+      });
+    }
+    if (input.source === "github" && repo.hasActiveLocalTask()) {
+      throw new AgileError({
+        code: "LOCAL_TASK_SOURCE_REQUIRED",
+        category: "startup",
+        retryable: false,
+        component: "cli",
+        message:
+          "An active local task requires scheduler run --source local for recovery",
+        runId,
+      });
+    }
     const hooks = new TaskHookService(repo, branches);
     const publisher = options.publisherFactory?.(branches);
+    const logger = loggerFor({
+      dbPath: input.dbPath,
+      repoPath: input.repoPath,
+    });
+    let source: SchedulerSource | undefined;
+    if (input.source === "github") {
+      const runner = new BunGitHubCommandRunner();
+      const reader = new GitHubRemoteIssueReader(input.repoPath, runner);
+      const repositoryName = await reader.repository();
+      const workerLogin = await reader.authenticatedLogin();
+      const trusted = trustedGitHubPublishers(
+        process.env.ROC_GITHUB_PUBLISHERS,
+      );
+      const remote = new RemoteTaskRepository(db);
+      const writer = new GitHubRemoteTaskWriter(
+        input.repoPath,
+        repositoryName,
+        workerLogin,
+        remote,
+        () => reader.read(repositoryName),
+        runner,
+      );
+      const taskSource = new GitHubRemoteTaskSource(
+        repositoryName,
+        trusted,
+        new PlanningRepository(db),
+        remote,
+        () => reader.read(repositoryName),
+      );
+      const dependencies = new GitHubRemoteDependencyGate(
+        input.repoPath,
+        repositoryName,
+        input.baseBranch ?? "",
+        remote,
+        runner,
+      );
+      source = new RemoteSchedulerSource(
+        {
+          /** Refreshes remote authority before pinning any dependency-safe task bases. */
+          async poll() {
+            const result = await taskSource.poll();
+            await dependencies.prepare();
+            return result;
+          },
+        },
+        repo,
+        Date.now,
+        async (kind, error) => {
+          await logger.write({
+            level: "warn",
+            code:
+              kind === "network"
+                ? "REMOTE_TASK_SOURCE_UNAVAILABLE"
+                : "REMOTE_TASK_SOURCE_INVALID",
+            category: kind === "network" ? "infra" : "domain",
+            component: "github-task-source",
+            retryable: kind === "network",
+            message: sanitizeRemoteDiagnostic(
+              error instanceof Error ? error.message : String(error),
+            ),
+            runId,
+          });
+        },
+        () => writer.sync(),
+      );
+    }
     await runDaemon({
-      daemon: daemonFor(repo, backend.harness, runId, hooks, publisher),
+      daemon: daemonFor(repo, backend.harness, runId, hooks, publisher, source),
       repo,
       harness: backend.harness,
-      logger: loggerFor({ dbPath: input.dbPath, repoPath: input.repoPath }),
+      logger,
       runId,
       closeBackend: () => backend.close(),
       cancelHooks: () => hooks.stop(),
@@ -388,6 +501,10 @@ export const defaultRuntime: CliRuntime = {
   /** Writes an operational error through the logger associated with its runtime paths. */
   async logError(error, input) {
     await loggerFor(input).error(error);
+  },
+  /** Publishes a validated task manifest through the explicit project checkout. */
+  async publishGitHubTasks(manifest, cwd) {
+    return new GitHubTaskPublisher(cwd).publish(manifest);
   },
   /** Reads one workspace skill catalog through a short-lived Codex client. */
   async listWorkspaceSkills(cwd) {

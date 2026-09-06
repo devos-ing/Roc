@@ -129,6 +129,56 @@ test("polls after idle and releases its lease on stop", async () => {
   expect(heartbeatWaits.pending).toHaveLength(0);
 });
 
+test("heartbeats while remote polling is paused", async () => {
+  const epoch = Date.parse("2026-08-25T00:00:00.000Z");
+  let now = epoch;
+  let tickCount = 0;
+  let heartbeatCount = 0;
+  const daemon = new SchedulerDaemon(
+    {
+      async tick() {
+        tickCount += 1;
+        return { kind: "idle" as const };
+      },
+    },
+    {
+      acquireLease() {
+        return true;
+      },
+      heartbeatLease() {
+        heartbeatCount += 1;
+        return true;
+      },
+      releaseLease() {
+        return true;
+      },
+    },
+    {
+      ownerId: "owner-1",
+      now: () => new Date(now),
+      sleep: async (_milliseconds, signal) => {
+        if (signal !== undefined) {
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          return;
+        }
+        now += 4_000;
+      },
+    },
+    {
+      async beforeTick() {
+        return false;
+      },
+    },
+  );
+
+  await daemon.run(() => now >= epoch + 12_000);
+
+  expect(tickCount).toBe(0);
+  expect(heartbeatCount).toBe(3);
+});
+
 test("heartbeats every three seconds with a ten-second lease", async () => {
   const calls: string[] = [];
   const heartbeatWaits = controlledHeartbeatWaits();

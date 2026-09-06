@@ -3,8 +3,10 @@ import type {
   DiscoveredSkill,
 } from "../agents/codex/skill-policy";
 import type { RealBackendName } from "../agents/registry";
+import type { BacklogManifest } from "../domain/schemas";
 import type { SkillIdentity } from "../domain/skill-allowlist";
 import type { GitHubIssueCandidate } from "../github/import-source";
+import type { PublishedRemoteTask } from "../github/remote-tasks";
 import type { AgileError } from "../runtime/errors";
 
 export type CliTerminalInput = NodeJS.ReadStream;
@@ -38,6 +40,8 @@ export type RealSchedulerRunInput = {
   baseRef: string;
   /** Names the GitHub branch that pull requests target, independently of the local base ref. */
   baseBranch?: string;
+  /** Selects local backlog execution or trusted GitHub task admission. */
+  source?: "local" | "github";
 };
 
 export type SchedulerRunInput =
@@ -49,6 +53,11 @@ export type CliRuntime = {
   runScheduler(input: SchedulerRunInput): Promise<void>;
   /** Reads raw approved GitHub Issue candidates for an import command. */
   readGitHubIssues?(): Promise<GitHubIssueCandidate[]>;
+  /** Publishes one approved manifest to the current project's GitHub repository. */
+  publishGitHubTasks?(
+    manifest: BacklogManifest,
+    cwd: string,
+  ): Promise<PublishedRemoteTask[]>;
   /** Records a normalized operational error at the resolved runtime location. */
   logError?(
     error: AgileError,

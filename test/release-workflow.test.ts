@@ -167,7 +167,10 @@ test("README explains the agile Scout, Implement, Review loop", async () => {
     "Roc picks one ready task and passes it through three agent roles",
   );
   expect(howItWorks).toContain('S["Scout<br/>Understand the task"]');
-  expect(howItWorks).toContain('I["Implement<br/>Write and commit code"]');
+  expect(howItWorks).toContain('I["Implement<br/>Write code"]');
+  expect(howItWorks).toContain(
+    'I --> C["Trusted harness<br/>Create the commit"]',
+  );
   expect(howItWorks).toContain('R["Review<br/>Check the exact commit"]');
   expect(howItWorks).toContain('P["Posthook and pull request"]');
   expect(howItWorks).toContain(
