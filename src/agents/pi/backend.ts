@@ -147,9 +147,10 @@ export function buildPiBackendFactory(input: {
       // The probe process is only a catalog oracle; role attempts spawn
       // their own children.
       const liveClients = new Set<PiClientApi>();
+      const closeFailures: unknown[] = [];
       /**
        * Tracks a live attempt client so runtime shutdown closes it, and
-       * drops it from tracking once the client closes itself.
+       * drops it only after confirmed close while retaining any failure evidence.
        */
       const trackAttemptClient = (client: PiClientApi): PiClientApi => {
         liveClients.add(client);
@@ -160,8 +161,10 @@ export function buildPiBackendFactory(input: {
           close: async () => {
             try {
               await client.close();
-            } finally {
               liveClients.delete(client);
+            } catch (error) {
+              closeFailures.push(error);
+              throw error;
             }
           },
         };
@@ -190,11 +193,17 @@ export function buildPiBackendFactory(input: {
         harness: createPiHarness({ branches, startClient: startAttemptClient }),
         close: () => {
           closed ??= (async () => {
-            await Promise.allSettled(
-              [...liveClients].map((client) => client.close()),
+            const results = await Promise.allSettled(
+              [...liveClients, probe].map((client) =>
+                Promise.resolve().then(() => client.close()),
+              ),
             );
+            if (closeFailures.length > 0) throw closeFailures[0];
+            const failed = results.find(
+              (result) => result.status === "rejected",
+            );
+            if (failed?.status === "rejected") throw failed.reason;
             liveClients.clear();
-            await probe.close();
           })();
           return closed;
         },

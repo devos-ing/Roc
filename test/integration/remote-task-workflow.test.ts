@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { Effect, TestClock, TestContext } from "effect";
 import type { BacklogManifest } from "../../src/domain/schemas";
 import type {
   GitHubCommandRunner,
@@ -374,10 +375,10 @@ test("publishes on machine A and completes with a status receipt on machine B", 
     async () => github.issues,
     workerRunner,
   );
-  let timestamp = Date.parse("2026-09-06T00:01:00.000Z");
+  const timestamp = Date.parse("2026-09-06T00:01:00.000Z");
   /** Runs the real daemon until its first idle wait for one worker session. */
   const runWorkerSession = async (ownerId: string): Promise<void> => {
-    let stopped = false;
+    const stop = new AbortController();
     const remoteScheduler = new RemoteSchedulerSource(
       {
         poll: async () => {
@@ -394,25 +395,24 @@ test("publishes on machine A and completes with a status receipt on machine B", 
     const daemon = new SchedulerDaemon(
       scheduler,
       orchestration,
+      { ownerId },
       {
-        ownerId,
-        now: () => new Date(timestamp),
-        sleep: async (milliseconds, signal) => {
-          if (signal !== undefined) {
-            await new Promise<void>((resolve) => {
-              signal.addEventListener("abort", () => resolve(), {
-                once: true,
-              });
-            });
-            return;
-          }
-          timestamp += milliseconds;
-          stopped = true;
+        beforeTick: () => remoteScheduler.beforeTick(),
+        async afterTick(result) {
+          await remoteScheduler.afterTick();
+          if (result.kind === "idle") stop.abort();
         },
       },
-      remoteScheduler,
     );
-    await daemon.run(() => stopped);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(timestamp);
+        yield* daemon.runEffect({
+          stop: stop.signal,
+          cancel: async () => {},
+        });
+      }).pipe(Effect.provide(TestContext.TestContext)),
+    );
   };
 
   await runWorkerSession("worker-session-1");

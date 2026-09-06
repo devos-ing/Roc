@@ -51,6 +51,49 @@ const probeDefaultModel = {
   thinkingLevelMap: { medium: 1, high: 2, xhigh: 3 },
 };
 
+for (const earlierFailure of [false, true]) {
+  test(`shutdown preserves ${earlierFailure ? "earlier" : "current"} client close failure after attempting all clients and probe`, async () => {
+    const previous = process.env.ROC_PI_EXPERIMENTAL;
+    const failure = new Error("client cleanup failed");
+    const probe = new ScriptedProbeClient(probeModels, probeDefaultModel);
+    const clients: RecordedPiClient[] = [];
+    try {
+      process.env.ROC_PI_EXPERIMENTAL = "1";
+      const factory = buildPiBackendFactory({
+        startProbeClient: async () => probe,
+        startAttemptClient: async () => {
+          const client = new RecordedPiClient();
+          const first = clients.length === 0;
+          client.close = async () => {
+            client.closeCount += 1;
+            if (first && client.closeCount === 1) throw failure;
+          };
+          clients.push(client);
+          return client;
+        },
+      });
+      const runtime = await factory({ branches: memoryBranches() });
+      const started = await runtime.harness.step(makeScoutRequest("first"));
+      if (earlierFailure) {
+        if (started.kind !== "event") throw new Error("expected started event");
+        clientAt(clients, 0).enqueue(messageEnd(), { type: "agent_settled" });
+        await collect(runtime.harness, {
+          ...makeScoutRequest("first"),
+          backendCursor: started.nextCursor,
+        }).catch(() => {});
+      }
+      await runtime.harness.step(makeScoutRequest("second"));
+      await expect(runtime.close()).rejects.toBe(failure);
+      await expect(runtime.close()).rejects.toBe(failure);
+      expect(clientAt(clients, 1).closeCount).toBe(1);
+      expect(probe.closeCount).toBe(1);
+    } finally {
+      if (previous === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
+      else process.env.ROC_PI_EXPERIMENTAL = previous;
+    }
+  });
+}
+
 /**
  * Runs the factory with one experimental-gate value and captures its
  * failure. The gate must reject before any Pi process is spawned, so the
