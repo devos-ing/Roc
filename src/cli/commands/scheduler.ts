@@ -89,7 +89,7 @@ export function registerSchedulerCommands(
     .description("Run and inspect the scheduler");
   scheduler
     .command("run")
-    .description("Run ready tasks with a registered backend")
+    .description("Run ready tasks through Pi")
     .option("--base <ref>", "Git ref used as the task base", "HEAD")
     .option(
       "--base-branch <branch>",
@@ -98,7 +98,7 @@ export function registerSchedulerCommands(
     .option(
       "--backend <name>",
       `Scheduler backend (${Object.keys(backends).join("|")})`,
-      "codex",
+      "pi",
     )
     .option("--source <name>", "Task source (local|github)", "local")
     .action(

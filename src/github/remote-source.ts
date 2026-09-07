@@ -437,7 +437,7 @@ export class GitHubRemoteTaskSource {
           this.remote.pauseTask(
             item.envelope.task.id,
             "needs_input",
-            "Remote workers cannot resolve machine-local context references",
+            "The Roc daemon cannot resolve context references local to the planning clone",
           );
         }
       }

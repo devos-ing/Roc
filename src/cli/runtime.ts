@@ -1,8 +1,5 @@
 import { dirname, join } from "node:path";
 import { Cause, Effect, Exit } from "effect";
-import { loadSchedulerSkillPolicy } from "../agents/codex/backend";
-import { CodexClient } from "../agents/codex/client";
-import { listWorkspaceSkills as readWorkspaceSkills } from "../agents/codex/skill-catalog";
 import { backends } from "../agents/registry";
 import type { BackendFactory } from "../agents/types";
 import {
@@ -35,6 +32,11 @@ import {
 } from "../scheduler/model-routing";
 import { Scheduler } from "../scheduler/scheduler";
 import { TaskHookService } from "../scheduler/task-hooks";
+import {
+  discoverTrustedSkills,
+  loadDefaultSkillPolicy,
+  loadSchedulerSkillPolicy,
+} from "../skills/policy";
 import { openDatabase } from "../store/database";
 import { OrchestrationRepository } from "../store/orchestration-repository";
 import { PlanningRepository } from "../store/planning-repository";
@@ -277,7 +279,7 @@ export type BackendSessionOptions = {
 /** Runs one scheduler session against a started backend factory. */
 export function runBackendSession(
   startBackend: BackendFactory,
-  input: RealSchedulerRunInput,
+  input: Omit<RealSchedulerRunInput, "backend"> & { backend: string },
   runId: string,
   options: BackendSessionOptions = {},
 ): Promise<void> {
@@ -470,7 +472,7 @@ export function runBackendSession(
             const runner = new BunGitHubCommandRunner();
             const reader = new GitHubRemoteIssueReader(input.repoPath, runner);
             const repositoryName = await reader.repository();
-            const workerLogin = await reader.authenticatedLogin();
+            const daemonLogin = await reader.authenticatedLogin();
             const trusted = trustedGitHubPublishers(
               process.env.ROC_GITHUB_PUBLISHERS,
             );
@@ -478,7 +480,7 @@ export function runBackendSession(
             const writer = new GitHubRemoteTaskWriter(
               input.repoPath,
               repositoryName,
-              workerLogin,
+              daemonLogin,
               remote,
               () => reader.read(repositoryName),
               runner,
@@ -625,13 +627,8 @@ export const defaultRuntime: CliRuntime = {
   async publishGitHubTasks(manifest, cwd) {
     return new GitHubTaskPublisher(cwd).publish(manifest);
   },
-  /** Reads one workspace skill catalog through a short-lived Codex client. */
-  async listWorkspaceSkills(cwd) {
-    const client = await CodexClient.start();
-    try {
-      return await readWorkspaceSkills(client, cwd);
-    } finally {
-      await client.close();
-    }
+  /** Discovers trusted installed skills without requiring a provider CLI or authentication. */
+  async listWorkspaceSkills(_cwd) {
+    return discoverTrustedSkills(await loadDefaultSkillPolicy());
   },
 };

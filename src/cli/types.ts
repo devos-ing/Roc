@@ -1,13 +1,10 @@
-import type {
-  DefaultSkillCandidate,
-  DiscoveredSkill,
-} from "../agents/codex/skill-policy";
 import type { RealBackendName } from "../agents/registry";
 import type { BacklogManifest } from "../domain/schemas";
 import type { SkillIdentity } from "../domain/skill-allowlist";
 import type { GitHubIssueCandidate } from "../github/import-source";
 import type { PublishedRemoteTask } from "../github/remote-tasks";
 import type { AgileError } from "../runtime/errors";
+import type { DefaultSkillCandidate, DiscoveredSkill } from "../skills/policy";
 
 export type CliTerminalInput = NodeJS.ReadStream;
 export type CliTerminalOutput = NodeJS.WriteStream;
@@ -63,7 +60,7 @@ export type CliRuntime = {
     error: AgileError,
     input: { dbPath: string; repoPath?: string },
   ): Promise<void>;
-  /** Returns Codex's complete skill catalog for one onboarding workspace. */
+  /** Returns installed trusted skills for onboarding without starting an agent. */
   listWorkspaceSkills?(cwd: string): Promise<DiscoveredSkill[]>;
   projectRoot?: string;
   homeRoot?: string;

@@ -169,7 +169,7 @@ test("prints a stable project scheduler snapshot", async () => {
   }
 });
 
-test("passes fixed project paths and the selected base to the Codex runtime", async () => {
+test("passes fixed project paths and the selected base to the Pi runtime", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-scheduler-codex-cli-"));
   const calls: unknown[] = [];
   const output: string[] = [];
@@ -188,7 +188,7 @@ test("passes fixed project paths and the selected base to the Codex runtime", as
     ).toBe(0);
     expect(calls).toEqual([
       {
-        backend: "codex",
+        backend: "pi",
         repoPath: root,
         baseRef: "origin/main",
         dbPath: join(root, ".agile", "runtime", "agile.db"),
@@ -222,6 +222,8 @@ test("rejects internal scheduler flags before invoking the runtime", async () =>
 
 test("rejects a --backend name outside the registry before invoking the runtime", async () => {
   for (const backend of [
+    "codex",
+    "zcode",
     "nope",
     "fake",
     "toString",
@@ -254,7 +256,7 @@ test("routes a registered --backend name into the scheduler run input", async ()
   try {
     expect(
       await runCli(
-        ["scheduler", "run", "--backend", "codex"],
+        ["scheduler", "run", "--backend", "pi"],
         { out: () => {}, err: () => {} },
         {
           projectRoot: root,
@@ -266,7 +268,7 @@ test("routes a registered --backend name into the scheduler run input", async ()
     ).toBe(0);
     expect(calls).toEqual([
       {
-        backend: "codex",
+        backend: "pi",
         repoPath: root,
         baseRef: "HEAD",
         dbPath: join(root, ".agile", "runtime", "agile.db"),

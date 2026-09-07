@@ -129,8 +129,8 @@ test("vertical: the pi factory routes every role through the shared runtime and 
   ];
   const probe = new ScriptedProbeClient([probeDefaultModel], probeDefaultModel);
   const clients: RecordedPiClient[] = [];
-  const previous = process.env.ROC_PI_EXPERIMENTAL;
-  process.env.ROC_PI_EXPERIMENTAL = "1";
+  const previous = process.env.ROC_ALLOW_UNSANDBOXED;
+  process.env.ROC_ALLOW_UNSANDBOXED = "1";
   let failure: unknown;
   let publicationCount = 0;
   try {
@@ -234,8 +234,8 @@ test("vertical: the pi factory routes every role through the shared runtime and 
       db.close();
     }
   } finally {
-    if (previous === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
-    else process.env.ROC_PI_EXPERIMENTAL = previous;
+    if (previous === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
+    else process.env.ROC_ALLOW_UNSANDBOXED = previous;
     await rm(projectRoot, { recursive: true, force: true });
     await rm(`${projectRoot}.agile-checkout`, { recursive: true, force: true });
   }

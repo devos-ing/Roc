@@ -1,5 +1,8 @@
+import {
+  type DiscoveredSkill,
+  SkillListResponseSchema,
+} from "../../skills/policy";
 import type { CodexClientApi } from "./client";
-import { type DiscoveredSkill, SkillListResponseSchema } from "./skill-policy";
 
 type SkillCatalogClient = Pick<CodexClientApi, "request">;
 

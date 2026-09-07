@@ -68,14 +68,17 @@ export class PiClient implements PiClientApi {
   static async start(input: {
     cwd: string;
     command?: string[];
+    skillPaths?: readonly string[];
     env?: Record<string, string | undefined>;
   }): Promise<PiClient> {
     const piBin = process.env.PI_BIN;
-    const command =
-      input.command ??
-      (piBin !== undefined && piBin !== ""
-        ? [piBin, "--mode", "rpc", ...PI_DETERMINISM_FLAGS]
-        : ["pi", "--mode", "rpc", ...PI_DETERMINISM_FLAGS]);
+    const command = input.command ?? [
+      piBin || "pi",
+      "--mode",
+      "rpc",
+      ...PI_DETERMINISM_FLAGS,
+      ...(input.skillPaths ?? []).flatMap((path) => ["--skill", path]),
+    ];
 
     let spawned: PiProcess;
     try {

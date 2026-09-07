@@ -10,7 +10,11 @@ You need:
 - [Bun](https://bun.sh/) 1.3.0 or later
 - Python 3.9 or later for the packaged PR review tests
 - Git
-- [Codex CLI](https://github.com/openai/codex) when testing Codex mode
+- Node.js 22.19+, [Pi](https://github.com/earendil-works/pi), and provider credentials for live execution
+- GitHub CLI and repository access for live PR publication
+
+Deterministic tests use fixtures and do not need Pi credentials. Native Codex
+and ZCode clients are only needed when manually testing their retained legacy adapters.
 
 Install the locked dependencies from a source checkout:
 
@@ -72,7 +76,7 @@ checks, and the test suite.
 ## Fake harness and debugging
 
 Roc keeps a fake scheduler harness for deterministic tests. It is intentionally
-not exposed on the public CLI: `scheduler run` only accepts registered backends
+not exposed on the public CLI: `scheduler run` only accepts the Pi backend
 and rejects `--db`, `--repo`, and `--fake-script` before invoking the runtime.
 The fake harness runs through internal test seams instead:
 

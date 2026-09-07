@@ -2,16 +2,16 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import {
-  buildDefaultSkillCandidates,
-  loadDefaultSkillPolicy,
-} from "../../agents/codex/skill-policy";
-import {
   type AgileCycleSetting,
   AgileCycleSettingSchema,
   activeAgileCycle,
 } from "../../domain/agile-cycle";
 import { loadRocSettingsIfPresent, saveRocSettings } from "../../settings";
 import { installPackagedSkills, SkillInstallError } from "../../skills/install";
+import {
+  buildDefaultSkillCandidates,
+  loadDefaultSkillPolicy,
+} from "../../skills/policy";
 import { openDatabase } from "../../store/database";
 import {
   commandProjectRoot,
@@ -100,7 +100,7 @@ async function executeOnboard(
     context.io.out(skillsStep);
     const homeRoot = context.runtime.homeRoot ?? homedir();
     if (context.runtime.listWorkspaceSkills === undefined) {
-      throw new Error("Codex skill discovery is required for onboard");
+      throw new Error("Local skill discovery is required for onboard");
     }
     if (context.io.selectSkills === undefined) {
       throw new Error("Interactive skill selection is required for onboard");

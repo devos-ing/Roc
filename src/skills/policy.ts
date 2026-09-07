@@ -1,10 +1,12 @@
+import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { z } from "zod";
 import {
   type SkillIdentity,
   skillIdentityKey,
-} from "../../domain/skill-allowlist";
+} from "../domain/skill-allowlist";
+import { loadRocSettings } from "../settings";
 
 const NonEmpty = z.string().trim().min(1);
 
@@ -227,4 +229,60 @@ export function buildDefaultSkillConfig(
         input.selectedSkillKeys.has(skillIdentityKey(identity)));
     return { path: skill.path, enabled: skill.enabled && selected };
   });
+}
+
+/** Loads the trusted skill policy intersected with the saved onboarding selection. */
+export async function loadSchedulerSkillPolicy(
+  homeRoot = homedir(),
+): Promise<DefaultSkillPolicy> {
+  const settings = await loadRocSettings(homeRoot);
+  return loadDefaultSkillPolicy(homeRoot, settings.skills?.allowlist);
+}
+
+/** Discovers installed trusted skills locally without starting an agent or loading skill code. */
+export async function discoverTrustedSkills(
+  policy: DefaultSkillPolicy,
+): Promise<DiscoveredSkill[]> {
+  const skills = new Map<string, DiscoveredSkill>();
+  const roots = [
+    { root: policy.agentsSkillsRoot, pattern: "*/SKILL.md", prefix: "" },
+    ...pluginSources.map((plugin) => ({
+      root: join(
+        policy.codexPluginCacheRoot,
+        plugin.cachePublisher,
+        plugin.cachePackage,
+      ),
+      pattern: "*/skills/*/SKILL.md",
+      prefix: plugin.prefix,
+    })),
+  ];
+  for (const { root, pattern, prefix } of roots) {
+    try {
+      const paths = await Array.fromAsync(
+        new Bun.Glob(pattern).scan({
+          cwd: root,
+          absolute: true,
+          onlyFiles: true,
+          followSymlinks: false,
+        }),
+      );
+      paths.sort((left, right) =>
+        right.localeCompare(left, undefined, { numeric: true }),
+      );
+      for (const path of paths) {
+        const name = prefix + path.split(sep).at(-2);
+        const skill = { name, path, enabled: true };
+        const identity = trustedIdentityFor(skill, policy);
+        if (identity === undefined || !(await lstat(path)).isFile()) continue;
+        const key = skillIdentityKey(identity);
+        if (!skills.has(key)) skills.set(key, skill);
+      }
+    } catch (error) {
+      if (
+        !(error instanceof Error && "code" in error && error.code === "ENOENT")
+      )
+        throw error;
+    }
+  }
+  return [...skills.values()];
 }

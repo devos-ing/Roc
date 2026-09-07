@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PiClient } from "../../../src/agents/pi/client";
@@ -197,5 +197,42 @@ test("close is idempotent and rejects in-flight consumers", async () => {
     await expect(client.close()).resolves.toBeUndefined();
   } finally {
     await cleanup();
+  }
+});
+
+test("default launch disables discovery and passes only explicit skill paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "roc-pi-argv-"));
+  const shim = join(root, "pi");
+  const previousBin = process.env.PI_BIN;
+  let client: PiClient | undefined;
+  try {
+    await writeFile(
+      shim,
+      `#!${process.execPath}
+for await (const line of console) {
+  const request = JSON.parse(line);
+  process.stdout.write(JSON.stringify({type: "response", id: request.id, command: request.type, success: true, data: process.argv.slice(2)}) + "\\n");
+}
+`,
+      { mode: 0o700 },
+    );
+    process.env.PI_BIN = shim;
+    const skill = join(root, "approved skill", "SKILL.md");
+    client = await PiClient.start({ cwd: root, skillPaths: [skill] });
+    expect(await client.request("fixture/args")).toEqual([
+      "--mode",
+      "rpc",
+      "--no-extensions",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-context-files",
+      "--skill",
+      skill,
+    ]);
+  } finally {
+    if (previousBin === undefined) delete process.env.PI_BIN;
+    else process.env.PI_BIN = previousBin;
+    await client?.close();
+    await rm(root, { recursive: true, force: true });
   }
 });

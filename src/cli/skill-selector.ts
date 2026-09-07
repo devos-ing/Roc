@@ -1,8 +1,8 @@
 import { type Readable, Writable } from "node:stream";
 import { styleText } from "node:util";
 import { isCancel, multiselect } from "@clack/prompts";
-import type { DefaultSkillCandidate } from "../agents/codex/skill-policy";
 import { skillIdentityKey } from "../domain/skill-allowlist";
+import type { DefaultSkillCandidate } from "../skills/policy";
 import type { SkillSelectionResult } from "./types";
 
 type SkillPromptConfig = {

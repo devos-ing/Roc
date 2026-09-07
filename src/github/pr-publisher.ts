@@ -35,7 +35,7 @@ export type TaskPublisher = {
 /** Verifies that GitHub access is ready before a real scheduler starts work. */
 export type GitHubPreflight = { assertReady(): Promise<void> };
 
-/** Runs one argv-only command and preserves its bounded textual diagnostics. */
+/** Runs a local gh or git subprocess with argv-only input and bounded diagnostics. */
 export type GitHubCommandRunner = {
   run(input: { command: string[]; cwd: string }): Promise<{
     exitCode: number;
@@ -53,7 +53,7 @@ export class GitHubPublicationError extends Error {
   }
 }
 
-/** Executes GitHub and Git commands without a shell. */
+/** Executes local gh and git subprocesses through Bun without a shell. */
 export class BunGitHubCommandRunner implements GitHubCommandRunner {
   /** Creates a subprocess runner with a bounded wall-clock command timeout. */
   constructor(private readonly timeoutMs = 30_000) {}

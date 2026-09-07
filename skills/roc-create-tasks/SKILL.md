@@ -18,13 +18,18 @@ with your own interview. If `grilling` is unavailable, stop and tell the user to
 install it with:
 
 ```bash
-npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor
+npx skills add mattpocock/skills --skill grilling --global --agent pi
 ```
 
 Continue grilling until the design-tree frontier is empty and the user confirms
 shared understanding. Then split the work into small, independently reviewable
 Roc tasks for the Scout -> Implement -> Review loop. Give every task explicit
 dependencies by task ID.
+
+Use the Roc entrypoint supplied by the user for every command below. When
+`ROC_CLI_ENTRY` is set, replace `npx roc-it@latest` with
+`bun "$ROC_CLI_ENTRY"`. This keeps source-checkout workflows on the same version
+as the daemon. Only use the npm command when no source entrypoint was supplied.
 
 Before creating the manifest, run:
 
@@ -67,7 +72,7 @@ Before writing anything, show the complete preview: cycle goal, every task in
 order, dependencies, risk, acceptance criteria, validation, and one destination:
 
 - **Local queue** imports the manifest into this project's Roc database.
-- **Remote GitHub worker** publishes approved managed Issues for another machine.
+- **Roc daemon via GitHub Issues** publishes approved tasks for a daemon in a separate clone on this host or another machine.
 
 If the invocation did not choose a destination, ask the user to choose one as
 part of the preview. Ask for explicit approval of the complete task set and its
@@ -83,7 +88,7 @@ For the local queue destination, run:
 npx roc-it@latest task import FILE
 ```
 
-For the remote GitHub worker destination, run:
+For the Roc daemon via GitHub Issues destination, run:
 
 ```bash
 npx roc-it@latest task publish-github FILE

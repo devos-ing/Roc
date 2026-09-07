@@ -11,8 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startCodexBackend } from "../../src/agents/codex/backend";
 import type { BackendRuntime } from "../../src/agents/types";
-import { runCli } from "../../src/cli/run";
-import { defaultRuntime, runBackendSession } from "../../src/cli/runtime";
+import { runBackendSession } from "../../src/cli/runtime";
 import { openDatabase } from "../../src/store/database";
 import {
   OrchestrationRepository,
@@ -214,52 +213,42 @@ realTest(
       }
 
       process.env.AGILE_TEST_SECRET = sentinel;
-      running = runCli(
-        [
-          "scheduler",
-          "run",
-          "--backend",
-          "codex",
-          "--base",
-          baseCommit,
-          "--base-branch",
-          "main",
-        ],
-        { out: () => {}, err: (text) => errors.push(text) },
+      // Exercise the retained native adapter directly; the public CLI now selects Pi only.
+      running = runBackendSession(
+        async (context) => {
+          backend = await startCodexBackend(context);
+          return backend;
+        },
         {
-          ...defaultRuntime,
-          projectRoot: root,
-          /** Runs the real backend and session while replacing only GitHub publication. */
-          async runScheduler(input) {
-            if (input.backend !== "codex")
-              throw new Error("Expected Codex backend");
-            await runBackendSession(
-              async (context) => {
-                backend = await startCodexBackend(context);
-                return backend;
-              },
-              input,
-              crypto.randomUUID(),
-              {
-                publisherFactory: (branches) => ({
-                  baseBranch: "main",
-                  /** Validates the real task commit and returns an isolated publication receipt. */
-                  async publish({ task, implementation }) {
-                    await branches.assertReviewReady(
-                      task.id,
-                      implementation.commitSha,
-                      task.baseCommit,
-                    );
-                    return {
-                      number: 1,
-                      url: "https://example.test/pull/1",
-                      state: "OPEN",
-                    };
-                  },
-                }),
-              },
-            );
-          },
+          backend: "legacy-codex",
+          dbPath: databasePath,
+          repoPath: root,
+          baseRef: baseCommit,
+        },
+        crypto.randomUUID(),
+        {
+          publisherFactory: (branches) => ({
+            baseBranch: "main",
+            /** Validates the real task commit and returns an isolated publication receipt. */
+            async publish({ task, implementation }) {
+              await branches.assertReviewReady(
+                task.id,
+                implementation.commitSha,
+                task.baseCommit,
+              );
+              return {
+                number: 1,
+                url: "https://example.test/pull/1",
+                state: "OPEN",
+              };
+            },
+          }),
+        },
+      ).then(
+        () => 0,
+        (error) => {
+          errors.push(String(error));
+          return 1;
         },
       );
       void running.then((code) => {

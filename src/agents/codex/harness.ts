@@ -14,6 +14,10 @@ import {
   ScoutOutputSchema,
 } from "../../harness/contracts";
 import { AgileError, normalizeError } from "../../runtime/errors";
+import {
+  buildDefaultSkillConfig,
+  type DefaultSkillPolicy,
+} from "../../skills/policy";
 import type {
   TaskBranchManager,
   TaskWorkspace,
@@ -46,10 +50,6 @@ import {
   TurnStartResponseSchema,
 } from "./protocol";
 import { listWorkspaceSkills } from "./skill-catalog";
-import {
-  buildDefaultSkillConfig,
-  type DefaultSkillPolicy,
-} from "./skill-policy";
 
 const UsageSchema = z
   .object({

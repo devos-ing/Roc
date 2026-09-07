@@ -12,7 +12,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import type { DefaultSkillCandidate } from "../../src/agents/codex/skill-policy";
 import { normalizeProjectSlug } from "../../src/cli/project-root";
 import { runCli } from "../../src/cli/run";
 import type { CliRuntime } from "../../src/cli/types";
@@ -22,6 +21,7 @@ import {
   rocSettingsPath,
   saveRocSettings,
 } from "../../src/settings";
+import type { DefaultSkillCandidate } from "../../src/skills/policy";
 import { openDatabase } from "../../src/store/database";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
@@ -30,15 +30,13 @@ const ansiSgrPattern = "\\u001B\\[[0-9;]*m";
 const onboardingNextSteps = [
   "Next:",
   "  Install unslop from pstack if needed:",
-  "    npx skills add backnotprop/pstack --skill unslop --global --agent codex --agent claude-code --agent cursor",
+  "    npx skills add backnotprop/pstack --skill unslop --global --agent pi",
   "  Then choose it:",
   "    npx roc-it@latest onboard",
   "  Install the grilling skill if needed:",
-  "    npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor",
-  "  Create your first backlog in Claude Code or Cursor:",
-  "    /roc-create-tasks <requirement>",
-  "  Create your first backlog in Codex:",
-  "    $roc-create-tasks <requirement>",
+  "    npx skills add mattpocock/skills --skill grilling --global --agent pi",
+  "  Create your first backlog in Pi:",
+  "    /skill:roc-create-tasks <requirement>",
   "  Inspect the resulting tasks:",
   "    npx roc-it@latest task list",
 ].join("\n");
@@ -957,8 +955,7 @@ test("task list reuses create-backlog guidance when empty", async () => {
     ).toBe(0);
     const empty = output.at(0) ?? "";
     expect(empty).toContain("No tasks.");
-    expect(empty).toContain("/roc-create-tasks <requirement>");
-    expect(empty).toContain("$roc-create-tasks <requirement>");
+    expect(empty).toContain("/skill:roc-create-tasks <requirement>");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1339,8 +1336,7 @@ test("task board shows backlog guidance for an empty project", async () => {
       ),
     ).toBe(0);
     expect(output.at(0)).toContain("No tasks.");
-    expect(output.at(0)).toContain("/roc-create-tasks <requirement>");
-    expect(output.at(0)).toContain("$roc-create-tasks <requirement>");
+    expect(output.at(0)).toContain("/skill:roc-create-tasks <requirement>");
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });

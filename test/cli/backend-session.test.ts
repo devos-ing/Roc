@@ -140,7 +140,7 @@ function fakeBackend(catalog: typeof compatibleCatalog): {
 }
 
 function sessionInput(repoPath: string, dbPath: string): RealSchedulerRunInput {
-  return { backend: "codex", dbPath, repoPath, baseRef: "HEAD" };
+  return { backend: "pi", dbPath, repoPath, baseRef: "HEAD" };
 }
 
 test("a missing repository preserves the sanitized branch-startup error before backend startup", async () => {
@@ -165,7 +165,7 @@ test("a missing repository preserves the sanitized branch-startup error before b
       retryable: false,
       component: "cli",
       runId: "missing-repository-run",
-      message: "Could not validate the codex repository and base ref",
+      message: "Could not validate the pi repository and base ref",
     });
     expect(failure).not.toMatchObject({
       message: expect.stringContaining(root),

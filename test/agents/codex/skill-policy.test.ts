@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { skillIdentityKey } from "../../../src/domain/skill-allowlist";
 import {
   buildDefaultSkillCandidates,
   buildDefaultSkillConfig,
+  discoverTrustedSkills,
   loadDefaultSkillPolicy,
-} from "../../../src/agents/codex/skill-policy";
-import { skillIdentityKey } from "../../../src/domain/skill-allowlist";
+} from "../../../src/skills/policy";
 
 test("trusts only the exact pstack unslop identity and path", async () => {
   const home = await mkdtemp(join(tmpdir(), "roc-unslop-policy-"));
@@ -221,4 +222,35 @@ test("builds deterministic checklist candidates with missing unslop disabled", (
     { identity: { name: "grilling" }, initiallySelected: false },
     { identity: { name: "tdd" }, initiallySelected: true },
   ]);
+});
+
+test("local discovery keeps the newest trusted plugin and skips linked skills", async () => {
+  const home = await mkdtemp(join(tmpdir(), "roc-skill-discovery-"));
+  try {
+    const policy = await loadDefaultSkillPolicy(home);
+    const root = join(policy.codexPluginCacheRoot, "ponytail", "ponytail");
+    for (const version of ["4.9.0", "4.10.0"]) {
+      const directory = join(root, version, "skills", "ponytail");
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, "SKILL.md"), "trusted skill");
+    }
+    await mkdir(policy.agentsSkillsRoot, { recursive: true });
+    await symlink(
+      join(root, "4.10.0", "skills", "ponytail"),
+      join(policy.agentsSkillsRoot, "tdd"),
+    );
+    const discovered = await discoverTrustedSkills({
+      ...policy,
+      standaloneSkillSources: new Map([["tdd", "mattpocock/skills"]]),
+    });
+    expect(discovered).toEqual([
+      {
+        name: "ponytail:ponytail",
+        path: join(root, "4.10.0", "skills", "ponytail", "SKILL.md"),
+        enabled: true,
+      },
+    ]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
 });

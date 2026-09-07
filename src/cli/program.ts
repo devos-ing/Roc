@@ -12,7 +12,7 @@ function createCliProgram(context: CliCommandContext): Command {
   const program = new Command();
   program
     .name("roc-it")
-    .description("Run Codex agents through an agile software flow")
+    .description("Run Pi agents through an agile software flow")
     .helpOption("-h, --help", "display help for command")
     .addHelpCommand("help [command]", "display help for command")
     .showHelpAfterError()

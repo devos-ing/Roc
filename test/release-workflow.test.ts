@@ -155,8 +155,10 @@ test("release workflow keeps the stable-tag, immutable-action, and ordered-relea
   expect(release).toContain('gh release create "$GITHUB_REF_NAME"');
 });
 
-test("README explains the agile Scout, Implement, Review loop", async () => {
-  const readme = await readProjectFile("README.md");
+test("README links to the detailed agile Scout, Implement, Review guide", async () => {
+  const overview = await readProjectFile("README.md");
+  expect(overview).toContain("[detailed guide](README.details.md)");
+  const readme = await readProjectFile("README.details.md");
   const start = readme.indexOf("## How it works");
   const end = readme.indexOf("## Commands", start);
   expect(start).toBeGreaterThanOrEqual(0);

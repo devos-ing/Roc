@@ -1,14 +1,14 @@
 # Cross-machine task delivery
 
-Status: approved direction and autonomous implementation authorized by the user on 2026-09-06. This spec translates the reviewed plan at `.scratch/deliver-code/remote-task-workflow/plan.md` into acceptance requirements. GitHub Issues are shared tasks; one Roc daemon on a dedicated worker polls them. Pi is the selected multi-provider execution backend. Existing local commands and other backends remain supported.
+Status: approved direction and autonomous implementation authorized by the user on 2026-09-06. This spec translates the reviewed plan at `.scratch/deliver-code/remote-task-workflow/plan.md` into acceptance requirements. GitHub Issues are shared tasks; one Roc daemon in a dedicated execution clone polls them. Pi is the sole public execution backend, using provider models directly. Existing local commands remain supported; native Codex and ZCode adapters are unregistered.
 
 ## Scope and authority
 
-Machine A publishes approved tasks after chat/grilling. Machine B has its own clone, database, checkout, CLI installations and credentials. A may go offline after publication. B runs Scout → Implement → independent Review → PR and writes results back to the originating Issue. GitHub Actions runners, shared SQLite files, concurrent workers, automatic merge, automatic failover, and new model adapters are excluded.
+Machine A publishes approved tasks after chat/grilling. Machine B has its own clone, database, checkout, CLI installations and credentials. A may go offline after publication. B runs Scout → Implement → independent Review → PR and writes results back to the originating Issue. Shared SQLite files, concurrent daemons, automatic merge, automatic failover, and new model adapters are excluded.
 
 The user authorized local implementation, tests, and diagrams without intermediate approvals. The initial implementation phase did not publish project Issues, commit/push changes, or start paid model jobs. Local deterministic GitHub fixtures prove orchestration; real provider/two-machine checks must remain explicitly unverified unless they are actually performed with an authorized test setup.
 
-Validation update, 2026-09-06: the user requested starting on the same machine. Use separate publisher and worker clones and databases, one worker daemon, a private disposable GitHub fixture, and the already authenticated Codex backend for the first live exercise. Fixture commits, Issues and PRs are test artifacts; implementation changes remain uncommitted. Do not share an executable backlog or resolve a nested worker checkout to an outer project's `.agile` directory. Record this separately from Pi provider checks and the later physical two-machine check.
+Validation update, 2026-09-06: the user requested starting on the same machine. Use separate publisher and execution clones and databases, one Roc daemon, a private disposable GitHub fixture, and Pi with a configured Codex provider model for the first live exercise. This supersedes the earlier native Codex CLI trial. Fixture commits, Issues and PRs are test artifacts; implementation changes remain uncommitted. Do not share an executable backlog or resolve a nested execution checkout to an outer project's `.agile` directory. Record this separately from Pi provider checks and the later physical two-machine check.
 
 ## Requirement IDs
 
@@ -18,13 +18,13 @@ Add `roc-it task publish-github FILE` for the existing strict BacklogManifest. E
 
 Each Issue includes a readable rendering and a versioned JSON envelope containing `planId`, `cycleId`, `goal` and the complete original task. Derive a stable plan identity deterministically from the approved manifest or persist it in the publication record. Preserve original task IDs, priority, dependencies, risk, acceptance criteria, validation, budget, and optional fields. Repository + planId + task.id identifies the remote task; collisions with existing local IDs must fail visibly rather than overwrite unrelated work.
 
-Use existing `gh` subprocess patterns with an explicit repository/cwd, argv-only invocation, bounded commands and safe body-file/stdin handling. No new SDK or generic tracker framework. Mark managed Issues with a durable label such as `roc:task`; create all Issue bodies and dependency links before admitting tasks with `roc:ready`. Approval is a separate trusted-author comment tied to the canonical envelope hash. The worker uses an explicit trusted publisher allowlist, e.g. `ROC_GITHUB_PUBLISHERS`, and never treats Issue prose or a ready label alone as execution authorization.
+Use existing `gh` subprocess patterns with an explicit repository/cwd, argv-only invocation, bounded commands and safe body-file/stdin handling. No new SDK or generic tracker framework. Mark managed Issues with a durable label such as `roc:task`; create all Issue bodies and dependency links before admitting tasks with `roc:ready`. Approval is a separate trusted-author comment tied to the canonical envelope hash. The daemon uses an explicit trusted publisher allowlist, e.g. `ROC_GITHUB_PUBLISHERS`, and never treats Issue prose or a ready label alone as execution authorization.
 
 Repeated invocation reconciles the stable identity with existing open/closed Issues. Conflicting duplicate identities halt the affected publication. If a create request times out, read back before retrying; if its outcome remains ambiguous, return a recoverable error without blindly creating another Issue. Partially published plans can be resumed. Do not automatically import the remote backlog into A's executable local queue.
 
 ### remote-admission
 
-Add `--source github` to the existing scheduler command, preserving local behavior when omitted. One daemon owns one project database under the existing lease. SQLite lease and Issue labels do not provide distributed mutual exclusion; operating two workers for one repository is unsupported.
+Add `--source github` to the existing scheduler command, preserving local behavior when omitted. One daemon owns one project database under the existing lease. SQLite lease and Issue labels do not provide distributed mutual exclusion; operating two daemons for one repository is unsupported.
 
 Poll GitHub about every 30 seconds and back off boundedly on network failures. Track managed active/completed Issues independently of the ready label. GitHub I/O must not run within SQLite transactions or prevent lease heartbeats. Validate the strict envelope, trusted approval author/hash, open/ready eligibility, task identity and the complete dependency graph before admitting ready work. Preserve the source cycle. Malformed, incomplete, cyclic or conflicting plans must not block other valid plans.
 
@@ -38,7 +38,7 @@ Persist local outcomes before remote side effects. Reuse existing task events/pu
 
 Map draft→roc:draft, ready→roc:ready, active phases→roc:running, done→roc:done, needs_input/needs_replan→roc:attention, rejected/failed_infra→roc:failed, retired→roc:retired. Include the actual phase/outcome, task identity, last update time, blocker/failure summary, and PR/follow-up link when present. Sanitize operational diagnostics before publication just as for existing AgileError logging.
 
-Status synchronization failure retries synchronization only. Restart or lost acknowledgements must not rerun completed agents, duplicate PRs, duplicate status comments, or replay stale progress over newer outcomes. Keep pending work durable. A halted/offline worker may leave a timestamped running status; this is not permission for another worker to take over.
+Status synchronization failure retries synchronization only. Restart or lost acknowledgements must not rerun completed agents, duplicate PRs, duplicate status comments, or replay stale progress over newer outcomes. Keep pending work durable. A halted/offline daemon may leave a timestamped running status; this is not permission for another daemon to take over.
 
 ### remote-followup
 
@@ -54,19 +54,19 @@ Fetch current target state for each new task, persist its full baseCommit and pa
 
 ### pi-provider-validation
 
-Reuse `--backend pi`, its RPC client, harness, model catalog and conformance tests. Each daemon session uses one explicitly resolved provider/model. Existing luna/terra/sol profiles currently map to that single default model. No automatic cross-provider fallback, per-ticket runtime switching, or per-role model routing is added.
+Default to `--backend pi` and reject other public backend names. Reuse its RPC client, harness, model catalog and conformance tests. Each daemon session uses one explicitly resolved provider/model. Existing luna/terra/sol profiles currently map to that single default model. No automatic cross-provider fallback, per-ticket runtime switching, or per-role model routing is added.
 
-Validate declared reasoning capabilities instead of guessing. The selected Pi default must support `high`; a model lacking it fails clearly without silently switching models. Persist accurate provider/model attribution and usage. Credentials remain on B. Pi lacks a built-in filesystem sandbox; keep its experimental gate and require documented OS/container confinement for unattended deployment. Do not present a working directory as a sandbox. Preserve independent Review and existing controlled restart/retry semantics.
+Validate declared reasoning capabilities instead of guessing. The selected Pi default must support `high`; a model lacking it fails clearly without silently switching models. Persist accurate provider/model attribution and usage. Credentials remain on B. Pi lacks a built-in filesystem sandbox; require the explicit `ROC_ALLOW_UNSANDBOXED=1` acknowledgement and require documented OS/container confinement for unattended deployment. Do not present a working directory as a sandbox. Preserve independent Review and existing controlled restart/retry semantics.
 
 ### remote-operations
 
-Document A/B setup with Roc, Bun, Pi and its Node.js requirement, Git, gh, project build tools, trusted publishers and credentials. Explain that only B runs the daemon. Give foreground startup and launchd/systemd service examples with a stable cwd/database location. Do not add a service manager. Retain local mode compatibility and document how to stop the old worker before transferring its state.
+Document A/B setup with Roc, Bun, Pi and its Node.js requirement, Git, gh, project build tools, trusted publishers and credentials. Explain that only B runs the daemon. Give foreground startup and launchd/systemd service examples with a stable cwd/database location. Do not add a service manager. Retain local mode compatibility and document how to stop the old daemon before transferring its state.
 
 ### remote-verification
 
 Use the existing Fake Harness and injected command runners. One vertical test should represent A and B with separate local state and a shared fake GitHub service, exercising publication → polling → roles → PR → result writeback. Include dependency merge/base propagation and the smallest boundary tests for ambiguous publication, invalid/revoked approval, network/restart recovery and one unapproved follow-up. Preserve existing lease, event deduplication, checkout, exact-commit review and publication tests. Run lint, typecheck and appropriate tests after implementation.
 
-Real Claude and GLM three-role runs and a two-machine exercise are required release evidence. Record them separately from deterministic checks; missing credentials/machines are an unverified release gate, not a passing test. No exhaustive provider/protocol/notification matrix or coverage target.
+Real Pi Codex, Claude and GLM three-role runs and a two-machine exercise are required release evidence. Record them separately from deterministic checks; missing credentials/machines are an unverified release gate, not a passing test. No exhaustive provider/protocol/notification matrix or coverage target.
 
 Run the same-host live exercise first: A publishes one small approved task; only B runs the daemon and completes the roles, PR and original-Issue writeback. Retain both database snapshots, actual model attribution, the implementation SHA, Issue and PR URLs, and shutdown evidence. A must have no executable task imported. Same-host success does not establish physical-host or credential isolation.
 

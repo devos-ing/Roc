@@ -486,8 +486,8 @@ test("keeps widths below forty bounded and frames empty boards completely", () =
   expect(output).toContain("Attention · 0");
   expect(output).toContain("Done · 0");
   expect(output).toContain("No tasks.");
-  expect(output).toContain("/roc-create-tasks");
-  expect(output).toContain("$roc-create-tasks");
+  expect(output).toContain("/skill:roc-create-tasks");
+  expect(output).toContain("--global --agent pi");
   expect(output).toContain("↑↓ move");
   expect(output.split("\n").every((line) => displayWidth(line) <= 24)).toBe(
     true,

@@ -67,7 +67,7 @@ export function sanitizeRemoteDiagnostic(value: string): string {
 export function renderRemoteStatus(projection: RemoteTaskProjection): string {
   const lines = [
     `<!-- roc:status task=${encodeURIComponent(projection.taskId)} -->`,
-    "## Roc worker status",
+    "## Roc daemon status",
     `- Task: ${projection.taskId}`,
     `- Phase/outcome: ${projection.status}`,
     `- Last local update: ${projection.updatedAt}`,
@@ -101,7 +101,7 @@ export class GitHubRemoteTaskWriter {
   constructor(
     private readonly cwd: string,
     private readonly repositoryName: string,
-    private readonly workerLogin: string,
+    private readonly daemonLogin: string,
     private readonly remote: RemoteTaskRepository,
     private readonly readIssues: () => Promise<RemoteIssue[]>,
     private readonly runner: GitHubCommandRunner,
@@ -259,7 +259,7 @@ export class GitHubRemoteTaskWriter {
       );
       const owned = issue?.comments.filter(
         (comment) =>
-          comment.author?.login === this.workerLogin &&
+          comment.author?.login === this.daemonLogin &&
           comment.body.includes(
             `<!-- roc:status task=${encodeURIComponent(projection.taskId)} -->`,
           ),
@@ -289,7 +289,7 @@ export class GitHubRemoteTaskWriter {
       );
       const owned = issue?.comments.filter(
         (comment) =>
-          comment.author?.login === this.workerLogin &&
+          comment.author?.login === this.daemonLogin &&
           comment.body.includes(
             `<!-- roc:status task=${encodeURIComponent(projection.taskId)} -->`,
           ),

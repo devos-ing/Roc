@@ -1,23 +1,10 @@
-import { homedir } from "node:os";
 import { normalizeError } from "../../runtime/errors";
 import type { CatalogModel } from "../../scheduler/model-routing";
-import { loadRocSettings } from "../../settings";
+import { loadSchedulerSkillPolicy } from "../../skills/policy";
 import type { BackendFactory } from "../types";
 import { CodexClient } from "./client";
 import { createCodexHarness } from "./harness";
 import { ModelListResponseSchema } from "./protocol";
-import {
-  type DefaultSkillPolicy,
-  loadDefaultSkillPolicy,
-} from "./skill-policy";
-
-/** Loads the current trusted policy intersected with the saved global selection. */
-export async function loadSchedulerSkillPolicy(
-  homeRoot = homedir(),
-): Promise<DefaultSkillPolicy> {
-  const settings = await loadRocSettings(homeRoot);
-  return loadDefaultSkillPolicy(homeRoot, settings.skills?.allowlist);
-}
 
 /** Loads the visible Codex model catalog over the running client connection. */
 export async function loadCatalog(

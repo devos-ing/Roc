@@ -2,10 +2,14 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildDefaultSkillConfig } from "../../src/agents/codex/skill-policy";
 import { runCli } from "../../src/cli/run";
 import { loadSchedulerSkillPolicy } from "../../src/cli/runtime";
 import { loadRocSettings } from "../../src/settings";
+import {
+  buildDefaultSkillConfig,
+  discoverTrustedSkills,
+  loadDefaultSkillPolicy,
+} from "../../src/skills/policy";
 
 test("onboarding selection becomes the scheduler skill configuration", async () => {
   const project = await mkdtemp(join(tmpdir(), "roc-allowlist-project-"));
@@ -34,6 +38,15 @@ test("onboarding selection becomes the scheduler skill configuration", async () 
         },
       }),
     );
+    for (const skill of discovered) {
+      await mkdir(join(agentsSkills, skill.name), { recursive: true });
+      await writeFile(skill.path, "# Trusted fixture skill");
+    }
+    await mkdir(join(agentsSkills, "untrusted"), { recursive: true });
+    await writeFile(
+      join(agentsSkills, "untrusted", "SKILL.md"),
+      "# Not in the trusted lock",
+    );
     const io = {
       out: () => {},
       err: () => {},
@@ -47,7 +60,8 @@ test("onboarding selection becomes the scheduler skill configuration", async () 
       runScheduler: async () => {},
       projectRoot: project,
       homeRoot: home,
-      listWorkspaceSkills: async () => discovered,
+      listWorkspaceSkills: async () =>
+        discoverTrustedSkills(await loadDefaultSkillPolicy(home)),
     };
 
     expect(await runCli(["onboard", "--global"], io, runtime)).toBe(0);
@@ -56,7 +70,11 @@ test("onboarding selection becomes the scheduler skill configuration", async () 
       { name: "unslop", source: "backnotprop/pstack" },
     ]);
     const policy = await loadSchedulerSkillPolicy(home);
-    expect(buildDefaultSkillConfig(discovered, policy)).toEqual([
+    expect(
+      buildDefaultSkillConfig(await discoverTrustedSkills(policy), policy).sort(
+        (a, b) => a.path.localeCompare(b.path),
+      ),
+    ).toEqual([
       { path: discovered[0]!.path, enabled: false },
       { path: discovered[1]!.path, enabled: true },
     ]);

@@ -7,11 +7,9 @@ type OnboardingScope =
 
 const createBacklogGuidance = [
   "  Install the grilling skill if needed:",
-  "    npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor",
-  "  Create your first backlog in Claude Code or Cursor:",
-  "    /roc-create-tasks <requirement>",
-  "  Create your first backlog in Codex:",
-  "    $roc-create-tasks <requirement>",
+  "    npx skills add mattpocock/skills --skill grilling --global --agent pi",
+  "  Create your first backlog in Pi:",
+  "    /skill:roc-create-tasks <requirement>",
 ];
 
 /** Renders the stable identity, scope, and step heading for onboarding. */
@@ -74,7 +72,7 @@ export function renderOnboardingComplete(
     ...(input.unslopMissing
       ? [
           "  Install unslop from pstack if needed:",
-          "    npx skills add backnotprop/pstack --skill unslop --global --agent codex --agent claude-code --agent cursor",
+          "    npx skills add backnotprop/pstack --skill unslop --global --agent pi",
           "  Then choose it:",
           "    npx roc-it@latest onboard",
         ]
