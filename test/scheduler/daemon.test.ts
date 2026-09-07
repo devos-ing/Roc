@@ -309,6 +309,175 @@ test("polls after idle and releases its lease on stop", async () => {
   );
 });
 
+test("heartbeats while remote polling is paused", async () => {
+  const entered = Promise.withResolvers<void>();
+  const stop = new AbortController();
+  let tickCount = 0;
+  let heartbeatCount = 0;
+  let released = false;
+  const daemon = new SchedulerDaemon(
+    {
+      async tick() {
+        tickCount += 1;
+        return { kind: "idle" };
+      },
+    },
+    {
+      acquireLease: () => true,
+      heartbeatLease() {
+        heartbeatCount += 1;
+        return true;
+      },
+      releaseLease() {
+        released = true;
+        return true;
+      },
+    },
+    { ownerId: "owner-1" },
+    {
+      async beforeTick() {
+        entered.resolve();
+        return false;
+      },
+    },
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.fork(
+        daemon.runEffect({
+          stop: stop.signal,
+          cancel: async () => {},
+        }),
+      );
+      yield* Effect.promise(() => entered.promise);
+      yield* TestClock.adjust(9_000);
+      expect(tickCount).toBe(0);
+      expect(heartbeatCount).toBe(3);
+      stop.abort();
+      yield* Fiber.join(fiber);
+      expect(released).toBe(true);
+    }).pipe(Effect.provide(TestContext.TestContext)),
+  );
+});
+
+test("drains pending remote polling on stop without starting a scheduler tick", async () => {
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<boolean>();
+  const stop = new AbortController();
+  const calls: string[] = [];
+  const daemon = new SchedulerDaemon(
+    {
+      async tick() {
+        calls.push("tick");
+        return { kind: "idle" };
+      },
+    },
+    {
+      acquireLease: () => true,
+      heartbeatLease() {
+        calls.push("heartbeat");
+        return true;
+      },
+      releaseLease() {
+        calls.push("release");
+        return true;
+      },
+    },
+    { ownerId: "owner-1" },
+    {
+      beforeTick() {
+        calls.push("poll");
+        entered.resolve();
+        return finish.promise;
+      },
+      async afterTick() {
+        calls.push("sync");
+      },
+    },
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.fork(
+        daemon.runEffect({
+          stop: stop.signal,
+          cancel: async () => {
+            finish.resolve(true);
+          },
+        }),
+      );
+      yield* Effect.promise(() => entered.promise);
+      yield* TestClock.adjust(3_000);
+      stop.abort();
+      yield* Fiber.join(fiber);
+      expect(calls).toEqual(["poll", "heartbeat", "release"]);
+    }).pipe(Effect.provide(TestContext.TestContext)),
+  );
+});
+
+test("heartbeats during remote writeback and drains it before releasing the lease", async () => {
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const stop = new AbortController();
+  const calls: string[] = [];
+  const daemon = new SchedulerDaemon(
+    {
+      async tick() {
+        calls.push("tick");
+        return { kind: "idle" };
+      },
+    },
+    {
+      acquireLease: () => true,
+      heartbeatLease() {
+        calls.push("heartbeat");
+        return true;
+      },
+      releaseLease() {
+        calls.push("release");
+        return true;
+      },
+    },
+    { ownerId: "owner-1" },
+    {
+      async beforeTick() {
+        calls.push("poll");
+        return true;
+      },
+      async afterTick(result) {
+        expect(result).toEqual({ kind: "idle" });
+        calls.push("sync");
+        entered.resolve();
+        await finish.promise;
+        calls.push("synced");
+      },
+    },
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.fork(
+        daemon.runEffect({
+          stop: stop.signal,
+          cancel: async () => {
+            finish.resolve();
+          },
+        }),
+      );
+      yield* Effect.promise(() => entered.promise);
+      yield* TestClock.adjust(3_000);
+      stop.abort();
+      yield* Fiber.join(fiber);
+      expect(calls).toEqual([
+        "poll",
+        "tick",
+        "sync",
+        "heartbeat",
+        "synced",
+        "release",
+      ]);
+    }).pipe(Effect.provide(TestContext.TestContext)),
+  );
+});
+
 test("heartbeats every three seconds with a ten-second lease", async () => {
   const entered = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<{

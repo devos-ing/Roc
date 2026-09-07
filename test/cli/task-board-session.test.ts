@@ -242,11 +242,9 @@ test("keeps the last valid frame on a transient read failure and retries on dema
   input.emit("data", "R");
   await waitFor(() => frame(output).includes("temporary read failure"));
   const errorFrame = frame(output);
-  if (process.env.NO_COLOR === undefined)
-    expect(errorFrame).toContain(
-      "\u001B[31mError: temporary read failure\u001B[0m",
-    );
-  else expect(errorFrame).not.toContain("\u001B[31m");
+  expect(errorFrame).toContain(
+    "\u001B[31mError: temporary read failure\u001B[0m",
+  );
   expect(stripVTControlCharacters(errorFrame)).toContain(
     "Error: temporary read failure",
   );

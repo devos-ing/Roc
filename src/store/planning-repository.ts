@@ -243,6 +243,17 @@ export class PlanningRepository {
     return existing;
   }
 
+  /** Returns the frozen goal for an existing cycle identity. */
+  findCycleGoal(cycleId: string): string | undefined {
+    return (
+      this.db
+        .query<{ goal: string }, [string]>(
+          "SELECT goal FROM cycles WHERE id = ?",
+        )
+        .get(cycleId)?.goal ?? undefined
+    );
+  }
+
   /** Atomically imports approved backlog tasks and their blocking dependencies. */
   importBacklog(input: BacklogManifest): BacklogImportResult {
     const manifest = BacklogManifestSchema.parse(input);

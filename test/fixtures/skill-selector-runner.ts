@@ -1,4 +1,10 @@
 import { PassThrough } from "node:stream";
+import { selectAgileCycle } from "../../src/cli/cycle-selector";
+import {
+  formatOnboardingMessage,
+  renderOnboardingComplete,
+  renderOnboardingHeader,
+} from "../../src/cli/presentation";
 import { selectSkillAllowlist } from "../../src/cli/skill-selector";
 
 type TtyInput = PassThrough & {
@@ -15,6 +21,12 @@ input.setRawMode = (value) => {
 };
 const output = new PassThrough();
 output.on("data", (chunk) => process.stdout.write(chunk));
+process.stdout.write(
+  `${formatOnboardingMessage(
+    renderOnboardingHeader({ kind: "project", root: "/example/roc" }),
+    true,
+  )}\n`,
+);
 setTimeout(() => {
   input.write("\u001B[B");
   setTimeout(() => input.write("\r"), 10);
@@ -40,5 +52,10 @@ await selectSkillAllowlist(
   ],
   undefined,
   { input, output },
+);
+setTimeout(() => input.write("\r"), 10);
+await selectAgileCycle(undefined, { input, output });
+process.stdout.write(
+  `${formatOnboardingMessage(renderOnboardingComplete(), true)}\n`,
 );
 output.end();

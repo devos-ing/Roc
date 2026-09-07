@@ -224,6 +224,7 @@ test("migration creates every approved table", () => {
     "events",
     "model_decisions",
     "reviews",
+    "remote_tasks",
     "scheduler_lease",
     "task_publications",
     "task_hooks",
@@ -237,7 +238,7 @@ test("migration creates every approved table", () => {
   expect(
     db.query<{ user_version: number }, []>("PRAGMA user_version").get()
       ?.user_version,
-  ).toBe(7);
+  ).toBe(8);
   expect(
     db
       .query<{ name: string }, []>("PRAGMA table_info(tasks)")
@@ -362,7 +363,7 @@ test("v4 migration renames weeks to cycles without losing related data", () => {
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get(),
-    ).toEqual({ user_version: 7 });
+    ).toEqual({ user_version: 8 });
   } finally {
     db.close();
   }
@@ -408,7 +409,7 @@ test("v5 migration adds task hooks to an existing v4 database", () => {
     ).toEqual({ name: "task_hooks" });
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get(),
-    ).toEqual({ user_version: 7 });
+    ).toEqual({ user_version: 8 });
   } finally {
     db.close();
   }
@@ -454,7 +455,7 @@ test("v3 migration backfills supported model profiles without losing runtime col
     expect(
       db.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(7);
+    ).toBe(8);
     expect(
       db
         .query<
@@ -818,13 +819,13 @@ test("database initialization closes its handle before rethrowing", () => {
   const directory = mkdtempSync(join(tmpdir(), "agile-agents-db-"));
   const path = join(directory, "future.sqlite");
   const future = new Database(path, { create: true });
-  future.exec("PRAGMA user_version = 8");
+  future.exec("PRAGMA user_version = 9");
   future.close();
 
   const close = spyOn(Database.prototype, "close");
   try {
     expect(() => openDatabase(path)).toThrow(
-      "Database version 8 is newer than supported version 7",
+      "Database version 9 is newer than supported version 8",
     );
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
@@ -859,7 +860,7 @@ test("file databases create parents and enable durable SQLite settings", () => {
         reopened
           .query<{ user_version: number }, []>("PRAGMA user_version")
           .get()?.user_version,
-      ).toBe(7);
+      ).toBe(8);
     } finally {
       reopened.close();
     }

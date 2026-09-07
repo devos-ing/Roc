@@ -1,3 +1,4 @@
+import { renderHelpBox } from "./help-box";
 import type { TaskBoardSnapshot } from "./task-board-model";
 import { renderTaskBoard, taskBoardHitTest } from "./task-board-renderer";
 import type { CliTerminalInput, CliTerminalOutput } from "./types";
@@ -36,19 +37,20 @@ function statusLine(value: string, width: number): string {
 
 /** Renders the keyboard fallback reference without requiring a board snapshot. */
 function renderHelp(width: number): string {
-  return [
+  return renderHelpBox(
     "Task board controls",
-    "↑/↓ or J/K  Select a task",
-    "Space         Peek at the selected task",
-    "Enter         Open full task details",
-    "D             Expand or collapse Done",
-    "R             Refresh now",
-    "?             Show this help",
-    "Esc           Return to the board",
-    "Q or Ctrl-C   Quit",
-  ]
-    .map((line) => statusLine(line, width))
-    .join("\n");
+    [
+      "↑/↓ or J/K  Select a task",
+      "Space         Peek at the selected task",
+      "Enter         Open full task details",
+      "D             Expand or collapse Done",
+      "R             Refresh now",
+      "?             Show this help",
+      "Esc           Return to the board",
+      "Q or Ctrl-C   Quit",
+    ].join("\n"),
+    width,
+  );
 }
 
 /** Runs the terminal task board until the user quits or terminal I/O fails. */
@@ -101,7 +103,7 @@ export async function runTaskBoardSession(
     }
     if (lastError !== undefined) {
       const error = statusLine(`Error: ${lastError}`, width);
-      frame = `${frame}\n\n${process.env.NO_COLOR === undefined ? `${red}${error}${reset}` : error}`;
+      frame = `${frame}\n\n${red}${error}${reset}`;
     }
     output.write(`${clearScreen}${frame}`);
   };

@@ -137,6 +137,39 @@ test("implement commits through the trusted harness", async () => {
   });
 });
 
+test("implement restores an approved follow-up source commit before starting Pi", async () => {
+  const client = new RecordedPiClient();
+  const restorations: Array<[string, string, string]> = [];
+  const harness = createPiHarness({
+    branches: memoryBranches({
+      async restoreChanges(taskId, sourceCommit, baseCommit) {
+        if (baseCommit === undefined) throw new Error("missing base commit");
+        restorations.push([taskId, sourceCommit, baseCommit]);
+      },
+    }),
+    startClient: async () => client,
+  });
+  const original = makeImplementRequest();
+  if (original.input.role !== "implement") throw new Error("unreachable");
+  const request = {
+    ...original,
+    input: {
+      ...original.input,
+      ticket: {
+        ...original.input.ticket,
+        spec: {
+          ...original.input.ticket.spec,
+          sourceCommit: "c".repeat(40),
+        },
+      },
+    },
+  };
+
+  await harness.step(request);
+
+  expect(restorations).toEqual([["T1", "c".repeat(40), "a".repeat(40)]]);
+});
+
 test("non-JSON final output fails as invalid structured output", async () => {
   const client = new RecordedPiClient();
   const harness = createPiHarness({

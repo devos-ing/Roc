@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PiClient } from "../../../src/agents/pi/client";
@@ -197,5 +197,124 @@ test("close is idempotent and rejects in-flight consumers", async () => {
     await expect(client.close()).resolves.toBeUndefined();
   } finally {
     await cleanup();
+  }
+});
+
+test("default launch disables discovery and passes only explicit skill paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "roc-pi-argv-"));
+  const shim = join(root, "pi");
+  const previousBin = process.env.PI_BIN;
+  let client: PiClient | undefined;
+  try {
+    await writeFile(
+      shim,
+      `#!${process.execPath}
+for await (const line of console) {
+  const request = JSON.parse(line);
+  process.stdout.write(JSON.stringify({type: "response", id: request.id, command: request.type, success: true, data: process.argv.slice(2)}) + "\\n");
+}
+`,
+      { mode: 0o700 },
+    );
+    process.env.PI_BIN = shim;
+    const skill = join(root, "approved skill", "SKILL.md");
+    client = await PiClient.start({ cwd: root, skillPaths: [skill] });
+    expect(await client.request("fixture/args")).toEqual([
+      "--mode",
+      "rpc",
+      "--no-extensions",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-context-files",
+      "--no-approve",
+      "--skill",
+      skill,
+    ]);
+  } finally {
+    if (previousBin === undefined) delete process.env.PI_BIN;
+    else process.env.PI_BIN = previousBin;
+    await client?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("close rejects when owned-child exit observation rejects", async () => {
+  const client = await PiClient.start({
+    cwd: process.cwd(),
+    command: [process.execPath, fixturePath],
+  });
+  const child: Bun.Subprocess<"pipe", "pipe", "pipe"> = Reflect.get(
+    client,
+    "process",
+  );
+  // Keep real child I/O and killing; inject only the OS exit-observation failure.
+  Reflect.set(client, "process", {
+    stdin: child.stdin,
+    exitCode: null,
+    exited: Promise.reject(new Error("exit observer secret")),
+    kill: (signal: number | NodeJS.Signals) => child.kill(signal),
+  });
+  try {
+    await expect(client.close()).rejects.toMatchObject({
+      code: "PI_PROCESS_EXIT_UNCONFIRMED",
+      category: "infra",
+      retryable: false,
+    });
+  } finally {
+    child.kill("SIGKILL");
+    await child.exited;
+    await client.close().catch(() => {});
+  }
+});
+
+test("the bundled Pi entrypoint answers RPC without a global Pi installation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "roc-bundled-pi-"));
+  const previousBin = process.env.PI_BIN;
+  const previousDir = process.env.PI_CODING_AGENT_DIR;
+  let client: PiClient | undefined;
+  try {
+    delete process.env.PI_BIN;
+    const agentDir = join(root, "agent");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const { SettingsManager } = await import("../../../src/agents/pi/sdk");
+    const settings = SettingsManager.create(root, agentDir, {
+      projectTrusted: false,
+    });
+    settings.setDefaultModelAndProvider("openai-codex", "gpt-5.5");
+    settings.setDefaultThinkingLevel("high");
+    await settings.flush();
+    expect(settings.drainErrors()).toEqual([]);
+    await Bun.write(
+      join(agentDir, "auth.json"),
+      JSON.stringify({
+        "openai-codex": {
+          type: "oauth",
+          access: "fixture-only-no-model-request",
+          refresh: "fixture",
+          expires: Date.now() + 3_600_000,
+        },
+      }),
+    );
+    await Bun.write(
+      join(root, ".pi", "settings.json"),
+      JSON.stringify({
+        defaultProvider: "anthropic",
+        defaultModel: "claude-sonnet-4-6",
+        defaultThinkingLevel: "off",
+      }),
+    );
+    client = await PiClient.start({ cwd: root });
+    expect(await client.request("get_state")).toMatchObject({
+      isStreaming: false,
+      model: { provider: "openai-codex", id: "gpt-5.5" },
+      thinkingLevel: "high",
+    });
+  } finally {
+    await client?.close();
+    if (previousBin === undefined) delete process.env.PI_BIN;
+    else process.env.PI_BIN = previousBin;
+    if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousDir;
+    await rm(root, { recursive: true, force: true });
   }
 });

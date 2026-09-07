@@ -328,14 +328,42 @@ CREATE UNIQUE INDEX tasks_one_followup_per_review
   WHERE discovered_from_review_id IS NOT NULL;
 `;
 
+const migration8 = `
+CREATE TABLE remote_tasks (
+  task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id),
+  repository TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  issue_number INTEGER NOT NULL CHECK(issue_number > 0),
+  issue_url TEXT NOT NULL,
+  envelope_hash TEXT NOT NULL,
+  approval_author TEXT,
+  approval_hash TEXT,
+  remote_state TEXT NOT NULL CHECK(remote_state IN ('OPEN', 'CLOSED')),
+  status_comment_id INTEGER CHECK(status_comment_id IS NULL OR status_comment_id > 0),
+  status_synced_at TEXT,
+  status_synced_value TEXT CHECK(status_synced_value IS NULL OR status_synced_value IN (
+    'draft', 'ready', 'claimed', 'scouting', 'implementing', 'reviewing',
+    'publishing', 'done', 'needs_input', 'needs_replan', 'rejected',
+    'failed_infra', 'retired'
+  )),
+  pending_sync INTEGER NOT NULL DEFAULT 1 CHECK(pending_sync IN (0, 1)),
+  last_sync_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK((approval_author IS NULL) = (approval_hash IS NULL)),
+  UNIQUE(repository, plan_id, task_id),
+  UNIQUE(repository, issue_number)
+);
+`;
+
 /** Migrates a database transactionally through every supported schema version. */
 export function migrate(db: Database): void {
   let version =
     db.query<{ user_version: number }, []>("PRAGMA user_version").get()
       ?.user_version ?? 0;
-  if (version > 7)
+  if (version > 8)
     throw new Error(
-      `Database version ${version} is newer than supported version 7`,
+      `Database version ${version} is newer than supported version 8`,
     );
   if (version === 0) {
     db.transaction(() => {
@@ -500,5 +528,12 @@ export function migrate(db: Database): void {
           : "PRAGMA foreign_keys = ON",
       );
     }
+    version = 7;
+  }
+  if (version === 7) {
+    db.transaction(() => {
+      db.exec(migration8);
+      db.exec("PRAGMA user_version = 8");
+    })();
   }
 }

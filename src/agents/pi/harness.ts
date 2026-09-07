@@ -455,6 +455,26 @@ export function createPiHarness(input: {
       request.attempt.taskId,
       request.input.ticket.baseCommit,
     );
+    const sourceCommit = request.input.ticket.spec.sourceCommit;
+    if (request.attempt.role === "implement" && sourceCommit !== undefined) {
+      try {
+        await input.branches.restoreChanges(
+          request.attempt.taskId,
+          sourceCommit,
+          workspace.baseCommit,
+        );
+      } catch (error) {
+        throw normalizeError(error, {
+          code: "source_commit_restore_failed",
+          category: "infra",
+          retryable: true,
+          component: "pi-harness",
+          message: "Could not restore the approved source commit",
+          taskId: request.attempt.taskId,
+          attemptId: request.attempt.attemptId,
+        });
+      }
+    }
     let reviewStatusBefore: string | undefined;
     if (request.attempt.role === "review") {
       try {

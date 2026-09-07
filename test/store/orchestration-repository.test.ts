@@ -12,6 +12,7 @@ import {
 import { openDatabase } from "../../src/store/database";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
+import { RemoteTaskRepository } from "../../src/store/remote-task-repository";
 
 const ticketSpec = {
   problem: "Need deterministic scheduling",
@@ -217,6 +218,33 @@ test("claims the first approved ready task once", () => {
         )
         .get("T2")?.status,
     ).toBe("ready");
+  } finally {
+    db.close();
+  }
+});
+
+test("local-only claims exclude remote-owned work", () => {
+  const { db, repo } = setup();
+  try {
+    const remote = new RemoteTaskRepository(db);
+    remote.add({
+      taskId: "T1",
+      repository: "owner/repo",
+      planId: "plan-1",
+      issueNumber: 1,
+      issueUrl: "https://example.test/issues/1",
+      envelopeHash: "a".repeat(64),
+      approvalAuthor: "trusted",
+      approvalHash: "a".repeat(64),
+      remoteState: "OPEN",
+    });
+    remote.pinBaseCommit("T1", "b".repeat(40));
+
+    expect(repo.claimNext(undefined, false, true)).toEqual({ taskId: "T2" });
+    expect(repo.inspectTask("T1")).toEqual({ id: "T1", status: "ready" });
+    db.query("UPDATE tasks SET status = 'ready' WHERE id = 'T2'").run();
+    expect(repo.claimNext(undefined, true)).toEqual({ taskId: "T1" });
+    expect(repo.hasActiveRemoteTask()).toBeTrue();
   } finally {
     db.close();
   }

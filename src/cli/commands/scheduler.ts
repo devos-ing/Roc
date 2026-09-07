@@ -13,12 +13,21 @@ import type { CliCommandContext, SchedulerRunInput } from "../types";
 /** Runs the public scheduler against a registered backend in the current project. */
 async function executeSchedulerRun(
   context: CliCommandContext,
-  options: { base: string; baseBranch?: string; backend: string },
+  options: {
+    base: string;
+    baseBranch?: string;
+    backend: string;
+    source: string;
+  },
 ): Promise<number> {
   if (!isRealBackendName(options.backend)) {
     context.io.err(
       `scheduler run requires --backend ${Object.keys(backends).join("|")}`,
     );
+    return 2;
+  }
+  if (options.source !== "local" && options.source !== "github") {
+    context.io.err("scheduler run requires --source local|github");
     return 2;
   }
   let repoPath: string;
@@ -34,6 +43,7 @@ async function executeSchedulerRun(
     dbPath,
     repoPath,
     baseRef: options.base,
+    ...(options.source === "github" ? { source: "github" as const } : {}),
     ...(options.baseBranch === undefined
       ? {}
       : { baseBranch: options.baseBranch }),
@@ -79,7 +89,7 @@ export function registerSchedulerCommands(
     .description("Run and inspect the scheduler");
   scheduler
     .command("run")
-    .description("Run ready tasks with a registered backend")
+    .description("Run ready tasks through Pi")
     .option("--base <ref>", "Git ref used as the task base", "HEAD")
     .option(
       "--base-branch <branch>",
@@ -88,13 +98,15 @@ export function registerSchedulerCommands(
     .option(
       "--backend <name>",
       `Scheduler backend (${Object.keys(backends).join("|")})`,
-      "codex",
+      "pi",
     )
+    .option("--source <name>", "Task source (local|github)", "local")
     .action(
       async (options: {
         base: string;
         baseBranch?: string;
         backend: string;
+        source: string;
       }) => {
         context.exitCode = await executeSchedulerRun(context, options);
       },

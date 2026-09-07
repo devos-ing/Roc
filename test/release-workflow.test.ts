@@ -155,8 +155,10 @@ test("release workflow keeps the stable-tag, immutable-action, and ordered-relea
   expect(release).toContain('gh release create "$GITHUB_REF_NAME"');
 });
 
-test("README explains the agile Scout, Implement, Review loop", async () => {
-  const readme = await readProjectFile("README.md");
+test("README links to the detailed agile Scout, Implement, Review guide", async () => {
+  const overview = await readProjectFile("README.md");
+  expect(overview).toContain("[detailed guide](README.details.md)");
+  const readme = await readProjectFile("README.details.md");
   const start = readme.indexOf("## How it works");
   const end = readme.indexOf("## Commands", start);
   expect(start).toBeGreaterThanOrEqual(0);
@@ -167,7 +169,10 @@ test("README explains the agile Scout, Implement, Review loop", async () => {
     "Roc picks one ready task and passes it through three agent roles",
   );
   expect(howItWorks).toContain('S["Scout<br/>Understand the task"]');
-  expect(howItWorks).toContain('I["Implement<br/>Write and commit code"]');
+  expect(howItWorks).toContain('I["Implement<br/>Write code"]');
+  expect(howItWorks).toContain(
+    'I --> C["Trusted harness<br/>Create the commit"]',
+  );
   expect(howItWorks).toContain('R["Review<br/>Check the exact commit"]');
   expect(howItWorks).toContain('P["Posthook and pull request"]');
   expect(howItWorks).toContain(

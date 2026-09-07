@@ -20,11 +20,11 @@ watch(root, () => {
 });
 process.on("SIGTERM", () => {});
 createInterface({ input: process.stdin }).on("line", (line) => {
-  const message = JSON.parse(line) as { id?: number; method: string };
-  if (message.method === "fixture/arm") armed = true;
+  const message = JSON.parse(line) as { id?: number; type: string };
+  if (message.type === "fixture/arm") armed = true;
   if (message.id !== undefined) {
     process.stdout.write(
-      `${JSON.stringify({ id: message.id, result: { pid: process.pid, armed } })}\n`,
+      `${JSON.stringify({ id: message.id, type: "response", command: message.type, success: true, data: { pid: process.pid, armed } })}\n`,
     );
   }
 });

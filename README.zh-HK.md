@@ -1,212 +1,100 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/devos-ing/Roc/main/output/imagegen/roc-avatar-tech.png" alt="Roc 專案頭像" width="220" />
+  <img src="https://raw.githubusercontent.com/devos-ing/Roc/main/output/imagegen/roc-avatar-tech.png" alt="Roc project avatar" width="220" />
 </p>
 
-<p align="center">
-  <a href="README.md">English</a> · <strong>繁體中文</strong>
-</p>
+[English](README.md) · [繁體中文](README.zh-HK.md)
 
 # Roc
 
-Roc 會讓程式開發任務依次經過幾個固定步驟：
+透過聊天把需求拆成程式開發任務，由本機 daemon 執行、建立 pull request，
+並更新任務狀態。你負責審查及合併結果。
 
-```text
-Ready → Scout → Implement → Review → Pull request → Done
-```
-
-- Scout 讀取任務，了解程式碼並準備實作計劃。
-- Implement 在獨立 Git branch 編寫程式，完成後建立 commit。
-- Review 只檢查該 commit，不會修改程式碼。
-- Roc 會把通過 Review 的 commit 發佈成 pull request。
-
-Roc 會把每個任務和執行記錄儲存在 SQLite。停止程式後，之後仍可繼續。
-如果 Review 不接受結果，Roc 會建立一個包含意見的草稿 follow-up 任務，
-不會不停重試同一項工作。
-
-Roc 每次只執行一個任務。它會 push 已接受的任務 branch，並建立或更新
-pull request。它不會 merge pull request 或刪除 branch。
-
-## 開始使用
-
-你需要 [Bun](https://bun.sh/) 1.3 或以上版本、Git、
-[Codex CLI](https://github.com/openai/codex)，以及已執行 `gh auth login` 的
-[GitHub CLI](https://cli.github.com/)。
-
-在 Git 專案內執行：
-
-```bash
-npx roc-it@latest onboard
-```
-
-Onboarding 會建立 Roc 的本機資料庫，並安裝兩個 skills：
-
-- `roc-create-tasks` 把需求整理成經你批准的 backlog。
-- `pr-review-to-closure` 在重複審查 pull request 時追蹤問題。
-
-重複 PR 審查 skill 需要 Python 3.9 或以上版本。Roc 的 scheduler 和 task
-指令只需要 Bun。
-
-在 Codex 建立 backlog：
-
-```text
-$roc-create-tasks 加入團隊邀請功能
-```
-
-這個 skill 會先顯示建議的任務，得到你批准後才會匯入。它需要
-`grilling` skill，你可以用以下指令安裝：
-
-```bash
-npx skills add mattpocock/skills --skill grilling --global --agent codex
-```
-
-查看任務、開始執行，然後打開看板：
-
-```bash
-npx roc-it@latest task list
-npx roc-it@latest scheduler run --base-branch main
-npx roc-it@latest task board
-```
-
-Roc 會在名為 `<project>.agile-checkout` 的相鄰資料夾編寫任務程式碼。
-目前 checkout 會留在原有 branch。
-
-## 任務看板
-
-看板是唯讀 terminal UI，目前使用英文介面。寬版保留四個任務欄和右側預覽；
-窄版會上下排列，並以全畫面顯示詳情。實際畫面如下：
-
-```text
-Cycle 2026-W35 · 4 tasks · 8420 / 12000 tok
-
-Ready · 1                   │ In progress · 1             │ Attention · 1               │ Done · 1
-─────────────────────────── │ ─────────────────────────── │ ─────────────────────────── │ ───────────────────────────
-    email  Add email login  │ ▌ ● api  Build auth API     │     tests  Fix auth tests   │   d to expand
-    ready                   │     implement · implementing│     needs_input             │
-                            │                             │     blocked by api          │
-
-↑↓ move · Space preview · Enter details · d Done · ? help · q quit
-```
-
-選取色條、語意狀態色和精簡的 token 摘要讓你不用以完整卡片邊框也能看清下一步。
-詳情會按狀態、執行資料、相依關係和任務摘要分類。按 `Space` 快速預覽，按
-`Enter` 查看完整資料。
-
-快捷鍵包括：`↑`/`↓` 或 `J`/`K` 移動、`Space` 預覽、`Enter` 詳情、`D` 展開
-Done、`R` 更新、`?` 說明、`Esc` 返回，以及 `Q` 或 `Ctrl-C` 離開。`task board`
-和較短的 `tui` 指令會打開同一個唯讀看板；兩者都不會啟動 scheduler 或改動
-任務。執行 `npx roc-it@latest task board --all` 可以包括舊 cycle 的任務。
-
-要保留歷史但停用過時的 draft、needs_input、needs_replan 或 ready 任務，可執行：
-
-```bash
-npx roc-it@latest task retire TASK_ID --reason "已過時的方案" [--replacement TASK_ID]
-```
-
-沒有 replacement 時 Roc 會顯示 Archived；有 replacement 時則顯示 Superseded。
-一般 task list 和 board 會隱藏 retired 任務；使用 `task list --history` 或
-`task board --history` 可查看保留的原因、replacement 和退休時間。
-
-## 任務怎樣執行
+## 怎樣運作
 
 ```mermaid
 flowchart LR
-    B[Ready] --> S[Scout 準備計劃]
-    S --> I[Implement 編寫程式並建立 commit]
-    I --> R[Review 檢查 commit]
-    R -->|接受| P[Posthook 和 pull request]
-    P --> D[Done]
-    R -->|拒絕| F[草稿 follow-up]
+    A["聊天釐清需求"] --> B["批准任務與規格"]
+    B --> C["Roc daemon"]
+    C --> D["Pi：Scout → Implement → Review"]
+    D --> E["Pull request 與任務狀態"]
 ```
 
-每個任務都有自己的 branch，全部放在專用 checkout。Review 只會收到
-Implement 建立的 commit，而且不能修改 working tree。
+**Pi 是唯一執行核心。** Onboarding 會連接你的 ChatGPT 帳戶，選用 Codex 模型。
+Claude、GLM 屬於進階 provider 設定。Roc 使用 Pi 的工具與 agent loop，
+不會啟動 Codex CLI 或 Claude Code。
+一個 daemon 每次執行一項任務，每項任務保留自己的 branch。
+`done` 表示 PR 已發佈，仍須由你合併。
 
-Review 接受結果後，Roc 會執行已信任的 posthook，並確認 Implement commit
-是乾淨的。之後它會 push `agile/<task-id>`，再建立或更新一個 pull request。
-發佈失敗會令任務進入 `needs_replan`，本機 commit 則會保留作恢復之用。
+**開發版本：**請依照下方指令使用這份原始碼。Pi 統一架構尚未發佈到 npm。
+自動測試不代表真實模型流程已通過；詳見[驗證狀態](README.details.zh-HK.md#驗證狀態)。
 
-`--base-branch` 指定 pull request 的 GitHub 目標 branch。如果任務 branch
-需要從某個本機 commit 開始，另行使用 `--base`。
+## 開始使用
 
-Roc 會記錄任務狀態、執行次數、事件、model 選擇和 token 用量。Token target
-只用作規劃估算。Agent 用量到達 target 時，Roc 不會強制停止。
+需要 Bun 1.3+、Node.js 22.19+、Git、GitHub CLI，以及專案的 build/test 工具。
+先在同一台機器使用本機任務佇列。
 
-## 實驗性 ZCode backend
+### 1. 設定 Roc
 
-Roc 預設使用 Codex。它也可以使用 Z.ai 桌面應用程式的 headless ZCode server：
+先在這份 Roc 原始碼目錄執行 `bun install`，Pi 會一併安裝。
+再到你想讓 Roc 修改的專案執行以下指令，把 entrypoint 替換為這份原始碼的絕對路徑：
 
 ```bash
-cd /absolute/path/to/project
-ROC_ZCODE_EXPERIMENTAL=1 npx roc-it@latest scheduler run --base-branch main --backend zcode
+export ROC_CLI_ENTRY=/absolute/path/to/Roc/src/cli/main.ts
+cd /path/to/your-project
+gh auth login
+bun "$ROC_CLI_ENTRY" onboard
 ```
 
-ZCode 需要同一部電腦上已登入的 Z.ai 桌面應用程式。Roc 會從
-`~/.zcode/v2/config.json` 讀取已啟用的 provider，再透過 `ZCODE_BIN` 啟動
-應用程式附帶的 CLI。該 CLI 沒有公開文件，日後版本可能會改變。
+Onboarding 會安裝 Roc skills，讓你選擇可信 skills 與 Agile 週期，並確認一次
+工具執行權限。工具擁有目前帳戶的權限。
+需要登入時，Roc 會開啟瀏覽器讓你授權 ChatGPT，發送一個小型 Codex 測試，
+收到正確回應後才保存預設模型。已有的 Pi 認證會直接重用，毋須另外安裝或登入 Pi。
+連線測試會使用少量模型額度。
 
-ZCode 沒有協定層級的檔案系統 sandbox。無人看管的 session 可以寫入 task
-checkout 以外的位置，而且停用 command sandbox 的要求會自動獲准。只應在
-僅開放 task checkout 的 OS sandbox 或 container 內使用這個 backend。
-設定 `ROC_ZCODE_EXPERIMENTAL=1` 表示你接受這項風險。
+用 ↑/↓ 移動、空白鍵勾選 skills、Enter 確認。週期可選 Daily、Weekly（預設），
+或 Custom 後輸入天數。終端配色會自動啟用。
 
-## 其他加入任務的方法
+### 2. 透過聊天建立任務
 
-匯入 Roc backlog JSON 檔案：
-
-```bash
-npx roc-it@latest task import .agile/backlog/my-backlog.json
-```
-
-或者匯入帶有 `roc:ready` label 的 open GitHub Issues：
-
-```bash
-npx roc-it@latest task import-github
-```
-
-GitHub 匯入是單向操作。Roc 匯入 Issue ID 後會跳過同一個 Issue，
-所以日後修改 Issue 不會更新已儲存的任務。
-
-## 重複審查 pull request
-
-再次審查 pull request 時，可以要求 agent 使用已安裝的
-`pr-review-to-closure` skill。它會保留固定的 finding ID、把新 head 與上次
-審查結果比較，並在必要檢查通過後提供 merge 判斷。除非你明確要求，這個
-skill 不會留言、批准、commit、push 或 merge。
-
-## 常用指令
+在你平常使用的 coding assistant 開啟專案，輸入：
 
 ```text
-npx roc-it@latest onboard                 在目前專案設定 Roc
-npx roc-it@latest cycle current           顯示目前 Agile cycle
-npx roc-it@latest task list [--history]   列出目前任務或保留歷史
-npx roc-it@latest task retire TASK_ID --reason TEXT [--replacement TASK_ID]
-npx roc-it@latest task board [--all] [--history] 打開唯讀看板
-npx roc-it@latest tui                     打開唯讀看板
-npx roc-it@latest scheduler run --base-branch BRANCH [--base REF] [--backend <name>]
-npx roc-it@latest scheduler inspect       查看 scheduler 狀態
-npx roc-it@latest tokens [--no-color]     顯示 token 用量
-npx roc-it@latest help                    顯示所有指令
+使用 roc-create-tasks 加入團隊邀請功能。使用本機佇列，以及 ROC_CLI_ENTRY 指定的 Roc。
 ```
 
-如果想使用較短的指令，可以全域安裝 `roc-it`：
+Skill 會提問釐清需求，提出任務與驗收條件，等你批准完整計劃後才儲存。
+若 assistant 無法讀取 terminal 的環境變數，直接提供 Roc entrypoint 的絕對路徑。
+規劃 assistant 須有 `grilling` 及 `unslop`；缺少時依照[詳細指南](README.details.zh-HK.md#規劃-skills)安裝。
+
+### 3. 啟動 daemon
+
+在同一專案與 terminal 執行；目標 branch 不是 `main` 時請替換名稱：
 
 ```bash
-npm install -g roc-it@latest
-roc-it help
+bun "$ROC_CLI_ENTRY" task list
+bun "$ROC_CLI_ENTRY" scheduler run --base-branch main
 ```
 
-## 目前限制
+保持 terminal 開啟。按 `Ctrl-C` 停止，再執行同一指令恢復已保存的工作。
+任務 branch 位於相鄰的 `<project>.agile-checkout`。
+Pi 沒有內建 sandbox，無人看管時應使用 OS/container 隔離。
 
-Roc 現時支援 Codex 和實驗性 ZCode backend。它仍未支援平行執行任務、
-遠端批准或通知。Pi、Claude Code 和 Cursor backend 仍在計劃中。
+### 4. 查看進度
 
-## 詳細資料
+另開 terminal，設定同一個 `ROC_CLI_ENTRY`，進入同一專案：
 
-- [系統架構說明](docs/architecture.md)
-- [互動式系統架構圖](output/archify/roc-system-architecture.html)
-- [參與開發](CONTRIBUTING.md)
-- [研究和專案比較](docs/research/agent-agile-orchestration-landscape.md)
+```bash
+bun "$ROC_CLI_ENTRY" task board
+```
 
-## 授權條款
+看板是唯讀的。按 `Enter` 查看詳情，按 `Q` 離開。
+欄位以顏色區分進行中、待處理及已完成，排版會配合終端寬度；重新導向檔案時輸出純文字。
+也可使用 `task list`、`scheduler inspect` 或 `help`。
 
-Roc 使用 [Apache License 2.0](LICENSE)。
+## 進一步設定
+
+[詳細指南](README.details.zh-HK.md) 包含架構圖、provider 設定、GitHub Issues
+共享任務、daemon 部署與恢復方式。先用同一台機器的兩個 clone，再搬移執行端。
+
+開發與發版：[CONTRIBUTING.md](CONTRIBUTING.md)。
+授權：[Apache 2.0](LICENSE)。

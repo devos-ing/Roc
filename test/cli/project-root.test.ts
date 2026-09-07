@@ -43,6 +43,21 @@ test("falls back to the Git checkout root before Roc is initialized", async () =
   expect(await resolveProjectRoot(nested)).toBe(await realpath(root));
 });
 
+test("keeps a nested checkout separate from an outer Roc database", async () => {
+  const outer = await temporaryDirectory();
+  const worker = join(outer, "worker");
+  const nested = join(worker, "packages", "app");
+  await mkdir(join(outer, ".agile"), { recursive: true });
+  await mkdir(nested, { recursive: true });
+  await git(["init"], outer);
+  await git(["init"], worker);
+
+  expect(await resolveProjectRoot(nested)).toBe(await realpath(worker));
+
+  await mkdir(join(nested, ".agile"));
+  expect(await resolveProjectRoot(nested)).toBe(await realpath(nested));
+});
+
 test("ignores inherited Git repository overrides when resolving another checkout", async () => {
   const hookRoot = await temporaryDirectory();
   const targetRoot = await temporaryDirectory();

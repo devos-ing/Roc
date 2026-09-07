@@ -331,7 +331,9 @@ test("pads colored wide columns and keeps ANSI resets intact", () => {
   expect(new Set(boardLines.map((line) => line.indexOf(" │ "))).size).toBe(1);
   expect(output).toContain("\u001B[0m");
   const footer = output.split("\n").at(-1) ?? "";
-  expect(stripVTControlCharacters(footer)).toBe(footer);
+  expect(output).toContain("\u001B[90m╭");
+  expect(stripVTControlCharacters(footer)).toContain("╰");
+  expect(stripVTControlCharacters(output)).toContain("↑↓ move");
 });
 
 test("uses a vertical list and full-screen wrapped detail in narrow terminals", () => {
@@ -403,19 +405,15 @@ test("wraps colored failed statuses and blockers without splitting ANSI controls
   expect(stripVTControlCharacters(plain)).toBe(plain);
 });
 
-test("honors NO_COLOR even when an interactive frame requests color", () => {
-  const previous = process.env.NO_COLOR;
-  process.env.NO_COLOR = "1";
-  try {
-    const output = renderTaskBoard(snapshot, {
-      width: 120,
-      selectedTaskId: "active",
-    });
-
-    expect(stripVTControlCharacters(output)).toBe(output);
-  } finally {
-    if (previous === undefined) delete process.env.NO_COLOR;
-    else process.env.NO_COLOR = previous;
+test("colors workflow headings in a terminal and preserves plain redirected layout", () => {
+  for (const width of [60, 120]) {
+    const colored = renderTaskBoard(snapshot, { width, isTTY: true });
+    const plain = renderTaskBoard(snapshot, { width, isTTY: false });
+    expect(colored).toContain("\u001B[36mIn progress");
+    expect(colored).toContain("\u001B[33mAttention");
+    expect(colored).toContain("\u001B[32mDone");
+    expect(stripVTControlCharacters(colored)).toBe(plain);
+    expect(plain).toContain("Roc · Cycle");
   }
 });
 
@@ -486,8 +484,8 @@ test("keeps widths below forty bounded and frames empty boards completely", () =
   expect(output).toContain("Attention · 0");
   expect(output).toContain("Done · 0");
   expect(output).toContain("No tasks.");
-  expect(output).toContain("/roc-create-tasks");
-  expect(output).toContain("$roc-create-tasks");
+  expect(output).toContain("roc-create-tasks");
+  expect(output).toContain("--global --agent pi");
   expect(output).toContain("↑↓ move");
   expect(output.split("\n").every((line) => displayWidth(line) <= 24)).toBe(
     true,
