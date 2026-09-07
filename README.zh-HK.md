@@ -51,6 +51,9 @@ Onboarding 會安裝 Roc skills，讓你選擇可信 skills 與 Agile 週期，�
 收到正確回應後才保存預設模型。已有的 Pi 認證會直接重用，毋須另外安裝或登入 Pi。
 連線測試會使用少量模型額度。
 
+用 ↑/↓ 移動、空白鍵勾選 skills、Enter 確認。週期可選 Daily、Weekly（預設），
+或 Custom 後輸入天數。終端配色會自動啟用。
+
 ### 2. 透過聊天建立任務
 
 在你平常使用的 coding assistant 開啟專案，輸入：
@@ -85,6 +88,7 @@ bun "$ROC_CLI_ENTRY" task board
 ```
 
 看板是唯讀的。按 `Enter` 查看詳情，按 `Q` 離開。
+欄位以顏色區分進行中、待處理及已完成，排版會配合終端寬度；重新導向檔案時輸出純文字。
 也可使用 `task list`、`scheduler inspect` 或 `help`。
 
 ## 進一步設定

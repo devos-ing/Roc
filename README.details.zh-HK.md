@@ -184,6 +184,8 @@ npx skills add backnotprop/pstack --skill unslop --global --agent codex
 ```
 
 重跑 onboarding 可把已安裝 skills 加入 daemon 的可信清單。
+`mattpocock/skills` 只列出釐清需求用的 `grilling` 及開發測試用的 `tdd`，
+毋須安裝整套。其他同來源 skills 不會載入執行，包括以前保存的選項。
 規劃使用 assistant 本身的登入；daemon 的模型登入由 Roc 處理。
 
 ## 看板與指令

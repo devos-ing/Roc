@@ -10,6 +10,49 @@ import {
   loadDefaultSkillPolicy,
 } from "../../src/skills/policy";
 
+test("limits Matt Pocock skills in onboarding and ignores obsolete saved selections", async () => {
+  const home = await mkdtemp(join(tmpdir(), "roc-curated-skills-"));
+  const names = ["grilling", "tdd", "teach", "to-spec"];
+  const selected = names.map((name) => ({ name, source: "mattpocock/skills" }));
+  const skills = names.map((name) => ({
+    name,
+    path: join(home, ".agents", "skills", name, "SKILL.md"),
+    enabled: true,
+  }));
+  try {
+    for (const skill of skills) {
+      await mkdir(join(home, ".agents", "skills", skill.name), {
+        recursive: true,
+      });
+      await writeFile(skill.path, "fixture skill");
+    }
+    await writeFile(
+      join(home, ".agents", ".skill-lock.json"),
+      JSON.stringify({
+        skills: Object.fromEntries(
+          selected.map(({ name, source }) => [name, { source }]),
+        ),
+      }),
+    );
+    const policy = await loadDefaultSkillPolicy(home, selected);
+    const discovered = await discoverTrustedSkills(policy);
+    expect(discovered.map(({ name }) => name).sort()).toEqual([
+      "grilling",
+      "tdd",
+    ]);
+    expect(
+      buildDefaultSkillCandidates(discovered, policy)
+        .filter(({ installed }) => installed)
+        .map(({ identity }) => identity.name),
+    ).toEqual(["grilling", "tdd"]);
+    expect(
+      buildDefaultSkillConfig(skills, policy).map(({ enabled }) => enabled),
+    ).toEqual([true, true, false, false]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("trusts only the exact pstack unslop identity and path", async () => {
   const home = await mkdtemp(join(tmpdir(), "roc-unslop-policy-"));
   await mkdir(join(home, ".agents"), { recursive: true });

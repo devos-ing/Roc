@@ -52,6 +52,7 @@ test("onboarding selection becomes the scheduler skill configuration", async () 
       err: () => {},
       ask: async (question: string) =>
         question.startsWith("Roc's coding tools") ? "yes" : "2",
+      selectCycle: async () => "weekly" as const,
       selectSkills: async () => ({
         kind: "selected" as const,
         identities: [{ name: "unslop", source: "backnotprop/pstack" }],

@@ -56,6 +56,10 @@ function interactiveIo(
         question.startsWith("Roc's coding tools")
           ? "yes"
           : (answers.shift() ?? ""),
+      selectCycle: async () => {
+        const choices = { "1": "daily", "2": "weekly", "3": "custom" } as const;
+        return choices[answers.shift() as keyof typeof choices];
+      },
       selectSkills: async (candidates: DefaultSkillCandidate[]) =>
         selectedNames === "cancel"
           ? { kind: "cancelled" as const }
@@ -127,33 +131,10 @@ test("onboard installs complete project skill packages without overwriting chang
     );
     expect(await readFile(agentsSkill)).toEqual(source);
     expect(await readFile(claudeSkill)).toEqual(source);
-    const reviewSkillFiles = [
-      "SKILL.md",
-      join("agents", "openai.yaml"),
-      join("references", "ledger-schema.md"),
-      join("scripts", "evidence.py"),
-      join("scripts", "ledger.py"),
-      join("scripts", "test_evidence.py"),
-      join("scripts", "test_ledger.py"),
-    ];
-    for (const skillRoot of [
-      join(root, ".agents", "skills", "pr-review-to-closure"),
-      join(root, ".claude", "skills", "pr-review-to-closure"),
-    ]) {
-      for (const relativePath of reviewSkillFiles) {
-        expect(await readFile(join(skillRoot, relativePath))).toEqual(
-          await readFile(
-            join(
-              import.meta.dir,
-              "..",
-              "..",
-              "skills",
-              "pr-review-to-closure",
-              relativePath,
-            ),
-          ),
-        );
-      }
+    for (const directory of [".agents", ".claude"]) {
+      await expect(
+        lstat(join(root, directory, "skills", "pr-review-to-closure")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
     }
     expect(await lstat(dbPath)).toMatchObject({ isFile: expect.any(Function) });
 
@@ -204,7 +185,7 @@ test("project onboarding reports completed steps, configuration, and next comman
     ).toBe(0);
 
     const transcript = output.join("\n");
-    expect(transcript).toContain("Roc onboarding");
+    expect(transcript).toContain("Welcome to Roc");
     expect(transcript).toContain(`Scope: Project (${root})`);
     expect(transcript).toContain(`1. Database: Ready (${dbPath})`);
     expect(transcript).toContain("2. Skills:");
@@ -214,13 +195,11 @@ test("project onboarding reports completed steps, configuration, and next comman
     expect(transcript).toContain("5. Settings: Saved ");
     expect(transcript).toContain(".config/roc/settings.json");
     expect(transcript).toContain("Result: Complete");
-    expect(transcript).toContain(onboardingNextSteps);
+    for (const line of onboardingNextSteps.split("\n"))
+      expect(transcript).toContain(line.trim());
+    expect(transcript).toContain("╭─Next:");
     expect(errors).toEqual([]);
-    expect(
-      new TextEncoder()
-        .encode(transcript)
-        .every((byte) => byte === 10 || (byte >= 32 && byte <= 126)),
-    ).toBe(true);
+    expect(stripVTControlCharacters(transcript)).toBe(transcript);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
@@ -245,7 +224,8 @@ test("global onboarding installs skills without creating a project database", as
       "1. Database: Not created (global scope)",
     );
     expect(output.join("\n")).not.toContain("Project database");
-    expect(output.join("\n")).toContain(onboardingNextSteps);
+    for (const line of onboardingNextSteps.split("\n"))
+      expect(output.join("\n")).toContain(line.trim());
     expect(
       await readFile(
         join(home, ".agents", "skills", "roc-create-tasks", "SKILL.md"),
@@ -332,31 +312,34 @@ test("onboard saves the selected global skill allowlist", async () => {
   expect(output.join("\n")).toContain("3. Agent skills: 1 allowed");
 });
 
-test("onboard cancellation preserves the prior allowlist", async () => {
-  const home = await mkdtemp(join(tmpdir(), "roc-onboard-cancel-"));
-  await saveRocSettings(
-    {
-      cycle: { type: "weekly" },
-      skills: { allowlist: [{ name: "tdd", source: "mattpocock/skills" }] },
-    },
-    home,
-  );
-  const before = await readFile(rocSettingsPath(home), "utf8");
-  const { io, errors } = interactiveIo([], "cancel");
+test.each(["skills", "cycle"] as const)(
+  "onboard %s cancellation preserves the prior allowlist",
+  async (step) => {
+    const home = await mkdtemp(join(tmpdir(), "roc-onboard-cancel-"));
+    await saveRocSettings(
+      {
+        cycle: { type: "weekly" },
+        skills: { allowlist: [{ name: "tdd", source: "mattpocock/skills" }] },
+      },
+      home,
+    );
+    const before = await readFile(rocSettingsPath(home), "utf8");
+    const { io, errors } = interactiveIo([], step === "skills" ? "cancel" : []);
 
-  expect(
-    await runCli(
-      ["onboard", "--global"],
-      io,
-      onboardingRuntime({
-        homeRoot: home,
-        listWorkspaceSkills: async () => [],
-      }),
-    ),
-  ).toBe(1);
-  expect(await readFile(rocSettingsPath(home), "utf8")).toBe(before);
-  expect(errors.join("\n")).toContain("Onboarding cancelled");
-});
+    expect(
+      await runCli(
+        ["onboard", "--global"],
+        io,
+        onboardingRuntime({
+          homeRoot: home,
+          listWorkspaceSkills: async () => [],
+        }),
+      ),
+    ).toBe(1);
+    expect(await readFile(rocSettingsPath(home), "utf8")).toBe(before);
+    expect(errors.join("\n")).toContain("Onboarding cancelled");
+  },
+);
 
 test("missing unslop is disabled and only produces manual install guidance", async () => {
   const home = await mkdtemp(join(tmpdir(), "roc-onboard-unslop-"));
@@ -366,6 +349,7 @@ test("missing unslop is disabled and only produces manual install guidance", asy
     err: () => {},
     ask: async (question: string) =>
       question.startsWith("Roc's coding tools") ? "yes" : "1",
+    selectCycle: async () => "daily" as const,
     selectSkills: async (candidates: DefaultSkillCandidate[]) => {
       seen = candidates;
       return { kind: "selected" as const, identities: [] };
@@ -606,6 +590,11 @@ test("onboarding reports only durable work when cycle validation rejects a new a
       interactions.push("cycle");
       return answers.shift() ?? "";
     },
+    selectCycle: async () => {
+      interactions.push("cycle");
+      answers.shift();
+      return "custom" as const;
+    },
     selectSkills: async (candidates: DefaultSkillCandidate[]) => {
       interactions.push("checklist");
       return {
@@ -656,7 +645,7 @@ test("onboarding reports only durable work when cycle validation rejects a new a
   }
 });
 
-test("onboard requires interactive input", async () => {
+test("onboard requires interactive cycle selection", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const homeRoot = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
   const errors: string[] = [];
@@ -678,7 +667,9 @@ test("onboard requires interactive input", async () => {
     ).toBe(1);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("Onboarding stopped");
-    expect(errors[0]).toContain("Interactive input is required for onboard");
+    expect(errors[0]).toContain(
+      "Interactive cycle selection is required for onboard",
+    );
     expect(errors[0]).toContain("Retry:");
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
@@ -776,7 +767,11 @@ test("onboarding retry prints a copyable canonical command", async () => {
         onboardingRuntime({ projectRoot: root, homeRoot: home }),
       ),
     ).toBe(1);
-    const retryCommand = errors.at(0)?.split("Retry:\n  ").at(1);
+    const retryCommand = errors
+      .at(0)
+      ?.split("\n")
+      .find((line) => line.includes("npx roc-it@latest onboard"))
+      ?.replace(/^│\s*|\s*│$/g, "");
     expect(retryCommand).toBeDefined();
     if (retryCommand === undefined) throw new Error("Expected a retry command");
     const shell = Bun.spawn(
@@ -877,7 +872,11 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
     expect(importResult).toContain("Created: 2");
     expect(importResult).toContain("Already present: 0");
     expect(importResult).toContain("Total: 2");
-    const nextCommand = importResult?.split("Next:\n  ").at(1);
+    expect(importResult).toContain("╭─Next:");
+    const nextCommand = importResult
+      ?.split("\n")
+      .find((line) => line.includes("npx roc-it@latest task list"))
+      ?.replace(/^│\s*|\s*│$/g, "");
     expect(nextCommand).toBeDefined();
     if (nextCommand === undefined) throw new Error("Expected a next command");
     const shell = Bun.spawn(
@@ -961,6 +960,7 @@ test("task list reuses create-backlog guidance when empty", async () => {
     ).toBe(0);
     const empty = output.at(0) ?? "";
     expect(empty).toContain("No tasks.");
+    expect(empty).toContain("╭─Next:");
     expect(empty).toContain("Use roc-create-tasks: <requirement>");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -993,7 +993,6 @@ test("task list and board share display IDs while preserving plain output and ca
     homeRoot: home,
     now: () => new Date(2026, 7, 30),
   };
-  const previousNoColor = process.env.NO_COLOR;
 
   try {
     await saveRocSettings({ cycle: { type: "daily" } }, home);
@@ -1026,7 +1025,6 @@ test("task list and board share display IDs while preserving plain output and ca
     });
     db.close();
 
-    delete process.env.NO_COLOR;
     expect(
       await runCli(
         ["task", "list"],
@@ -1055,21 +1053,6 @@ test("task list and board share display IDs while preserving plain output and ca
     );
     expect(coloredOutput.at(-1)).toContain("\u001B[36mclaimed\u001B[0m");
 
-    process.env.NO_COLOR = "";
-    const noColorOutput: string[] = [];
-    expect(
-      await runCli(
-        ["task", "list"],
-        {
-          out: (text) => noColorOutput.push(text),
-          err: () => {},
-          output: { isTTY: true } as NodeJS.WriteStream,
-        },
-        runtime,
-      ),
-    ).toBe(0);
-    expect(noColorOutput.at(-1)).toBe(plainOutput.at(-1));
-
     expect(
       await runCli(
         ["task", "board"],
@@ -1092,8 +1075,6 @@ test("task list and board share display IDs while preserving plain output and ca
       verificationDb.close();
     }
   } finally {
-    if (previousNoColor === undefined) delete process.env.NO_COLOR;
-    else process.env.NO_COLOR = previousNoColor;
     await rm(root, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
   }

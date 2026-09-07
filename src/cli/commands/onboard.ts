@@ -19,6 +19,7 @@ import {
   projectDatabasePath,
 } from "../command-context";
 import {
+  formatOnboardingMessage,
   renderAllowlistStep,
   renderCycleStep,
   renderDatabaseStep,
@@ -34,14 +35,14 @@ import type { CliCommandContext, CliIo } from "../types";
 async function promptCycleSetting(
   io: CliIo,
   now: Date,
+  initialValue?: AgileCycleSetting["type"],
 ): Promise<AgileCycleSetting> {
+  if (!io.selectCycle)
+    throw new Error("Interactive cycle selection is required for onboard");
+  const choice = await io.selectCycle(initialValue);
+  if (choice === undefined) throw new Error("Onboarding cancelled");
+  if (choice === "daily" || choice === "weekly") return { type: choice };
   if (!io.ask) throw new Error("Interactive input is required for onboard");
-  const choice = (
-    await io.ask("Agile cycle: 1) Daily 2) Weekly 3) Custom")
-  ).trim();
-  if (choice === "1") return { type: "daily" };
-  if (choice === "2") return { type: "weekly" };
-  if (choice !== "3") throw new Error("Choose Daily, Weekly, or Custom");
   const days = Number((await io.ask("Custom cycle duration in days")).trim());
   if (!Number.isInteger(days) || days <= 0) {
     throw new Error("Custom duration must be a whole number greater than zero");
@@ -65,6 +66,22 @@ async function executeOnboard(
   context: CliCommandContext,
   options: { global?: boolean },
 ): Promise<number> {
+  const originalIo = context.io;
+  const color = originalIo.output?.isTTY === true;
+  context = {
+    ...context,
+    io: {
+      ...originalIo,
+      out: (message) =>
+        originalIo.out(
+          formatOnboardingMessage(message, color, originalIo.output?.columns),
+        ),
+      err: (message) =>
+        originalIo.err(
+          formatOnboardingMessage(message, color, originalIo.output?.columns),
+        ),
+    },
+  };
   const global = options.global === true;
   const retryCommand = onboardingRetryCommand(global);
   const sourceRoot = resolve(import.meta.dir, "..", "..", "..", "skills");
@@ -119,6 +136,7 @@ async function executeOnboard(
     const setting = await promptCycleSetting(
       context.io,
       context.runtime.now?.() ?? new Date(),
+      priorSettings?.cycle.type,
     );
     if (!context.runtime.configureModel)
       throw new Error("Model setup is required for onboard");

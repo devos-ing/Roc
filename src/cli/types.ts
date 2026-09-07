@@ -1,4 +1,5 @@
 import type { RealBackendName } from "../agents/registry";
+import type { AgileCycleSetting } from "../domain/agile-cycle";
 import type { BacklogManifest } from "../domain/schemas";
 import type { SkillIdentity } from "../domain/skill-allowlist";
 import type { GitHubIssueCandidate } from "../github/import-source";
@@ -20,6 +21,10 @@ export type CliIo = {
   err(text: string): void;
   /** Prompts for one interactive answer when input is available. */
   ask?(question: string, signal?: AbortSignal): Promise<string>;
+  /** Selects an Agile cycle with keyboard navigation, returning undefined on cancellation. */
+  selectCycle?(
+    initialValue?: AgileCycleSetting["type"],
+  ): Promise<AgileCycleSetting["type"] | undefined>;
   /** Selects exact trusted skills through an interactive terminal checklist. */
   selectSkills?(
     candidates: DefaultSkillCandidate[],

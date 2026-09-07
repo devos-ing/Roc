@@ -16,6 +16,7 @@ import {
   errorMessage,
   projectDatabasePath,
 } from "../command-context";
+import { boxGuidance } from "../help-box";
 import { renderEmptyTaskList } from "../presentation";
 import { resolveProjectDisplaySlug } from "../project-root";
 import {
@@ -57,8 +58,10 @@ async function executeTaskImport(
           `Created: ${result.created}`,
           `Already present: ${result.skipped}`,
           `Total: ${result.total}`,
-          "Next:",
-          "  npx roc-it@latest task list",
+          boxGuidance(
+            "Next:\n  npx roc-it@latest task list",
+            context.io.output?.columns,
+          ),
         ].join("\n"),
       );
       return 0;
@@ -223,11 +226,9 @@ async function executeTaskList(
           ? renderTaskList(tasks, {
               projectSlug,
               activeTaskId,
-              colorEnabled:
-                context.io.output?.isTTY === true &&
-                process.env.NO_COLOR === undefined,
+              colorEnabled: context.io.output?.isTTY === true,
             })
-          : renderEmptyTaskList(),
+          : renderEmptyTaskList(context.io.output?.columns),
       );
       return 0;
     } finally {

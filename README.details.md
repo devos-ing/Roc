@@ -10,7 +10,6 @@ and the complete command reference. Start with [the README](README.md) for your 
 - [Task board and retiring tasks](#the-task-board)
 - [Execution and recovery](#how-it-works)
 - [Other task sources](#other-ways-to-add-tasks)
-- [Repeated PR reviews](#repeated-pull-request-reviews)
 - [Commands](#commands)
 - [Current limits](#current-limits)
 
@@ -327,6 +326,9 @@ npx skills add backnotprop/pstack --skill unslop --global --agent codex
 ```
 
 Rerun onboarding to add installed skills to the daemon's trusted allowlist.
+From `mattpocock/skills`, Roc offers only `grilling` for requirement discovery
+and `tdd` for implementation tests. You do not need the whole collection.
+Other skills from that source are excluded from execution, including older saved selections.
 Planning uses your assistant's own login; daemon authentication is handled by Roc.
 
 ## The task board
@@ -422,13 +424,6 @@ bun "$ROC_CLI_ENTRY" task import-github
 
 GitHub import is one-way. Roc skips an Issue after importing its ID, so later
 edits to the Issue do not update the stored task.
-
-## Repeated pull-request reviews
-
-Ask an agent to use the installed `pr-review-to-closure` skill when reviewing a
-pull request again. It keeps stable finding IDs, compares the new head with the
-previous review, and reports a merge decision after the required checks pass.
-The skill does not comment, approve, commit, push, or merge unless you ask.
 
 ## Commands
 

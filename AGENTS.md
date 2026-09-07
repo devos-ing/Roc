@@ -2,6 +2,10 @@
 
 - Keep the code simple: use the smallest implementation that meets current requirements, reuse existing code, and remove obsolete paths instead of retaining speculative abstractions or compatibility layers; preserve validation, recovery, and safety checks.
 
+# Development skills
+
+- `.agents/skills/pr-review-to-closure/` is only for reviewing Roc's own pull requests. Keep it out of user onboarding, runtime skills, and the published npm package.
+
 # Testing Policy
 
 - Optimize for confidence in core product behavior, not for 100% test coverage.

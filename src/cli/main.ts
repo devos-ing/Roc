@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { createInterface } from "node:readline/promises";
+import { selectAgileCycle } from "./cycle-selector";
 import { runCli } from "./run";
 import { selectSkillAllowlist } from "./skill-selector";
 
@@ -29,6 +30,7 @@ if (import.meta.main) {
         });
       },
       selectSkills: selectSkillAllowlist,
+      selectCycle: selectAgileCycle,
       input: process.stdin,
       output: process.stdout,
     });

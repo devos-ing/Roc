@@ -17,10 +17,10 @@ const SkillLockSchema = z
   .passthrough();
 
 const allowedStandaloneSources = new Set([
-  "mattpocock/skills",
   "ayghri/i-have-adhd",
   "dietrichgebert/ponytail",
 ]);
+const mattPocockSkills = new Set(["grilling", "tdd"]);
 const UNSLOP_IDENTITY = {
   name: "unslop",
   source: "backnotprop/pstack",
@@ -140,6 +140,7 @@ export async function loadDefaultSkillPolicy(
       const source = metadata.source.toLowerCase();
       if (
         allowedStandaloneSources.has(source) ||
+        (source === "mattpocock/skills" && mattPocockSkills.has(name)) ||
         (name === UNSLOP_IDENTITY.name && source === UNSLOP_IDENTITY.source)
       ) {
         standaloneSkillSources.set(name, source);

@@ -54,6 +54,10 @@ Codex prompt, and saves the model after a successful response. Existing Pi
 credentials are reused. You do not need to install or log into Pi separately.
 The test uses a small amount of your model quota.
 
+Use ↑/↓ to move, Space to toggle skills, and Enter to confirm. Choose Daily,
+Weekly (the default), or Custom and enter the number of days. Terminal colors
+are automatic.
+
 ### 2. Create tasks through chat
 
 Open the project in your usual coding assistant and ask:
@@ -90,6 +94,8 @@ bun "$ROC_CLI_ENTRY" task board
 ```
 
 The board is read-only. Press `Enter` for details or `Q` to quit.
+Colored columns show progress, attention, and completed work; the layout adapts
+to your terminal width. Redirected output stays plain.
 Use `task list`, `scheduler inspect`, or `help` for more information.
 
 ## Go further

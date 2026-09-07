@@ -8,7 +8,7 @@ change, and add only the tests needed to protect important paths.
 You need:
 
 - [Bun](https://bun.sh/) 1.3.0 or later
-- Python 3.9 or later for the packaged PR review tests
+- Python 3.9 or later for the development PR review tests
 - Git
 - Node.js 22.19+, [Pi](https://github.com/earendil-works/pi), and provider credentials for live execution
 - GitHub CLI and repository access for live PR publication
@@ -46,9 +46,9 @@ QUICK_VALIDATE="$(find ~/.codex/skills -path '*/skill-creator/scripts/quick_vali
 [ -n "$QUICK_VALIDATE" ] || { echo 'quick_validate.py not found' >&2; exit 1; }
 
 python3 "$QUICK_VALIDATE" skills/roc-create-tasks
-python3 "$QUICK_VALIDATE" skills/pr-review-to-closure
-python3 -B skills/pr-review-to-closure/scripts/test_evidence.py -v
-python3 -B skills/pr-review-to-closure/scripts/test_ledger.py -v
+python3 "$QUICK_VALIDATE" .agents/skills/pr-review-to-closure
+python3 -B .agents/skills/pr-review-to-closure/scripts/test_evidence.py -v
+python3 -B .agents/skills/pr-review-to-closure/scripts/test_ledger.py -v
 ```
 
 You can test an import with a temporary strict JSON manifest, then inspect its
@@ -72,6 +72,14 @@ bun run check
 
 Always run `bun run check` before submitting a change. It runs linting, type
 checks, and the test suite.
+
+## Reviewing Roc pull requests
+
+Use the repository's [pr-review-to-closure skill](.agents/skills/pr-review-to-closure/SKILL.md)
+when reviewing Roc pull requests across revisions. It tracks finding IDs and
+checks the current head against earlier findings. The skill is for developing
+Roc; onboarding does not install it and the npm package does not include it.
+It does not comment, approve, push, or merge without an explicit request.
 
 ## Fake harness and debugging
 

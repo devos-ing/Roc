@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
+import { renderHelpBox } from "./help-box";
 import { renderEmptyTaskList } from "./presentation";
 import type { TaskBoardSnapshot, TaskBoardTask } from "./task-board-model";
 import {
@@ -203,6 +204,24 @@ function boardColumns(snapshot: TaskBoardSnapshot): BoardColumn[] {
   ];
 }
 
+/** Colors each column heading by its workflow state without changing its layout. */
+function columnHeading(
+  column: BoardColumn,
+  width: number,
+  enabled: boolean,
+): string {
+  const tones = {
+    Ready: "muted",
+    "In progress": "active",
+    Attention: "attention",
+    Done: "done",
+  } as const;
+  const heading = fit(`${column.name} · ${column.tasks.length}`, width);
+  return enabled
+    ? `\u001B[1m${color(heading, tones[column.name], true)}`
+    : heading;
+}
+
 /** Finds one task across all canonical board columns. */
 function taskById(
   taskColumns: readonly BoardColumn[],
@@ -227,7 +246,7 @@ function renderCard(input: {
   const blocked = blocker(input.task);
   const lines = [
     fit(
-      `${input.selected ? color("▌", "active", input.colorEnabled) : " "} ${input.task.isActive ? color("●", "active", input.colorEnabled) : " "} ${formatTaskDisplayId(input.task.id, input.projectSlug)}  ${input.task.title}`,
+      `${input.selected ? color("▌", "active", input.colorEnabled) : " "} ${input.task.isActive ? color("●", "active", input.colorEnabled) : " "} ${color(formatTaskDisplayId(input.task.id, input.projectSlug), statusTone(input.task) ?? "muted", input.colorEnabled)}  ${input.task.title}`,
       input.width,
     ),
     fit(
@@ -260,8 +279,8 @@ function renderColumn(input: {
   const collapsed = input.column.name === "Done" && !input.doneExpanded;
   const tasks = collapsed ? [] : input.column.tasks;
   const lines = [
-    fit(`${input.column.name} · ${input.column.tasks.length}`, input.width),
-    "─".repeat(input.width),
+    columnHeading(input.column, input.width, input.colorEnabled),
+    color("─".repeat(input.width), "muted", input.colorEnabled),
   ];
   if (collapsed)
     lines.push(
@@ -469,19 +488,24 @@ function renderDetails(
   ];
 }
 
-/** Renders the compact non-interactive shortcut reminder. */
-function footer(width: number): string {
-  return fit(
-    "↑↓ move · Space preview · Enter details · d Done · ? help · q quit",
-    width,
+/** Renders the keyboard shortcuts in a wrapping help box below the board. */
+function footer(width: number, colorEnabled: boolean): string {
+  return color(
+    renderHelpBox(
+      "Controls",
+      "↑↓ move · Space preview · Enter details · d Done · ? help · q quit",
+      width,
+    ),
+    "muted",
+    colorEnabled,
   );
 }
 
 /** Wraps the shared empty-backlog guidance for the available terminal width. */
 function emptyBoardGuidance(width: number): string[] {
-  return renderEmptyTaskList()
+  return renderEmptyTaskList(width)
     .split("\n")
-    .flatMap((line) => wrap(line, width));
+    .map((line) => fit(line, width));
 }
 
 /** Renders the canonical current-cycle summary and token progress. */
@@ -500,7 +524,7 @@ function summary(
   const activeCount = snapshot.tasks.filter((task) => task.isActive).length;
   const activity = activeCount === 0 ? "" : ` · ${activeCount} active`;
   return fit(
-    `Cycle ${snapshot.currentCycleId} · ${taskCount} task${taskCount === 1 ? "" : "s"}${activity}${tokens}`,
+    `Roc · Cycle ${snapshot.currentCycleId} · ${taskCount} task${taskCount === 1 ? "" : "s"}${activity}${tokens}`,
     width,
   );
 }
@@ -513,10 +537,7 @@ export function renderTaskBoard(
   const width = Math.max(1, Math.floor(options.width ?? 100));
   const projectSlug = options.projectSlug ?? "project";
   const colorEnabled =
-    (options.color === true || process.env.NO_COLOR === undefined) &&
-    options.color !== false &&
-    options.isTTY !== false &&
-    options.tty !== false;
+    options.color !== false && options.isTTY !== false && options.tty !== false;
   const taskColumns = boardColumns(snapshot);
   const taskCount = snapshot.tasks.length;
   const selected = taskById(
@@ -542,16 +563,20 @@ export function renderTaskBoard(
       [
         ...renderDetails(detail, snapshot, width, colorEnabled),
         "",
-        footer(width),
+        footer(width, colorEnabled),
       ].join("\n"),
       colorEnabled,
     );
 
-  const heading = summary(snapshot, taskCount, width);
+  const heading = color(
+    summary(snapshot, taskCount, width),
+    "active",
+    colorEnabled,
+  );
   if (width < narrowWidth) {
     const lines = [heading, ""];
     for (const column of taskColumns) {
-      lines.push(fit(`${column.name} · ${column.tasks.length}`, width));
+      lines.push(columnHeading(column, width, colorEnabled));
       if (column.name === "Done" && !doneExpanded)
         lines.push(color(fit("  [d] expand", width), "muted", colorEnabled));
       else if (column.tasks.length === 0) lines.push(fit("  —", width));
@@ -572,7 +597,7 @@ export function renderTaskBoard(
     }
     if (taskCount === 0) lines.push("", ...emptyBoardGuidance(width));
     return plainSnapshot(
-      [...lines, "", footer(width)].join("\n"),
+      [...lines, "", footer(width, colorEnabled)].join("\n"),
       colorEnabled,
     );
   }
@@ -609,7 +634,10 @@ export function renderTaskBoard(
     );
   }
   if (taskCount === 0) lines.push("", ...emptyBoardGuidance(width));
-  return plainSnapshot([...lines, "", footer(width)].join("\n"), colorEnabled);
+  return plainSnapshot(
+    [...lines, "", footer(width, colorEnabled)].join("\n"),
+    colorEnabled,
+  );
 }
 
 /** Maps a one-based terminal mouse position to a board card or Done header control. */
