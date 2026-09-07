@@ -19,8 +19,9 @@ flowchart LR
     D --> E["Pull request 與任務狀態"]
 ```
 
-**Pi 是唯一執行核心。** 在 Pi 選擇 Codex、Claude 或 GLM 模型，Roc 使用 Pi 的
-工具與 agent loop，不會啟動 Codex CLI 或 Claude Code。
+**Pi 是唯一執行核心。** Onboarding 會連接你的 ChatGPT 帳戶，選用 Codex 模型。
+Claude、GLM 屬於進階 provider 設定。Roc 使用 Pi 的工具與 agent loop，
+不會啟動 Codex CLI 或 Claude Code。
 一個 daemon 每次執行一項任務，每項任務保留自己的 branch。
 `done` 表示 PR 已發佈，仍須由你合併。
 
@@ -32,54 +33,48 @@ flowchart LR
 需要 Bun 1.3+、Node.js 22.19+、Git、GitHub CLI，以及專案的 build/test 工具。
 先在同一台機器使用本機任務佇列。
 
-### 1. 安裝及設定 Pi
+### 1. 設定 Roc
 
-```bash
-npm install -g @earendil-works/pi-coding-agent
-pi
-```
-
-在 Pi 使用 `/login` 登入，再以 `/model` 選擇支援 `high` reasoning 的模型。
-在模型選單按 **Ctrl+S** 儲存為啟動預設。
-Claude、GLM 的 API key 設定見[provider 設定](README.details.zh-HK.md#pi-provider-設定)。
-
-### 2. 設定 Roc 與專案
-
-先在這份 Roc 原始碼目錄執行 `bun install`。再到你想讓 Roc 修改的專案執行以下指令，
-把 entrypoint 替換為這份原始碼的絕對路徑：
+先在這份 Roc 原始碼目錄執行 `bun install`，Pi 會一併安裝。
+再到你想讓 Roc 修改的專案執行以下指令，把 entrypoint 替換為這份原始碼的絕對路徑：
 
 ```bash
 export ROC_CLI_ENTRY=/absolute/path/to/Roc/src/cli/main.ts
 cd /path/to/your-project
 gh auth login
-npx skills add mattpocock/skills --skill grilling --global --agent pi
-npx skills add backnotprop/pstack --skill unslop --global --agent pi
 bun "$ROC_CLI_ENTRY" onboard
-pi
 ```
 
-Onboarding 會建立資料庫、安裝 `roc-create-tasks`，並讓你選擇可信的 agent skills。
-在 Pi 輸入：
+Onboarding 會安裝 Roc skills，讓你選擇可信 skills 與 Agile 週期，並確認一次
+工具執行權限。工具擁有目前帳戶的權限。
+需要登入時，Roc 會開啟瀏覽器讓你授權 ChatGPT，發送一個小型 Codex 測試，
+收到正確回應後才保存預設模型。已有的 Pi 認證會直接重用，毋須另外安裝或登入 Pi。
+連線測試會使用少量模型額度。
+
+### 2. 透過聊天建立任務
+
+在你平常使用的 coding assistant 開啟專案，輸入：
 
 ```text
-/skill:roc-create-tasks 加入團隊邀請功能。使用本機佇列，以及 ROC_CLI_ENTRY 指定的 Roc。
+使用 roc-create-tasks 加入團隊邀請功能。使用本機佇列，以及 ROC_CLI_ENTRY 指定的 Roc。
 ```
 
-Skill 會透過提問釐清需求，提出任務與驗收條件，等你批准完整計劃後才儲存。
+Skill 會提問釐清需求，提出任務與驗收條件，等你批准完整計劃後才儲存。
+若 assistant 無法讀取 terminal 的環境變數，直接提供 Roc entrypoint 的絕對路徑。
+規劃 assistant 須有 `grilling` 及 `unslop`；缺少時依照[詳細指南](README.details.zh-HK.md#規劃-skills)安裝。
 
 ### 3. 啟動 daemon
 
-退出 Pi，在同一個 terminal 執行；目標 branch 不是 `main` 時請替換名稱。
-Pi 沒有內建 sandbox。下方變數表示你確認 Pi 工具擁有目前帳戶的權限；
-無人看管的執行應另外使用 OS/container 隔離。
+在同一專案與 terminal 執行；目標 branch 不是 `main` 時請替換名稱：
 
 ```bash
 bun "$ROC_CLI_ENTRY" task list
-ROC_ALLOW_UNSANDBOXED=1 bun "$ROC_CLI_ENTRY" scheduler run --base-branch main
+bun "$ROC_CLI_ENTRY" scheduler run --base-branch main
 ```
 
 保持 terminal 開啟。按 `Ctrl-C` 停止，再執行同一指令恢復已保存的工作。
 任務 branch 位於相鄰的 `<project>.agile-checkout`。
+Pi 沒有內建 sandbox，無人看管時應使用 OS/container 隔離。
 
 ### 4. 查看進度
 

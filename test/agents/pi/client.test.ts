@@ -226,6 +226,7 @@ for await (const line of console) {
       "--no-skills",
       "--no-prompt-templates",
       "--no-context-files",
+      "--no-approve",
       "--skill",
       skill,
     ]);
@@ -263,5 +264,57 @@ test("close rejects when owned-child exit observation rejects", async () => {
     child.kill("SIGKILL");
     await child.exited;
     await client.close().catch(() => {});
+  }
+});
+
+test("the bundled Pi entrypoint answers RPC without a global Pi installation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "roc-bundled-pi-"));
+  const previousBin = process.env.PI_BIN;
+  const previousDir = process.env.PI_CODING_AGENT_DIR;
+  let client: PiClient | undefined;
+  try {
+    delete process.env.PI_BIN;
+    const agentDir = join(root, "agent");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const { SettingsManager } = await import("../../../src/agents/pi/sdk");
+    const settings = SettingsManager.create(root, agentDir, {
+      projectTrusted: false,
+    });
+    settings.setDefaultModelAndProvider("openai-codex", "gpt-5.5");
+    settings.setDefaultThinkingLevel("high");
+    await settings.flush();
+    expect(settings.drainErrors()).toEqual([]);
+    await Bun.write(
+      join(agentDir, "auth.json"),
+      JSON.stringify({
+        "openai-codex": {
+          type: "oauth",
+          access: "fixture-only-no-model-request",
+          refresh: "fixture",
+          expires: Date.now() + 3_600_000,
+        },
+      }),
+    );
+    await Bun.write(
+      join(root, ".pi", "settings.json"),
+      JSON.stringify({
+        defaultProvider: "anthropic",
+        defaultModel: "claude-sonnet-4-6",
+        defaultThinkingLevel: "off",
+      }),
+    );
+    client = await PiClient.start({ cwd: root });
+    expect(await client.request("get_state")).toMatchObject({
+      isStreaming: false,
+      model: { provider: "openai-codex", id: "gpt-5.5" },
+      thinkingLevel: "high",
+    });
+  } finally {
+    await client?.close();
+    if (previousBin === undefined) delete process.env.PI_BIN;
+    else process.env.PI_BIN = previousBin;
+    if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousDir;
+    await rm(root, { recursive: true, force: true });
   }
 });

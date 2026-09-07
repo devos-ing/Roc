@@ -120,8 +120,22 @@ async function executeOnboard(
       context.io,
       context.runtime.now?.() ?? new Date(),
     );
+    if (!context.runtime.configureModel)
+      throw new Error("Model setup is required for onboard");
+    if (priorSettings?.execution?.allowUnsandboxed !== true) {
+      const answer = await context.io.ask?.(
+        "Roc's coding tools run with your account permissions. Use OS/container isolation for unattended work. Allow execution on this machine? [y/N]",
+      );
+      if (!/^(y|yes)$/i.test(answer?.trim() ?? ""))
+        throw new Error("Execution was not authorized; onboarding cancelled");
+    }
+    const model = await context.runtime.configureModel(context.io, root);
     const settingsPath = await saveRocSettings(
-      { cycle: setting, skills: { allowlist: selection.identities } },
+      {
+        cycle: setting,
+        skills: { allowlist: selection.identities },
+        execution: { allowUnsandboxed: true },
+      },
       homeRoot,
     );
     const allowlistStep = renderAllowlistStep(selection.identities.length);
@@ -133,6 +147,9 @@ async function executeOnboard(
     const settingsStep = renderSettingsStep(settingsPath);
     completedSteps.push(settingsStep);
     context.io.out(settingsStep);
+    const modelStep = `6. Model: Connected (${model})`;
+    completedSteps.push(modelStep);
+    context.io.out(modelStep);
     context.io.out(
       renderOnboardingComplete({
         unslopMissing: candidates.some(
@@ -168,7 +185,9 @@ export function registerOnboardCommand(
 ): void {
   program
     .command("onboard")
-    .description("Set up Roc, its skills, and your Agile cycle")
+    .description(
+      "Set up Roc, Codex login, trusted skills, and your Agile cycle",
+    )
     .option("--global", "install Roc skills globally without project state")
     .action(async (options: { global?: boolean }) => {
       context.exitCode = await executeOnboard(context, options);

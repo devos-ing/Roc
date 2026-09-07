@@ -140,3 +140,20 @@ git push origin vX.Y.Z
 The tag must match the version in `package.json`. GitHub Actions checks the tag,
 installs locked dependencies, runs the full check, publishes the package to npm,
 and creates the GitHub Release.
+
+## Live Pi Codex check
+
+Run `bun install`, then `bun dev -- onboard` to authorize ChatGPT and verify
+the Codex model through the bundled Pi SDK. Then run this test separately from
+the deterministic suite:
+
+```bash
+ROC_LIVE_CODEX=1 bun test test/integration/pi-codex.test.ts
+```
+
+This opt-in spends model tokens and acknowledges Pi's unsandboxed tool execution.
+It runs the production Pi backend in a temporary Git project through Scout,
+Implement and independent Review. Only PR publication is stubbed; no GitHub PR
+is created. It verifies model attribution, usage, tests, one trusted commit and
+clean checkouts, and retains the printed evidence directory. The normal suite
+skips this test; a skip is not live-provider verification.

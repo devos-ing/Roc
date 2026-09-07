@@ -63,15 +63,24 @@ Roc retains scheduling, approvals, trusted commits, PR publication, and status.
 
 ### Validation status
 
-As of 2026-09-06:
+As of 2026-09-07:
 
 | Scope | Result |
 | --- | --- |
 | Pi RPC fixtures and orchestration tests | Deterministic checks cover roles, attribution, rejection, recovery and cleanup |
-| Installed Pi 0.82.1 RPC probe | Process and RPC respond; no usable default provider/model was returned |
-| Pi with real Codex, Claude and GLM | Complete Scout → Implement → Review → PR → done flows remain unverified |
+| Bundled Pi 0.82.1 RPC probe | Process and RPC respond without a global Pi executable |
+| Roc Codex onboarding | Browser authorization and real model response verified with `openai-codex/gpt-5.6-terra`, `high`; default saved |
+| Pi with real Codex | Scout → Implement → independent Review → local `done` passed with `gpt-5.6-terra`, `high` for every role; PR publication stubbed |
+| Pi with real Claude and GLM | Not yet verified |
 | Same-host GitHub exercise before the Pi migration | Publication, admission, retries and failure writeback verified; no complete accepted flow |
 | Physical two-host operation | Not yet verified |
+
+The Codex live test completed on 2026-09-07 in 80.42 seconds with 21 assertions.
+It recorded 62,386 input/output tokens, including any cached input, and verified
+implementation commit `a572aeb5480966a9c4b317b8fa070e0645f70ac8` in its isolated
+fixture checkout. It made real model requests and ran the project's test;
+publication alone was stubbed. Real GitHub PR publication and remote status
+writeback are still separate acceptance checks.
 
 Earlier native Codex CLI probes are historical evidence, not Pi acceptance.
 The native Codex and ZCode adapters and their dedicated tests have been removed; `--backend codex` and `--backend zcode` are no longer supported.
@@ -103,25 +112,66 @@ not import the tasks into machine A's local database.
 
 ### Pi provider setup
 
-For the Pi runtime, B needs Bun, Git, GitHub CLI, Node.js 22.19 or later, Pi, Roc, a clone
-with push access, the target project's build and test tools, and provider
-credentials for Pi. Install the CLIs and authenticate GitHub:
+B needs Bun 1.3+, Node.js 22.19+, Git, GitHub CLI, Roc, a clone with push
+access, and the project's build/test tools. `bun install` in the Roc checkout
+installs the pinned Pi dependency. No global Pi CLI installation is needed.
 
 ```bash
-npm install -g @earendil-works/pi-coding-agent
+cd /absolute/path/to/execution-clone
 gh auth login
-cd /absolute/path/to/project
 bun "$ROC_CLI_ENTRY" onboard
 ```
 
-Run `pi`, authenticate with `/login` where supported, and choose `/model`.
-Press **Ctrl+S in the model picker** to save the startup default. API key
-providers also need their environment in the daemon's process, not just the
-interactive planning terminal:
+Onboarding reuses Pi's Codex credentials or opens browser authorization with
+your ChatGPT account. Pi owns credential storage and token refresh. Roc sends
+one small test prompt before saving `openai-codex/gpt-5.5` with `high` reasoning.
+An existing Codex default is retained if it supports the required reasoning.
+Failed login or model checks leave previous defaults and Roc settings unchanged.
+Press `Ctrl-C` to cancel and rerun onboarding to retry. Login is limited to five
+minutes, and the test request to one minute. Browser authorization remains a
+human step; on a headless host open the displayed URL locally and paste the
+callback URL into the execution host's terminal, never into an Issue or chat.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Roc as Roc onboard
+    participant Pi as Bundled Pi SDK
+    participant OpenAI
+    User->>Roc: onboard
+    Roc->>User: Choose cycle, skills, and execution permission
+    Roc->>Pi: Resolve Codex credentials
+    opt Login required
+      Pi-->>User: Open browser authorization
+      User->>OpenAI: Authorize ChatGPT account
+      OpenAI-->>Pi: OAuth callback
+      Pi->>Pi: Store credentials
+    end
+    Roc->>Pi: Small Codex connection test
+    Pi->>OpenAI: Model request
+    OpenAI-->>Roc: Verified response via Pi
+    Roc->>Pi: Save model and high reasoning
+    Roc->>Roc: Save cycle, skills, execution consent
+```
+
+The default model lives in `~/.pi/agent/settings.json`; credentials live in Pi's
+`~/.pi/agent/auth.json`. `PI_CODING_AGENT_DIR` overrides that directory when set.
+Roc stores the cycle, skill allowlist, and `execution.allowUnsandboxed` consent
+in `~/.config/roc/settings.json`. Use the same OS account and configuration
+paths for onboarding and the daemon. Project-local Pi configuration is disabled
+for Roc execution so it cannot replace the verified default or load extra tools.
+Rerunning onboarding verifies Codex again. To repair an invalid saved Codex
+model, remove `defaultModel` from Pi's settings and rerun onboarding.
+
+For an advanced Claude or GLM setup, use Pi's model configuration under the daemon
+account after onboarding. You can open the bundled CLI from the Roc checkout with
+`bun x --no-install pi`, use `/login` where supported, then `/model` and **Ctrl+S**
+to save the default. API keys must be available in the daemon environment.
+Rerunning Roc onboarding selects Codex again.
 
 | Model family | Pi provider | Authentication |
 | --- | --- | --- |
-| Codex | `openai-codex` | Pi `/login` with OpenAI Codex/ChatGPT |
+| Codex | `openai-codex` | ChatGPT browser authorization through Roc onboarding |
 | Claude | `anthropic` | `ANTHROPIC_API_KEY` or Pi-supported login |
 | GLM (global Coding Plan) | `zai` | `ZAI_API_KEY` |
 
@@ -136,7 +186,6 @@ silently switching models. Put the trusted publisher login in a service-account-
 
 ```bash
 ROC_GITHUB_PUBLISHERS=publisher-login
-ROC_ALLOW_UNSANDBOXED=1
 ```
 
 Then run the only daemon for this project:
@@ -165,12 +214,14 @@ actual merge commit, and pins that fresh target commit immediately before the
 dependent task is claimed. A closed-unmerged pull request, changed approval, or
 retired dependency moves the affected work to attention for explicit replanning.
 
-Pi has no built-in filesystem sandbox. Its working directory is a starting
+Onboarding records execution permission once. Advanced automation can instead
+set `ROC_ALLOW_UNSANDBOXED=1` explicitly. Pi has no built-in filesystem sandbox. Its working directory is a starting
 directory, not a security boundary, so run an unattended daemon in an OS sandbox
 or container that exposes only the repository, its sibling Roc checkout, and
 the credentials it needs.
 
-For systemd, install Roc and Pi at stable absolute paths and use one unit:
+For systemd, install Roc with its dependencies at a stable absolute path, run
+onboarding as the service account once, and use one unit:
 
 ```ini
 [Unit]
@@ -219,7 +270,6 @@ stores:
     <string>/opt/homebrew/bin:/usr/local/bin:/Users/roc/.bun/bin:/usr/bin:/bin</string>
     <key>ROC_GITHUB_PUBLISHERS</key>
     <string>publisher-login</string>
-    <key>ROC_ALLOW_UNSANDBOXED</key><string>1</string>
   </dict>
   <key>KeepAlive</key><true/>
   <key>RunAtLoad</key><true/>
@@ -230,8 +280,8 @@ stores:
 To move the daemon, stop the old service first and leave it stopped. With no Roc
 process running, copy the project checkout, its complete `.agile/runtime/`
 directory including any SQLite sidecar files, and the sibling
-`<project>.agile-checkout` to the new machine. Restore the Pi and GitHub service
-account credentials, verify the target branch and paths, then start the new
+`<project>.agile-checkout` to the new machine. Run onboarding as the new service account to authorize execution and reconnect
+Codex, restore GitHub credentials, verify the target branch and paths, then start the new
 service. Roc does not provide hot failover or multi-daemon coordination.
 
 Remote mode deliberately has one operational bound: if the repository has
@@ -263,6 +313,21 @@ snapshot, the Issue history, commit, and pull request. For a dependent task,
 merge its prerequisite and retain the fetched target SHA showing the actual
 merge result before the dependent claim. These live checks are not part of the
 local evidence reported by this change.
+
+## Planning skills
+
+Roc installs `roc-create-tasks` for your coding assistant during onboarding.
+The task-creation skill requires `grilling` and `unslop` in your planning assistant.
+Install them separately if missing. Choose
+`--agent` for the assistant where you plan tasks, for example:
+
+```bash
+npx skills add mattpocock/skills --skill grilling --global --agent codex
+npx skills add backnotprop/pstack --skill unslop --global --agent codex
+```
+
+Rerun onboarding to add installed skills to the daemon's trusted allowlist.
+Planning uses your assistant's own login; daemon authentication is handled by Roc.
 
 ## The task board
 

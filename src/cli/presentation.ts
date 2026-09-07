@@ -8,8 +8,8 @@ type OnboardingScope =
 const createBacklogGuidance = [
   "  Install the grilling skill if needed:",
   "    npx skills add mattpocock/skills --skill grilling --global --agent pi",
-  "  Create your first backlog in Pi:",
-  "    /skill:roc-create-tasks <requirement>",
+  "  Ask your coding assistant to create a backlog:",
+  "    Use roc-create-tasks: <requirement>",
 ];
 
 /** Renders the stable identity, scope, and step heading for onboarding. */

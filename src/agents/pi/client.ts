@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import type { z } from "zod";
 import { AgileError, normalizeError } from "../../runtime/errors";
 import { PiEventEnvelopeSchema, PiResponseEnvelopeSchema } from "./protocol";
@@ -36,6 +37,7 @@ export const PI_DETERMINISM_FLAGS = [
   "--no-skills",
   "--no-prompt-templates",
   "--no-context-files",
+  "--no-approve",
 ] as const;
 
 export class PiClient implements PiClientApi {
@@ -73,9 +75,14 @@ export class PiClient implements PiClientApi {
   }): Promise<PiClient> {
     const piBin = process.env.PI_BIN;
     const command = input.command ?? [
-      piBin || "pi",
-      "--mode",
-      "rpc",
+      ...(piBin
+        ? [piBin, "--mode", "rpc"]
+        : [
+            "node",
+            fileURLToPath(
+              import.meta.resolve("@earendil-works/pi-coding-agent/rpc-entry"),
+            ),
+          ]),
       ...PI_DETERMINISM_FLAGS,
       ...(input.skillPaths ?? []).flatMap((path) => ["--skill", path]),
     ];

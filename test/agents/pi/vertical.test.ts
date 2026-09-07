@@ -10,9 +10,9 @@ import { git } from "../../helpers/git";
 import { messageEnd, RecordedPiClient, ScriptedProbeClient } from "./fixtures";
 
 const probeDefaultModel = {
-  id: "claude-sonnet-4-6",
-  provider: "anthropic",
-  name: "Claude Sonnet 4.6",
+  id: "gpt-5.5",
+  provider: "openai-codex",
+  name: "GPT-5.5",
   reasoning: true,
   thinkingLevelMap: { medium: 1, high: 2, xhigh: 3 },
 };
@@ -144,7 +144,7 @@ test("vertical: the pi factory routes every role through the shared runtime and 
           }
           const client = new RecordedPiClient(
             [messageEnd({ text: turn.text }), { type: "agent_settled" }],
-            {},
+            { model: probeDefaultModel },
             turn.implements
               ? async () => {
                   // A real implement agent edits the prepared workspace
@@ -192,7 +192,7 @@ test("vertical: the pi factory routes every role through the shared runtime and 
     for (const client of clients) {
       expect(client.requests).toContainEqual({
         command: "set_model",
-        params: { provider: "anthropic", modelId: "claude-sonnet-4-6" },
+        params: { provider: "openai-codex", modelId: "gpt-5.5" },
       });
       expect(client.requests).toContainEqual({
         command: "set_thinking_level",

@@ -50,7 +50,8 @@ test("onboarding selection becomes the scheduler skill configuration", async () 
     const io = {
       out: () => {},
       err: () => {},
-      ask: async () => "2",
+      ask: async (question: string) =>
+        question.startsWith("Roc's coding tools") ? "yes" : "2",
       selectSkills: async () => ({
         kind: "selected" as const,
         identities: [{ name: "unslop", source: "backnotprop/pstack" }],
@@ -58,6 +59,7 @@ test("onboarding selection becomes the scheduler skill configuration", async () 
     };
     const runtime = {
       runScheduler: async () => {},
+      configureModel: async () => "openai-codex/gpt-5.5",
       projectRoot: project,
       homeRoot: home,
       listWorkspaceSkills: async () =>

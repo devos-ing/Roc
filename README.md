@@ -19,7 +19,8 @@ flowchart LR
     D --> E["Pull request and task status"]
 ```
 
-**Pi is the execution core.** Choose a Codex, Claude, or GLM model in Pi.
+**Pi is the execution core.** Onboarding connects your ChatGPT account and selects
+a Codex model. Claude and GLM are advanced provider options.
 Roc uses Pi's tools and agent loop; it does not launch Codex CLI or Claude Code.
 One daemon runs one task at a time. Each task keeps its own branch.
 `done` means the PR is published; you still merge it yourself.
@@ -33,55 +34,52 @@ success; see [validation status](README.details.md#validation-status).
 You need Bun 1.3+, Node.js 22.19+, Git, GitHub CLI, and your project's build/test
 tools. Start with the local task queue on one machine.
 
-### 1. Install and configure Pi
+### 1. Set up Roc
 
-```bash
-npm install -g @earendil-works/pi-coding-agent
-pi
-```
-
-In Pi, use `/login` to authenticate, then `/model` to select a model that supports
-`high` reasoning. Press **Ctrl+S in the model picker** to save the startup default.
-See [provider setup](README.details.md#pi-provider-setup) for Claude and GLM API keys.
-
-### 2. Set up Roc and your project
-
-In this Roc checkout, run `bun install`. Then run the following in the project
-you want Roc to modify. Replace the entrypoint with this checkout's absolute path:
+Run `bun install` in this Roc checkout. Pi is included as a dependency.
+Then enter the project you want Roc to modify. Replace the entrypoint with
+this checkout's absolute path:
 
 ```bash
 export ROC_CLI_ENTRY=/absolute/path/to/Roc/src/cli/main.ts
 cd /path/to/your-project
 gh auth login
-npx skills add mattpocock/skills --skill grilling --global --agent pi
-npx skills add backnotprop/pstack --skill unslop --global --agent pi
 bun "$ROC_CLI_ENTRY" onboard
-pi
 ```
 
-Onboarding creates the database, installs `roc-create-tasks`, and lets you choose
-trusted agent skills. In Pi, ask:
+Onboarding installs Roc's skills, lets you choose trusted skills and an Agile
+cycle, and asks once for permission to run coding tools with your account's
+permissions. It opens your browser for ChatGPT login when needed, tests a small
+Codex prompt, and saves the model after a successful response. Existing Pi
+credentials are reused. You do not need to install or log into Pi separately.
+The test uses a small amount of your model quota.
+
+### 2. Create tasks through chat
+
+Open the project in your usual coding assistant and ask:
 
 ```text
-/skill:roc-create-tasks Add team invitations. Use the local queue and the Roc entrypoint in ROC_CLI_ENTRY.
+Use roc-create-tasks to add team invitations. Use the local queue and the Roc entrypoint in ROC_CLI_ENTRY.
 ```
 
 The skill asks questions and proposes tasks with acceptance criteria. It saves
-them after you approve the complete plan.
+them after you approve the complete plan. If the assistant cannot read your
+terminal environment, give it the absolute Roc entrypoint path.
+Install `grilling` and `unslop` in your planning assistant if missing; see
+[planning skills](README.details.md#planning-skills).
 
 ### 3. Start the daemon
 
-Exit Pi, then use the same terminal. Replace `main` with your target branch.
-Pi has no built-in sandbox. The variable below acknowledges that Pi tools have
-your user account's permissions; use OS/container isolation for unattended runs.
+In the same project and terminal, replace `main` with your target branch:
 
 ```bash
 bun "$ROC_CLI_ENTRY" task list
-ROC_ALLOW_UNSANDBOXED=1 bun "$ROC_CLI_ENTRY" scheduler run --base-branch main
+bun "$ROC_CLI_ENTRY" scheduler run --base-branch main
 ```
 
 Leave the terminal open. Press `Ctrl-C` to stop; repeat the command to recover
 saved work. Roc keeps task branches in a sibling `<project>.agile-checkout`.
+For unattended work, use OS/container isolation because Pi has no built-in sandbox.
 
 ### 4. Follow progress
 

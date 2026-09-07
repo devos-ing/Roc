@@ -40,6 +40,7 @@ export const RocSettingsSchema = z
   .object({
     cycle: AgileCycleSettingSchema,
     skills: SkillSettingsSchema.optional(),
+    execution: z.object({ allowUnsandboxed: z.boolean() }).strict().optional(),
   })
   .strict();
 

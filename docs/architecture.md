@@ -23,7 +23,7 @@ Harness remains an internal deterministic test backend and is not exposed by
 the public scheduler command.
 
 ```text
-CLI -> Scheduler -> AgentHarness -> PiHarness -> PiClient -> pi --mode rpc
+CLI -> Scheduler -> AgentHarness -> PiHarness -> PiClient -> bundled Pi RPC
                  |                                        -> provider model
                  |              -> TaskBranchManager -> Git
                  -> TaskHookService -> Bun argv subprocess
@@ -185,14 +185,16 @@ branches and checkouts intact. Models from these vendors run through Pi provider
 ## Pi backend
 
 The Pi backend (`src/agents/pi/`) drives the documented Pi RPC mode
-(`pi --mode rpc`, npm `@earendil-works/pi-coding-agent`): strict JSONL with
+through the pinned `@earendil-works/pi-coding-agent` dependency. Roc launches
+its exported `rpc-entry` with Node; `PI_BIN` remains an explicit override for
+an operator-managed Pi binary. The transport uses strict JSONL with
 one JSON object per line — commands are `{type, id?, ...params}` on stdin,
 responses `{id?, type: "response", command, success, data|error}` and
 unwrapped events on stdout. The working directory is process-level state in
 Pi (there is no per-session workspace parameter), so every role attempt
 spawns its own child rooted at the isolated task workspace with deterministic
 startup flags (`--no-extensions --no-skills --no-prompt-templates
---no-context-files`). Only approved installed skills are added through explicit
+--no-context-files --no-approve`). Only approved installed skills are added through explicit
 `--skill` paths; local discovery and trust selection live in `src/skills/policy.ts`
 and do not start Codex. One `prompt` is sent per attempt; `agent_settled` is
 the authoritative completion anchor, the last assistant `message_end` before
@@ -207,7 +209,21 @@ write anywhere the user can. The task workspace is only the child's working
 directory, not a confinement boundary, and the Review status comparison only
 sees changes inside the task checkout. Until Pi runs inside a real OS sandbox
 or container that exposes only the task checkout, the backend factory refuses
-to start unless `ROC_ALLOW_UNSANDBOXED=1` acknowledges these limits.
+to start unless onboarding saved `execution.allowUnsandboxed: true` in the
+user's Roc settings, or an explicit `ROC_ALLOW_UNSANDBOXED=1` override acknowledges
+these limits. Project files cannot grant this execution permission.
+
+**Codex onboarding.** `roc-it onboard` uses Pi's public `ModelRuntime` SDK for
+OAuth, credential reuse, refresh, and one small connection test. Browser login
+is the default. After a verified response, `SettingsManager` saves the Codex
+provider/model and high reasoning in Pi's user settings. Roc stores the selected
+cycle, skills, and execution consent separately. A failed or cancelled login
+never reports completion or saves new Roc settings. Pi project configuration
+is disabled during setup and RPC execution. Authentication does not launch
+Codex CLI, and Roc does not copy its credentials. `src/agents/pi/sdk.ts` loads
+only the model/settings modules of the pinned Pi version. The SDK barrel also
+loads a native clipboard addon that stalls Bun/macOS shutdown; revisit these
+internal module paths when upgrading Pi.
 
 **Model attribution.** A short-lived probe process answers
 `get_available_models` and `get_state`; the probe's effective default model

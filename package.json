@@ -18,7 +18,8 @@
     "LICENSE"
   ],
   "engines": {
-    "bun": ">=1.3.0"
+    "bun": ">=1.3.0",
+    "node": ">=22.19.0"
   },
   "repository": {
     "type": "git",
@@ -52,6 +53,7 @@
   },
   "dependencies": {
     "@clack/prompts": "1.7.0",
+    "@earendil-works/pi-coding-agent": "0.82.1",
     "commander": "15.0.0",
     "effect": "3.22.1",
     "simple-git": "^3.36.0",

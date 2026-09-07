@@ -34,15 +34,23 @@ Claude Code CLI。同一個 daemon、資料庫及 checkout 會依序重用；每
 
 ### 驗證狀態
 
-截至 2026-09-06：
+截至 2026-09-07：
 
 | 範圍 | 結果 |
 | --- | --- |
 | Pi RPC fixture 與排程測試 | 驗證角色流程、模型紀錄、拒絕、恢復及清理 |
-| 本機 Pi 0.82.1 RPC 探測 | Process 與 RPC 有回應，但沒有可用的預設 provider/model |
-| Pi 真實 Codex、Claude、GLM | 完整三角色 → PR → done 流程尚未驗證 |
+| 隨 Roc 安裝的 Pi 0.82.1 RPC 探測 | 不依賴全域 Pi，process 與 RPC 有回應 |
+| Roc Codex onboarding | 瀏覽器授權及真實模型回應通過，已保存 `openai-codex/gpt-5.6-terra`、`high` |
+| Pi 真實 Codex | Scout → Implement → 獨立 Review → 本機 `done` 通過；每個角色均為 `gpt-5.6-terra`、`high`，PR 發佈使用測試替身 |
+| Pi 真實 Claude、GLM | 尚未驗證 |
 | 改用 Pi 前的單機 GitHub 演練 | 發佈、拉取、重試及失敗回寫已驗證；完整通過流程未完成 |
 | 實體兩台機器 | 尚未驗證 |
+
+2026-09-07 的 Codex 實測花費 80.42 秒，21 項斷言通過。
+紀錄輸入／輸出用量為 62,386 tokens，包含可能的快取輸入。
+獨立測試 checkout 的 implementation commit 為 `a572aeb5480966a9c4b317b8fa070e0645f70ac8`。
+模型呼叫及專案測試均為真實執行；只有 PR 發佈使用替身。
+真實 GitHub PR 發佈及遠端狀態回寫仍須另外驗證。
 
 舊 Codex CLI 探測不等於 Pi 驗收。原生 Codex/ZCode adapter 程式及專用測試已移除，
 公開 CLI 不再接受 `--backend codex` 或 `--backend zcode`。
@@ -67,24 +75,41 @@ bun "$ROC_CLI_ENTRY" task publish-github .agile/backlog/approved.json
 
 ### Pi provider 設定
 
-B 需要 Bun 1.3+、Node.js 22.19+、Pi、Git、gh、Roc、可 push 的 clone、
+B 需要 Bun 1.3+、Node.js 22.19+、Git、gh、Roc、可 push 的 clone、
 專案 build/test 工具，以及自己的 provider 憑證。
+在 Roc 目錄執行 `bun install` 會一併安裝指定版本的 Pi，毋須全域安裝 Pi CLI。
 
 ```bash
-npm install -g @earendil-works/pi-coding-agent
 cd /absolute/path/to/execution-clone
 gh auth login
 bun "$ROC_CLI_ENTRY" onboard
-pi
 ```
 
-在 Pi 使用 `/login` 登入，再以 `/model` 選擇模型，在模型選單按 **Ctrl+S**
-保存啟動預設。選擇須支援 `high` reasoning；不支援時 Roc 會回報
-`PI_MODEL_UNSUPPORTED`，無法解析預設模型時回報 `PI_MODEL_UNRESOLVED`。
+Onboarding 會重用 Pi 的 Codex 認證；需要登入時，開啟瀏覽器讓你授權 ChatGPT。
+Pi 負責認證保存及 token 更新。Roc 發送一個小型測試，收到正確回應後，才將
+`openai-codex/gpt-5.5` 與 `high` reasoning 存為預設。
+已有支援所需 reasoning 的 Codex 預設模型會保留。登入或連線測試失敗時，
+原本的模型預設與 Roc 設定不變。按 `Ctrl-C` 取消，重新執行 onboard 重試。
+登入最多等候五分鐘，模型測試最多一分鐘。
+無桌面環境時，可在另一台電腦開啟 terminal 顯示的授權網址，登入後把 callback URL
+貼回執行端 terminal；不要貼到 Issue 或聊天。
+
+流程圖見[登入時序圖](README.details.md#pi-provider-setup)。
+模型預設保存在 `~/.pi/agent/settings.json`，認證由 Pi 存在 `~/.pi/agent/auth.json`。
+設定 `PI_CODING_AGENT_DIR` 時會改用該目錄。
+週期、skills allowlist 與 `execution.allowUnsandboxed` 執行許可保存在
+`~/.config/roc/settings.json`。Onboarding 與 daemon 必須使用相同 OS 帳戶及設定路徑。
+Roc 停用專案內的 Pi 設定，避免它覆蓋已驗證模型或額外載入工具。
+若保存的 Codex 模型已失效，刪除 Pi settings 的 `defaultModel` 後重跑 onboarding。
+
+Claude、GLM 屬進階設定。在 onboarding 後，以 daemon 的帳戶設定 Pi provider。
+可在 Roc 原始碼目錄執行 `bun x --no-install pi` 開啟隨附 CLI，以 `/login` 登入，
+使用 `/model` 並按 **Ctrl+S** 儲存預設；API key 須提供給 daemon process。
+模型必須支援 `high` reasoning。再次執行 Roc onboarding 會選回 Codex。
 
 | 模型 | Pi provider | 認證 |
 | --- | --- | --- |
-| Codex | `openai-codex` | Pi `/login` 的 OpenAI Codex／ChatGPT |
+| Codex | `openai-codex` | Roc onboarding 的 ChatGPT 瀏覽器授權 |
 | Claude | `anthropic` | `ANTHROPIC_API_KEY` 或 Pi 支援的登入方式 |
 | GLM（全球 Coding Plan） | `zai` | `ZAI_API_KEY` |
 
@@ -94,28 +119,28 @@ API key 必須存在於 daemon 的執行環境；只在 A 或互動 terminal 設
 參考 Pi 官方 [providers](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md)
 與 [RPC](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md)。
 
-退出 Pi 後，在 B 啟動唯一的 daemon：
+在 B 啟動唯一的 daemon：
 
 ```bash
-ROC_GITHUB_PUBLISHERS=publisher-login ROC_ALLOW_UNSANDBOXED=1 \
+ROC_GITHUB_PUBLISHERS=publisher-login \
   bun "$ROC_CLI_ENTRY" scheduler run --source github --base-branch main
 ```
 
 `--backend pi` 可省略。省略 `--source github` 就使用本機佇列。
 執行目錄固定為 B 的 project root；資料庫位於 `.agile/runtime/agile.db`。
-Pi 沒有內建 sandbox，`ROC_ALLOW_UNSANDBOXED=1` 表示你確認工具具有目前帳戶的
-權限。無人看管時應使用 OS/container 隔離，僅開放 repository、相鄰 task checkout
+Onboarding 會保存一次執行許可；進階自動化仍可明確設定 `ROC_ALLOW_UNSANDBOXED=1`。
+Pi 沒有內建 sandbox，工具具有目前帳戶的權限。無人看管時應使用 OS/container 隔離，僅開放 repository、相鄰 task checkout
 及必要憑證。工作目錄本身不是安全邊界。
 
 ### 常駐服務與搬移
 
 [英文詳細指南的 systemd／launchd 範例](README.details.md#pi-provider-setup)
-提供完整服務檔。使用固定 working directory、明確的 Bun/Pi 路徑，並在服務帳戶
+提供完整服務檔。使用固定 working directory、明確的 Bun/Node 路徑，並在服務帳戶
 設定 provider 與 GitHub 憑證。環境檔應限制為 `0600`，不要把密鑰提交到 repository。
 
 搬移前停止舊 daemon，保持它停止。確認沒有 Roc process 後，複製 project clone、
 完整 `.agile/runtime/`（包含 SQLite sidecar）及相鄰 `<project>.agile-checkout`，
-再在新機設定 Pi／GitHub 憑證及路徑。Roc 沒有熱備援或多 daemon 協調。
+再以新機服務帳戶執行 onboarding，確認執行權限並連接 Codex，設定 GitHub 憑證及路徑。Roc 沒有熱備援或多 daemon 協調。
 若留下 checkout ownership lock，先依照[架構恢復指引](docs/architecture.md)
 確認相關 process／child 已停止；不要直接刪除 lock、資料庫或 checkout。
 
@@ -146,6 +171,20 @@ GitHub 模式每約 30 秒輪詢；無法驗證批准時暫停新工作，但會
 `Ctrl-C` 後重新執行相同指令可恢復持久狀態；Pi 中斷的 turn 可能從 ticket 重試，
 不會重新連接死亡的 session。Roc 記錄模型、用量與事件；token target 是估算，
 不是自動中止的硬限制。可信 prehook/posthook 設定及清理契約見[架構](docs/architecture.md)。
+
+## 規劃 skills
+
+Onboarding 會為 coding assistant 安裝 `roc-create-tasks`。
+建立任務須使用 `grilling` 及 `unslop`，缺少時請分別安裝。
+`--agent` 請選擇你用來規劃的 assistant，例如：
+
+```bash
+npx skills add mattpocock/skills --skill grilling --global --agent codex
+npx skills add backnotprop/pstack --skill unslop --global --agent codex
+```
+
+重跑 onboarding 可把已安裝 skills 加入 daemon 的可信清單。
+規劃使用 assistant 本身的登入；daemon 的模型登入由 Roc 處理。
 
 ## 看板與指令
 

@@ -105,7 +105,11 @@ async function gateFailureWith(value: string | undefined): Promise<unknown> {
     if (value === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
     else process.env.ROC_ALLOW_UNSANDBOXED = value;
     try {
-      await startPiBackend({ branches: undefined as never });
+      await buildPiBackendFactory({
+        startProbeClient: async () => {
+          throw new Error("probe must not start");
+        },
+      })({ branches: undefined as never });
     } catch (error) {
       return error;
     }
@@ -134,12 +138,13 @@ test("the gate message tells the operator how to acknowledge", async () => {
   expect(error.message).toContain("sandbox");
 });
 
-test("the gate open path attributes the probe default model and reaps the probe", async () => {
+test("saved execution consent permits the probe without an environment override", async () => {
   const previous = process.env.ROC_ALLOW_UNSANDBOXED;
   const probe = new ScriptedProbeClient(probeModels, probeDefaultModel);
   try {
-    process.env.ROC_ALLOW_UNSANDBOXED = "1";
+    delete process.env.ROC_ALLOW_UNSANDBOXED;
     const factory = buildPiBackendFactory({
+      allowUnsandboxed: true,
       startProbeClient: async () => probe,
       startAttemptClient: async () => {
         throw new Error("no role attempt runs in this test");

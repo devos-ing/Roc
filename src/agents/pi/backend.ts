@@ -1,5 +1,6 @@
 import { AgileError } from "../../runtime/errors";
 import type { CatalogModel } from "../../scheduler/model-routing";
+import { loadRocSettings } from "../../settings";
 import {
   buildDefaultSkillConfig,
   discoverTrustedSkills,
@@ -48,8 +49,8 @@ function validateDefaultModel(raw: unknown): PiModel | undefined {
 }
 
 /** Requires explicit acknowledgement before Pi runs with the process user permissions. */
-function assertExecutionPermission(): void {
-  if (process.env.ROC_ALLOW_UNSANDBOXED !== "1") {
+function assertExecutionPermission(allowUnsandboxed = false): void {
+  if (!allowUnsandboxed && process.env.ROC_ALLOW_UNSANDBOXED !== "1") {
     throw new AgileError({
       code: "PI_SANDBOX_REQUIRED",
       category: "startup",
@@ -58,7 +59,7 @@ function assertExecutionPermission(): void {
       message:
         "Pi has no built-in sandbox and " +
         "its tools run with the full process user permissions, so a role " +
-        "turn can write anywhere the user can. Set ROC_ALLOW_UNSANDBOXED=1 " +
+        "turn can write anywhere the user can. Run onboard to authorize execution, or set ROC_ALLOW_UNSANDBOXED=1 " +
         "to acknowledge and confine the process with an external OS " +
         "sandbox or container.",
     });
@@ -72,7 +73,9 @@ function assertExecutionPermission(): void {
  * and the execution permission requirement live in docs/architecture.md.
  */
 export const startPiBackend: BackendFactory = async (context) => {
-  assertExecutionPermission();
+  const settings = await loadRocSettings();
+  const allowUnsandboxed = settings.execution?.allowUnsandboxed === true;
+  assertExecutionPermission(allowUnsandboxed);
   const policy = await loadSchedulerSkillPolicy();
   const skillPaths = buildDefaultSkillConfig(
     await discoverTrustedSkills(policy),
@@ -83,6 +86,7 @@ export const startPiBackend: BackendFactory = async (context) => {
   return buildPiBackendFactory({
     startProbeClient: () => PiClient.start({ cwd: process.cwd() }),
     skillPaths,
+    allowUnsandboxed,
   })(context);
 };
 
@@ -94,10 +98,11 @@ export const startPiBackend: BackendFactory = async (context) => {
 export function buildPiBackendFactory(input: {
   startProbeClient: () => Promise<PiClientApi>;
   skillPaths?: readonly string[];
+  allowUnsandboxed?: boolean;
   startAttemptClient?: (cwd: string) => Promise<PiClientApi>;
 }): BackendFactory {
   return async ({ branches }: { branches: TaskBranchManager }) => {
-    assertExecutionPermission();
+    assertExecutionPermission(input.allowUnsandboxed);
 
     const probe = await input.startProbeClient();
     try {

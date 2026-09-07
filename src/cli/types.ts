@@ -19,7 +19,7 @@ export type CliIo = {
   /** Writes one diagnostic-output record. */
   err(text: string): void;
   /** Prompts for one interactive answer when input is available. */
-  ask?(question: string): Promise<string>;
+  ask?(question: string, signal?: AbortSignal): Promise<string>;
   /** Selects exact trusted skills through an interactive terminal checklist. */
   selectSkills?(
     candidates: DefaultSkillCandidate[],
@@ -62,6 +62,8 @@ export type CliRuntime = {
   ): Promise<void>;
   /** Returns installed trusted skills for onboarding without starting an agent. */
   listWorkspaceSkills?(cwd: string): Promise<DiscoveredSkill[]>;
+  /** Connects and verifies the default model through Pi during onboarding. */
+  configureModel?(io: CliIo, cwd: string): Promise<string>;
   projectRoot?: string;
   homeRoot?: string;
   /** Supplies the clock used for cycle calculations. */

@@ -603,6 +603,11 @@ export function runBackendSession(
 }
 
 export const defaultRuntime: CliRuntime = {
+  /** Loads Pi's onboarding support only when the user configures a model. */
+  async configureModel(io, cwd) {
+    const { configureCodex } = await import("../agents/pi/onboard");
+    return configureCodex(io, cwd);
+  },
   /** Runs the selected scheduler backend under a fresh structured run identifier. */
   async runScheduler(input) {
     const runId = crypto.randomUUID();

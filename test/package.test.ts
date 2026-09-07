@@ -48,7 +48,7 @@ test("package metadata exposes roc-it as a public Bun CLI", async () => {
     "README.details.zh-HK.md",
     "LICENSE",
   ]);
-  expect(manifest.engines).toEqual({ bun: ">=1.3.0" });
+  expect(manifest.engines).toEqual({ bun: ">=1.3.0", node: ">=22.19.0" });
   expect(manifest.publishConfig).toEqual({ access: "public" });
   expect(manifest.scripts?.dev).toBe("bun src/cli/main.ts");
   expect(manifest.scripts?.prepublishOnly).toBe("bun run check");

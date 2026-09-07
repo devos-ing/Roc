@@ -35,8 +35,8 @@ const onboardingNextSteps = [
   "    npx roc-it@latest onboard",
   "  Install the grilling skill if needed:",
   "    npx skills add mattpocock/skills --skill grilling --global --agent pi",
-  "  Create your first backlog in Pi:",
-  "    /skill:roc-create-tasks <requirement>",
+  "  Ask your coding assistant to create a backlog:",
+  "    Use roc-create-tasks: <requirement>",
   "  Inspect the resulting tasks:",
   "    npx roc-it@latest task list",
 ].join("\n");
@@ -52,7 +52,10 @@ function interactiveIo(
     io: {
       out: (text: string) => output.push(text),
       err: (text: string) => errors.push(text),
-      ask: async () => answers.shift() ?? "",
+      ask: async (question: string) =>
+        question.startsWith("Roc's coding tools")
+          ? "yes"
+          : (answers.shift() ?? ""),
       selectSkills: async (candidates: DefaultSkillCandidate[]) =>
         selectedNames === "cancel"
           ? { kind: "cancelled" as const }
@@ -75,6 +78,7 @@ function interactiveIo(
 function onboardingRuntime(overrides: Partial<CliRuntime> = {}): CliRuntime {
   return {
     runScheduler: async () => {},
+    configureModel: async () => "openai-codex/gpt-5.5",
     listWorkspaceSkills: async () => [],
     ...overrides,
   };
@@ -360,7 +364,8 @@ test("missing unslop is disabled and only produces manual install guidance", asy
   const io = {
     out: () => {},
     err: () => {},
-    ask: async () => "1",
+    ask: async (question: string) =>
+      question.startsWith("Roc's coding tools") ? "yes" : "1",
     selectSkills: async (candidates: DefaultSkillCandidate[]) => {
       seen = candidates;
       return { kind: "selected" as const, identities: [] };
@@ -520,7 +525,10 @@ test("onboard saves each selected Agile cycle globally", async () => {
           ),
         ),
         scenario.name,
-      ).toEqual(scenario.expected);
+      ).toEqual({
+        ...scenario.expected,
+        execution: { allowUnsandboxed: true },
+      });
       expect(errors, scenario.name).toEqual([]);
     } finally {
       await rm(projectRoot, { recursive: true, force: true });
@@ -953,7 +961,7 @@ test("task list reuses create-backlog guidance when empty", async () => {
     ).toBe(0);
     const empty = output.at(0) ?? "";
     expect(empty).toContain("No tasks.");
-    expect(empty).toContain("/skill:roc-create-tasks <requirement>");
+    expect(empty).toContain("Use roc-create-tasks: <requirement>");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1334,7 +1342,7 @@ test("task board shows backlog guidance for an empty project", async () => {
       ),
     ).toBe(0);
     expect(output.at(0)).toContain("No tasks.");
-    expect(output.at(0)).toContain("/skill:roc-create-tasks <requirement>");
+    expect(output.at(0)).toContain("Use roc-create-tasks: <requirement>");
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
@@ -1788,5 +1796,52 @@ test("task hook trust records only the current task-scoped configuration hash", 
     }
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("execution refusal and model failure preserve Roc settings and never report ready", async () => {
+  for (const allow of [false, true]) {
+    const root = await mkdtemp(join(tmpdir(), "roc-onboard-failed-"));
+    const home = await mkdtemp(join(tmpdir(), "roc-onboard-home-"));
+    try {
+      await saveRocSettings(
+        { cycle: { type: "daily" }, skills: { allowlist: [] } },
+        home,
+      );
+      const before = await readFile(rocSettingsPath(home), "utf8");
+      const { io, output, errors } = interactiveIo(["2"]);
+      let modelCalls = 0;
+      expect(
+        await runCli(
+          ["onboard"],
+          {
+            ...io,
+            ask: async (question) =>
+              question.startsWith("Roc's coding tools")
+                ? allow
+                  ? "yes"
+                  : "no"
+                : "2",
+          },
+          onboardingRuntime({
+            projectRoot: root,
+            homeRoot: home,
+            configureModel: async () => {
+              modelCalls++;
+              throw new Error("Model setup failed");
+            },
+          }),
+        ),
+      ).toBe(1);
+      expect(modelCalls).toBe(allow ? 1 : 0);
+      expect(await readFile(rocSettingsPath(home), "utf8")).toBe(before);
+      expect(output.join("\n")).not.toContain("Result: Complete");
+      expect(errors.join("\n")).toContain(
+        allow ? "Model setup failed" : "Execution was not authorized",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
   }
 });
