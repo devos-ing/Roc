@@ -44,8 +44,8 @@ Claude Code CLI。同一個 daemon、資料庫及 checkout 會依序重用；每
 | 改用 Pi 前的單機 GitHub 演練 | 發佈、拉取、重試及失敗回寫已驗證；完整通過流程未完成 |
 | 實體兩台機器 | 尚未驗證 |
 
-舊 Codex CLI 探測不等於 Pi 驗收。原生 Codex/ZCode adapter 程式及回歸測試仍保留，
-但未註冊，公開 CLI 不再接受 `--backend codex` 或 `--backend zcode`。
+舊 Codex CLI 探測不等於 Pi 驗收。原生 Codex/ZCode adapter 程式及專用測試已移除，
+公開 CLI 不再接受 `--backend codex` 或 `--backend zcode`。
 升級前先用舊版本完成進行中的原生 adapter 任務；原生 session cursor 不能在 Pi
 恢復。保留資料庫、checkout 與 task branches。
 

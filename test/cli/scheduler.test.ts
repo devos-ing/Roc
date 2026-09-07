@@ -170,7 +170,7 @@ test("prints a stable project scheduler snapshot", async () => {
 });
 
 test("passes fixed project paths and the selected base to the Pi runtime", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-scheduler-codex-cli-"));
+  const root = await mkdtemp(join(tmpdir(), "agile-scheduler-pi-cli-"));
   const calls: unknown[] = [];
   const output: string[] = [];
   try {
@@ -285,11 +285,11 @@ test("logs and renders one operational scheduler failure", async () => {
   const errors: string[] = [];
   const logged: AgileError[] = [];
   const runtimeError = new AgileError({
-    code: "CODEX_STARTUP_BLOCKED",
+    code: "PI_STARTUP_BLOCKED",
     category: "startup",
     retryable: false,
     component: "cli",
-    message: "Codex could not start",
+    message: "Pi could not start",
   });
   try {
     expect(
@@ -308,7 +308,7 @@ test("logs and renders one operational scheduler failure", async () => {
       ),
     ).toBe(1);
     expect(output).toEqual(["Status: Starting"]);
-    expect(errors).toEqual(["CODEX_STARTUP_BLOCKED: Codex could not start"]);
+    expect(errors).toEqual(["PI_STARTUP_BLOCKED: Pi could not start"]);
     expect(logged).toEqual([runtimeError]);
   } finally {
     await rm(root, { recursive: true, force: true });

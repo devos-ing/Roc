@@ -10,28 +10,6 @@ import { loadRocSettings } from "../settings";
 
 const NonEmpty = z.string().trim().min(1);
 
-const DiscoveredSkillSchema = z
-  .object({
-    name: NonEmpty,
-    path: NonEmpty,
-    enabled: z.boolean(),
-  })
-  .passthrough();
-
-export const SkillListResponseSchema = z
-  .object({
-    data: z.array(
-      z
-        .object({
-          cwd: NonEmpty,
-          skills: z.array(DiscoveredSkillSchema),
-          errors: z.array(z.unknown()),
-        })
-        .passthrough(),
-    ),
-  })
-  .passthrough();
-
 const SkillLockSchema = z
   .object({
     skills: z.record(z.string(), z.object({ source: NonEmpty }).passthrough()),
@@ -62,7 +40,7 @@ const pluginSources = [
   },
 ] as const;
 
-export type DiscoveredSkill = z.infer<typeof DiscoveredSkillSchema>;
+export type DiscoveredSkill = { name: string; path: string; enabled: boolean };
 export type DefaultSkillCandidate = {
   identity: SkillIdentity;
   installed: boolean;

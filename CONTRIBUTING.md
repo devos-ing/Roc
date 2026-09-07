@@ -13,8 +13,8 @@ You need:
 - Node.js 22.19+, [Pi](https://github.com/earendil-works/pi), and provider credentials for live execution
 - GitHub CLI and repository access for live PR publication
 
-Deterministic tests use fixtures and do not need Pi credentials. Native Codex
-and ZCode clients are only needed when manually testing their retained legacy adapters.
+Deterministic tests use Pi RPC fixtures and the Fake Harness without provider
+credentials. Pi is the only production harness; new model vendors use Pi providers.
 
 Install the locked dependencies from a source checkout:
 

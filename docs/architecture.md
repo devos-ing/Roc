@@ -67,8 +67,8 @@ late successful completion never unlocks it. Bounded safe diagnostics use
 lock and reports `SCHEDULER_CHECKOUT_OWNERSHIP_LOST` without replacing an existing
 primary error. No PID-, age- or lease-based automatic takeover is permitted.
 
-Codex, Pi and ZCode client close reject with a sanitized
-`*_PROCESS_EXIT_UNCONFIRMED` error when the final exit wait cannot confirm their
+Pi client close rejects with a sanitized
+`PI_PROCESS_EXIT_UNCONFIRMED` error when the final exit wait cannot confirm their
 owned child's exit. Rejected exit observation is not success. Pi also preserves
 earlier client-close failures and attempts all remaining clients and its probe
 before propagating cleanup failure. These are direct-child lifecycle contracts,
@@ -85,11 +85,10 @@ owner's lock, the checkout, database or task branches as a recovery shortcut.
 This is cooperative local ownership, not a hostile-user or distributed-filesystem
 security boundary. A crash can require the same manual recovery.
 
-Deterministic validation includes an actual CodexClient with a controlled
+Deterministic validation includes an actual PiClient with a controlled
 non-agent child writing after session return: a successor is refused before
-checkout validation, and the lock remains after eventual child exit. Real Codex
-smoke has not been run; independent integration review and final user review
-remain separate from these local checks.
+checkout validation, and the lock remains after eventual child exit. Live Pi provider flows remain unverified; deterministic checks do not replace
+provider acceptance.
 
 Roc prepares a sibling checkout instead of editing the resolved project checkout. A
 `TaskBranchManager` creates or reuses one sibling checkout at
@@ -176,13 +175,12 @@ reads. Live GitHub, real-provider, and two-machine behavior is operator release
 evidence; deterministic local tests exercise the same publication, admission,
 scheduler, writeback, and dependency seams.
 
-## Legacy adapter source
+## Upgrading from native adapters
 
-`src/agents/codex/` and `src/agents/zcode/` remain for historical tests. They are
-unregistered and cannot be selected by the public scheduler. Their protocol and
-sandbox behavior does not describe Pi. Finish active native-adapter work using
-the prior version before upgrading; native session cursors cannot resume in Pi.
-Keep existing databases, task branches and checkouts intact.
+Native Codex and ZCode adapters and their dedicated tests have been removed.
+Finish active native-adapter work using the prior version before upgrading;
+native session cursors cannot resume in Pi. Keep existing databases, task
+branches and checkouts intact. Models from these vendors run through Pi providers.
 
 ## Pi backend
 

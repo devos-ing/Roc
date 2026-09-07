@@ -74,8 +74,7 @@ As of 2026-09-06:
 | Physical two-host operation | Not yet verified |
 
 Earlier native Codex CLI probes are historical evidence, not Pi acceptance.
-The native Codex and ZCode adapters remain unregistered source with regression
-tests; `--backend codex` and `--backend zcode` are no longer supported.
+The native Codex and ZCode adapters and their dedicated tests have been removed; `--backend codex` and `--backend zcode` are no longer supported.
 Finish active native-adapter tasks on the previous version before upgrading.
 Native session cursors cannot resume in Pi; preserve databases and checkouts.
 

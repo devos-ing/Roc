@@ -2,13 +2,13 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { skillIdentityKey } from "../../../src/domain/skill-allowlist";
+import { skillIdentityKey } from "../../src/domain/skill-allowlist";
 import {
   buildDefaultSkillCandidates,
   buildDefaultSkillConfig,
   discoverTrustedSkills,
   loadDefaultSkillPolicy,
-} from "../../../src/skills/policy";
+} from "../../src/skills/policy";
 
 test("trusts only the exact pstack unslop identity and path", async () => {
   const home = await mkdtemp(join(tmpdir(), "roc-unslop-policy-"));

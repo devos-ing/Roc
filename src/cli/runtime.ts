@@ -279,7 +279,7 @@ export type BackendSessionOptions = {
 /** Runs one scheduler session against a started backend factory. */
 export function runBackendSession(
   startBackend: BackendFactory,
-  input: Omit<RealSchedulerRunInput, "backend"> & { backend: string },
+  input: RealSchedulerRunInput,
   runId: string,
   options: BackendSessionOptions = {},
 ): Promise<void> {

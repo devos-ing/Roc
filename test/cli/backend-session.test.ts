@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CodexClient } from "../../src/agents/codex/client";
+import { PiClient } from "../../src/agents/pi/client";
 import type { BackendFactory, BackendRuntime } from "../../src/agents/types";
 import { runBackendSession } from "../../src/cli/runtime";
 import type { RealSchedulerRunInput } from "../../src/cli/types";
@@ -180,7 +180,7 @@ test("a real client child can write after session return but cannot hand its che
   const dbPath = join(root, ".agile", "runtime", "agile.db");
   await seedReadyTask(dbPath);
   const fake = fakeBackend(compatibleCatalog);
-  let client: CodexClient | undefined;
+  let client: PiClient | undefined;
   let closeFinished = false;
   let closing: Promise<void> | undefined;
   let running: Promise<void> | undefined;
@@ -190,7 +190,8 @@ test("a real client child can write after session return but cannot hand its che
   try {
     running = runBackendSession(
       async (context) => {
-        const startedClient = await CodexClient.start({
+        const startedClient = await PiClient.start({
+          cwd: root,
           command: [
             process.execPath,
             join(import.meta.dir, "../fixtures/checkout-late-writer.ts"),

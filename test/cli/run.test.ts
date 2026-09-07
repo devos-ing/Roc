@@ -445,7 +445,7 @@ test("repeat onboarding preselects only the saved identities", async () => {
   ]);
 });
 
-test("catalog failure preserves the prior allowlist", async () => {
+test("local skill discovery failure preserves the prior allowlist", async () => {
   const home = await mkdtemp(join(tmpdir(), "roc-onboard-catalog-failure-"));
   await saveRocSettings(
     {
@@ -464,15 +464,13 @@ test("catalog failure preserves the prior allowlist", async () => {
       onboardingRuntime({
         homeRoot: home,
         listWorkspaceSkills: async () => {
-          throw new Error(
-            "Codex did not return a complete workspace skill catalog",
-          );
+          throw new Error("Local skill discovery failed");
         },
       }),
     ),
   ).toBe(1);
   expect(await readFile(rocSettingsPath(home), "utf8")).toBe(before);
-  expect(errors.join("\n")).toContain("complete workspace skill catalog");
+  expect(errors.join("\n")).toContain("Local skill discovery failed");
 });
 
 test("onboard saves each selected Agile cycle globally", async () => {

@@ -1,6 +1,6 @@
 # Cross-machine task delivery
 
-Status: approved direction and autonomous implementation authorized by the user on 2026-09-06. This spec translates the reviewed plan at `.scratch/deliver-code/remote-task-workflow/plan.md` into acceptance requirements. GitHub Issues are shared tasks; one Roc daemon in a dedicated execution clone polls them. Pi is the sole public execution backend, using provider models directly. Existing local commands remain supported; native Codex and ZCode adapters are unregistered.
+Status: approved direction and autonomous implementation authorized by the user on 2026-09-06. This spec translates the reviewed plan at `.scratch/deliver-code/remote-task-workflow/plan.md` into acceptance requirements. GitHub Issues are shared tasks; one Roc daemon in a dedicated execution clone polls them. Pi is the sole public execution backend, using provider models directly. Existing local commands remain supported; native Codex and ZCode adapters and their dedicated tests are removed.
 
 ## Scope and authority
 

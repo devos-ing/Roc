@@ -236,3 +236,32 @@ for await (const line of console) {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("close rejects when owned-child exit observation rejects", async () => {
+  const client = await PiClient.start({
+    cwd: process.cwd(),
+    command: [process.execPath, fixturePath],
+  });
+  const child: Bun.Subprocess<"pipe", "pipe", "pipe"> = Reflect.get(
+    client,
+    "process",
+  );
+  // Keep real child I/O and killing; inject only the OS exit-observation failure.
+  Reflect.set(client, "process", {
+    stdin: child.stdin,
+    exitCode: null,
+    exited: Promise.reject(new Error("exit observer secret")),
+    kill: (signal: number | NodeJS.Signals) => child.kill(signal),
+  });
+  try {
+    await expect(client.close()).rejects.toMatchObject({
+      code: "PI_PROCESS_EXIT_UNCONFIRMED",
+      category: "infra",
+      retryable: false,
+    });
+  } finally {
+    child.kill("SIGKILL");
+    await child.exited;
+    await client.close().catch(() => {});
+  }
+});
