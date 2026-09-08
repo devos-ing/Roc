@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import { z } from "zod";
 import {
   ContextRefSchema,
@@ -20,6 +21,25 @@ const EventBaseSchema = z.object({
   sequence: z.number().int().positive(),
   occurredAt: z.string().datetime(),
 });
+
+/** Removes terminal controls and bounds a progress summary to one readable line. */
+export function activitySummary(value: string): string {
+  return stripVTControlCharacters(value)
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 200)
+    .replace(/[\uD800-\uDBFF]$/u, "");
+}
+
+export const HarnessActivitySchema = z
+  .object({
+    itemId: NonEmpty.max(512),
+    action: z.enum(["read", "search", "command", "test", "edit", "tool"]),
+    summary: z.string().transform(activitySummary).pipe(NonEmpty.max(200)),
+    status: z.enum(["running", "completed", "failed"]),
+  })
+  .strict();
 
 export const ScoutOutputSchema = z
   .object({
@@ -64,6 +84,10 @@ export const HarnessEventSchema = z.discriminatedUnion("type", [
       ImplementOutputSchema,
       ReviewOutputSchema,
     ]),
+  }).strict(),
+  EventBaseSchema.extend({
+    type: z.literal("attempt.activity"),
+    activity: HarnessActivitySchema,
   }).strict(),
   EventBaseSchema.extend({
     type: z.literal("attempt.usage_delta"),

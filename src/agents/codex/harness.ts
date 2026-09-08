@@ -22,6 +22,7 @@ import {
   implementationCommitFailureMessage,
   restoreApprovedSourceCommit,
 } from "../source-commit";
+import { codexActivity } from "./activity";
 import type { CodexClientApi } from "./client";
 import {
   ImplementDraftOutputJsonSchema,
@@ -37,6 +38,7 @@ import {
   classifyCodexTurnFailure,
   ExitedReviewModeItemSchema,
   ItemCompletedNotificationSchema,
+  ItemStartedNotificationSchema,
   KnownServerRequestSchema,
   ReviewStartResponseSchema,
   ThreadReadResponseSchema,
@@ -93,6 +95,8 @@ type ActiveAttempt = {
   startedAt: string;
   reviewStatusBefore?: string;
   reconciledCompletion?: boolean;
+  activityEvents?: Set<string>;
+  pendingActivity?: Extract<HarnessDelivery, { kind: "event" }>;
 };
 
 const zeroUsage: Usage = {
@@ -716,6 +720,8 @@ export function createCodexHarness(input: {
     initialCursor: BackendCursor,
     active: ActiveAttempt,
   ): Promise<HarnessDelivery> {
+    if (active.pendingActivity?.event.sequence === initialCursor.nextSequence)
+      return active.pendingActivity;
     let cursor = initialCursor;
     while (true) {
       let message: Awaited<ReturnType<CodexClientApi["nextServerMessage"]>>;
@@ -871,11 +877,22 @@ export function createCodexHarness(input: {
         });
       }
 
-      if (message.method === "item/completed") {
-        let notification: z.infer<typeof ItemCompletedNotificationSchema>;
+      if (
+        message.method === "item/started" ||
+        message.method === "item/completed"
+      ) {
+        const started = message.method === "item/started";
+        let notification:
+          | z.infer<typeof ItemCompletedNotificationSchema>
+          | z.infer<typeof ItemStartedNotificationSchema>;
         try {
-          notification = ItemCompletedNotificationSchema.parse(message);
+          notification = (
+            started
+              ? ItemStartedNotificationSchema
+              : ItemCompletedNotificationSchema
+          ).parse(message);
         } catch (error) {
+          if (started) continue;
           throw protocolError(
             "invalid_completed_item",
             "Codex sent an invalid completed item",
@@ -884,6 +901,11 @@ export function createCodexHarness(input: {
             error,
           );
         }
+        const activity = codexActivity(
+          notification.params.item,
+          started ? "started" : "completed",
+        );
+        if (started && activity === undefined) continue;
         if (
           terminalTurnSources.has(
             turnSource(
@@ -899,6 +921,27 @@ export function createCodexHarness(input: {
           active,
           request,
         );
+        if (activity !== undefined && !active.outputDelivered) {
+          const key = JSON.stringify([
+            activity.itemId,
+            started ? "started" : "completed",
+          ]);
+          const completedKey = JSON.stringify([activity.itemId, "completed"]);
+          active.activityEvents ??= new Set();
+          const seen = active.activityEvents;
+          if (seen.has(key) || (started && seen.has(completedKey))) continue;
+          seen.add(key);
+          const next = delivery(cursor, {
+            type: "attempt.activity",
+            eventId: `${active.attemptId}:${active.turnId}:activity:${key}`,
+            attemptId: active.attemptId,
+            occurredAt: now(),
+            activity,
+          });
+          if (next.kind === "event") active.pendingActivity = next;
+          return next;
+        }
+        if (started) continue;
         let itemId: string;
         let encodedOutput: string;
         if (active.role === "review") {

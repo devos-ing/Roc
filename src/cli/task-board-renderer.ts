@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
+import { activitySummary } from "../harness/contracts";
 import { renderEmptyTaskList } from "./presentation";
 import type { TaskBoardSnapshot, TaskBoardTask } from "./task-board-model";
 import {
@@ -21,6 +22,7 @@ export type TaskBoardRenderOptions = {
   doneExpanded?: boolean;
   expandedDone?: boolean;
   projectSlug?: string;
+  now?: number;
 };
 
 export type TaskBoardHit = { kind: "task"; taskId: string } | { kind: "done" };
@@ -136,6 +138,120 @@ function currentAttempt(task: TaskBoardTask, snapshot: TaskBoardSnapshot) {
   );
 }
 
+/** Describes the latest tool action without leaving a finished attempt marked as running. */
+function latestActivity(
+  attempt: TaskBoardTask["attempts"][number] | undefined,
+  compact = false,
+): string | undefined {
+  const activity = attempt?.activity;
+  if (activity === undefined) return undefined;
+  const state =
+    activity.status === "running" && attempt?.status !== "running"
+      ? "Last activity"
+      : activity.status === "running"
+        ? "Running"
+        : activity.status === "failed"
+          ? "Failed"
+          : "Completed";
+  const summary = activitySummary(activity.summary);
+  if (!compact) return `${state}: ${summary}`;
+  const symbol =
+    state === "Running"
+      ? "◌"
+      : state === "Failed"
+        ? "×"
+        : state === "Completed"
+          ? "✓"
+          : "·";
+  return `${symbol} ${summary}`;
+}
+
+/** Formats attempt duration using its recorded end time once execution has stopped. */
+function elapsed(
+  attempt: TaskBoardTask["attempts"][number],
+  now: number,
+): string {
+  const end = attempt.endedAt === undefined ? now : Date.parse(attempt.endedAt);
+  const seconds = Math.max(
+    0,
+    Math.floor((end - Date.parse(attempt.startedAt)) / 1000),
+  );
+  if (!Number.isFinite(seconds)) return "";
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+/** Renders each role's latest attempt with its actual review outcome and bounded activity. */
+function renderProgress(
+  task: TaskBoardTask,
+  width: number,
+  colorEnabled: boolean,
+  now: number,
+): string[] {
+  return (["scout", "implement", "review"] as const).flatMap((role, index) => {
+    const attempt = task.attempts
+      .filter((candidate) => candidate.role === role)
+      .sort((left, right) => right.retryIndex - left.retryIndex)
+      .at(0);
+    let status =
+      task.column === "attention" || task.rawStatus === "retired"
+        ? "Not run"
+        : "Waiting";
+    let symbol = "○";
+    let tone: keyof typeof colors = "muted";
+    if (attempt !== undefined) {
+      if (attempt.status === "running") {
+        status = "Running";
+        symbol = "◌";
+        tone = "active";
+      } else if (
+        attempt.status === "failed_infra" ||
+        attempt.reviewDecision === "rejected"
+      ) {
+        status = attempt.reviewDecision === "rejected" ? "Rejected" : "Failed";
+        symbol = "×";
+        tone = "error";
+      } else if (attempt.status === "blocked_policy") {
+        status = "Blocked";
+        symbol = "!";
+        tone = "attention";
+      } else {
+        status =
+          attempt.reviewDecision === "accepted" ? "Accepted" : "Completed";
+        symbol = "✓";
+        tone =
+          role === "review" && attempt.reviewDecision === undefined
+            ? "muted"
+            : "done";
+      }
+    }
+    const branch = index === 2 ? "└─" : "├─";
+    const indent = index === 2 ? "   " : "│  ";
+    const label = role[0]?.toUpperCase() + role.slice(1);
+    const timing = attempt === undefined ? "" : ` · ${elapsed(attempt, now)}`;
+    const retry =
+      attempt === undefined || attempt.retryIndex === 0
+        ? ""
+        : ` · retry ${attempt.retryIndex}`;
+    const activity = latestActivity(attempt);
+    return [
+      ...wrap(
+        `${branch} ${symbol} ${label} · ${status}${timing}${retry}`,
+        width,
+      ).map((line) => color(line, tone, colorEnabled)),
+      ...(activity === undefined ? [] : wrap(activity, width, indent)),
+      ...(attempt?.failure === undefined
+        ? []
+        : wrap(
+            `Reason: ${activitySummary(attempt.failure)}`,
+            width,
+            indent,
+          ).map((line) => color(line, tone, colorEnabled))),
+    ];
+  });
+}
+
 /** Returns the task's current role, falling back to its raw scheduler status. */
 function phase(task: TaskBoardTask, snapshot: TaskBoardSnapshot): string {
   return currentAttempt(task, snapshot)?.role ?? task.rawStatus;
@@ -225,6 +341,10 @@ function renderCard(input: {
   projectSlug: string;
 }): string[] {
   const blocked = blocker(input.task);
+  const activity = latestActivity(
+    currentAttempt(input.task, input.snapshot),
+    true,
+  );
   const lines = [
     fit(
       `${input.selected ? color("▌", "active", input.colorEnabled) : " "} ${input.task.isActive ? color("●", "active", input.colorEnabled) : " "} ${formatTaskDisplayId(input.task.id, input.projectSlug)}  ${input.task.title}`,
@@ -235,6 +355,7 @@ function renderCard(input: {
       input.width,
     ),
   ];
+  if (activity !== undefined) lines.push(fit(`    ${activity}`, input.width));
   if (blocked)
     lines.push(
       fit(
@@ -286,9 +407,10 @@ function renderColumn(input: {
 }
 
 /** Returns the number of terminal rows occupied by one rendered card. */
-function cardHeight(task: TaskBoardTask): number {
+function cardHeight(task: TaskBoardTask, snapshot: TaskBoardSnapshot): number {
   return (
     2 +
+    Number(latestActivity(currentAttempt(task, snapshot)) !== undefined) +
     Number(blocker(task) !== undefined) +
     Number(task.rawStatus === "retired")
   );
@@ -373,6 +495,7 @@ function renderDetails(
   snapshot: TaskBoardSnapshot,
   width: number,
   colorEnabled: boolean,
+  now: number,
 ): string[] {
   const attempt = currentAttempt(task, snapshot);
   const blocked = blocker(task);
@@ -453,6 +576,9 @@ function renderDetails(
       colorEnabled,
     ),
     "",
+    detailSection("Progress", width, colorEnabled),
+    ...renderProgress(task, width, colorEnabled, now),
+    "",
     detailSection("Execution", width, colorEnabled),
     ...execution,
     ...(dependencyDetails.length === 0
@@ -512,6 +638,7 @@ export function renderTaskBoard(
 ): string {
   const width = Math.max(1, Math.floor(options.width ?? 100));
   const projectSlug = options.projectSlug ?? "project";
+  const now = options.now ?? Date.now();
   const colorEnabled =
     (options.color === true || process.env.NO_COLOR === undefined) &&
     options.color !== false &&
@@ -540,7 +667,7 @@ export function renderTaskBoard(
   )
     return plainSnapshot(
       [
-        ...renderDetails(detail, snapshot, width, colorEnabled),
+        ...renderDetails(detail, snapshot, width, colorEnabled, now),
         "",
         footer(width),
       ].join("\n"),
@@ -596,7 +723,13 @@ export function renderTaskBoard(
   );
   const lines = [heading, "", ...boardLines];
   if (detail !== undefined) {
-    const details = renderDetails(detail, snapshot, detailWidth, colorEnabled);
+    const details = renderDetails(
+      detail,
+      snapshot,
+      detailWidth,
+      colorEnabled,
+      now,
+    );
     const height = Math.max(boardLines.length, details.length);
     lines.splice(
       2,
@@ -640,7 +773,7 @@ export function taskBoardHitTest(
         continue;
       }
       for (const [index, task] of column.tasks.entries()) {
-        const height = cardHeight(task);
+        const height = cardHeight(task, snapshot);
         if (point.y >= row && point.y < row + height)
           return { kind: "task", taskId: task.id };
         row += height + (index < column.tasks.length - 1 ? 1 : 0);
@@ -674,7 +807,7 @@ export function taskBoardHitTest(
     return undefined;
   let row = 5;
   for (const [index, task] of column.tasks.entries()) {
-    const height = cardHeight(task);
+    const height = cardHeight(task, snapshot);
     if (point.y >= row && point.y < row + height)
       return { kind: "task", taskId: task.id };
     row += height + (index < column.tasks.length - 1 ? 1 : 0);

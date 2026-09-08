@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildTaskBoardSnapshot } from "../../src/cli/task-board-model";
+import { renderTaskBoard } from "../../src/cli/task-board-renderer";
 import type { TaskPublisher } from "../../src/github/pr-publisher";
 import type { HarnessEvent } from "../../src/harness/contracts";
 import { createFakeHarness } from "../../src/harness/fake";
@@ -388,6 +390,188 @@ test("three-task deterministic scheduler gate rejects, recovers, and accounts ex
         .all(),
     ).toEqual([]);
     expect(() => fake.assertComplete()).not.toThrow();
+  } finally {
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("activity survives rollback and restart without leaking into retries or accepting a rejected review", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agile-progress-"));
+  const databasePath = join(root, "state.db");
+  let db = openDatabase(databasePath);
+  try {
+    const planning = new PlanningRepository(db);
+    planning.createCycle({
+      id: "2026-W35",
+      goal: "Visible execution",
+      nonGoals: [],
+      tokenBudget: 100_000,
+      ticketIds: ["T1"],
+    });
+    planning.createTask({
+      id: "T1",
+      cycleId: "2026-W35",
+      title: "Progress test",
+      spec: {
+        problem: "Waiting without feedback",
+        desiredOutcome: "Show actual execution",
+        scope: ["TUI"],
+        nonGoals: [],
+        acceptanceCriteria: ["Activity follows the attempt"],
+        validation: ["bun test"],
+        dependencies: [],
+        risk: "medium",
+        contextCandidates: [],
+        tokenCeiling: 10_000,
+      },
+      priority: 0,
+      approvalRequired: false,
+      approved: true,
+    });
+    planning.transitionTask("T1", "ready", "T1:ready");
+    const original = scenario().attempts.slice(0, 3);
+    const scout = original[0];
+    if (scout === undefined) throw new Error("Missing Scout script");
+    const activity: HarnessEvent = {
+      type: "attempt.activity",
+      eventId: "failed-scout:activity",
+      attemptId: "attempt-1",
+      sequence: 2,
+      occurredAt: "2026-08-25T00:00:02.000Z",
+      activity: {
+        itemId: "read",
+        action: "read",
+        summary: "Read old.ts",
+        status: "running",
+      },
+    };
+    const script = {
+      attempts: [
+        {
+          ...scout,
+          deliveries: [
+            {
+              nextCursor: "1",
+              event: {
+                ...scout.deliveries[0]?.event,
+                type: "attempt.started",
+                eventId: "failed-scout:started",
+                attemptId: "attempt-1",
+                sequence: 1,
+                occurredAt: "2026-08-25T00:00:01.000Z",
+              },
+            },
+            { nextCursor: "2", event: activity },
+            {
+              nextCursor: "3",
+              event: {
+                type: "attempt.failed_infra",
+                eventId: "failed-scout:failure",
+                attemptId: "attempt-1",
+                sequence: 3,
+                occurredAt: "2026-08-25T00:00:03.000Z",
+                code: "transport_failed",
+                message: "Connection closed",
+                retryable: true,
+              },
+            },
+          ],
+        },
+        { ...scout, retryIndex: 1 },
+        ...original.slice(1),
+      ],
+    };
+    const ids = createIds();
+    let failInsert = false;
+    let repo = new OrchestrationRepository(
+      db,
+      () => "2026-08-25T00:00:01.000Z",
+      ids,
+      (point) => {
+        if (point === "after_event_insert" && failInsert) {
+          failInsert = false;
+          throw new Error("Progress transaction interrupted");
+        }
+      },
+    );
+    let fake = createFakeHarness(script);
+    let scheduler = new Scheduler(repo, fake.harness);
+    await scheduler.tick();
+    await scheduler.tick();
+    await scheduler.tick();
+    failInsert = true;
+    await expect(scheduler.tick()).rejects.toThrow(
+      "Progress transaction interrupted",
+    );
+    expect(repo.inspect().tasks[0]?.attempts[0]?.activity).toBeUndefined();
+    expect(repo.getRunningAttempt()?.backendCursor).toBe("1");
+    await scheduler.tick();
+    repo.applyHarnessEvent("attempt-1", "2", activity);
+    expect(repo.inspect().tasks[0]?.attempts[0]?.activity?.summary).toBe(
+      "Read old.ts",
+    );
+    expect(
+      db
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM events WHERE type = 'attempt.activity'",
+        )
+        .get()?.count,
+    ).toBe(1);
+    db.close();
+    db = openDatabase(databasePath);
+    repo = new OrchestrationRepository(
+      db,
+      () => "2026-08-25T00:00:04.000Z",
+      ids,
+    );
+    fake = createFakeHarness(script);
+    scheduler = new Scheduler(repo, fake.harness);
+    const frame = (now: number) =>
+      renderTaskBoard(
+        buildTaskBoardSnapshot({
+          tasks: new PlanningRepository(db).listTasks(),
+          inspection: repo.inspect(),
+          currentCycleId: "2026-W35",
+        }),
+        {
+          width: 80,
+          color: false,
+          detailTaskId: "T1",
+          detailMode: "full",
+          now,
+        },
+      );
+    expect(frame(Date.parse("2026-08-25T00:00:03.000Z"))).toContain(
+      "Running: Read old.ts",
+    );
+    await scheduler.tick();
+    const failed = frame(Date.parse("2026-08-25T00:00:04.000Z"));
+    expect(failed).toContain("Scout · Failed");
+    expect(failed).toContain("Reason: Connection closed");
+    expect(failed).toContain("Last activity: Read old.ts");
+    expect(failed).not.toContain("Running: Read old.ts");
+    await scheduler.tick();
+    const retried = frame(Date.parse("2026-08-25T00:00:05.000Z"));
+    expect(retried).toContain("Scout · Running");
+    expect(retried).toContain("retry 1");
+    expect(retried).not.toContain("old.ts");
+    await scheduler.runUntilIdle(50);
+    const final = frame(Date.parse("2026-08-25T00:01:00.000Z"));
+    expect(final).toContain("× Review · Rejected");
+    expect(final).not.toContain("✓ Review");
+    expect(frame(Date.parse("2026-08-25T01:00:00.000Z"))).toBe(final);
+    expect(
+      repo
+        .inspect()
+        .tasks.find((task) => task.id === "T1")
+        ?.attempts.at(-1),
+    ).toMatchObject({
+      status: "succeeded",
+      reviewDecision: "rejected",
+      endedAt: "2026-08-25T00:00:04.000Z",
+    });
+    fake.assertComplete();
   } finally {
     db.close();
     await rm(root, { recursive: true, force: true });

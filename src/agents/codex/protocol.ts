@@ -282,6 +282,11 @@ export const ItemCompletedNotificationSchema = z
   })
   .passthrough();
 
+export const ItemStartedNotificationSchema =
+  ItemCompletedNotificationSchema.extend({
+    method: z.literal("item/started"),
+  });
+
 export const CodexErrorInfoSchema = z.union([
   z.enum([
     "contextWindowExceeded",

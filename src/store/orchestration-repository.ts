@@ -11,6 +11,8 @@ import {
 import { assertTransition } from "../domain/transitions";
 import {
   AgentRoleSchema,
+  activitySummary,
+  HarnessActivitySchema,
   HarnessAttemptSchema,
   type HarnessEvent,
   HarnessEventSchema,
@@ -125,6 +127,13 @@ const InspectionAttemptSchema = z
     effort: ReasoningEffortSchema,
     status: z.enum(["running", "succeeded", "failed_infra", "blocked_policy"]),
     retryIndex: RetryIndexSchema,
+    startedAt: z.string().datetime(),
+    endedAt: z.string().datetime().optional(),
+    activity: HarnessActivitySchema.extend({
+      occurredAt: z.string().datetime(),
+    }).optional(),
+    reviewDecision: z.enum(["accepted", "rejected"]).optional(),
+    failure: NonEmpty.optional(),
     threadId: NonEmpty.optional(),
     turnId: NonEmpty.optional(),
     gitCommit: NonEmpty.optional(),
@@ -1565,7 +1574,7 @@ export class OrchestrationRepository {
             }),
             event.occurredAt,
           );
-      } else {
+      } else if (event.type !== "attempt.activity") {
         throw new Error("Unsupported harness event in happy-path repository");
       }
 
@@ -1814,6 +1823,9 @@ export class OrchestrationRepository {
           thread_id: string | null;
           turn_id: string | null;
           git_commit: string | null;
+          started_at: string;
+          ended_at: string | null;
+          review_decision: string | null;
           input_tokens: number;
           cached_input_tokens: number;
           output_tokens: number;
@@ -1833,16 +1845,49 @@ export class OrchestrationRepository {
         attempt.thread_id,
         attempt.turn_id,
         attempt.git_commit,
+        attempt.started_at,
+        attempt.ended_at,
+        review.decision AS review_decision,
         COALESCE(SUM(usage.input_tokens), 0) AS input_tokens,
         COALESCE(SUM(usage.cached_input_tokens), 0) AS cached_input_tokens,
         COALESCE(SUM(usage.output_tokens), 0) AS output_tokens,
         COALESCE(SUM(usage.reasoning_output_tokens), 0) AS reasoning_output_tokens
       FROM attempts AS attempt
       LEFT JOIN usage ON usage.attempt_id = attempt.id
+      LEFT JOIN reviews AS review ON review.attempt_id = attempt.id
       GROUP BY attempt.id
       ORDER BY attempt.started_at ASC, attempt.id ASC
     `)
       .all();
+    const progressByAttempt = new Map<
+      string,
+      Pick<InspectionAttempt, "activity" | "failure">
+    >();
+    const progressEvents = this.db
+      .query<{ payload_json: string }, []>(`
+        SELECT payload_json FROM events
+        WHERE seq IN (
+          SELECT MAX(seq) FROM events
+          WHERE type IN ('attempt.activity', 'attempt.failed_infra', 'attempt.blocked_policy')
+            AND attempt_id IS NOT NULL
+          GROUP BY attempt_id, type
+        )
+        ORDER BY seq
+      `)
+      .all();
+    for (const row of progressEvents) {
+      const event = HarnessEventSchema.parse(JSON.parse(row.payload_json));
+      const progress = progressByAttempt.get(event.attemptId) ?? {};
+      if (event.type === "attempt.activity") {
+        progress.activity = { ...event.activity, occurredAt: event.occurredAt };
+      } else if (
+        event.type === "attempt.failed_infra" ||
+        event.type === "attempt.blocked_policy"
+      ) {
+        progress.failure = activitySummary(event.message) || event.code;
+      }
+      progressByAttempt.set(event.attemptId, progress);
+    }
     const decisions = this.db
       .query<
         {
@@ -1902,6 +1947,12 @@ export class OrchestrationRepository {
           effort: row.effort,
           status: row.status,
           retryIndex: row.retry_index,
+          startedAt: row.started_at,
+          ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
+          ...(row.review_decision === null
+            ? {}
+            : { reviewDecision: row.review_decision }),
+          ...progressByAttempt.get(row.id),
           ...(row.thread_id === null ? {} : { threadId: row.thread_id }),
           ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
           ...(row.git_commit === null ? {} : { gitCommit: row.git_commit }),

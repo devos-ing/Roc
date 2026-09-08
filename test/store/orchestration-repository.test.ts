@@ -980,6 +980,7 @@ test("records each token delta once and inspects deterministic usage totals", ()
               effort: "high",
               status: "running",
               retryIndex: 0,
+              startedAt: "2026-08-25T00:00:01.000Z",
               inputTokens: 15,
               cachedInputTokens: 3,
               outputTokens: 6,

@@ -344,6 +344,189 @@ function observed(events: HarnessEvent[]): unknown[] {
   });
 }
 
+test("reports bounded tool activity, replays an uncommitted delivery, and ignores duplicate notifications", async () => {
+  const command = {
+    id: "tests-1",
+    type: "commandExecution",
+    command: "bun test --token=do-not-store",
+    status: "inProgress",
+    commandActions: [{ type: "unknown" }],
+  };
+  const toolMessage = (method: string, item: unknown): ServerMessage => ({
+    method,
+    params: { threadId: "thread-scout", turnId: "turn-scout", item },
+  });
+  const client = new RecordedCodexClient([
+    toolMessage("item/started", command),
+    toolMessage("item/started", command),
+    toolMessage("item/completed", {
+      ...command,
+      status: "completed",
+      exitCode: 1,
+      aggregatedOutput: "do-not-store",
+    }),
+    toolMessage("item/completed", {
+      ...command,
+      status: "completed",
+      exitCode: 1,
+    }),
+    toolMessage("item/started", command),
+    toolMessage("item/started", {
+      id: "bad-tool",
+      type: "fileChange",
+      changes: "invalid",
+    }),
+    toolMessage("item/completed", {
+      id: "edit-1",
+      type: "fileChange",
+      status: "completed",
+      changes: [
+        {
+          path: `src/\u001b[2Jtest\n${"字".repeat(300)}.ts`,
+          diff: "do-not-store",
+        },
+      ],
+    }),
+    toolMessage("item/completed", {
+      id: "read-1",
+      type: "commandExecution",
+      status: "completed",
+      command: "cat src/main.ts",
+      commandActions: [{ type: "read", path: "src/main.ts" }],
+    }),
+    toolMessage("item/completed", {
+      id: "mcp-1",
+      type: "mcpToolCall",
+      status: "completed",
+      tool: "inspect",
+      arguments: { secret: "do-not-store" },
+      result: "do-not-store",
+    }),
+    completedItem("thread-scout", "turn-scout", "final", scoutOutput),
+    completedTurn("thread-scout", "turn-scout"),
+  ]);
+  let clock = 0;
+  const harness = createCodexHarness({
+    client,
+    branches: memoryBranches(),
+    now: () => new Date(clock++ * 1000).toISOString(),
+  });
+  const request = makeScoutRequest();
+  const start = await harness.step(request);
+  if (start.kind !== "event") throw new Error("Expected start");
+  const activityRequest = { ...request, backendCursor: start.nextCursor };
+  const running = await harness.step(activityRequest);
+  if (running.kind !== "event") throw new Error("Expected activity");
+  expect(running.event).toMatchObject({
+    type: "attempt.activity",
+    sequence: 2,
+    activity: { action: "test", summary: "Run tests", status: "running" },
+  });
+  expect(await harness.step(activityRequest)).toEqual(running);
+  const events = [start.event, running.event];
+  let cursor = running.nextCursor;
+  for (let i = 0; i < 10 && events.at(-1)?.type !== "attempt.completed"; i++) {
+    const next = await harness.step({ ...request, backendCursor: cursor });
+    if (next.kind !== "event") throw new Error("Expected event");
+    events.push(next.event);
+    cursor = next.nextCursor;
+  }
+  const activities = events.filter(
+    (event) => event.type === "attempt.activity",
+  );
+  expect(
+    activities.map((event) => [event.activity.action, event.activity.status]),
+  ).toEqual([
+    ["test", "running"],
+    ["test", "failed"],
+    ["edit", "completed"],
+    ["read", "completed"],
+    ["tool", "completed"],
+  ]);
+  const edit = activities[2]?.activity.summary ?? "";
+  expect(edit.length).toBeLessThanOrEqual(200);
+  expect(edit).not.toContain("\u001b");
+  expect(edit).not.toContain("\n");
+  expect(JSON.stringify(activities)).not.toContain("do-not-store");
+  expect(events.map((event) => event.sequence)).toEqual([
+    1, 2, 3, 4, 5, 6, 7, 8,
+  ]);
+  expect(events.at(-1)?.type).toBe("attempt.completed");
+});
+
+test("recovers role output and completion after persisting an activity cursor", async () => {
+  const original = createCodexHarness({
+    client: new RecordedCodexClient([
+      {
+        method: "item/started",
+        params: {
+          threadId: "thread-scout",
+          turnId: "turn-scout",
+          item: {
+            id: "cmd",
+            type: "commandExecution",
+            command: "bun test",
+            status: "inProgress",
+          },
+        },
+      },
+    ]),
+    branches: memoryBranches(),
+  });
+  const request = makeScoutRequest();
+  const start = await original.step(request);
+  if (start.kind !== "event") throw new Error("Expected start");
+  const activity = await original.step({
+    ...request,
+    backendCursor: start.nextCursor,
+  });
+  if (activity.kind !== "event") throw new Error("Expected activity");
+  const recovered = createCodexHarness({
+    client: new RecordedCodexClient([], {
+      threadReads: [
+        {
+          thread: {
+            id: "thread-scout",
+            turns: [
+              {
+                id: "turn-scout",
+                status: "completed",
+                items: [
+                  {
+                    type: "agentMessage",
+                    id: "final",
+                    text: JSON.stringify(scoutOutput),
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    }),
+    branches: memoryBranches(),
+  });
+  const output = await recovered.step({
+    ...request,
+    mode: "reconcile",
+    backendCursor: activity.nextCursor,
+  });
+  if (output.kind !== "event") throw new Error("Expected recovered output");
+  expect(output.event).toMatchObject({
+    type: "attempt.output",
+    sequence: 3,
+    output: scoutOutput,
+  });
+  const completed = await recovered.step({
+    ...request,
+    backendCursor: output.nextCursor,
+  });
+  expect(completed).toMatchObject({
+    kind: "event",
+    event: { type: "attempt.completed", sequence: 4 },
+  });
+});
+
 test("applies the default skill-source allowlist before starting a role thread", async () => {
   const cwd = memoryWorkspacePath;
   const skills = [

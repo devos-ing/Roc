@@ -73,6 +73,7 @@ const active = task({
       effort: "high",
       status: "running",
       retryIndex: 1,
+      startedAt: "2026-08-25T00:00:00.000Z",
       ...tokens,
     },
   ],
@@ -504,4 +505,73 @@ test("keeps selected details bounded when labels exceed the terminal width", () 
   expect(output.split("\n").every((line) => displayWidth(line) <= 10)).toBe(
     true,
   );
+});
+
+test("shows actual phase duration and activity with safe terminal text and accurate card hit targets", () => {
+  const attempt = active.attempts[0];
+  if (attempt === undefined) throw new Error("Expected active attempt");
+  const running = task({
+    ...active,
+    attempts: [
+      {
+        ...attempt,
+        activity: {
+          itemId: "tests",
+          action: "test",
+          summary: "Run\u001b[2J\ntests",
+          status: "running",
+          occurredAt: "2026-08-25T00:01:30.000Z",
+        },
+      },
+    ],
+  });
+  const queued = task({
+    id: "queued",
+    rawStatus: "claimed",
+    column: "inProgress",
+  });
+  const live: TaskBoardSnapshot = {
+    ...snapshot,
+    tasks: [running, queued],
+    columns: {
+      ready: [],
+      inProgress: [running, queued],
+      attention: [],
+      done: [],
+    },
+  };
+  const now = Date.parse("2026-08-25T00:01:42.000Z");
+  const detail = renderTaskBoard(live, {
+    width: 80,
+    color: false,
+    detailTaskId: running.id,
+    detailMode: "full",
+    now,
+  });
+  expect(detail).toContain("├─ ◌ Implement · Running · 1m 42s · retry 1");
+  expect(detail).toContain("Running: Run tests");
+  expect(detail).toContain("└─ ○ Review · Waiting");
+  for (const width of [16, 120]) {
+    const colored = renderTaskBoard(live, {
+      width,
+      color: true,
+      detailTaskId: running.id,
+      detailMode: "full",
+      now,
+    });
+    expect(colored).not.toContain("\u001b[2J");
+    expect(
+      stripVTControlCharacters(colored)
+        .split("\n")
+        .every((line) => displayWidth(line) <= width),
+    ).toBe(true);
+  }
+  const board = renderTaskBoard(live, { width: 80, color: false, now });
+  expect(board).toContain("◌ Run tests");
+  const row =
+    board.split("\n").findIndex((line) => line.includes("queued work")) + 1;
+  expect(taskBoardHitTest(live, { x: 1, y: row }, { width: 80 })).toEqual({
+    kind: "task",
+    taskId: "queued",
+  });
 });
