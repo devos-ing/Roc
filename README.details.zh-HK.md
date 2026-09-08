@@ -32,6 +32,17 @@ Claude Code CLI。同一個 daemon、資料庫及 checkout 會依序重用；每
 使用獨立 Pi process/session。一個 daemon session 固定使用同一組 provider/model，
 不會按任務或角色自動換供應商。Roc 負責排程、批准、commit、PR 與任務狀態。
 
+### Context 壓縮
+
+Roc 使用 Pi 內建的自動 context 壓縮，除非在 Pi 使用者設定中停用，否則預設啟用。
+接近模型的 context 上限時，Pi 會摘要較舊訊息，保留近期內容供後續請求使用。
+
+Scout、Implement、Review 各自使用獨立的 Pi session，壓縮只處理該 session 的內容。
+Roc 另以檔案及 SQLite 保存任務規格與執行狀態，不另寫一套壓縮機制。
+
+觸發條件、保留內容及 `compaction` 設定，請參閱
+[Pi 官方文件](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)。
+
 ### 驗證狀態
 
 截至 2026-09-07：

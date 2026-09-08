@@ -60,6 +60,19 @@ checkout sequentially; each role gets a separate Pi child/session. The selected
 provider/model is fixed for the daemon session, including independent Review.
 Roc retains scheduling, approvals, trusted commits, PR publication, and status.
 
+### Context compaction
+
+Roc uses Pi's built-in auto-compaction. It is enabled by default unless disabled
+in Pi's user settings. Near the model's context limit, Pi summarizes older
+messages and keeps recent messages for subsequent requests.
+
+Scout, Implement, and Review each use a separate Pi session. Compaction applies
+within that session; Roc stores task specs and execution state separately in
+files and SQLite. Roc does not add a second compaction mechanism.
+
+See [Pi's compaction documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)
+for triggers, retained context, and the `compaction` settings.
+
 ### Validation status
 
 As of 2026-09-07:
