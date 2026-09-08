@@ -25,6 +25,11 @@ Roc uses Pi's tools and agent loop; it does not launch Codex CLI or Claude Code.
 One daemon runs one task at a time. Each task keeps its own branch.
 `done` means the PR is published; you still merge it yourself.
 
+Pi automatically summarizes older context as a session approaches its context
+limit. Auto-compaction is enabled by default; Roc uses Pi's setting. See
+[context compaction](README.details.md#context-compaction) and
+[Pi's compaction documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md).
+
 **Development version:** use this checkout, as shown below. The Pi-only workflow
 is not yet published to npm. Automated checks do not establish live provider
 success; see [validation status](README.details.md#validation-status).

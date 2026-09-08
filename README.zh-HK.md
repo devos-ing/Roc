@@ -25,6 +25,10 @@ Claude、GLM 屬於進階 provider 設定。Roc 使用 Pi 的工具與 agent loo
 一個 daemon 每次執行一項任務，每項任務保留自己的 branch。
 `done` 表示 PR 已發佈，仍須由你合併。
 
+Pi 預設啟用自動 context 壓縮，接近 session 的 context 上限時會摘要較舊內容。
+Roc 沿用 Pi 的設定。詳見[context 壓縮](README.details.zh-HK.md#context-壓縮)及
+[Pi 官方文件](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)。
+
 **開發版本：**請依照下方指令使用這份原始碼。Pi 統一架構尚未發佈到 npm。
 自動測試不代表真實模型流程已通過；詳見[驗證狀態](README.details.zh-HK.md#驗證狀態)。
 
