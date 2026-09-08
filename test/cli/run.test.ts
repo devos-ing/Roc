@@ -12,7 +12,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import type { DefaultSkillCandidate } from "../../src/agents/codex/skill-policy";
 import { normalizeProjectSlug } from "../../src/cli/project-root";
 import { runCli } from "../../src/cli/run";
 import type { CliRuntime } from "../../src/cli/types";
@@ -22,6 +21,7 @@ import {
   rocSettingsPath,
   saveRocSettings,
 } from "../../src/settings";
+import type { DefaultSkillCandidate } from "../../src/skills/policy";
 import { openDatabase } from "../../src/store/database";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
@@ -30,15 +30,13 @@ const ansiSgrPattern = "\\u001B\\[[0-9;]*m";
 const onboardingNextSteps = [
   "Next:",
   "  Install unslop from pstack if needed:",
-  "    npx skills add backnotprop/pstack --skill unslop --global --agent codex --agent claude-code --agent cursor",
+  "    npx skills add backnotprop/pstack --skill unslop --global --agent pi",
   "  Then choose it:",
   "    npx roc-it@latest onboard",
   "  Install the grilling skill if needed:",
-  "    npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor",
-  "  Create your first backlog in Claude Code or Cursor:",
-  "    /roc-create-tasks <requirement>",
-  "  Create your first backlog in Codex:",
-  "    $roc-create-tasks <requirement>",
+  "    npx skills add mattpocock/skills --skill grilling --global --agent pi",
+  "  Ask your coding assistant to create a backlog:",
+  "    Use roc-create-tasks: <requirement>",
   "  Inspect the resulting tasks:",
   "    npx roc-it@latest task list",
 ].join("\n");
@@ -54,7 +52,14 @@ function interactiveIo(
     io: {
       out: (text: string) => output.push(text),
       err: (text: string) => errors.push(text),
-      ask: async () => answers.shift() ?? "",
+      ask: async (question: string) =>
+        question.startsWith("Roc's coding tools")
+          ? "yes"
+          : (answers.shift() ?? ""),
+      selectCycle: async () => {
+        const choices = { "1": "daily", "2": "weekly", "3": "custom" } as const;
+        return choices[answers.shift() as keyof typeof choices];
+      },
       selectSkills: async (candidates: DefaultSkillCandidate[]) =>
         selectedNames === "cancel"
           ? { kind: "cancelled" as const }
@@ -77,6 +82,7 @@ function interactiveIo(
 function onboardingRuntime(overrides: Partial<CliRuntime> = {}): CliRuntime {
   return {
     runScheduler: async () => {},
+    configureModel: async () => "openai-codex/gpt-5.5",
     listWorkspaceSkills: async () => [],
     ...overrides,
   };
@@ -125,33 +131,10 @@ test("onboard installs complete project skill packages without overwriting chang
     );
     expect(await readFile(agentsSkill)).toEqual(source);
     expect(await readFile(claudeSkill)).toEqual(source);
-    const reviewSkillFiles = [
-      "SKILL.md",
-      join("agents", "openai.yaml"),
-      join("references", "ledger-schema.md"),
-      join("scripts", "evidence.py"),
-      join("scripts", "ledger.py"),
-      join("scripts", "test_evidence.py"),
-      join("scripts", "test_ledger.py"),
-    ];
-    for (const skillRoot of [
-      join(root, ".agents", "skills", "pr-review-to-closure"),
-      join(root, ".claude", "skills", "pr-review-to-closure"),
-    ]) {
-      for (const relativePath of reviewSkillFiles) {
-        expect(await readFile(join(skillRoot, relativePath))).toEqual(
-          await readFile(
-            join(
-              import.meta.dir,
-              "..",
-              "..",
-              "skills",
-              "pr-review-to-closure",
-              relativePath,
-            ),
-          ),
-        );
-      }
+    for (const directory of [".agents", ".claude"]) {
+      await expect(
+        lstat(join(root, directory, "skills", "pr-review-to-closure")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
     }
     expect(await lstat(dbPath)).toMatchObject({ isFile: expect.any(Function) });
 
@@ -202,7 +185,7 @@ test("project onboarding reports completed steps, configuration, and next comman
     ).toBe(0);
 
     const transcript = output.join("\n");
-    expect(transcript).toContain("Roc onboarding");
+    expect(transcript).toContain("Welcome to Roc");
     expect(transcript).toContain(`Scope: Project (${root})`);
     expect(transcript).toContain(`1. Database: Ready (${dbPath})`);
     expect(transcript).toContain("2. Skills:");
@@ -212,13 +195,11 @@ test("project onboarding reports completed steps, configuration, and next comman
     expect(transcript).toContain("5. Settings: Saved ");
     expect(transcript).toContain(".config/roc/settings.json");
     expect(transcript).toContain("Result: Complete");
-    expect(transcript).toContain(onboardingNextSteps);
+    for (const line of onboardingNextSteps.split("\n"))
+      expect(transcript).toContain(line.trim());
+    expect(transcript).toContain("╭─Next:");
     expect(errors).toEqual([]);
-    expect(
-      new TextEncoder()
-        .encode(transcript)
-        .every((byte) => byte === 10 || (byte >= 32 && byte <= 126)),
-    ).toBe(true);
+    expect(stripVTControlCharacters(transcript)).toBe(transcript);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
@@ -243,7 +224,8 @@ test("global onboarding installs skills without creating a project database", as
       "1. Database: Not created (global scope)",
     );
     expect(output.join("\n")).not.toContain("Project database");
-    expect(output.join("\n")).toContain(onboardingNextSteps);
+    for (const line of onboardingNextSteps.split("\n"))
+      expect(output.join("\n")).toContain(line.trim());
     expect(
       await readFile(
         join(home, ".agents", "skills", "roc-create-tasks", "SKILL.md"),
@@ -330,31 +312,34 @@ test("onboard saves the selected global skill allowlist", async () => {
   expect(output.join("\n")).toContain("3. Agent skills: 1 allowed");
 });
 
-test("onboard cancellation preserves the prior allowlist", async () => {
-  const home = await mkdtemp(join(tmpdir(), "roc-onboard-cancel-"));
-  await saveRocSettings(
-    {
-      cycle: { type: "weekly" },
-      skills: { allowlist: [{ name: "tdd", source: "mattpocock/skills" }] },
-    },
-    home,
-  );
-  const before = await readFile(rocSettingsPath(home), "utf8");
-  const { io, errors } = interactiveIo([], "cancel");
+test.each(["skills", "cycle"] as const)(
+  "onboard %s cancellation preserves the prior allowlist",
+  async (step) => {
+    const home = await mkdtemp(join(tmpdir(), "roc-onboard-cancel-"));
+    await saveRocSettings(
+      {
+        cycle: { type: "weekly" },
+        skills: { allowlist: [{ name: "tdd", source: "mattpocock/skills" }] },
+      },
+      home,
+    );
+    const before = await readFile(rocSettingsPath(home), "utf8");
+    const { io, errors } = interactiveIo([], step === "skills" ? "cancel" : []);
 
-  expect(
-    await runCli(
-      ["onboard", "--global"],
-      io,
-      onboardingRuntime({
-        homeRoot: home,
-        listWorkspaceSkills: async () => [],
-      }),
-    ),
-  ).toBe(1);
-  expect(await readFile(rocSettingsPath(home), "utf8")).toBe(before);
-  expect(errors.join("\n")).toContain("Onboarding cancelled");
-});
+    expect(
+      await runCli(
+        ["onboard", "--global"],
+        io,
+        onboardingRuntime({
+          homeRoot: home,
+          listWorkspaceSkills: async () => [],
+        }),
+      ),
+    ).toBe(1);
+    expect(await readFile(rocSettingsPath(home), "utf8")).toBe(before);
+    expect(errors.join("\n")).toContain("Onboarding cancelled");
+  },
+);
 
 test("missing unslop is disabled and only produces manual install guidance", async () => {
   const home = await mkdtemp(join(tmpdir(), "roc-onboard-unslop-"));
@@ -362,7 +347,9 @@ test("missing unslop is disabled and only produces manual install guidance", asy
   const io = {
     out: () => {},
     err: () => {},
-    ask: async () => "1",
+    ask: async (question: string) =>
+      question.startsWith("Roc's coding tools") ? "yes" : "1",
+    selectCycle: async () => "daily" as const,
     selectSkills: async (candidates: DefaultSkillCandidate[]) => {
       seen = candidates;
       return { kind: "selected" as const, identities: [] };
@@ -447,7 +434,7 @@ test("repeat onboarding preselects only the saved identities", async () => {
   ]);
 });
 
-test("catalog failure preserves the prior allowlist", async () => {
+test("local skill discovery failure preserves the prior allowlist", async () => {
   const home = await mkdtemp(join(tmpdir(), "roc-onboard-catalog-failure-"));
   await saveRocSettings(
     {
@@ -466,15 +453,13 @@ test("catalog failure preserves the prior allowlist", async () => {
       onboardingRuntime({
         homeRoot: home,
         listWorkspaceSkills: async () => {
-          throw new Error(
-            "Codex did not return a complete workspace skill catalog",
-          );
+          throw new Error("Local skill discovery failed");
         },
       }),
     ),
   ).toBe(1);
   expect(await readFile(rocSettingsPath(home), "utf8")).toBe(before);
-  expect(errors.join("\n")).toContain("complete workspace skill catalog");
+  expect(errors.join("\n")).toContain("Local skill discovery failed");
 });
 
 test("onboard saves each selected Agile cycle globally", async () => {
@@ -524,7 +509,10 @@ test("onboard saves each selected Agile cycle globally", async () => {
           ),
         ),
         scenario.name,
-      ).toEqual(scenario.expected);
+      ).toEqual({
+        ...scenario.expected,
+        execution: { allowUnsandboxed: true },
+      });
       expect(errors, scenario.name).toEqual([]);
     } finally {
       await rm(projectRoot, { recursive: true, force: true });
@@ -602,6 +590,11 @@ test("onboarding reports only durable work when cycle validation rejects a new a
       interactions.push("cycle");
       return answers.shift() ?? "";
     },
+    selectCycle: async () => {
+      interactions.push("cycle");
+      answers.shift();
+      return "custom" as const;
+    },
     selectSkills: async (candidates: DefaultSkillCandidate[]) => {
       interactions.push("checklist");
       return {
@@ -652,7 +645,7 @@ test("onboarding reports only durable work when cycle validation rejects a new a
   }
 });
 
-test("onboard requires interactive input", async () => {
+test("onboard requires interactive cycle selection", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const homeRoot = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
   const errors: string[] = [];
@@ -674,7 +667,9 @@ test("onboard requires interactive input", async () => {
     ).toBe(1);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("Onboarding stopped");
-    expect(errors[0]).toContain("Interactive input is required for onboard");
+    expect(errors[0]).toContain(
+      "Interactive cycle selection is required for onboard",
+    );
     expect(errors[0]).toContain("Retry:");
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
@@ -772,7 +767,11 @@ test("onboarding retry prints a copyable canonical command", async () => {
         onboardingRuntime({ projectRoot: root, homeRoot: home }),
       ),
     ).toBe(1);
-    const retryCommand = errors.at(0)?.split("Retry:\n  ").at(1);
+    const retryCommand = errors
+      .at(0)
+      ?.split("\n")
+      .find((line) => line.includes("npx roc-it@latest onboard"))
+      ?.replace(/^│\s*|\s*│$/g, "");
     expect(retryCommand).toBeDefined();
     if (retryCommand === undefined) throw new Error("Expected a retry command");
     const shell = Bun.spawn(
@@ -873,7 +872,11 @@ test("task import creates ready tasks, replays them, and rejects invalid input",
     expect(importResult).toContain("Created: 2");
     expect(importResult).toContain("Already present: 0");
     expect(importResult).toContain("Total: 2");
-    const nextCommand = importResult?.split("Next:\n  ").at(1);
+    expect(importResult).toContain("╭─Next:");
+    const nextCommand = importResult
+      ?.split("\n")
+      .find((line) => line.includes("npx roc-it@latest task list"))
+      ?.replace(/^│\s*|\s*│$/g, "");
     expect(nextCommand).toBeDefined();
     if (nextCommand === undefined) throw new Error("Expected a next command");
     const shell = Bun.spawn(
@@ -957,8 +960,8 @@ test("task list reuses create-backlog guidance when empty", async () => {
     ).toBe(0);
     const empty = output.at(0) ?? "";
     expect(empty).toContain("No tasks.");
-    expect(empty).toContain("/roc-create-tasks <requirement>");
-    expect(empty).toContain("$roc-create-tasks <requirement>");
+    expect(empty).toContain("╭─Next:");
+    expect(empty).toContain("Use roc-create-tasks: <requirement>");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -990,7 +993,6 @@ test("task list and board share display IDs while preserving plain output and ca
     homeRoot: home,
     now: () => new Date(2026, 7, 30),
   };
-  const previousNoColor = process.env.NO_COLOR;
 
   try {
     await saveRocSettings({ cycle: { type: "daily" } }, home);
@@ -1023,7 +1025,6 @@ test("task list and board share display IDs while preserving plain output and ca
     });
     db.close();
 
-    delete process.env.NO_COLOR;
     expect(
       await runCli(
         ["task", "list"],
@@ -1052,21 +1053,6 @@ test("task list and board share display IDs while preserving plain output and ca
     );
     expect(coloredOutput.at(-1)).toContain("\u001B[36mclaimed\u001B[0m");
 
-    process.env.NO_COLOR = "";
-    const noColorOutput: string[] = [];
-    expect(
-      await runCli(
-        ["task", "list"],
-        {
-          out: (text) => noColorOutput.push(text),
-          err: () => {},
-          output: { isTTY: true } as NodeJS.WriteStream,
-        },
-        runtime,
-      ),
-    ).toBe(0);
-    expect(noColorOutput.at(-1)).toBe(plainOutput.at(-1));
-
     expect(
       await runCli(
         ["task", "board"],
@@ -1089,8 +1075,6 @@ test("task list and board share display IDs while preserving plain output and ca
       verificationDb.close();
     }
   } finally {
-    if (previousNoColor === undefined) delete process.env.NO_COLOR;
-    else process.env.NO_COLOR = previousNoColor;
     await rm(root, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
   }
@@ -1339,8 +1323,7 @@ test("task board shows backlog guidance for an empty project", async () => {
       ),
     ).toBe(0);
     expect(output.at(0)).toContain("No tasks.");
-    expect(output.at(0)).toContain("/roc-create-tasks <requirement>");
-    expect(output.at(0)).toContain("$roc-create-tasks <requirement>");
+    expect(output.at(0)).toContain("Use roc-create-tasks: <requirement>");
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
@@ -1387,7 +1370,7 @@ test("operational database failures report an error, return 1, and close the dat
   const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
   const dbPath = join(root, ".agile", "runtime", "agile.db");
   const future = openDatabase(dbPath);
-  future.exec("PRAGMA user_version = 8");
+  future.exec("PRAGMA user_version = 9");
   future.close();
   const output: string[] = [];
   const errors: string[] = [];
@@ -1406,7 +1389,7 @@ test("operational database failures report an error, return 1, and close the dat
     ).toBe(1);
     expect(output).toEqual([]);
     expect(errors).toEqual([
-      "Database version 8 is newer than supported version 7",
+      "Database version 9 is newer than supported version 8",
     ]);
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
@@ -1425,7 +1408,7 @@ test("task board reports database failures without emitting a snapshot", async (
   try {
     await saveRocSettings({ cycle: { type: "daily" } }, home);
     const future = openDatabase(dbPath);
-    future.exec("PRAGMA user_version = 8");
+    future.exec("PRAGMA user_version = 9");
     future.close();
     expect(
       await runCli(
@@ -1444,7 +1427,7 @@ test("task board reports database failures without emitting a snapshot", async (
     ).toBe(1);
     expect(output).toEqual([]);
     expect(errors).toEqual([
-      "TASK_BOARD_FAILED: Database version 8 is newer than supported version 7",
+      "TASK_BOARD_FAILED: Database version 9 is newer than supported version 8",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1698,7 +1681,7 @@ test("tokens rejects scheduler-only options and reports read failures through th
   const dbPath = join(root, ".agile", "runtime", "agile.db");
   await saveRocSettings({ cycle: { type: "weekly" } }, root);
   const future = openDatabase(dbPath);
-  future.exec("PRAGMA user_version = 8");
+  future.exec("PRAGMA user_version = 9");
   future.close();
   try {
     expect(
@@ -1794,5 +1777,52 @@ test("task hook trust records only the current task-scoped configuration hash", 
     }
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("execution refusal and model failure preserve Roc settings and never report ready", async () => {
+  for (const allow of [false, true]) {
+    const root = await mkdtemp(join(tmpdir(), "roc-onboard-failed-"));
+    const home = await mkdtemp(join(tmpdir(), "roc-onboard-home-"));
+    try {
+      await saveRocSettings(
+        { cycle: { type: "daily" }, skills: { allowlist: [] } },
+        home,
+      );
+      const before = await readFile(rocSettingsPath(home), "utf8");
+      const { io, output, errors } = interactiveIo(["2"]);
+      let modelCalls = 0;
+      expect(
+        await runCli(
+          ["onboard"],
+          {
+            ...io,
+            ask: async (question) =>
+              question.startsWith("Roc's coding tools")
+                ? allow
+                  ? "yes"
+                  : "no"
+                : "2",
+          },
+          onboardingRuntime({
+            projectRoot: root,
+            homeRoot: home,
+            configureModel: async () => {
+              modelCalls++;
+              throw new Error("Model setup failed");
+            },
+          }),
+        ),
+      ).toBe(1);
+      expect(modelCalls).toBe(allow ? 1 : 0);
+      expect(await readFile(rocSettingsPath(home), "utf8")).toBe(before);
+      expect(output.join("\n")).not.toContain("Result: Complete");
+      expect(errors.join("\n")).toContain(
+        allow ? "Model setup failed" : "Execution was not authorized",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
   }
 });

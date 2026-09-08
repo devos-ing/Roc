@@ -12,6 +12,7 @@ import {
 } from "../../harness/contracts";
 import { AgileError, normalizeError } from "../../runtime/errors";
 import type { TaskBranchManager } from "../../workspace/task-branch";
+import { piActivity } from "./activity";
 import { PiClient, type PiClientApi } from "./client";
 import { implementPrompt, reviewPrompt, scoutPrompt } from "./prompts";
 import {
@@ -55,6 +56,7 @@ type ActiveAttempt = {
   pendingDeliveries: HarnessDelivery[];
   usageSum: Usage;
   lastAssistant?: PiAssistantMessage;
+  activities?: Map<string, NonNullable<ReturnType<typeof piActivity>>>;
 };
 
 const zeroUsage: Usage = {
@@ -455,6 +457,26 @@ export function createPiHarness(input: {
       request.attempt.taskId,
       request.input.ticket.baseCommit,
     );
+    const sourceCommit = request.input.ticket.spec.sourceCommit;
+    if (request.attempt.role === "implement" && sourceCommit !== undefined) {
+      try {
+        await input.branches.restoreChanges(
+          request.attempt.taskId,
+          sourceCommit,
+          workspace.baseCommit,
+        );
+      } catch (error) {
+        throw normalizeError(error, {
+          code: "source_commit_restore_failed",
+          category: "infra",
+          retryable: true,
+          component: "pi-harness",
+          message: "Could not restore the approved source commit",
+          taskId: request.attempt.taskId,
+          attemptId: request.attempt.attemptId,
+        });
+      }
+    }
     let reviewStatusBefore: string | undefined;
     if (request.attempt.role === "review") {
       try {
@@ -862,6 +884,34 @@ export function createPiHarness(input: {
         });
       }
 
+      if (
+        event.type === "tool_execution_start" ||
+        event.type === "tool_execution_end"
+      ) {
+        const previous =
+          typeof event.toolCallId === "string"
+            ? active.activities?.get(event.toolCallId)
+            : undefined;
+        const activity = piActivity(event, previous);
+        if (
+          activity === undefined ||
+          (previous !== undefined &&
+            (previous.status !== "running" || activity.status === "running"))
+        )
+          continue;
+        active.activities ??= new Map();
+        active.activities.set(activity.itemId, activity);
+        const next = delivery(cursor, {
+          type: "attempt.activity",
+          eventId: `${active.attemptId}:${active.sessionId}:activity:${JSON.stringify([activity.itemId, event.type])}`,
+          attemptId: active.attemptId,
+          occurredAt: now(),
+          activity,
+        });
+        active.pendingDeliveries = [next];
+        return next;
+      }
+
       if (event.type === "message_end") {
         let messageEnd: z.infer<typeof PiMessageEndEventSchema>;
         try {
@@ -992,7 +1042,7 @@ export function createPiHarness(input: {
       }
 
       // Additive events without normalized product meaning (agent_start,
-      // agent_end, turn_*, message_start, message_update, tool_execution_*)
+      // agent_end, turn_*, message_start, message_update, tool_execution_update)
       // are ignored.
     }
   }

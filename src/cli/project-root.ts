@@ -61,11 +61,15 @@ async function isDirectory(path: string): Promise<boolean> {
   }
 }
 
-/** Finds the nearest ancestor that contains Roc's project-state directory. */
-async function findRocRoot(startPath: string): Promise<string | undefined> {
+/** Finds the nearest Roc state directory without crossing the containing Git checkout. */
+async function findRocRoot(
+  startPath: string,
+  gitRoot: string | undefined,
+): Promise<string | undefined> {
   let current = startPath;
   while (true) {
     if (await isDirectory(join(current, ".agile"))) return current;
+    if (current === gitRoot) return undefined;
     const parent = dirname(current);
     if (parent === current) return undefined;
     current = parent;
@@ -146,9 +150,9 @@ export async function resolveProjectRoot(
   options: { allowCurrentDirectory?: boolean } = {},
 ): Promise<string> {
   const start = await realpath(resolve(startPath));
-  const rocRoot = await findRocRoot(start);
-  if (rocRoot !== undefined) return rocRoot;
   const gitRoot = await findGitRoot(start);
+  const rocRoot = await findRocRoot(start, gitRoot);
+  if (rocRoot !== undefined) return rocRoot;
   if (gitRoot !== undefined) return gitRoot;
   if (options.allowCurrentDirectory) return start;
   throw new AgileError({

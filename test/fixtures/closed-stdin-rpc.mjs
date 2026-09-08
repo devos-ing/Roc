@@ -11,17 +11,14 @@ while (!input.includes("\n")) {
 }
 const message = JSON.parse(input);
 closeSync(0);
-const response =
-  message.method === undefined
-    ? {
-        id: message.id,
-        type: "response",
-        command: message.type,
-        success: true,
-      }
-    : { id: message.id, result: {} };
+const response = {
+  id: message.id,
+  type: "response",
+  command: message.type,
+  success: true,
+};
 writeSync(1, `${JSON.stringify(response)}\n`);
-const exitDelayMs = message.params?.exitDelayMs ?? message.exitDelayMs;
+const exitDelayMs = message.exitDelayMs;
 if (exitDelayMs !== undefined) {
   setTimeout(() => process.exit(0), exitDelayMs);
 } else {

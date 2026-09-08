@@ -1,5 +1,5 @@
 import { Cause, Clock, Deferred, Effect, Exit, Fiber, Option } from "effect";
-import type { Scheduler } from "./scheduler";
+import type { Scheduler, TickResult } from "./scheduler";
 
 export type LeaseStore = {
   acquireLease(ownerId: string, now: string, expiresAt: string): boolean;
@@ -9,12 +9,18 @@ export type LeaseStore = {
 
 type Runtime = { ownerId: string };
 
+export type SchedulerSource = {
+  beforeTick(): Promise<boolean>;
+  afterTick?(result: TickResult): Promise<void>;
+};
+
 export class SchedulerDaemon {
   /** Creates a daemon from scheduler, lease-store, and ownership dependencies. */
   constructor(
     private readonly scheduler: Pick<Scheduler, "tick">,
     private readonly leases: LeaseStore,
     private readonly runtime: Runtime,
+    private readonly source?: SchedulerSource,
   ) {}
 
   /** Runs ticks under a lease and drains owned work before sealing continuation. */
@@ -51,10 +57,34 @@ export class SchedulerDaemon {
         let admitting = true;
         const worker = yield* Effect.gen(function* () {
           while (admitting && !input.stop.aborted) {
+            const source = self.source;
+            const mayAdvance =
+              source === undefined
+                ? true
+                : yield* Effect.tryPromise({
+                    try: () => source.beforeTick(),
+                    catch: (error) => error,
+                  });
+            if (!admitting || input.stop.aborted || seal.signal.aborted) break;
+            if (!mayAdvance) {
+              yield* Effect.raceFirst(
+                Effect.sleep(1_000),
+                Deferred.await(draining),
+              );
+              continue;
+            }
             const result = yield* Effect.tryPromise({
               try: () => self.scheduler.tick(self.runtime.ownerId, seal.signal),
               catch: (error) => error,
             });
+            if (source?.afterTick !== undefined && !seal.signal.aborted) {
+              yield* Effect.tryPromise({
+                try: async () => {
+                  await source.afterTick?.(result);
+                },
+                catch: (error) => error,
+              });
+            }
             if (result.kind === "idle")
               yield* Effect.raceFirst(
                 Effect.sleep(1_000),

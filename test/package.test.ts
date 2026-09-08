@@ -44,9 +44,11 @@ test("package metadata exposes roc-it as a public Bun CLI", async () => {
     "skills",
     "README.md",
     "README.zh-HK.md",
+    "README.details.md",
+    "README.details.zh-HK.md",
     "LICENSE",
   ]);
-  expect(manifest.engines).toEqual({ bun: ">=1.3.0" });
+  expect(manifest.engines).toEqual({ bun: ">=1.3.0", node: ">=22.19.0" });
   expect(manifest.publishConfig).toEqual({ access: "public" });
   expect(manifest.scripts?.dev).toBe("bun src/cli/main.ts");
   expect(manifest.scripts?.prepublishOnly).toBe("bun run check");
@@ -56,7 +58,7 @@ test("a representative next stable version satisfies the package boundary", () =
   expect("0.0.3").toMatch(stableVersionPattern);
 });
 
-test("packaged PR review helpers pass their Python suites", async () => {
+test("Roc development PR review helpers pass their Python suites", async () => {
   for (const script of ["test_evidence.py", "test_ledger.py"]) {
     const child = Bun.spawn(
       [
@@ -64,6 +66,7 @@ test("packaged PR review helpers pass their Python suites", async () => {
         "-B",
         resolve(
           projectRoot,
+          ".agents",
           "skills",
           "pr-review-to-closure",
           "scripts",
@@ -114,6 +117,8 @@ test("npm archive contains only runtime files", async () => {
     "LICENSE",
     "README.md",
     "README.zh-HK.md",
+    "README.details.md",
+    "README.details.zh-HK.md",
     "package.json",
   ]);
   const unexpected = paths.filter(
@@ -127,19 +132,13 @@ test("npm archive contains only runtime files", async () => {
   expect(paths).toContain("LICENSE");
   expect(paths).toContain("README.md");
   expect(paths).toContain("README.zh-HK.md");
+  expect(paths).toContain("README.details.md");
+  expect(paths).toContain("README.details.zh-HK.md");
   expect(paths).not.toContain("CONTRIBUTING.md");
   expect(paths).toContain("package.json");
   expect(paths).toContain("src/cli/main.ts");
   expect(paths).toContain("skills/roc-create-tasks/SKILL.md");
-  expect(paths).toEqual(
-    expect.arrayContaining([
-      "skills/pr-review-to-closure/SKILL.md",
-      "skills/pr-review-to-closure/agents/openai.yaml",
-      "skills/pr-review-to-closure/references/ledger-schema.md",
-      "skills/pr-review-to-closure/scripts/evidence.py",
-      "skills/pr-review-to-closure/scripts/ledger.py",
-      "skills/pr-review-to-closure/scripts/test_evidence.py",
-      "skills/pr-review-to-closure/scripts/test_ledger.py",
-    ]),
+  expect(paths.some((path) => path.includes("pr-review-to-closure"))).toBe(
+    false,
   );
 });

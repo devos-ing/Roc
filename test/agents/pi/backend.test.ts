@@ -53,12 +53,12 @@ const probeDefaultModel = {
 
 for (const earlierFailure of [false, true]) {
   test(`shutdown preserves ${earlierFailure ? "earlier" : "current"} client close failure after attempting all clients and probe`, async () => {
-    const previous = process.env.ROC_PI_EXPERIMENTAL;
+    const previous = process.env.ROC_ALLOW_UNSANDBOXED;
     const failure = new Error("client cleanup failed");
     const probe = new ScriptedProbeClient(probeModels, probeDefaultModel);
     const clients: RecordedPiClient[] = [];
     try {
-      process.env.ROC_PI_EXPERIMENTAL = "1";
+      process.env.ROC_ALLOW_UNSANDBOXED = "1";
       const factory = buildPiBackendFactory({
         startProbeClient: async () => probe,
         startAttemptClient: async () => {
@@ -88,31 +88,35 @@ for (const earlierFailure of [false, true]) {
       expect(clientAt(clients, 1).closeCount).toBe(1);
       expect(probe.closeCount).toBe(1);
     } finally {
-      if (previous === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
-      else process.env.ROC_PI_EXPERIMENTAL = previous;
+      if (previous === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
+      else process.env.ROC_ALLOW_UNSANDBOXED = previous;
     }
   });
 }
 
 /**
- * Runs the factory with one experimental-gate value and captures its
+ * Runs the factory with one execution-permission value and captures its
  * failure. The gate must reject before any Pi process is spawned, so the
  * branches context is never touched.
  */
 async function gateFailureWith(value: string | undefined): Promise<unknown> {
-  const previous = process.env.ROC_PI_EXPERIMENTAL;
+  const previous = process.env.ROC_ALLOW_UNSANDBOXED;
   try {
-    if (value === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
-    else process.env.ROC_PI_EXPERIMENTAL = value;
+    if (value === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
+    else process.env.ROC_ALLOW_UNSANDBOXED = value;
     try {
-      await startPiBackend({ branches: undefined as never });
+      await buildPiBackendFactory({
+        startProbeClient: async () => {
+          throw new Error("probe must not start");
+        },
+      })({ branches: undefined as never });
     } catch (error) {
       return error;
     }
     return undefined;
   } finally {
-    if (previous === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
-    else process.env.ROC_PI_EXPERIMENTAL = previous;
+    if (previous === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
+    else process.env.ROC_ALLOW_UNSANDBOXED = previous;
   }
 }
 
@@ -120,7 +124,7 @@ test("the backend factory refuses to start without the acknowledgement", async (
   for (const value of [undefined, "0"]) {
     await expect(gateFailureWith(value)).resolves.toMatchObject({
       name: "AgileError",
-      code: "PI_EXPERIMENTAL_GATE",
+      code: "PI_SANDBOX_REQUIRED",
       category: "startup",
       retryable: false,
       component: "pi-backend",
@@ -130,16 +134,17 @@ test("the backend factory refuses to start without the acknowledgement", async (
 
 test("the gate message tells the operator how to acknowledge", async () => {
   const error = (await gateFailureWith(undefined)) as Error;
-  expect(error.message).toContain("ROC_PI_EXPERIMENTAL=1");
+  expect(error.message).toContain("ROC_ALLOW_UNSANDBOXED=1");
   expect(error.message).toContain("sandbox");
 });
 
-test("the gate open path attributes the probe default model and reaps the probe", async () => {
-  const previous = process.env.ROC_PI_EXPERIMENTAL;
+test("saved execution consent permits the probe without an environment override", async () => {
+  const previous = process.env.ROC_ALLOW_UNSANDBOXED;
   const probe = new ScriptedProbeClient(probeModels, probeDefaultModel);
   try {
-    process.env.ROC_PI_EXPERIMENTAL = "1";
+    delete process.env.ROC_ALLOW_UNSANDBOXED;
     const factory = buildPiBackendFactory({
+      allowUnsandboxed: true,
       startProbeClient: async () => probe,
       startAttemptClient: async () => {
         throw new Error("no role attempt runs in this test");
@@ -170,16 +175,16 @@ test("the gate open path attributes the probe default model and reaps the probe"
     await runtime.close();
     expect(probe.closeCount).toBe(1);
   } finally {
-    if (previous === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
-    else process.env.ROC_PI_EXPERIMENTAL = previous;
+    if (previous === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
+    else process.env.ROC_ALLOW_UNSANDBOXED = previous;
   }
 });
 
 test("the factory fails closed and closes the probe when no default model resolves", async () => {
-  const previous = process.env.ROC_PI_EXPERIMENTAL;
+  const previous = process.env.ROC_ALLOW_UNSANDBOXED;
   const probe = new ScriptedProbeClient(probeModels, null);
   try {
-    process.env.ROC_PI_EXPERIMENTAL = "1";
+    process.env.ROC_ALLOW_UNSANDBOXED = "1";
     const factory = buildPiBackendFactory({
       startProbeClient: async () => probe,
     });
@@ -193,17 +198,50 @@ test("the factory fails closed and closes the probe when no default model resolv
     });
     expect(probe.closeCount).toBe(1);
   } finally {
-    if (previous === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
-    else process.env.ROC_PI_EXPERIMENTAL = previous;
+    if (previous === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
+    else process.env.ROC_ALLOW_UNSANDBOXED = previous;
   }
 });
 
-test("the registry exposes the gated pi factory under one name", () => {
+test("the factory rejects a default model without high reasoning instead of switching", async () => {
+  const previous = process.env.ROC_ALLOW_UNSANDBOXED;
+  const unsupportedDefault = {
+    id: "medium-only",
+    provider: "acme",
+    reasoning: true,
+    thinkingLevelMap: { medium: 1, high: null, xhigh: null },
+  };
+  const probe = new ScriptedProbeClient(
+    [unsupportedDefault, ...probeModels],
+    unsupportedDefault,
+  );
+  try {
+    process.env.ROC_ALLOW_UNSANDBOXED = "1";
+    const factory = buildPiBackendFactory({
+      startProbeClient: async () => probe,
+    });
+    await expect(
+      factory({ branches: undefined as never }),
+    ).rejects.toMatchObject({
+      code: "PI_MODEL_UNSUPPORTED",
+      category: "startup",
+      retryable: false,
+      component: "pi-backend",
+    });
+    expect(probe.closeCount).toBe(1);
+  } finally {
+    if (previous === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
+    else process.env.ROC_ALLOW_UNSANDBOXED = previous;
+  }
+});
+
+test("the public registry contains only Pi", () => {
   expect(backends.pi).toBe(startPiBackend);
+  expect(Object.keys(backends)).toEqual(["pi"]);
 });
 
 test("reasoning-disabled models publish no efforts and null levels are excluded", async () => {
-  const previous = process.env.ROC_PI_EXPERIMENTAL;
+  const previous = process.env.ROC_ALLOW_UNSANDBOXED;
   const models = [
     {
       id: "no-reasoning",
@@ -225,7 +263,7 @@ test("reasoning-disabled models publish no efforts and null levels are excluded"
   ];
   const probe = new ScriptedProbeClient(models, probeDefaultModel);
   try {
-    process.env.ROC_PI_EXPERIMENTAL = "1";
+    process.env.ROC_ALLOW_UNSANDBOXED = "1";
     const factory = buildPiBackendFactory({
       startProbeClient: async () => probe,
       startAttemptClient: async () => {
@@ -251,13 +289,13 @@ test("reasoning-disabled models publish no efforts and null levels are excluded"
       await runtime.close();
     }
   } finally {
-    if (previous === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
-    else process.env.ROC_PI_EXPERIMENTAL = previous;
+    if (previous === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
+    else process.env.ROC_ALLOW_UNSANDBOXED = previous;
   }
 });
 
 test("effort maps distinguish absent keys from explicit nulls", async () => {
-  const previous = process.env.ROC_PI_EXPERIMENTAL;
+  const previous = process.env.ROC_ALLOW_UNSANDBOXED;
   const models = [
     {
       id: "all-null",
@@ -280,7 +318,7 @@ test("effort maps distinguish absent keys from explicit nulls", async () => {
   ];
   const probe = new ScriptedProbeClient(models, probeDefaultModel);
   try {
-    process.env.ROC_PI_EXPERIMENTAL = "1";
+    process.env.ROC_ALLOW_UNSANDBOXED = "1";
     const factory = buildPiBackendFactory({
       startProbeClient: async () => probe,
       startAttemptClient: async () => {
@@ -308,17 +346,17 @@ test("effort maps distinguish absent keys from explicit nulls", async () => {
       await runtime.close();
     }
   } finally {
-    if (previous === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
-    else process.env.ROC_PI_EXPERIMENTAL = previous;
+    if (previous === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
+    else process.env.ROC_ALLOW_UNSANDBOXED = previous;
   }
 });
 
 test("the factory drives a scripted scout-implement-review task to done", async () => {
-  const previous = process.env.ROC_PI_EXPERIMENTAL;
+  const previous = process.env.ROC_ALLOW_UNSANDBOXED;
   const probe = new ScriptedProbeClient(probeModels, probeDefaultModel);
   const clients: RecordedPiClient[] = [];
   try {
-    process.env.ROC_PI_EXPERIMENTAL = "1";
+    process.env.ROC_ALLOW_UNSANDBOXED = "1";
     const factory = buildPiBackendFactory({
       startProbeClient: async () => probe,
       startAttemptClient: async () => {
@@ -419,17 +457,17 @@ test("the factory drives a scripted scout-implement-review task to done", async 
       await runtime.close();
     }
   } finally {
-    if (previous === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
-    else process.env.ROC_PI_EXPERIMENTAL = previous;
+    if (previous === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
+    else process.env.ROC_ALLOW_UNSANDBOXED = previous;
   }
 });
 
 test("shutdown reaps live injected clients and drops closed ones", async () => {
-  const previous = process.env.ROC_PI_EXPERIMENTAL;
+  const previous = process.env.ROC_ALLOW_UNSANDBOXED;
   const probe = new ScriptedProbeClient(probeModels, probeDefaultModel);
   const clients: RecordedPiClient[] = [];
   try {
-    process.env.ROC_PI_EXPERIMENTAL = "1";
+    process.env.ROC_ALLOW_UNSANDBOXED = "1";
     const factory = buildPiBackendFactory({
       startProbeClient: async () => probe,
       startAttemptClient: async () => {
@@ -463,7 +501,7 @@ test("shutdown reaps live injected clients and drops closed ones", async () => {
     expect(clientAt(clients, 0).closeCount).toBe(1);
     expect(clientAt(clients, 1).closeCount).toBe(1);
   } finally {
-    if (previous === undefined) delete process.env.ROC_PI_EXPERIMENTAL;
-    else process.env.ROC_PI_EXPERIMENTAL = previous;
+    if (previous === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
+    else process.env.ROC_ALLOW_UNSANDBOXED = previous;
   }
 });

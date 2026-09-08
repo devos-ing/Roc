@@ -20,11 +20,11 @@ test("normalizes unknown failures and logs only safe AgileError fields", async (
   try {
     const cause = new Error("secret-token-must-not-leak");
     const error = new AgileError({
-      code: "CODEX_STREAM_DISCONNECTED",
+      code: "PI_RPC_EXITED",
       category: "infra",
       retryable: true,
-      component: "codex-client",
-      message: "Codex stream disconnected",
+      component: "pi-client",
+      message: "Pi RPC process exited",
       runId: "run-1",
       taskId: "T1",
       attemptId: "A1",
@@ -47,9 +47,7 @@ test("normalizes unknown failures and logs only safe AgileError fields", async (
     });
     await logger.error(error);
 
-    expect(stderr).toEqual([
-      "CODEX_STREAM_DISCONNECTED: Codex stream disconnected",
-    ]);
+    expect(stderr).toEqual(["PI_RPC_EXITED: Pi RPC process exited"]);
     const text = await readFile(path, "utf8");
     const lines = text
       .trim()
@@ -63,11 +61,11 @@ test("normalizes unknown failures and logs only safe AgileError fields", async (
     expect(lines[1]).toEqual({
       timestamp: "2026-08-26T00:00:00.000Z",
       level: "error",
-      code: "CODEX_STREAM_DISCONNECTED",
+      code: "PI_RPC_EXITED",
       category: "infra",
-      component: "codex-client",
+      component: "pi-client",
       retryable: true,
-      message: "Codex stream disconnected",
+      message: "Pi RPC process exited",
       runId: "run-1",
       taskId: "T1",
       attemptId: "A1",

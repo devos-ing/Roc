@@ -40,6 +40,8 @@ export class Scheduler {
     private readonly fault: (point: SchedulerFaultPoint) => void = () => {},
     private readonly hooks?: TaskHookService,
     private readonly publisher?: TaskPublisher,
+    private readonly remoteOnly = false,
+    private readonly localOnly = false,
   ) {
     const active = repo.getRunningAttempt();
     if (active) this.reconcile.add(active.descriptor.attemptId);
@@ -165,7 +167,11 @@ export class Scheduler {
     const started = this.repo.beginNextAttempt(leaseOwnerId);
     if (started)
       return { kind: "attempt_started", attemptId: started.attemptId };
-    const claimed = this.repo.claimNext(leaseOwnerId);
+    const claimed = this.repo.claimNext(
+      leaseOwnerId,
+      this.remoteOnly,
+      this.localOnly,
+    );
     if (claimed) return { kind: "task_claimed", taskId: claimed.taskId };
     return { kind: "idle" };
   }

@@ -1,7 +1,7 @@
 {
   "name": "roc-it",
   "version": "0.0.4",
-  "description": "Run Codex agents through a durable Scout, Implement, and Review flow.",
+  "description": "Run Pi agents through a durable Scout, Implement, and Review flow.",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
@@ -13,10 +13,13 @@
     "skills",
     "README.md",
     "README.zh-HK.md",
+    "README.details.md",
+    "README.details.zh-HK.md",
     "LICENSE"
   ],
   "engines": {
-    "bun": ">=1.3.0"
+    "bun": ">=1.3.0",
+    "node": ">=22.19.0"
   },
   "repository": {
     "type": "git",
@@ -31,6 +34,7 @@
     "agile",
     "bun",
     "cli",
+    "pi",
     "codex",
     "orchestration"
   ],
@@ -49,6 +53,7 @@
   },
   "dependencies": {
     "@clack/prompts": "1.7.0",
+    "@earendil-works/pi-coding-agent": "0.82.1",
     "commander": "15.0.0",
     "effect": "3.22.1",
     "simple-git": "^3.36.0",

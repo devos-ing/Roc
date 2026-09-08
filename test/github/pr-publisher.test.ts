@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  BunGitHubCommandRunner,
   GitHubCliPreflight,
   type GitHubCommandRunner,
   GitHubPublicationError,
@@ -313,4 +314,13 @@ test("preflight requires explicit base branch and GitHub access", async () => {
   await expect(
     new GitHubCliPreflight("/repo", "HEAD", runner([], [])).assertReady(),
   ).rejects.toBeInstanceOf(GitHubPublicationError);
+});
+
+test("force-kills a GitHub command that exceeds its wall-clock bound", async () => {
+  const result = await new BunGitHubCommandRunner(10).run({
+    command: [process.execPath, "-e", "await Bun.sleep(10000)"],
+    cwd: process.cwd(),
+  });
+  expect(result).toMatchObject({ exitCode: 124 });
+  expect(result.stderr).toContain("command timed out");
 });

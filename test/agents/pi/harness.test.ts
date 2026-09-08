@@ -14,6 +14,160 @@ import {
   scoutOutput,
 } from "./fixtures";
 
+test("reports bounded Pi tool activity, correlates overlapping calls, and replays uncommitted deliveries", async () => {
+  const start = {
+    type: "tool_execution_start",
+    toolCallId: "tests",
+    toolName: "bash",
+    args: { command: "bun test --token=do-not-store" },
+  };
+  const end = {
+    type: "tool_execution_end",
+    toolCallId: "tests",
+    toolName: "bash",
+    isError: true,
+    result: "do-not-store",
+  };
+  const client = new RecordedPiClient([
+    start,
+    start,
+    {
+      type: "tool_execution_start",
+      toolCallId: "read",
+      toolName: "read",
+      args: { path: "src/main.ts" },
+    },
+    {
+      type: "tool_execution_update",
+      toolCallId: "tests",
+      toolName: "bash",
+      partialResult: "do-not-store",
+    },
+    end,
+    end,
+    start,
+    {
+      type: "tool_execution_end",
+      toolCallId: "read",
+      toolName: "read",
+      isError: false,
+      result: "do-not-store",
+    },
+    {
+      type: "tool_execution_start",
+      toolCallId: "edit",
+      toolName: "write",
+      args: {
+        path: `src/\u001b[2Jtest\n${"字".repeat(300)}`,
+        content: "do-not-store",
+      },
+    },
+    {
+      type: "tool_execution_end",
+      toolCallId: "edit",
+      toolName: "write",
+      isError: false,
+    },
+    {
+      type: "tool_execution_end",
+      toolCallId: "invalid",
+      toolName: "bash",
+      isError: "no",
+    },
+    messageEnd(),
+    { type: "agent_settled" },
+  ]);
+  const harness = createPiHarness({
+    branches: memoryBranches(),
+    startClient: async () => client,
+  });
+  const request = makeScoutRequest();
+  const started = await harness.step(request);
+  if (started.kind !== "event") throw new Error("Expected start");
+  const pendingRequest = { ...request, backendCursor: started.nextCursor };
+  const pending = await harness.step(pendingRequest);
+  if (pending.kind !== "event") throw new Error("Expected activity");
+  expect(await harness.step(pendingRequest)).toEqual(pending);
+  const { events } = await collect(harness, {
+    ...request,
+    backendCursor: pending.nextCursor,
+  });
+  const all = [pending.event, ...events];
+  const activities = all.filter((event) => event.type === "attempt.activity");
+  expect(
+    activities.map((event) => [
+      event.activity.summary.slice(0, 16),
+      event.activity.status,
+    ]),
+  ).toEqual([
+    ["Run tests", "running"],
+    ["Read src/main.ts", "running"],
+    ["Run tests", "failed"],
+    ["Read src/main.ts", "completed"],
+    ["Edit src/test 字字", "running"],
+    ["Edit src/test 字字", "completed"],
+  ]);
+  expect(
+    activities.every((event) => event.activity.summary.length <= 200),
+  ).toBe(true);
+  expect(JSON.stringify(activities)).not.toContain("do-not-store");
+  expect(JSON.stringify(activities)).not.toContain("\\u001b");
+  expect(all.map((event) => event.sequence)).toEqual([
+    2, 3, 4, 5, 6, 7, 8, 9, 10,
+  ]);
+  expect(all.at(-1)?.type).toBe("attempt.completed");
+});
+
+test("reconciles a persisted Pi activity cursor as an orphaned turn and starts retries without stale activity", async () => {
+  const client = new RecordedPiClient([
+    {
+      type: "tool_execution_start",
+      toolCallId: "old",
+      toolName: "read",
+      args: { path: "old.ts" },
+    },
+  ]);
+  const first = createPiHarness({
+    branches: memoryBranches(),
+    startClient: async () => client,
+  });
+  const request = makeScoutRequest();
+  const started = await first.step(request);
+  if (started.kind !== "event") throw new Error("Expected start");
+  const activity = await first.step({
+    ...request,
+    backendCursor: started.nextCursor,
+  });
+  if (activity.kind !== "event") throw new Error("Expected activity");
+  const recovered = createPiHarness({
+    branches: memoryBranches(),
+    startClient: async () =>
+      new RecordedPiClient([messageEnd(), { type: "agent_settled" }]),
+  });
+  expect(
+    await recovered.step({
+      ...request,
+      mode: "reconcile",
+      backendCursor: activity.nextCursor,
+    }),
+  ).toMatchObject({
+    kind: "event",
+    event: {
+      type: "attempt.failed_infra",
+      code: "orphaned_turn",
+      sequence: 3,
+      retryable: true,
+    },
+  });
+  const retry = makeScoutRequest("retry");
+  const { events } = await collect(recovered, {
+    ...retry,
+    attempt: { ...retry.attempt, retryIndex: 1 },
+  });
+  expect(events.some((event) => event.type === "attempt.activity")).toBe(false);
+  expect(events.at(-1)?.type).toBe("attempt.completed");
+});
+
 test("scout dispatch accumulates per-message usage and completes", async () => {
   const client = new RecordedPiClient();
   const clientCwds: string[] = [];
@@ -135,6 +289,39 @@ test("implement commits through the trusted harness", async () => {
     kind: "implement",
     commitSha: "b".repeat(40),
   });
+});
+
+test("implement restores an approved follow-up source commit before starting Pi", async () => {
+  const client = new RecordedPiClient();
+  const restorations: Array<[string, string, string]> = [];
+  const harness = createPiHarness({
+    branches: memoryBranches({
+      async restoreChanges(taskId, sourceCommit, baseCommit) {
+        if (baseCommit === undefined) throw new Error("missing base commit");
+        restorations.push([taskId, sourceCommit, baseCommit]);
+      },
+    }),
+    startClient: async () => client,
+  });
+  const original = makeImplementRequest();
+  if (original.input.role !== "implement") throw new Error("unreachable");
+  const request = {
+    ...original,
+    input: {
+      ...original.input,
+      ticket: {
+        ...original.input.ticket,
+        spec: {
+          ...original.input.ticket.spec,
+          sourceCommit: "c".repeat(40),
+        },
+      },
+    },
+  };
+
+  await harness.step(request);
+
+  expect(restorations).toEqual([["T1", "c".repeat(40), "a".repeat(40)]]);
 });
 
 test("non-JSON final output fails as invalid structured output", async () => {

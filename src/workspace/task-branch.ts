@@ -434,11 +434,20 @@ export async function createTaskBranchManager(
       persistedBaseCommit?: string,
     ): Promise<TaskWorkspace> {
       const candidate = workspace(taskId, persistedBaseCommit);
-      await checkoutGit.raw([
-        "cat-file",
-        "-e",
-        `${candidate.baseCommit}^{commit}`,
-      ]);
+      try {
+        await checkoutGit.raw([
+          "cat-file",
+          "-e",
+          `${candidate.baseCommit}^{commit}`,
+        ]);
+      } catch {
+        await checkoutGit.raw(["fetch", "origin", "--prune"]);
+        await checkoutGit.raw([
+          "cat-file",
+          "-e",
+          `${candidate.baseCommit}^{commit}`,
+        ]);
+      }
       await checkpointBeforeSwitch(candidate.branch);
 
       if (await branchExists(candidate.branch)) {

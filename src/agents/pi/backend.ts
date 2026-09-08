@@ -1,5 +1,11 @@
 import { AgileError } from "../../runtime/errors";
 import type { CatalogModel } from "../../scheduler/model-routing";
+import { loadRocSettings } from "../../settings";
+import {
+  buildDefaultSkillConfig,
+  discoverTrustedSkills,
+  loadSchedulerSkillPolicy,
+} from "../../skills/policy";
 import type { TaskBranchManager } from "../../workspace/task-branch";
 import type { BackendFactory } from "../types";
 import { PiClient, type PiClientApi } from "./client";
@@ -42,16 +48,47 @@ function validateDefaultModel(raw: unknown): PiModel | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+/** Requires explicit acknowledgement before Pi runs with the process user permissions. */
+function assertExecutionPermission(allowUnsandboxed = false): void {
+  if (!allowUnsandboxed && process.env.ROC_ALLOW_UNSANDBOXED !== "1") {
+    throw new AgileError({
+      code: "PI_SANDBOX_REQUIRED",
+      category: "startup",
+      retryable: false,
+      component: "pi-backend",
+      message:
+        "Pi has no built-in sandbox and " +
+        "its tools run with the full process user permissions, so a role " +
+        "turn can write anywhere the user can. Run onboard to authorize execution, or set ROC_ALLOW_UNSANDBOXED=1 " +
+        "to acknowledge and confine the process with an external OS " +
+        "sandbox or container.",
+    });
+  }
+}
+
 /**
  * Starts the registry-facing Pi backend: a probe process resolves the
  * attributed default model and the durable catalog, then every role attempt
  * runs in its own child process rooted at its task workspace. Safety limits
- * and the experimental gate rationale live in docs/architecture.md.
+ * and the execution permission requirement live in docs/architecture.md.
  */
-export const startPiBackend: BackendFactory = (context) =>
-  buildPiBackendFactory({
+export const startPiBackend: BackendFactory = async (context) => {
+  const settings = await loadRocSettings();
+  const allowUnsandboxed = settings.execution?.allowUnsandboxed === true;
+  assertExecutionPermission(allowUnsandboxed);
+  const policy = await loadSchedulerSkillPolicy();
+  const skillPaths = buildDefaultSkillConfig(
+    await discoverTrustedSkills(policy),
+    policy,
+  )
+    .filter((skill) => skill.enabled)
+    .map((skill) => skill.path);
+  return buildPiBackendFactory({
     startProbeClient: () => PiClient.start({ cwd: process.cwd() }),
+    skillPaths,
+    allowUnsandboxed,
   })(context);
+};
 
 /**
  * Builds a Pi backend factory around injectable process starters; tests use
@@ -60,23 +97,12 @@ export const startPiBackend: BackendFactory = (context) =>
  */
 export function buildPiBackendFactory(input: {
   startProbeClient: () => Promise<PiClientApi>;
+  skillPaths?: readonly string[];
+  allowUnsandboxed?: boolean;
   startAttemptClient?: (cwd: string) => Promise<PiClientApi>;
 }): BackendFactory {
   return async ({ branches }: { branches: TaskBranchManager }) => {
-    if (process.env.ROC_PI_EXPERIMENTAL !== "1") {
-      throw new AgileError({
-        code: "PI_EXPERIMENTAL_GATE",
-        category: "startup",
-        retryable: false,
-        component: "pi-backend",
-        message:
-          "--backend pi is production-gated: Pi has no built-in sandbox and " +
-          "its tools run with the full process user permissions, so a role " +
-          "turn can write anywhere the user can. Set ROC_PI_EXPERIMENTAL=1 " +
-          "to acknowledge and confine the process with an external OS " +
-          "sandbox or container.",
-      });
-    }
+    assertExecutionPermission(input.allowUnsandboxed);
 
     const probe = await input.startProbeClient();
     try {
@@ -178,7 +204,7 @@ export function buildPiBackendFactory(input: {
         trackAttemptClient(
           input.startAttemptClient
             ? await input.startAttemptClient(cwd)
-            : await PiClient.start({ cwd }),
+            : await PiClient.start({ cwd, skillPaths: input.skillPaths }),
         );
       let closed: Promise<void> | undefined;
       return {

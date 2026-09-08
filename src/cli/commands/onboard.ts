@@ -2,16 +2,16 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import {
-  buildDefaultSkillCandidates,
-  loadDefaultSkillPolicy,
-} from "../../agents/codex/skill-policy";
-import {
   type AgileCycleSetting,
   AgileCycleSettingSchema,
   activeAgileCycle,
 } from "../../domain/agile-cycle";
 import { loadRocSettingsIfPresent, saveRocSettings } from "../../settings";
 import { installPackagedSkills, SkillInstallError } from "../../skills/install";
+import {
+  buildDefaultSkillCandidates,
+  loadDefaultSkillPolicy,
+} from "../../skills/policy";
 import { openDatabase } from "../../store/database";
 import {
   commandProjectRoot,
@@ -19,6 +19,7 @@ import {
   projectDatabasePath,
 } from "../command-context";
 import {
+  formatOnboardingMessage,
   renderAllowlistStep,
   renderCycleStep,
   renderDatabaseStep,
@@ -34,14 +35,14 @@ import type { CliCommandContext, CliIo } from "../types";
 async function promptCycleSetting(
   io: CliIo,
   now: Date,
+  initialValue?: AgileCycleSetting["type"],
 ): Promise<AgileCycleSetting> {
+  if (!io.selectCycle)
+    throw new Error("Interactive cycle selection is required for onboard");
+  const choice = await io.selectCycle(initialValue);
+  if (choice === undefined) throw new Error("Onboarding cancelled");
+  if (choice === "daily" || choice === "weekly") return { type: choice };
   if (!io.ask) throw new Error("Interactive input is required for onboard");
-  const choice = (
-    await io.ask("Agile cycle: 1) Daily 2) Weekly 3) Custom")
-  ).trim();
-  if (choice === "1") return { type: "daily" };
-  if (choice === "2") return { type: "weekly" };
-  if (choice !== "3") throw new Error("Choose Daily, Weekly, or Custom");
   const days = Number((await io.ask("Custom cycle duration in days")).trim());
   if (!Number.isInteger(days) || days <= 0) {
     throw new Error("Custom duration must be a whole number greater than zero");
@@ -65,6 +66,22 @@ async function executeOnboard(
   context: CliCommandContext,
   options: { global?: boolean },
 ): Promise<number> {
+  const originalIo = context.io;
+  const color = originalIo.output?.isTTY === true;
+  context = {
+    ...context,
+    io: {
+      ...originalIo,
+      out: (message) =>
+        originalIo.out(
+          formatOnboardingMessage(message, color, originalIo.output?.columns),
+        ),
+      err: (message) =>
+        originalIo.err(
+          formatOnboardingMessage(message, color, originalIo.output?.columns),
+        ),
+    },
+  };
   const global = options.global === true;
   const retryCommand = onboardingRetryCommand(global);
   const sourceRoot = resolve(import.meta.dir, "..", "..", "..", "skills");
@@ -100,7 +117,7 @@ async function executeOnboard(
     context.io.out(skillsStep);
     const homeRoot = context.runtime.homeRoot ?? homedir();
     if (context.runtime.listWorkspaceSkills === undefined) {
-      throw new Error("Codex skill discovery is required for onboard");
+      throw new Error("Local skill discovery is required for onboard");
     }
     if (context.io.selectSkills === undefined) {
       throw new Error("Interactive skill selection is required for onboard");
@@ -119,9 +136,24 @@ async function executeOnboard(
     const setting = await promptCycleSetting(
       context.io,
       context.runtime.now?.() ?? new Date(),
+      priorSettings?.cycle.type,
     );
+    if (!context.runtime.configureModel)
+      throw new Error("Model setup is required for onboard");
+    if (priorSettings?.execution?.allowUnsandboxed !== true) {
+      const answer = await context.io.ask?.(
+        "Roc's coding tools run with your account permissions. Use OS/container isolation for unattended work. Allow execution on this machine? [y/N]",
+      );
+      if (!/^(y|yes)$/i.test(answer?.trim() ?? ""))
+        throw new Error("Execution was not authorized; onboarding cancelled");
+    }
+    const model = await context.runtime.configureModel(context.io, root);
     const settingsPath = await saveRocSettings(
-      { cycle: setting, skills: { allowlist: selection.identities } },
+      {
+        cycle: setting,
+        skills: { allowlist: selection.identities },
+        execution: { allowUnsandboxed: true },
+      },
       homeRoot,
     );
     const allowlistStep = renderAllowlistStep(selection.identities.length);
@@ -133,6 +165,9 @@ async function executeOnboard(
     const settingsStep = renderSettingsStep(settingsPath);
     completedSteps.push(settingsStep);
     context.io.out(settingsStep);
+    const modelStep = `6. Model: Connected (${model})`;
+    completedSteps.push(modelStep);
+    context.io.out(modelStep);
     context.io.out(
       renderOnboardingComplete({
         unslopMissing: candidates.some(
@@ -168,7 +203,9 @@ export function registerOnboardCommand(
 ): void {
   program
     .command("onboard")
-    .description("Set up Roc, its skills, and your Agile cycle")
+    .description(
+      "Set up Roc, Codex login, trusted skills, and your Agile cycle",
+    )
     .option("--global", "install Roc skills globally without project state")
     .action(async (options: { global?: boolean }) => {
       context.exitCode = await executeOnboard(context, options);

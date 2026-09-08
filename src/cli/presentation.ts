@@ -1,5 +1,7 @@
+import { styleText } from "node:util";
 import type { AgileCycleSetting } from "../domain/agile-cycle";
 import type { SkillInstallResult } from "../skills/install";
+import { boxGuidance } from "./help-box";
 
 type OnboardingScope =
   | { kind: "global"; root: string }
@@ -7,11 +9,9 @@ type OnboardingScope =
 
 const createBacklogGuidance = [
   "  Install the grilling skill if needed:",
-  "    npx skills add mattpocock/skills --skill grilling --global --agent codex --agent claude-code --agent cursor",
-  "  Create your first backlog in Claude Code or Cursor:",
-  "    /roc-create-tasks <requirement>",
-  "  Create your first backlog in Codex:",
-  "    $roc-create-tasks <requirement>",
+  "    npx skills add mattpocock/skills --skill grilling --global --agent pi",
+  "  Ask your coding assistant to create a backlog:",
+  "    Use roc-create-tasks: <requirement>",
 ];
 
 /** Renders the stable identity, scope, and step heading for onboarding. */
@@ -20,7 +20,43 @@ export function renderOnboardingHeader(scope: OnboardingScope): string {
     scope.kind === "global"
       ? `Global user account (${scope.root})`
       : `Project (${scope.root})`;
-  return `Roc onboarding\nScope: ${label}\n\nSteps:`;
+  return `Welcome to Roc\n\nTurn your plan into coding tasks.\nChoose your skills, set a cycle, and connect Codex.\n\nScope: ${label}\n\nSetup steps:`;
+}
+
+/** Styles onboarding headings and outcomes while preserving a readable plain transcript. */
+export function formatOnboardingMessage(
+  message: string,
+  color: boolean,
+  width = 80,
+): string {
+  message = boxGuidance(message, width);
+  if (!color) return message;
+  return message
+    .split("\n")
+    .map((line) => {
+      if (/^[╭│╰]/u.test(line))
+        return styleText("cyan", line, { validateStream: false });
+      if (line === "Welcome to Roc")
+        return styleText(["bold", "cyan"], line, { validateStream: false });
+      if (line === "Result: Complete")
+        return styleText(["bold", "green"], line, { validateStream: false });
+      if (line === "Onboarding stopped" || line.startsWith("Failed:"))
+        return styleText(["bold", "red"], line, { validateStream: false });
+      if (/^\d+\./.test(line)) {
+        const colon = line.indexOf(":");
+        return (
+          styleText(["bold", "cyan"], line.slice(0, colon + 1), {
+            validateStream: false,
+          }) + line.slice(colon + 1)
+        );
+      }
+      if (["Setup steps:", "Next:", "Retry:", "Completed work:"].includes(line))
+        return styleText("bold", line, { validateStream: false });
+      if (line.startsWith("Scope:") || line.startsWith("  - "))
+        return styleText("dim", line, { validateStream: false });
+      return line;
+    })
+    .join("\n");
 }
 
 /** Renders the completed database step without implying one exists for global onboarding. */
@@ -74,7 +110,7 @@ export function renderOnboardingComplete(
     ...(input.unslopMissing
       ? [
           "  Install unslop from pstack if needed:",
-          "    npx skills add backnotprop/pstack --skill unslop --global --agent codex --agent claude-code --agent cursor",
+          "    npx skills add backnotprop/pstack --skill unslop --global --agent pi",
           "  Then choose it:",
           "    npx roc-it@latest onboard",
         ]
@@ -86,8 +122,11 @@ export function renderOnboardingComplete(
 }
 
 /** Renders an empty task list with the accepted backlog-creation guidance. */
-export function renderEmptyTaskList(): string {
-  return ["No tasks.", "Next:", ...createBacklogGuidance].join("\n");
+export function renderEmptyTaskList(width = 80): string {
+  return boxGuidance(
+    ["No tasks.", "Next:", ...createBacklogGuidance].join("\n"),
+    width,
+  );
 }
 
 /** Renders a truthful partial-failure summary without suggesting rollback or success. */

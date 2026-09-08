@@ -309,7 +309,11 @@ export class OrchestrationRepository {
   ) {}
 
   /** Atomically claims the next approved dependency-ready task under the scheduler lease. */
-  claimNext(leaseOwnerId?: string): { taskId: string } | undefined {
+  claimNext(
+    leaseOwnerId?: string,
+    remoteOnly = false,
+    localOnly = false,
+  ): { taskId: string } | undefined {
     return this.db.transaction(() => {
       this.assertLeaseOwner(leaseOwnerId);
       const row = this.db
@@ -318,6 +322,12 @@ export class OrchestrationRepository {
         FROM tasks AS task
         WHERE task.status = 'ready'
           AND task.approved = 1
+          ${remoteOnly ? "AND EXISTS (SELECT 1 FROM remote_tasks AS selected_remote WHERE selected_remote.task_id = task.id)" : ""}
+          ${localOnly ? "AND NOT EXISTS (SELECT 1 FROM remote_tasks AS selected_remote WHERE selected_remote.task_id = task.id)" : ""}
+          AND (
+            NOT EXISTS (SELECT 1 FROM remote_tasks WHERE remote_tasks.task_id = task.id)
+            OR task.base_commit IS NOT NULL
+          )
           AND NOT EXISTS (
             SELECT 1 FROM tasks AS active
             WHERE active.status IN ('claimed', 'scouting', 'implementing', 'reviewing', 'publishing')
@@ -350,6 +360,58 @@ export class OrchestrationRepository {
         .run(this.id("event"), row.id, this.now());
       return { taskId: row.id };
     })();
+  }
+
+  /** Reports whether remote-owned active work or a terminal posthook needs remote recovery. */
+  hasActiveRemoteTask(): boolean {
+    return (
+      this.db
+        .query<{ active: number }, []>(`
+          SELECT 1 AS active
+          FROM tasks JOIN remote_tasks ON remote_tasks.task_id = tasks.id
+          WHERE tasks.status IN ('claimed', 'scouting', 'implementing', 'reviewing', 'publishing')
+             OR (
+               tasks.status IN ('done', 'rejected', 'failed_infra')
+               AND json_type(tasks.spec_json, '$.posthook') IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM task_hooks
+                 WHERE task_hooks.task_id = tasks.id
+                   AND task_hooks.phase = 'posthook'
+                   AND task_hooks.status = 'succeeded'
+               )
+             )
+          LIMIT 1
+        `)
+        .get() !== null
+    );
+  }
+
+  /** Reports whether local-owned active work or a terminal posthook needs local recovery. */
+  hasActiveLocalTask(): boolean {
+    return (
+      this.db
+        .query<{ active: number }, []>(`
+          SELECT 1 AS active
+          FROM tasks
+          WHERE NOT EXISTS (
+              SELECT 1 FROM remote_tasks WHERE remote_tasks.task_id = tasks.id
+            ) AND (
+              tasks.status IN ('claimed', 'scouting', 'implementing', 'reviewing', 'publishing')
+              OR (
+                tasks.status IN ('done', 'rejected', 'failed_infra')
+                AND json_type(tasks.spec_json, '$.posthook') IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM task_hooks
+                  WHERE task_hooks.task_id = tasks.id
+                    AND task_hooks.phase = 'posthook'
+                    AND task_hooks.status = 'succeeded'
+                )
+              )
+            )
+          LIMIT 1
+        `)
+        .get() !== null
+    );
   }
 
   /** Returns the single claimed task that must finish its prehook before Scout can start. */

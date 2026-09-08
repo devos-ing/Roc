@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CodexClient } from "../../src/agents/codex/client";
+import { PiClient } from "../../src/agents/pi/client";
 import type { BackendFactory, BackendRuntime } from "../../src/agents/types";
 import { runBackendSession } from "../../src/cli/runtime";
 import type { RealSchedulerRunInput } from "../../src/cli/types";
@@ -21,6 +21,7 @@ import type {
 import { AgileError } from "../../src/runtime/errors";
 import { openDatabase } from "../../src/store/database";
 import { PlanningRepository } from "../../src/store/planning-repository";
+import { RemoteTaskRepository } from "../../src/store/remote-task-repository";
 import { git } from "../helpers/git";
 
 async function createRepository(): Promise<string> {
@@ -139,7 +140,7 @@ function fakeBackend(catalog: typeof compatibleCatalog): {
 }
 
 function sessionInput(repoPath: string, dbPath: string): RealSchedulerRunInput {
-  return { backend: "codex", dbPath, repoPath, baseRef: "HEAD" };
+  return { backend: "pi", dbPath, repoPath, baseRef: "HEAD" };
 }
 
 test("a missing repository preserves the sanitized branch-startup error before backend startup", async () => {
@@ -164,7 +165,7 @@ test("a missing repository preserves the sanitized branch-startup error before b
       retryable: false,
       component: "cli",
       runId: "missing-repository-run",
-      message: "Could not validate the codex repository and base ref",
+      message: "Could not validate the pi repository and base ref",
     });
     expect(failure).not.toMatchObject({
       message: expect.stringContaining(root),
@@ -179,7 +180,7 @@ test("a real client child can write after session return but cannot hand its che
   const dbPath = join(root, ".agile", "runtime", "agile.db");
   await seedReadyTask(dbPath);
   const fake = fakeBackend(compatibleCatalog);
-  let client: CodexClient | undefined;
+  let client: PiClient | undefined;
   let closeFinished = false;
   let closing: Promise<void> | undefined;
   let running: Promise<void> | undefined;
@@ -189,7 +190,8 @@ test("a real client child can write after session return but cannot hand its che
   try {
     running = runBackendSession(
       async (context) => {
-        const startedClient = await CodexClient.start({
+        const startedClient = await PiClient.start({
+          cwd: root,
           command: [
             process.execPath,
             join(import.meta.dir, "../fixtures/checkout-late-writer.ts"),
@@ -461,6 +463,69 @@ test("runBackendSession closes the backend when no catalog model is compatible",
     expect(closed()).toBe(true);
   } finally {
     await cleanupRepository(root);
+  }
+});
+
+test("runBackendSession requires the GitHub source to recover an active remote task", async () => {
+  const root = await createRepository();
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
+  await seedReadyTask(dbPath);
+  const db = openDatabase(dbPath);
+  try {
+    new RemoteTaskRepository(db).add({
+      taskId: "T1",
+      repository: "owner/repo",
+      planId: "plan-1",
+      issueNumber: 1,
+      issueUrl: "https://example.test/issues/1",
+      envelopeHash: "a".repeat(64),
+      approvalAuthor: "trusted",
+      approvalHash: "a".repeat(64),
+      remoteState: "OPEN",
+    });
+    db.query("UPDATE tasks SET status = 'claimed' WHERE id = 'T1'").run();
+  } finally {
+    db.close();
+  }
+  const { factory, closed } = fakeBackend(compatibleCatalog);
+  try {
+    await expect(
+      runBackendSession(
+        factory,
+        sessionInput(root, dbPath),
+        "run-session-remote-recovery",
+      ),
+    ).rejects.toMatchObject({ code: "REMOTE_TASK_SOURCE_REQUIRED" });
+    expect(closed()).toBeTrue();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+  }
+});
+
+test("runBackendSession requires the local source to recover an active local task", async () => {
+  const root = await createRepository();
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
+  await seedReadyTask(dbPath);
+  const db = openDatabase(dbPath);
+  try {
+    db.query("UPDATE tasks SET status = 'claimed' WHERE id = 'T1'").run();
+  } finally {
+    db.close();
+  }
+  const { factory, closed } = fakeBackend(compatibleCatalog);
+  try {
+    await expect(
+      runBackendSession(
+        factory,
+        { ...sessionInput(root, dbPath), source: "github" },
+        "run-session-local-recovery",
+      ),
+    ).rejects.toMatchObject({ code: "LOCAL_TASK_SOURCE_REQUIRED" });
+    expect(closed()).toBeTrue();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
   }
 });
 

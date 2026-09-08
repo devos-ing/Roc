@@ -67,7 +67,7 @@ The skill contains:
 
 The evidence adapter calls only `gh pr view` and the read-only pull-request review-comment API. It binds review evidence to the snapshot head and marks an absent or blank PR description as missing. A recording-stub test rejects mutation commands. Commenting, approval, review submission, editing, merging, committing, and pushing remain in the agent workflow and require explicit user authorization.
 
-Roc ships the canonical package under `skills/pr-review-to-closure/`. Onboarding copies every regular package file into `.agents/skills` and `.claude/skills`, preserves identical installations, rejects differing destination files, and refuses symbolic-link source or destination paths.
+Distribution was narrowed on 2026-09-07: the canonical skill lives under `.agents/skills/pr-review-to-closure/` for reviewing Roc's own pull requests. It is excluded from user onboarding and the npm package. Only product skills under `skills/` are installed into user projects.
 
 ## Error Handling
 

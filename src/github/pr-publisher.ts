@@ -35,7 +35,7 @@ export type TaskPublisher = {
 /** Verifies that GitHub access is ready before a real scheduler starts work. */
 export type GitHubPreflight = { assertReady(): Promise<void> };
 
-/** Runs one argv-only command and preserves its bounded textual diagnostics. */
+/** Runs a local gh or git subprocess with argv-only input and bounded diagnostics. */
 export type GitHubCommandRunner = {
   run(input: { command: string[]; cwd: string }): Promise<{
     exitCode: number;
@@ -53,8 +53,11 @@ export class GitHubPublicationError extends Error {
   }
 }
 
-/** Executes GitHub and Git commands without a shell. */
+/** Executes local gh and git subprocesses through Bun without a shell. */
 export class BunGitHubCommandRunner implements GitHubCommandRunner {
+  /** Creates a subprocess runner with a bounded wall-clock command timeout. */
+  constructor(private readonly timeoutMs = 30_000) {}
+
   /** Runs one command in its repository workspace and collects its complete output. */
   async run(input: {
     command: string[];
@@ -67,12 +70,27 @@ export class BunGitHubCommandRunner implements GitHubCommandRunner {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const [exitCode, stdout, stderr] = await Promise.all([
-      process.exited,
-      new Response(process.stdout).text(),
-      new Response(process.stderr).text(),
-    ]);
-    return { exitCode, stdout, stderr };
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      process.kill("SIGKILL");
+    }, this.timeoutMs);
+    try {
+      const [exitCode, stdout, stderr] = await Promise.all([
+        process.exited,
+        new Response(process.stdout).text(),
+        new Response(process.stderr).text(),
+      ]);
+      return {
+        exitCode: timedOut ? 124 : exitCode,
+        stdout,
+        stderr: timedOut
+          ? `${stderr}${stderr === "" ? "" : "\n"}command timed out`
+          : stderr,
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 }
 
