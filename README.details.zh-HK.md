@@ -41,6 +41,10 @@ M1–M4 已按修訂範圍完成。以下功能請使用這份 checkout 的 `src
 | 自動合併、更新基底與新的 Review | [M3 protected branch 驗收](docs/validation/m3-live-2026-09-09.md) |
 | 診斷、進度、耗時、用量及效率比較 | [M4 實測報告](docs/validation/m4-live-2026-09-09.md)，292 個本地測試通過 |
 
+另有[分角色 reasoning 實測](docs/validation/role-routing-live-2026-09-09.md)，透過 Pi 狀態讀回
+確認 Scout／Review 使用 `high`、Implement 使用 `medium`。加上診斷的第二輪完整合併兩個 PR；
+首輪一次 refresh 取消的原因仍未確認，保留在 [#79](https://github.com/devos-ing/Roc/issues/79)。
+
 同一組兩個小任務的成功執行，串行為 8分31秒／67,722 tokens，平行為
 6分47秒／67,615 tokens，平行省略 Scout 為 5分4秒／52,925 tokens。
 最後一組曾遇啟動超時，連同人工恢復實際為 12分38秒；後來才加入前置讀取重試。

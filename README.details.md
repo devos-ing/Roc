@@ -46,6 +46,11 @@ through `ROC_CLI_ENTRY` in each terminal for the behavior described here.
 | Automatic merge, base refresh and fresh Review | [M3 protected-branch acceptance](docs/validation/m3-live-2026-09-09.md) |
 | Diagnostics, progress, timing, usage and comparisons | [M4 measurements](docs/validation/m4-live-2026-09-09.md), with 292 local tests passing |
 
+A separate [mixed-effort live check](docs/validation/role-routing-live-2026-09-09.md)
+confirmed Astra `high` Scout/Review and `medium` Implement through Pi state readback.
+Its traced repeat merged both PRs; an unexplained first-run refresh cancellation
+remains open in [#79](https://github.com/devos-ing/Roc/issues/79).
+
 For one fixed pair of small tasks, successful runs took 8m31s / 67,722 tokens
 sequentially, 6m47s / 67,615 tokens in parallel, and 5m4s / 52,925 tokens in
 parallel with Scout omitted. The last mode also hit a startup timeout; including
