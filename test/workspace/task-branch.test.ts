@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTaskBranchManager } from "../../src/workspace/task-branch";
@@ -20,6 +27,203 @@ async function removeRepository(root: string): Promise<void> {
   await rm(root, { recursive: true, force: true });
   await rm(`${root}.agile-worktrees`, { recursive: true, force: true });
 }
+
+/** Publishes a trusted task patch to a bare origin and advances its target independently. */
+async function refreshFixture(conflict = false) {
+  const root = await createRepository();
+  const origin = await mkdtemp(join(tmpdir(), "agile-refresh-origin-"));
+  await git(["init", "--bare"], origin);
+  await git(["branch", "-M", "main"], root);
+  await git(["remote", "add", "origin", origin], root);
+  await git(["push", "origin", "main"], root);
+  const expectedBase = await git(["rev-parse", "HEAD"], root);
+  const manager = await createTaskBranchManager(root, expectedBase);
+  const workspace = await manager.prepare("T1", expectedBase);
+  await writeFile(join(workspace.path, "README.md"), "trusted patch\n");
+  const expectedHead = await manager.commitChanges("T1", expectedBase);
+  await git(["push", "origin", workspace.branch], workspace.path);
+  await writeFile(
+    join(root, conflict ? "README.md" : "target.txt"),
+    "other task\n",
+  );
+  await git(["add", "-A"], root);
+  await git(["commit", "-m", "advance target"], root);
+  await git(["push", "origin", "main"], root);
+  const targetBase = await git(["rev-parse", "HEAD"], root);
+  return {
+    root,
+    origin,
+    manager,
+    workspace,
+    input: { expectedHead, expectedBase, targetBase, baseBranch: "main" },
+    async cleanup() {
+      await removeRepository(root);
+      await rm(origin, { recursive: true, force: true });
+    },
+  };
+}
+
+test("clean base refresh preserves the patch, lease-pushes the task ref and advances only the confirmed cached base", async () => {
+  const f = await refreshFixture();
+  try {
+    const patch = await git(
+      ["diff", f.input.expectedBase, f.input.expectedHead],
+      f.root,
+    );
+    const head = await f.manager.refresh("T1", f.input);
+    expect(head).not.toBe(f.input.expectedHead);
+    expect(await git(["diff", f.input.targetBase, head], f.root)).toBe(patch);
+    expect(await git(["rev-parse", "agile/T1"], f.origin)).toBe(head);
+    expect(await git(["rev-parse", "main"], f.origin)).toBe(f.input.targetBase);
+    expect(await git(["rev-parse", "HEAD"], f.root)).toBe(f.input.targetBase);
+    expect(await git(["status", "--porcelain"], f.workspace.path)).toBe("");
+    await f.manager.assertReviewReady("T1", head, f.input.targetBase);
+    await expect(f.manager.prepare("T1", f.input.expectedBase)).rejects.toThrow(
+      "base changed",
+    );
+    expect((await f.manager.prepare("T1", f.input.targetBase)).baseCommit).toBe(
+      f.input.targetBase,
+    );
+    expect(
+      await git(
+        ["rev-parse", `refs/agile-refresh/T1/${f.input.expectedHead}`],
+        f.root,
+      ),
+    ).toBe(f.input.expectedHead);
+
+    await writeFile(join(f.root, "second-target.txt"), "another merge\n");
+    await git(["add", "-A"], f.root);
+    await git(["commit", "-m", "second target advance"], f.root);
+    await git(["push", "origin", "main"], f.root);
+    const nextBase = await git(["rev-parse", "HEAD"], f.root);
+    const next = await f.manager.refresh("T1", {
+      expectedHead: head,
+      expectedBase: f.input.targetBase,
+      targetBase: nextBase,
+      baseBranch: "main",
+    });
+    expect(await git(["diff", nextBase, next], f.root)).toBe(patch);
+    await f.manager.assertReviewReady("T1", next, nextBase);
+    const restarted = await createTaskBranchManager(f.root, nextBase);
+    await restarted.assertReviewReady("T1", next, nextBase);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("conflicting base refresh aborts without losing the original trusted patch or changing origin", async () => {
+  const f = await refreshFixture(true);
+  try {
+    await expect(f.manager.refresh("T1", f.input)).rejects.toThrow(
+      "conflicted",
+    );
+    expect(await git(["rev-parse", "HEAD"], f.workspace.path)).toBe(
+      f.input.expectedHead,
+    );
+    expect(await git(["rev-parse", "agile/T1"], f.origin)).toBe(
+      f.input.expectedHead,
+    );
+    expect(await readFile(join(f.workspace.path, "README.md"), "utf8")).toBe(
+      "trusted patch\n",
+    );
+    expect(await git(["status", "--porcelain"], f.workspace.path)).toBe("");
+    await f.manager.assertReviewReady(
+      "T1",
+      f.input.expectedHead,
+      f.input.expectedBase,
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("dirty files, unexpected history, external heads and interrupted Git operations refuse refresh without discarding work", async () => {
+  for (const change of [
+    "dirty",
+    "history",
+    "external",
+    "interrupted",
+  ] as const) {
+    const f = await refreshFixture();
+    try {
+      if (change === "dirty")
+        await writeFile(
+          join(f.workspace.path, "untracked.txt"),
+          "someone else's work\n",
+        );
+      if (change === "history") {
+        await writeFile(
+          join(f.workspace.path, "extra.txt"),
+          "external history\n",
+        );
+        await git(["add", "-A"], f.workspace.path);
+        await git(["commit", "-m", "external edit"], f.workspace.path);
+      }
+      if (change === "external")
+        await git(
+          ["update-ref", "refs/heads/agile/T1", f.input.targetBase],
+          f.origin,
+        );
+      if (change === "interrupted") {
+        const path = await git(
+          [
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "CHERRY_PICK_HEAD",
+          ],
+          f.workspace.path,
+        );
+        await writeFile(path, `${f.input.expectedHead}\n`);
+      }
+      const before = await git(["rev-parse", "HEAD"], f.workspace.path);
+      const status = await git(["status", "--porcelain"], f.workspace.path);
+      const remote = await git(["rev-parse", "agile/T1"], f.origin);
+      await expect(f.manager.refresh("T1", f.input)).rejects.toThrow();
+      expect(await git(["rev-parse", "HEAD"], f.workspace.path)).toBe(before);
+      expect(await git(["status", "--porcelain"], f.workspace.path)).toBe(
+        status,
+      );
+      expect(await git(["rev-parse", "agile/T1"], f.origin)).toBe(remote);
+      if (change === "dirty")
+        expect(
+          await readFile(join(f.workspace.path, "untracked.txt"), "utf8"),
+        ).toBe("someone else's work\n");
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+test("an exact old-head lease refuses an external push racing after preflight and retains both versions", async () => {
+  const f = await refreshFixture();
+  try {
+    const script = join(f.origin, "racing-receive-pack");
+    await writeFile(
+      script,
+      `#!/bin/sh\nunset GIT_CONFIG_PARAMETERS\ngit --git-dir='${f.origin}' update-ref refs/heads/agile/T1 ${f.input.targetBase}\nexec git-receive-pack "$@"\n`,
+    );
+    await chmod(script, 0o700);
+    await git(["config", "remote.origin.receivepack", script], f.root);
+    await expect(f.manager.refresh("T1", f.input)).rejects.toThrow();
+    expect(await git(["rev-parse", "agile/T1"], f.origin)).toBe(
+      f.input.targetBase,
+    );
+    const retained = await git(["rev-parse", "HEAD"], f.workspace.path);
+    expect(retained).not.toBe(f.input.expectedHead);
+    expect(await git(["diff", f.input.targetBase, retained], f.root)).toBe(
+      await git(["diff", f.input.expectedBase, f.input.expectedHead], f.root),
+    );
+    expect(
+      await git(
+        ["rev-parse", `refs/agile-refresh/T1/${f.input.expectedHead}`],
+        f.root,
+      ),
+    ).toBe(f.input.expectedHead);
+  } finally {
+    await f.cleanup();
+  }
+});
 
 test("project ignores Codex sandbox and test artifacts before task commits", async () => {
   const artifacts = [

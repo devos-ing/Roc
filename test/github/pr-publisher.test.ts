@@ -66,6 +66,9 @@ function branches(calls: string[]): TaskBranchManager {
     async commitChanges() {
       throw new Error("not used");
     },
+    async refresh() {
+      throw Error("Unexpected base refresh");
+    },
     async restoreChanges() {
       throw new Error("not used");
     },
