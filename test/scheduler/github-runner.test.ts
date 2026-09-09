@@ -136,6 +136,84 @@ test("done-open repair rejects absent or mismatched authority and merge evidence
   }
 });
 
+test.each([
+  { state: "CLOSED" as const, admitted: true },
+  { state: "OPEN" as const, admitted: false },
+])(
+  "done label recovery respects admission: %j",
+  async ({ state, admitted }) => {
+    const remote = memoryGitHub();
+    await seed(remote, (record) => {
+      record.phase = "done";
+      record.publication = {
+        number: 7,
+        branch: "agile/issue-41",
+        commitSha: base,
+        mergeCommit: base,
+      };
+    });
+    remote.issue.state = state;
+    remote.issue.labels = [
+      { name: "roc:task" },
+      { name: "roc:awaiting-merge" },
+    ];
+    const before = structuredClone(remote.issue.comments);
+    const labels: string[] = [];
+    const store = remote.store();
+    const syncLabels = store.syncLabels.bind(store);
+    let synchronizations = 0;
+    store.syncLabels = async (task) => {
+      synchronizations++;
+      await syncLabels(task);
+    };
+    remote.api.setStatusLabel = async (...args: unknown[]) => {
+      const label = String(args[2]);
+      labels.push(label);
+      remote.issue.labels = [{ name: "roc:task" }, { name: label }];
+    };
+    const commands: string[][] = [];
+    const run = new GitHubTaskRunner({
+      store,
+      branches,
+      harness: {
+        async step() {
+          throw Error("No model replay");
+        },
+        async cancel() {},
+      },
+      advisor: createModelAdvisor([]),
+      publisher: {
+        baseBranch: "main",
+        async publish() {
+          throw Error("No publication");
+        },
+      },
+      command: {
+        async run({ command }) {
+          commands.push(command);
+          throw Error("No PR or merge checks");
+        },
+      },
+      cwd: "/fixture",
+      baseBranch: "main",
+    });
+    const { tasks } = await store.list();
+    expect(
+      await run.claimNext(tasks, new AbortController().signal, () => admitted),
+    ).toBeUndefined();
+    expect(synchronizations).toBe(admitted ? 1 : 0);
+    expect(labels).toEqual(admitted ? ["roc:done"] : []);
+    expect(remote.issue.labels).toContainEqual({
+      name: admitted ? "roc:done" : "roc:awaiting-merge",
+    });
+    expect(commands).toEqual([]);
+    expect(remote.closures).toEqual([]);
+    expect(remote.issue.state).toBe(state);
+    expect(remote.issue.comments).toEqual(before);
+    expect((await store.get(41)).execution).toEqual(tasks[0]?.execution);
+  },
+);
+
 test("shutdown after a confirmed publication does not rewrite completed work as cancelled", async () => {
   const remote = memoryGitHub();
   await seed(remote, (record) => {
