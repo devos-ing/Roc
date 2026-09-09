@@ -123,10 +123,6 @@ export class GitHubTaskRunner {
   ): Promise<NativeTask | undefined> {
     for (const task of tasks) {
       signal.throwIfAborted();
-      if (task.execution?.phase === "done") {
-        if (task.issue.state === "OPEN") await this.repairClosure(task, signal);
-        continue;
-      }
       if (!admit(task)) continue;
       await this.input.store
         .syncLabels(task)
@@ -135,6 +131,10 @@ export class GitHubTaskRunner {
             `Issue #${task.issue.number}: status label synchronization is pending`,
           ),
         );
+      if (task.execution?.phase === "done") {
+        if (task.issue.state === "OPEN") await this.repairClosure(task, signal);
+        continue;
+      }
       if (
         !task.blockedReason &&
         (task.execution?.phase === "awaiting_merge" ||
