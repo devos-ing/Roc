@@ -154,6 +154,14 @@ Review and CI before automatic merge. That test used one Mac.
 
 ### Parallel admission
 
+For a sufficiently specified low-risk task, the approved manifest can set
+`skipScout: true` to run Implement and independent Review directly. This is off
+by default. The scope must contain explicit relative file paths with suffixes,
+without whitespace, traversal or glob syntax; acceptance and validation remain
+required. Use the normal Scout flow for broader or uncertain work. The board
+shows Scout as skipped, and a later base refresh still requires a fresh Review.
+See the [M4 measurements and limitations](docs/validation/m4-live-2026-09-09.md).
+
 For failed work, inspect `scheduler inspect` and `.agile/runtime/agile.log` on
 the execution host. Safe error codes identify GitHub reads, uncertain writes,
 the affected Issue, attempt and phase. Check the retained task worktree before
@@ -161,6 +169,8 @@ starting replacement work. A verified existing commit can be supplied as
 `sourceCommit` in a new approved task; preserve the original failed checkpoint
 and review the replacement task's scope and dependencies. Never remove a retained
 ownership lock until its processes and uncertain remote writes are reconciled.
+A timed-out repository lookup during startup gets one read-only retry before
+any task starts; a second failure reports `GITHUB_REPOSITORY_UNAVAILABLE`.
 
 `task board` details show elapsed time, time in agent attempts, merge waiting and
 partial token usage. `scheduler inspect` includes the phase-duration breakdown.

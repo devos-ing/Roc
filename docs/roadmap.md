@@ -10,6 +10,9 @@ M3 now adds guarded automatic merge and bounded base refresh with fresh Review.
 for two parallel tasks, including a rebase, new Review and fresh CI before the
 second merge. The implementation exercise still needed coordinator recovery;
 the report distinguishes it from the successful automatic fixture run.
+M4 software now provides failure diagnostics, timing/activity inspection, bounded
+GitHub reads and opt-in Scout omission. [Local fixed-task comparisons](validation/m4-live-2026-09-09.md)
+are complete. M4 remains open for physical MacBook/Mac mini acceptance in Issue #56.
 The current stage ends at M4. M5 Superset integration is outside this stage and
 will only be reconsidered after a new scope decision, not automatically after M4.
 

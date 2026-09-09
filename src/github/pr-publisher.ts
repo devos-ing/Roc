@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { StoredTask } from "../domain/schemas";
 import type { ImplementOutput } from "../harness/contracts";
+import { AgileError } from "../runtime/errors";
 import { gitPathResolutionEnvironment } from "../workspace/git-environment";
 import type { TaskBranchManager } from "../workspace/task-branch";
 
@@ -230,15 +231,25 @@ export class GitHubCliPreflight implements GitHubPreflight {
     private readonly runner: GitHubCommandRunner = new BunGitHubCommandRunner(),
   ) {}
 
-  /** Confirms the configured base, gh login, and current repository are available. */
+  /** Confirms base and GitHub access, retrying a timed-out repository read once before any task starts. */
   async assertReady(): Promise<void> {
     assertBaseBranch(this.baseBranch);
     await mustRun(this.runner, ["gh", "auth", "status"], this.repoPath);
-    await mustRun(
-      this.runner,
-      ["gh", "repo", "view", "--json", "nameWithOwner"],
-      this.repoPath,
-    );
+    const input = {
+      command: ["gh", "repo", "view", "--json", "nameWithOwner"],
+      cwd: this.repoPath,
+    };
+    let result = await this.runner.run(input);
+    if (result.exitCode === 124) result = await this.runner.run(input);
+    if (result.exitCode !== 0)
+      throw new AgileError({
+        code: "GITHUB_REPOSITORY_UNAVAILABLE",
+        category: "startup",
+        component: "github-preflight",
+        retryable: result.exitCode === 124,
+        message:
+          "GitHub repository lookup failed before task startup; check connection and repository access, then restart the daemon",
+      });
   }
 }
 

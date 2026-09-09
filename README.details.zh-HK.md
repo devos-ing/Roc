@@ -126,6 +126,11 @@ PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依�
 
 ### 平行執行
 
+資料已足夠的低風險任務，可在批准的 manifest 設定 `skipScout: true`，直接執行 Implement
+及獨立 Review。預設不啟用。Scope 必須是有副檔名的明確相對檔案路徑，不含空白、
+路徑跳轉或 glob；驗收條件和 validation 仍然必填。不確定或較廣的工作保留 Scout。
+Board 會顯示 Scout 已省略，基底更新後仍須新的 Review。詳見 [M4 實測及限制](docs/validation/m4-live-2026-09-09.md)。
+
 `task board` 詳情會顯示總耗時、agent attempt 時間、等待合併時間，以及用量是否完整。
 `scheduler inspect` 另有各階段耗時。最近動作是 GitHub checkpoint 摘要，階段切換時保存，
 工具持續執行時最多每 30 秒補一次；逐項即時動作請看 daemon 輸出。
@@ -134,6 +139,8 @@ PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依�
 失敗時查看執行主機的 `.agile/runtime/agile.log`。紀錄包含安全錯誤代碼、Issue、attempt
 及階段。先核對保留的 worktree；可把已驗證的 commit 填入新批准任務的 `sourceCommit`，
 重用成果並保留原失敗紀錄。程序或 GitHub 寫入結果未確認前，不要移除 ownership lock。
+啟動時若 repository lookup 超時，會在任務開始前重試該讀取一次；第二次失敗回報
+`GITHUB_REPOSITORY_UNAVAILABLE`。
 
 預設為 `--concurrency 2`，`--concurrency 1` 可切回逐項執行。
 一項任務完成後會立即補位，不必等待另一項較慢的任務。

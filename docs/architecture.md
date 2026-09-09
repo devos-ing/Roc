@@ -227,6 +227,16 @@ GitHub comment reads run in batches of at most four requests. The reader waits
 for all requests in a failed batch and returns no partial snapshot. It preserves
 the original order, request count, complete comment history and approval checks.
 
+An approved low-risk spec may explicitly omit Scout using `skipScout: true`.
+The schema requires conservative literal file scopes and the existing complete
+acceptance/validation fields. Implement and Review then receive no Scout capsule;
+their prompts disclose the omission. Only actual model attempts are recorded,
+and independent Review plus all refresh/merge guards remain required.
+
+Startup preflight retries a timed-out repository lookup once before any task
+starts. A second failure reports a safe startup code. This read-only recovery
+does not repeat model work or GitHub mutations.
+
 SQLite production modules, local queue commands and SQL-only tests were removed
 after replacement boundaries were exercised. Existing databases and old
 checkouts remain on disk. Legacy daemon-owned `roc:status` comments without new

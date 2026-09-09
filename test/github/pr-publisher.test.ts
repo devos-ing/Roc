@@ -327,3 +327,39 @@ test("force-kills a GitHub command that exceeds its wall-clock bound", async () 
   expect(result).toMatchObject({ exitCode: 124 });
   expect(result.stderr).toContain("command timed out");
 });
+
+test("repository preflight retries one timed-out read and stops safely after a second timeout", async () => {
+  for (const recover of [true, false]) {
+    let reads = 0;
+    const preflight = new GitHubCliPreflight("/repo", "main", {
+      async run({ command }) {
+        if (command[1] === "auth")
+          return { exitCode: 0, stdout: "", stderr: "" };
+        expect(command).toEqual([
+          "gh",
+          "repo",
+          "view",
+          "--json",
+          "nameWithOwner",
+        ]);
+        reads++;
+        return recover && reads === 2
+          ? { exitCode: 0, stdout: "{}", stderr: "" }
+          : {
+              exitCode: 124,
+              stdout: "private response",
+              stderr: "private token",
+            };
+      },
+    });
+    if (recover) await expect(preflight.assertReady()).resolves.toBeUndefined();
+    else {
+      const error = await preflight
+        .assertReady()
+        .catch((error: unknown) => error);
+      expect(error).toMatchObject({ code: "GITHUB_REPOSITORY_UNAVAILABLE" });
+      expect(String(error)).not.toContain("private");
+    }
+    expect(reads).toBe(2);
+  }
+});

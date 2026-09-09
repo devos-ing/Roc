@@ -14,6 +14,9 @@ GPT-6 model and high-or-higher reasoning policy.
    ownership. Recovery reuses the existing approved source-commit workflow;
    never rewrite a failed checkpoint as a successful attempt or blindly replay
    an interrupted merge/refresh.
+   If the repository lookup in startup preflight times out, retry that read once
+   before any task starts. A second failure returns a safe operational code;
+   this does not retry writes, model roles or merge operations.
 2. Show task phase, recent action, elapsed execution time, attempt/model time,
    waiting reason and recorded token usage through existing inspection and board
    interfaces. Distinguish incomplete usage and unavailable historical timing
