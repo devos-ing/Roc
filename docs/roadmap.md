@@ -10,7 +10,8 @@ M3 now adds guarded automatic merge and bounded base refresh with fresh Review.
 for two parallel tasks, including a rebase, new Review and fresh CI before the
 second merge. The implementation exercise still needed coordinator recovery;
 the report distinguishes it from the successful automatic fixture run.
-Superset is deferred and is not a prerequisite for core development.
+The current stage ends at M4. M5 Superset integration is outside this stage and
+will only be reconsidered after a new scope decision, not automatically after M4.
 
 | Milestone | Outcome | Depends on |
 | --- | --- | --- |
@@ -18,7 +19,7 @@ Superset is deferred and is not a prerequisite for core development.
 | [M2: Parallel task execution](https://github.com/devos-ing/Roc/milestone/2) | Up to two independent Issues execute concurrently with separate worktrees, sessions and cancellation scopes. | M1 |
 | [M3: AI-reviewed automatic PR merge](https://github.com/devos-ing/Roc/milestone/3) | Roc merges the exact reviewed head after required checks and repository rules pass, then releases dependencies. | M1, M2 |
 | [M4: Execution visibility and measured speed](https://github.com/devos-ing/Roc/milestone/4) | Visible progress, two-Mac operation and measured token/time improvements without lost quality. | M1; parallel and merge comparisons follow M2/M3 |
-| [M5: Superset integration](https://github.com/devos-ing/Roc/milestone/5) | Optional remote UI for Roc-managed worktrees, terminal activity and diffs. | Deferred until the core milestones are established |
+| [M5: Superset integration](https://github.com/devos-ing/Roc/milestone/5) | Future option for a remote UI for Roc-managed worktrees, terminal activity and diffs. | Outside this stage; requires a new scope decision |
 
 GitHub Issues retain requirements, priorities, dependencies and approved spec
 identity. Roc-owned GitHub records retain execution checkpoints, attempt

@@ -21,7 +21,7 @@ import {
   type HarnessRoleInput,
   type HarnessStepRequest,
 } from "../harness/contracts";
-import { AgileError } from "../runtime/errors";
+import { AgileError, normalizeError } from "../runtime/errors";
 import {
   type TaskBranchManager,
   taskBranchName,
@@ -56,7 +56,35 @@ export type GitHubRunnerInput = {
   hooks?: TaskHookRunner;
   activity?: (taskId: string, event: HarnessEvent) => void;
   diagnostic?: (message: string) => void;
+  logError?: (error: AgileError) => Promise<void>;
 };
+
+/** Reports a safe error with its task location without exposing unknown exception contents. */
+export async function reportTaskFailure(
+  input: Pick<GitHubRunnerInput, "logError" | "diagnostic">,
+  task: NativeTask,
+  error: unknown,
+): Promise<AgileError> {
+  const normalized = normalizeError(error, {
+    code: "TASK_EXECUTION_FAILED",
+    category: "infra",
+    component: "scheduler",
+    retryable: false,
+    message:
+      "Task execution failed; inspect retained work before creating an approved recovery task",
+  });
+  const diagnostic = new AgileError({
+    ...normalized,
+    message: `${normalized.message} Phase: ${task.execution?.phase ?? task.task.status}.`,
+    taskId: task.task.id,
+    attemptId: task.execution?.attempts.at(-1)?.descriptor.attemptId,
+    cause: error,
+  });
+  await input.logError?.(diagnostic).catch(() => {
+    input.diagnostic?.("Could not write the task diagnostic log");
+  });
+  return diagnostic;
+}
 
 /** Executes one admitted Issue with its own role and hook cancellation scope. */
 export class GitHubTaskRunner {
@@ -246,17 +274,22 @@ export class GitHubTaskRunner {
           await this.reviewRefresh(task, combined);
         else await this.reconcileMerge(task, combined);
       } catch (error) {
+        const diagnostic = await reportTaskFailure(this.input, task, error);
         try {
           await this.cancel();
         } catch {
-          throw new AgileError({
-            code: "TASK_CLEANUP_UNCONFIRMED",
-            category: "infra",
-            component: "scheduler",
-            retryable: false,
-            message:
-              "Coordinator cleanup could not be confirmed; execution ownership must be retained",
-          });
+          throw await reportTaskFailure(
+            this.input,
+            task,
+            new AgileError({
+              code: "TASK_CLEANUP_UNCONFIRMED",
+              category: "infra",
+              component: "scheduler",
+              retryable: false,
+              message:
+                "Coordinator cleanup could not be confirmed; execution ownership must be retained",
+            }),
+          );
         }
         if (
           error instanceof AgileError &&
@@ -267,7 +300,7 @@ export class GitHubTaskRunner {
           task,
           combined.aborted
             ? "Task cancelled; execution requires replan"
-            : "Base refresh or Review failed; inspect retained task history and replan",
+            : `${diagnostic.code}: ${diagnostic.message}`,
         );
         signal.throwIfAborted();
         if (!interrupted && !combined.aborted) throw error;

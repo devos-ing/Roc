@@ -14,6 +14,7 @@ import {
 } from "../../src/github/remote-tasks";
 import type { HarnessStepRequest } from "../../src/harness/contracts";
 import { createFakeHarness } from "../../src/harness/fake";
+import { AgileError } from "../../src/runtime/errors";
 import { GitHubTaskPool } from "../../src/scheduler/github-pool";
 import { GitHubTaskRunner } from "../../src/scheduler/github-runner";
 import { createModelAdvisor } from "../../src/scheduler/model-routing";
@@ -978,6 +979,42 @@ test("cancelling a selector-owned fresh Review drains its child before returning
   expect(cancelledAttempt).toBe(record.attempts.at(-1)!.descriptor.attemptId);
   expect(record.mergeReview).toBeUndefined();
   expect(f.prs.get(41)!.merged).toBe(false);
+});
+
+test("selector-owned Review failures preserve safe diagnostic attribution", async () => {
+  const f = fixture();
+  await tick(f, false);
+  f.data.base = sha("c", 42);
+  const errors: AgileError[] = [];
+  f.data.beforeRole = async () => {
+    throw new AgileError({
+      code: "GITHUB_READ_FAILED",
+      category: "infra",
+      component: "github-state",
+      retryable: true,
+      message: "GitHub read failed",
+      cause: Error("private token"),
+    });
+  };
+  const pool = new GitHubTaskPool({
+    ...f.input,
+    autoMerge: true,
+    async logError(error) {
+      errors.push(error);
+    },
+  });
+  await pool.run(new AbortController().signal, true);
+  const record = await f.record();
+  expect(errors).toHaveLength(1);
+  expect(errors[0]).toMatchObject({
+    code: "GITHUB_READ_FAILED",
+    taskId: "issue-41",
+    attemptId: record.attempts.at(-1)!.descriptor.attemptId,
+  });
+  expect(record.failure).toContain("GITHUB_READ_FAILED");
+  expect(record.failure).toContain("reviewing");
+  expect(record.failure).not.toContain("private token");
+  expect(record.phase).toBe("needs_replan");
 });
 
 test("selector-owned Review keeps authority polling alive and cancels on approval withdrawal", async () => {

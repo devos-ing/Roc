@@ -207,6 +207,13 @@ cycle, skill allowlist and execution consent without creating a task database.
 Inspection, boards and tokens read GitHub. Diagnostic logs and Pi sessions stay
 local. The Fake Harness is internal, not a scheduler CLI backend.
 
+Worker and coordinator failures write safe operational codes with run, Issue,
+attempt and phase attribution to `.agile/runtime/agile.log`. GitHub read and
+write failures have distinct codes; write failures still require remote readback
+before retry. Unknown exception messages and raw CLI output are not logged.
+Original errors are recorded before cleanup, and cleanup failures retain their
+own task context while preserving execution ownership.
+
 SQLite production modules, local queue commands and SQL-only tests were removed
 after replacement boundaries were exercised. Existing databases and old
 checkouts remain on disk. Legacy daemon-owned `roc:status` comments without new

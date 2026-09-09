@@ -154,6 +154,14 @@ Review and CI before automatic merge. That test used one Mac.
 
 ### Parallel admission
 
+For failed work, inspect `scheduler inspect` and `.agile/runtime/agile.log` on
+the execution host. Safe error codes identify GitHub reads, uncertain writes,
+the affected Issue, attempt and phase. Check the retained task worktree before
+starting replacement work. A verified existing commit can be supplied as
+`sourceCommit` in a new approved task; preserve the original failed checkpoint
+and review the replacement task's scope and dependencies. Never remove a retained
+ownership lock until its processes and uncertain remote writes are reconciled.
+
 The default is `--concurrency 2`; use `--concurrency 1` to serialize execution.
 When one task finishes, its slot can start another without waiting for a slower
 task. `--once` still processes only one task. The board shows all running Issues,

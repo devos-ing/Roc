@@ -1,6 +1,10 @@
 import type { NativeTask } from "../github/execution-store";
 import { AgileError } from "../runtime/errors";
-import { type GitHubRunnerInput, GitHubTaskRunner } from "./github-runner";
+import {
+  type GitHubRunnerInput,
+  GitHubTaskRunner,
+  reportTaskFailure,
+} from "./github-runner";
 import { canRunTogether } from "./parallel-admission";
 
 type Worker = {
@@ -239,10 +243,19 @@ export class GitHubTaskPool {
     try {
       await worker.runner.execute(worker.task, worker.stop.signal);
     } catch (error) {
+      const diagnostic = await reportTaskFailure(
+        this.input,
+        worker.task,
+        error,
+      );
       try {
         await worker.runner.cancel();
       } catch {
-        throw this.cleanupFailure();
+        throw await reportTaskFailure(
+          this.input,
+          worker.task,
+          this.cleanupFailure(),
+        );
       }
       if (
         error instanceof AgileError &&
@@ -251,7 +264,7 @@ export class GitHubTaskPool {
         throw error;
       const reason = worker.stop.signal.aborted
         ? "Task cancelled; execution requires replan"
-        : "Task execution failed; inspect diagnostics and replan";
+        : `${diagnostic.code}: ${diagnostic.message}`;
       if (await worker.runner.interrupt(worker.task, reason)) {
         this.input.diagnostic?.(
           `Issue #${worker.task.issue.number}: ${reason}`,

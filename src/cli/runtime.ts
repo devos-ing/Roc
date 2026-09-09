@@ -164,6 +164,14 @@ export async function runBackendSession(
             cwd: input.repoPath,
             baseBranch,
             diagnostic: (message) => process.stderr.write(`${message}\n`),
+            logError: (error) =>
+              logger.error(
+                new AgileError({
+                  ...error,
+                  message: error.message,
+                  runId,
+                }),
+              ),
             activity: (taskId, event) => {
               const summary =
                 event.type === "attempt.activity"
