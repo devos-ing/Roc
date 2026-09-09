@@ -67,6 +67,14 @@ export function memoryPlan(scopes: string[][]) {
           body,
         });
     },
+    async closeCompleted(_repo: string, number: number) {
+      const issue = issues.find((item) => item.number === number);
+      if (!issue) throw Error("Missing fixture Issue");
+      if (issue.state === "OPEN") {
+        issue.state = "CLOSED";
+        issue.stateReason = "COMPLETED";
+      }
+    },
     async setStatusLabel() {},
   };
   return {

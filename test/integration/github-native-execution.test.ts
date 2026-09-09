@@ -6,16 +6,225 @@ import { createPiHarness } from "../../src/agents/pi/harness";
 import { renderExecution } from "../../src/github/execution-store";
 import { BunGitHubCommandRunner } from "../../src/github/pr-publisher";
 import {
+  jsonHash,
   remoteTaskEnvelope,
   renderRemoteTaskApproval,
   renderRemoteTaskBody,
 } from "../../src/github/remote-tasks";
+import { createFakeHarness } from "../../src/harness/fake";
 import { GitHubTaskRunner } from "../../src/scheduler/github-runner";
 import { createModelAdvisor } from "../../src/scheduler/model-routing";
+import type { TaskBranchManager } from "../../src/workspace/task-branch";
 import { createTaskBranchManager } from "../../src/workspace/task-branch";
 import { messageEnd, RecordedPiClient } from "../agents/pi/fixtures";
 import { git } from "../helpers/git";
 import { manifest, memoryGitHub } from "../helpers/github-native";
+
+test("Fake Harness completes on a non-default target and restart retries only denied closure", async () => {
+  const hook = { command: "fixture", args: [], timeoutSeconds: 1 };
+  const remote = memoryGitHub(hook);
+  remote.issue.comments.push({
+    databaseId: 10,
+    author: { login: "owner" },
+    body: `<!-- roc:hook-trust ${jsonHash({ phase: "posthook", hook })} -->`,
+  });
+  const base = "a".repeat(40);
+  const head = "b".repeat(40);
+  const model = "test/model";
+  const time = "2026-09-08T00:00:00.000Z";
+  const outputs = [
+    { kind: "scout", summary: "Inspect", files: [], tests: [], risks: [] },
+    {
+      kind: "implement",
+      commitSha: head,
+      validation: ["checked"],
+      risks: [],
+      limitations: [],
+    },
+    { kind: "review", decision: "accepted", findings: [], remainingGaps: [] },
+  ];
+  const fake = createFakeHarness({
+    attempts: outputs.map((output) => ({
+      taskId: "issue-41",
+      role: output.kind,
+      retryIndex: 0,
+      expect: {
+        model,
+        effort: output.kind === "implement" ? "medium" : "high",
+      },
+      deliveries: [
+        {
+          nextCursor: "output",
+          event: {
+            type: "attempt.output",
+            eventId: "output",
+            attemptId: "fixture",
+            sequence: 1,
+            occurredAt: time,
+            output,
+          },
+        },
+        {
+          nextCursor: "completed",
+          event: {
+            type: "attempt.completed",
+            eventId: "completed",
+            attemptId: "fixture",
+            sequence: 2,
+            occurredAt: time,
+          },
+        },
+      ],
+    })),
+  });
+  const branches: TaskBranchManager = {
+    async prepare(taskId) {
+      return {
+        taskId,
+        path: "/fixture",
+        branch: `agile/${taskId}`,
+        baseCommit: base,
+      };
+    },
+    async refresh() {
+      throw Error("No refresh");
+    },
+    async restoreChanges() {},
+    async commitChanges() {
+      return head;
+    },
+    async assertCommit() {},
+    async assertReviewReady() {},
+    async status() {
+      return "";
+    },
+  };
+  let publications = 0;
+  let steps = 0;
+  let hooks = 0;
+  let merged = false;
+  const commands: string[][] = [];
+  const order: string[] = [];
+  const get = remote.api.get;
+  remote.api.get = async () => {
+    const issue = await get();
+    if (
+      issue.comments.some((comment) => comment.body.includes('"phase": "done"'))
+    )
+      order.push("done-read");
+    return issue;
+  };
+  const close = remote.api.closeCompleted;
+  remote.api.closeCompleted = async (...args) => {
+    order.push("close");
+    expect(order).toContain("done-read");
+    await close(...args);
+  };
+  const diagnostics: string[] = [];
+  const makeRunner = () =>
+    new GitHubTaskRunner({
+      store: remote.store(),
+      branches,
+      harness: {
+        async step(request) {
+          steps++;
+          return fake.harness.step(request);
+        },
+        async cancel() {},
+      },
+      hooks: {
+        async stop() {},
+        async run() {
+          hooks++;
+          return {
+            succeeded: true,
+            exitCode: 0,
+            timedOut: false,
+            stdout: "",
+            stderr: "",
+          };
+        },
+      },
+      advisor: createModelAdvisor(
+        [{ id: model, supportedReasoningEfforts: ["medium", "high", "xhigh"] }],
+        { luna: model, terra: model, sol: model },
+      ),
+      publisher: {
+        baseBranch: "release",
+        async publish() {
+          publications++;
+          return {
+            number: 7,
+            url: "https://github.com/acme/test/pull/7",
+            state: "OPEN",
+          };
+        },
+      },
+      command: {
+        async run({ command }) {
+          commands.push(command);
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout:
+              command[0] === "gh"
+                ? JSON.stringify({
+                    number: 7,
+                    state: merged ? "MERGED" : "OPEN",
+                    baseRefName: "release",
+                    headRefName: "agile/issue-41",
+                    headRefOid: head,
+                    mergeCommit: merged ? { oid: head } : null,
+                  })
+                : base,
+          };
+        },
+      },
+      cwd: "/fixture",
+      baseBranch: "release",
+      diagnostic: (message) => diagnostics.push(message),
+    });
+  const signal = new AbortController().signal;
+  expect(await makeRunner().runOnce(signal)).toBe(true);
+  fake.assertComplete();
+  expect(hooks).toBe(1);
+  merged = true;
+  const write = remote.api.writeComment;
+  remote.api.writeComment = async (...args) => {
+    if (args[2].includes('"phase": "done"')) throw Error("denied checkpoint");
+    await write(...args);
+  };
+  await expect(makeRunner().runOnce(signal)).rejects.toMatchObject({
+    code: "GITHUB_CHECKPOINT_UNCONFIRMED",
+  });
+  expect(remote.closures).toEqual([]);
+  expect((await remote.store().get(41)).execution?.phase).toBe(
+    "awaiting_merge",
+  );
+  remote.api.writeComment = write;
+  remote.loseNextResponse();
+  remote.denyClosure(true);
+  await makeRunner().runOnce(signal);
+  const done = (await remote.store().get(41)).execution;
+  expect(done?.phase).toBe("done");
+  expect(remote.issue.state).toBe("OPEN");
+  expect(diagnostics.join()).toContain("closure pending");
+  const before = { steps, publications, hooks };
+  remote.denyClosure(false);
+  await makeRunner().runOnce(signal);
+  expect(remote.issue.state).toBe("CLOSED");
+  expect(remote.issue.stateReason).toBe("COMPLETED");
+  expect((await remote.store().get(41)).execution).toEqual(done);
+  expect({ steps, publications, hooks }).toEqual(before);
+  expect(
+    commands.some(
+      (command) => command[1] === "fetch" && command[3] === "release",
+    ),
+  ).toBe(true);
+  expect(
+    commands.some((command) => command[1] === "pr" && command[2] === "merge"),
+  ).toBe(false);
+});
 
 for (const skipScout of [false, true])
   test(`GitHub checkpoints drive a real worktree through independent Pi Review (skipScout=${skipScout})`, async () => {

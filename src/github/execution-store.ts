@@ -139,7 +139,7 @@ export type NativeTask = {
 };
 export type IssueAccess = Pick<
   GitHubRemoteIssueReader,
-  "read" | "get" | "writeComment" | "setStatusLabel"
+  "read" | "get" | "writeComment" | "setStatusLabel" | "closeCompleted"
 >;
 const marker = "<!-- roc:execution\n";
 
@@ -333,6 +333,39 @@ export class GitHubExecutionStore {
     )
       throw this.unconfirmed();
     await this.syncLabels(confirmed).catch(() => undefined);
+  }
+
+  /** Authorizes closure against fresh complete-plan authority and the exact verified done checkpoint. */
+  async closeCompleted(task: NativeTask): Promise<void> {
+    const record = task.execution;
+    const { tasks } = await this.list();
+    const listed = tasks.find(
+      (item) => item.issue.number === task.issue.number,
+    );
+    const fresh = await this.get(task.issue.number);
+    if (fresh.issue.state === "CLOSED") return;
+    if (
+      record?.phase !== "done" ||
+      !record.publication?.number ||
+      !record.publication.mergeCommit ||
+      record.issueNumber !== task.issue.number ||
+      fresh.issue.number !== task.issue.number ||
+      task.blockedReason ||
+      !listed ||
+      listed.blockedReason ||
+      !listed.approved ||
+      !fresh.approved ||
+      fresh.blockedReason ||
+      jsonHash(listed.envelope) !== jsonHash(task.envelope) ||
+      jsonHash(fresh.envelope) !== record.specHash ||
+      jsonHash(task.envelope) !== record.specHash ||
+      jsonHash(listed.execution) !== jsonHash(record) ||
+      jsonHash(fresh.execution) !== jsonHash(record)
+    )
+      throw Error(
+        "Issue closure authority changed or done evidence is missing",
+      );
+    await this.api.closeCompleted(this.repository, task.issue.number);
   }
 
   /** Repairs the readable status label from the confirmed checkpoint without replaying work. */
