@@ -245,12 +245,16 @@ migrate it explicitly; there is no automatic SQLite execution conversion.
 
 M1 provides GitHub execution and separate task worktrees; M2 adds bounded parallel admission.
 M3 adds opt-in guarded automatic PR merge with at most two clean base refreshes
-and independent re-reviews. [Later milestones](roadmap.md) add measured
-performance/visibility and deferred Superset integration.
+and independent re-reviews. M4 adds diagnostics, phase/activity timing, bounded
+GitHub reads and explicit Scout omission. M1–M4 are complete for the revised
+[roadmap](roadmap.md); physical two-host acceptance and Superset are deferred.
 Deterministic checks are complemented by [live GitHub and sandboxed GPT-6 acceptance](validation/m1-m2-live-2026-09-09.md).
 [M3 protected-branch acceptance](validation/m3-live-2026-09-09.md) also verified
 two automatic merges with a real base refresh, new Review and fresh CI.
-Physical two-host operation remains unverified. See the [current specification](specs/github-native-execution.md)
+[M4 comparisons](validation/m4-live-2026-09-09.md) record measured time, usage and
+startup recovery limits. The [interactive architecture map](../output/archify/roc-current/roc-architecture.html)
+links its components to source files. Physical two-host operation remains unverified.
+See the [current specification](specs/github-native-execution.md)
 and [M2 specification](specs/parallel-execution.md), plus
 [validation status](../README.details.md#validation-status).
 
@@ -312,7 +316,7 @@ with `PI_MODEL_UNRESOLVED` instead of running an unobservable default. The
 resolved default must advertise `high` reasoning; otherwise startup fails with
 `PI_MODEL_UNSUPPORTED` rather than selecting a different model or provider.
 
-Low- and medium-risk tasks start Scout on Luna, Implement on Terra, and Review
+By default, low- and medium-risk tasks start Scout on Luna, Implement on Terra, and Review
 on Sol. High-risk roles use only Sol with `xhigh`; unsupported
 effort routes the task to `needs_replan`. The operator chooses which actual
 model each profile represents. Existing attempt descriptors remain authoritative

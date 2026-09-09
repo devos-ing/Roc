@@ -9,17 +9,11 @@ The daemon saves attempts, model choices, usage, role results and PR receipts
 in one comment per Issue owned by its GitHub account. Labels show status; they
 do not lock tasks or grant execution permission.
 
-```mermaid
-flowchart LR
-    chat["MacBook: clarify and approve"] --> issues["GitHub Issues"]
-    issues --> daemon["Mac mini: one Roc daemon"]
-    daemon --> worktree["Worktree per Issue"]
-    worktree --> scout["Pi Scout"] --> implement["Pi Implement"]
-    implement --> review["Independent Pi Review"] --> pr["PR: awaiting_merge"]
-    pr --> merge["Confirm merge: done"]
-    daemon --> checkpoint["Execution checkpoint"] --> issues
-    issues --> board["Read-only task board"]
-```
+[Open the interactive architecture map](output/archify/roc-current/roc-architecture.html), authored in Traditional Chinese with English viewer controls. Download the HTML and open it locally; GitHub displays its source.
+
+![Roc architecture map, Traditional Chinese](docs/assets/roc-architecture.png)
+
+Planning and execution can share one machine. The roles in the diagram do not require two Macs.
 
 The daemon runs up to two independent Issues. Each task has its own retained worktree at
 `<project>.agile-worktrees/issue-<number>` and branch `agile/issue-<number>`.
@@ -34,38 +28,40 @@ in Pi's user settings. Near the model's context limit, Pi summarizes older
 messages and keeps recent messages for subsequent requests.
 
 Scout, Implement, and Review each use a separate Pi session. Compaction applies
-within that session; Roc stores task specs and execution state separately in
-files and SQLite. Roc does not add a second compaction mechanism.
+within that session. GitHub Issues retain task specifications and execution
+checkpoints; local Pi session files retain conversation history. Roc does not
+add a second compaction mechanism.
 
 See [Pi's compaction documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)
 for triggers, retained context, and the `compaction` settings.
 
 ### Validation status
 
-The GitHub-native implementation is unreleased. Use this checkout's absolute
-`src/cli/main.ts` path through `ROC_CLI_ENTRY` in every terminal.
+M1–M4 are complete for the revised scope. Use this checkout's `src/cli/main.ts`
+through `ROC_CLI_ENTRY` in each terminal for the behavior described here.
 
-Deterministic tests exercise a real temporary Git worktree with the Pi harness
-and a recorded Pi client. They cover the accepted role flow, remote checkpoints,
-recovery, approval withdrawal and uncertain cleanup. These tests do not call a
-live provider or publish a real PR.
+| Scope | Evidence |
+| --- | --- |
+| GitHub tasks, worktrees, parallel execution and recovery | [M1/M2 live acceptance](docs/validation/m1-m2-live-2026-09-09.md) |
+| Automatic merge, base refresh and fresh Review | [M3 protected-branch acceptance](docs/validation/m3-live-2026-09-09.md) |
+| Diagnostics, progress, timing, usage and comparisons | [M4 measurements](docs/validation/m4-live-2026-09-09.md), with 292 local tests passing |
 
-A historical Codex test on 2026-09-07 completed Scout, Implement and independent
-Review using `gpt-5.6-terra` with `high` reasoning. It took 80.42 seconds and
-recorded 62,386 input/output tokens, including cached input. Publication was
-stubbed and the test used the old SQLite runtime. That result does not validate
-this new daemon. On 2026-09-09, a separate live sandbox exercise used
-`openai-codex/gpt-6-astra` with `high` and actual GitHub Issues/PRs. Seven Issues
-produced six reviewed PRs and one cancelled task. Restart, merge dependencies,
-parallel execution, slot refill, cancellation containment and overlapping-scope
-serialization passed. See the [live acceptance report](docs/validation/m1-m2-live-2026-09-09.md).
-Claude/GLM and physical MacBook-to-Mac-mini operation remain unverified.
+For one fixed pair of small tasks, successful runs took 8m31s / 67,722 tokens
+sequentially, 6m47s / 67,615 tokens in parallel, and 5m4s / 52,925 tokens in
+parallel with Scout omitted. The last mode also hit a startup timeout; including
+manual recovery, its observed trial took 12m38s. A preflight read retry was added
+afterward. This small sample is not a general speed or cost guarantee. Cached
+input is already included in input tokens.
+
+Claude/GLM have not passed equivalent live acceptance. [Physical two-host acceptance #56](https://github.com/devos-ing/Roc/issues/56)
+is deferred and does not block this stage. Superset is outside this stage.
+Historical SQLite/stub results are not evidence for the current workflow.
 
 ## Roc daemon setup
 
-Planning and execution machines need clones of the same GitHub repository.
-Only the execution machine runs a daemon. You can first use two clones on one
-machine to check configuration.
+Start with planning and execution in one project clone on one machine. If you
+later separate the machines, clone the same GitHub repository on each and run
+a daemon only on the execution host. Physical two-host acceptance is deferred.
 
 On the planning machine, authenticate GitHub CLI, use `roc-create-tasks`, and
 approve the plan. The skill publishes its approved manifest with:
@@ -105,7 +101,7 @@ ownership lock until reconciled.
 
 ### Optional automatic PR merge
 
-Manual publication is the default. To merge independently reviewed PRs automatically:
+Manual merge is the default. To merge independently reviewed PRs automatically:
 
 ```bash
 bun "$ROC_CLI_ENTRY" scheduler run --base-branch main --auto-merge
@@ -167,31 +163,6 @@ Review and CI before automatic merge. That test used one Mac.
 
 ### Parallel admission
 
-For a sufficiently specified low-risk task, the approved manifest can set
-`skipScout: true` to run Implement and independent Review directly. This is off
-by default. The scope must contain explicit relative file paths with suffixes,
-without whitespace, traversal or glob syntax; acceptance and validation remain
-required. Use the normal Scout flow for broader or uncertain work. The board
-shows Scout as skipped, and a later base refresh still requires a fresh Review.
-See the [M4 measurements and limitations](docs/validation/m4-live-2026-09-09.md).
-
-For failed work, inspect `scheduler inspect` and `.agile/runtime/agile.log` on
-the execution host. Safe error codes identify GitHub reads, uncertain writes,
-the affected Issue, attempt and phase. Check the retained task worktree before
-starting replacement work. A verified existing commit can be supplied as
-`sourceCommit` in a new approved task; preserve the original failed checkpoint
-and review the replacement task's scope and dependencies. Never remove a retained
-ownership lock until its processes and uncertain remote writes are reconciled.
-A timed-out repository lookup during startup gets one read-only retry before
-any task starts; a second failure reports `GITHUB_REPOSITORY_UNAVAILABLE`.
-
-`task board` details show elapsed time, time in agent attempts, merge waiting and
-partial token usage. `scheduler inspect` includes the phase-duration breakdown.
-Recent actions are GitHub checkpoint summaries, refreshed at phase boundaries
-and at most every 30 seconds of tool activity; watch daemon output for individual
-live actions. Historical records without timing, or closed/changed Issues whose
-stop has not been reconciled, show unavailable timing rather than zero.
-
 The default is `--concurrency 2`; use `--concurrency 1` to serialize execution.
 When one task finishes, its slot can start another without waiting for a slower
 task. `--once` still processes only one task. The board shows all running Issues,
@@ -210,6 +181,35 @@ or cancellation records attention without stopping its sibling. Pi child exit
 must be confirmed before a role completes or a worker releases its slot.
 Unconfirmed cleanup or checkpoint writes stop admission and retain the daemon
 lock. Global `Ctrl-C` cancels every active task.
+
+### Optional Scout omission
+
+For a sufficiently specified low-risk task, the approved manifest can set
+`skipScout: true` to run Implement and independent Review directly. This is off
+by default. The scope must contain explicit relative file paths with suffixes,
+without whitespace, traversal or glob syntax; acceptance and validation remain
+required. Use the normal Scout flow for broader or uncertain work. The board
+shows Scout as skipped, and a later base refresh still requires a fresh Review.
+See the [M4 measurements and limitations](docs/validation/m4-live-2026-09-09.md).
+
+### Progress and recovery
+
+For failed work, inspect `scheduler inspect` and `.agile/runtime/agile.log` on
+the execution host. Safe error codes identify GitHub reads, uncertain writes,
+the affected Issue, attempt and phase. Check the retained task worktree before
+starting replacement work. A verified existing commit can be supplied as
+`sourceCommit` in a new approved task; preserve the original failed checkpoint
+and review the replacement task's scope and dependencies. Never remove a retained
+ownership lock until its processes and uncertain remote writes are reconciled.
+A timed-out repository lookup during startup gets one read-only retry before
+any task starts; a second failure reports `GITHUB_REPOSITORY_UNAVAILABLE`.
+
+`task board` details show elapsed time, time in agent attempts, merge waiting and
+partial token usage. `scheduler inspect` includes the phase-duration breakdown.
+Recent actions are GitHub checkpoint summaries, refreshed at phase boundaries
+and at most every 30 seconds of tool activity; watch daemon output for individual
+live actions. Historical records without timing, or closed/changed Issues whose
+stop has not been reconciled, show unavailable timing rather than zero.
 
 ### Pi provider setup
 
@@ -293,12 +293,44 @@ not enforced limits. Concise Scout output has no separate byte cap.
 
 ## How it works
 
+### Per-task workflow
+
+```mermaid
+flowchart TD
+    work["Approved task worktree"]
+    scout["Scout inspects"]
+    implement["Implement changes and validates"]
+    review["Independent Review"]
+    pr["PR: awaiting_merge"]
+    human["Human merge"]
+    guard["Check Review, CI and protection"]
+    refresh["Clean rebase, at most twice"]
+    merge["Squash merge bound to head SHA"]
+    done["Verify merge → done"]
+    attention["Retain work for replanning"]
+    work --> scout
+    scout --> implement
+    work -->|"Approved skipScout"| implement
+    implement --> review
+    review -->|"Accepted"| pr
+    review -->|"Rejected"| attention
+    pr -->|"Default"| human
+    human --> done
+    pr -->|"--auto-merge"| guard
+    guard -->|"Requirements pending"| pr
+    guard -->|"Base advanced"| refresh
+    refresh -->|"New head"| review
+    guard -->|"All gates pass"| merge
+    merge --> done
+    refresh -->|"Unsafe or budget exhausted"| attention
+```
+
 Before claiming a task, Roc validates its complete plan and dependency graph.
 It checks exact trusted approval at role boundaries. Dependencies require a PR
 merged into the intended target with the recorded implementation head. Roc
 fetches that target, verifies its merge commits and pins the new task's base.
 
-Roc saves the attempt descriptor before starting Pi. Scout inspects, Implement
+Roc saves the attempt descriptor before starting Pi. By default Scout inspects, Implement
 writes, and the harness creates a single trusted commit. Review uses a separate
 Pi session and checks that exact clean commit. Accepted work runs its trusted
 posthook before PR publication. An open PR stays `awaiting_merge`; only a
@@ -358,5 +390,6 @@ Run these after `bun "$ROC_CLI_ENTRY"`. Task identifiers are Issue numbers,
 `--base` have been removed. See [architecture](docs/architecture.md),
 [M1 specification](docs/specs/github-native-execution.md),
 [M2 specification](docs/specs/parallel-execution.md),
-[automatic merge specification](docs/specs/automatic-merge.md) and
+[automatic merge specification](docs/specs/automatic-merge.md),
+[M4 specification](docs/specs/execution-efficiency.md) and
 [roadmap](docs/roadmap.md) for implementation scope.
