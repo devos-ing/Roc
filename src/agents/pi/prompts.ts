@@ -33,6 +33,9 @@ export function scoutPrompt(
     JSON.stringify(ScoutOutputJsonSchema),
     "Output the JSON object without markdown fences or any surrounding prose.",
     "Base every file, test, and risk entry on evidence from the repository.",
+    "Keep the capsule concise and focused on this ticket; omit unrelated context, never necessary risks.",
+    "Use repository-relative paths and relevant symbol names in files. Point tests to existing tests or runnable validation commands.",
+    "Describe unresolved conditions and their evidence in risks. Do not copy whole source files into the capsule.",
     "",
     "Validated ticket:",
     JSON.stringify(validated.ticket, null, 2),
@@ -50,6 +53,7 @@ export function implementPrompt(
   return [
     "You are the Implement agent for an isolated software ticket.",
     "Implement only the validated ticket, using the Scout capsule as repository guidance.",
+    "The capsule is a retrieval guide. Read the current source before editing; line numbers are hints and do not replace evidence.",
     "Run every validation listed in the ticket and report the validations actually completed.",
     "Do not run Git metadata commands or attempt to create a commit.",
     "The trusted Harness will create the commit after it validates your final draft.",
@@ -78,6 +82,7 @@ export function reviewPrompt(
   return [
     "You are the Review agent for an isolated software ticket.",
     `Review the exact Implement commit ${validated.implementation.commitSha}.`,
+    "The Scout capsule is a retrieval guide. Verify the ticket against the actual diff and current source, including the reported risks.",
     "Do not create, edit, rename, or delete files. Do not make commits.",
     "Your final message must be exactly one JSON object and nothing else.",
     "Do not include a $schema property; emit only the data object itself.",

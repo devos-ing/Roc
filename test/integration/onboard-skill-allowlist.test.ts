@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/run";
 import { loadSchedulerSkillPolicy } from "../../src/cli/runtime";
-import { loadRocSettings } from "../../src/settings";
+import { loadRocSettings, saveRocSettings } from "../../src/settings";
 import {
   buildDefaultSkillConfig,
   discoverTrustedSkills,
@@ -72,6 +72,10 @@ test("onboarding selection becomes the scheduler skill configuration", async () 
     expect(settings.skills?.allowlist).toEqual([
       { name: "unslop", source: "backnotprop/pstack" },
     ]);
+    const models = { luna: "openai-codex/gpt-5.6-luna" };
+    await saveRocSettings({ ...settings, models }, home);
+    expect(await runCli(["onboard", "--global"], io, runtime)).toBe(0);
+    expect((await loadRocSettings(home)).models).toEqual(models);
     const policy = await loadSchedulerSkillPolicy(home);
     expect(
       buildDefaultSkillConfig(await discoverTrustedSkills(policy), policy).sort(

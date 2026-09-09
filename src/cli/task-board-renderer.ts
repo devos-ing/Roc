@@ -525,6 +525,13 @@ function renderDetails(
   );
   const model = attempt?.model ?? task.modelDecisions.at(-1)?.model;
   const execution = [
+    ...(task.issueUrl ? [detailField("Issue", task.issueUrl, width)] : []),
+    ...(task.pullRequestUrl
+      ? [detailField("PR", task.pullRequestUrl, width)]
+      : []),
+    ...(task.failure
+      ? [detailField("Reason", activitySummary(task.failure), width)]
+      : []),
     ...(attempt?.role === undefined
       ? []
       : [detailField("Role", attempt.role, width)]),
@@ -650,7 +657,7 @@ function summary(
   const activeCount = snapshot.tasks.filter((task) => task.isActive).length;
   const activity = activeCount === 0 ? "" : ` · ${activeCount} active`;
   return fit(
-    `Roc · Cycle ${snapshot.currentCycleId} · ${taskCount} task${taskCount === 1 ? "" : "s"}${activity}${tokens}`,
+    `Roc${snapshot.remoteCheckpoints ? " · GitHub checkpoints" : ""} · Cycle ${snapshot.currentCycleId} · ${taskCount} task${taskCount === 1 ? "" : "s"}${activity}${tokens}${snapshot.usageIncomplete ? " · partial usage" : ""}`,
     width,
   );
 }

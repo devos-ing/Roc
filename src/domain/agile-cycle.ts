@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ModelProfileSchema } from "./schemas";
 import { SkillSettingsSchema } from "./skill-allowlist";
 
 const dayMilliseconds = 86_400_000;
@@ -41,6 +42,9 @@ export const RocSettingsSchema = z
     cycle: AgileCycleSettingSchema,
     skills: SkillSettingsSchema.optional(),
     execution: z.object({ allowUnsandboxed: z.boolean() }).strict().optional(),
+    models: z
+      .partialRecord(ModelProfileSchema, z.string().regex(/^[^\s/]+\/[^\s]+$/u))
+      .optional(),
   })
   .strict();
 

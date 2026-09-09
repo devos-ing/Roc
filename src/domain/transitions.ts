@@ -2,18 +2,25 @@ import type { TaskStatus } from "./schemas";
 
 const allowed: Record<TaskStatus, readonly TaskStatus[]> = {
   draft: ["needs_input", "needs_replan", "ready"],
-  needs_input: ["draft"],
+  needs_input: ["draft", "scouting", "implementing", "reviewing", "publishing"],
   needs_replan: ["draft"],
   ready: ["needs_input", "needs_replan", "claimed"],
-  claimed: ["needs_replan", "scouting", "failed_infra"],
-  scouting: ["needs_replan", "implementing", "failed_infra"],
-  implementing: ["needs_replan", "reviewing", "failed_infra"],
-  reviewing: ["needs_replan", "publishing", "rejected", "failed_infra"],
-  publishing: ["needs_replan", "done"],
+  claimed: ["needs_input", "needs_replan", "scouting", "failed_infra"],
+  scouting: ["needs_input", "needs_replan", "implementing", "failed_infra"],
+  implementing: ["needs_input", "needs_replan", "reviewing", "failed_infra"],
+  reviewing: [
+    "needs_input",
+    "needs_replan",
+    "publishing",
+    "rejected",
+    "failed_infra",
+  ],
+  publishing: ["needs_input", "needs_replan", "awaiting_merge"],
   done: [],
   rejected: [],
   failed_infra: [],
   retired: [],
+  awaiting_merge: ["done", "needs_replan"],
 };
 
 const terminal = new Set<TaskStatus>([

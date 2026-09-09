@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createPiHarness } from "../../../src/agents/pi/harness";
 import type { PiBackendCursor } from "../../../src/agents/pi/protocol";
 import type { HarnessEvent } from "../../../src/harness/contracts";
+import { barrier } from "../../helpers/github-plan";
 import {
   backendCursor,
   collect,
@@ -13,6 +14,75 @@ import {
   RecordedPiClient,
   scoutOutput,
 } from "./fixtures";
+
+test("terminal delivery waits for child cleanup and retains a rejected close for cancellation", async () => {
+  const closing = barrier();
+  const release = barrier();
+  const client = new RecordedPiClient([
+    messageEnd(),
+    { type: "agent_settled" },
+  ]);
+  client.close = async () => {
+    closing.release();
+    await release.promise;
+  };
+  const harness = createPiHarness({
+    branches: memoryBranches(),
+    startClient: async () => client,
+  });
+  let completed = false;
+  const result = collect(harness, makeScoutRequest()).then((value) => {
+    completed = true;
+    return value;
+  });
+  await closing.promise;
+  expect(completed).toBe(false);
+  release.release();
+  expect((await result).events.at(-1)?.type).toBe("attempt.completed");
+
+  const broken = new RecordedPiClient([
+    messageEnd(),
+    { type: "agent_settled" },
+  ]);
+  broken.close = async () => {
+    throw Error("Private close diagnostic");
+  };
+  const failed = createPiHarness({
+    branches: memoryBranches(),
+    startClient: async () => broken,
+  });
+  await expect(
+    collect(failed, makeScoutRequest("bad-close")),
+  ).rejects.toMatchObject({
+    code: "PI_PROCESS_EXIT_UNCONFIRMED",
+    message: "Pi role cleanup could not be confirmed",
+  });
+  await expect(failed.cancel("bad-close")).rejects.toMatchObject({
+    code: "PI_PROCESS_EXIT_UNCONFIRMED",
+  });
+});
+
+test("delivers a valid large Scout capsule without truncation", async () => {
+  const output = { ...scoutOutput, summary: "必要風險與背景".repeat(1000) };
+  const client = new RecordedPiClient([
+    messageEnd({ text: JSON.stringify(output) }),
+    { type: "agent_settled" },
+  ]);
+  const harness = createPiHarness({
+    branches: memoryBranches(),
+    startClient: async () => client,
+  });
+  const { events } = await collect(harness, makeScoutRequest());
+  expect(events.map((event) => event.type)).toEqual([
+    "attempt.started",
+    "attempt.usage_delta",
+    "attempt.output",
+    "attempt.completed",
+  ]);
+  expect(events.find((event) => event.type === "attempt.output")).toMatchObject(
+    { output },
+  );
+});
 
 test("reports bounded Pi tool activity, correlates overlapping calls, and replays uncommitted deliveries", async () => {
   const start = {

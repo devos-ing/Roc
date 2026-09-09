@@ -69,31 +69,23 @@ Create one strict JSON manifest with this shape:
 ```
 
 Before writing anything, show the complete preview: cycle goal, every task in
-order, dependencies, risk, acceptance criteria, validation, and one destination:
+order, dependencies, risk, acceptance criteria, validation, and the target
+GitHub repository. GitHub Issues are the only execution destination.
 
-- **Local queue** imports the manifest into this project's Roc database.
-- **Roc daemon via GitHub Issues** publishes approved tasks for a daemon in a separate clone on this host or another machine.
-
-If the invocation did not choose a destination, ask the user to choose one as
-part of the preview. Ask for explicit approval of the complete task set and its
-destination immediately before writing. Do not create a backlog file, import it,
-or publish Issues without that approval.
+Ask for explicit approval of the complete task set and repository immediately
+before writing. A prior approval of the same concrete task set remains valid.
 
 After approval, create `.agile/backlog` safely and write the manifest to a new
-unused `YYYY-MM-DD-<slug>.json` path. Never overwrite an existing file.
+unused `YYYY-MM-DD-<slug>.json` path. This file is a publication input, not a
+local execution queue. Never overwrite an existing file.
 
-For the local queue destination, run:
-
-```bash
-npx roc-it@latest task import FILE
-```
-
-For the Roc daemon via GitHub Issues destination, run:
+Publish the approved tasks:
 
 ```bash
 npx roc-it@latest task publish-github FILE
 ```
 
-Replace `FILE` with the new manifest path. Remote publication is the complete
-machine-A action: never also run `task import` on machine A. Report the local
-import counts or the published Issue URLs, according to the selected destination.
+Replace `FILE` with the new manifest path. Report the published Issue URLs.
+The execution host reads the Issues directly and creates a worktree per Issue.
+A published PR awaits merge; the task is done only after its PR is confirmed
+merged into the target branch.

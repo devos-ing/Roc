@@ -22,8 +22,10 @@ flowchart LR
 **Pi 是唯一執行核心。** Onboarding 會連接你的 ChatGPT 帳戶，選用 Codex 模型。
 Claude、GLM 屬於進階 provider 設定。Roc 使用 Pi 的工具與 agent loop，
 不會啟動 Codex CLI 或 Claude Code。
-一個 daemon 每次執行一項任務，每項任務保留自己的 branch。
-`done` 表示 PR 已發佈，仍須由你合併。
+GitHub Issues 保存規格、批准及執行紀錄。
+一個 daemon 最多同時執行兩項獨立任務，每個 Issue 有獨立的 Git worktree。
+`--concurrency 1` 可切回逐項執行。Scope 重疊、不明或帶有 hooks 的任務會單獨執行。
+PR 開啟後是 `awaiting_merge`，確認合併後才是 `done`。
 
 Pi 預設啟用自動 context 壓縮，接近 session 的 context 上限時會摘要較舊內容。
 Roc 沿用 Pi 的設定。詳見[context 壓縮](README.details.zh-HK.md#context-壓縮)及
@@ -35,7 +37,7 @@ Roc 沿用 Pi 的設定。詳見[context 壓縮](README.details.zh-HK.md#context
 ## 開始使用
 
 需要 Bun 1.3+、Node.js 22.19+、Git、GitHub CLI，以及專案的 build/test 工具。
-先在同一台機器使用本機任務佇列。
+任務直接存於 GitHub Issues，每個 repository 只啟動一個執行 daemon。
 
 ### 1. 設定 Roc
 
@@ -63,10 +65,10 @@ Onboarding 會安裝 Roc skills，讓你選擇可信 skills 與 Agile 週期，�
 在你平常使用的 coding assistant 開啟專案，輸入：
 
 ```text
-使用 roc-create-tasks 加入團隊邀請功能。使用本機佇列，以及 ROC_CLI_ENTRY 指定的 Roc。
+使用 roc-create-tasks 加入團隊邀請功能。用 ROC_CLI_ENTRY 指定的 Roc，把批准後的任務發佈到這個 repository 的 GitHub Issues。
 ```
 
-Skill 會提問釐清需求，提出任務與驗收條件，等你批准完整計劃後才儲存。
+Skill 會提問釐清需求，提出任務與驗收條件，等你批准完整計劃後才發佈到 GitHub。
 若 assistant 無法讀取 terminal 的環境變數，直接提供 Roc entrypoint 的絕對路徑。
 規劃 assistant 須有 `grilling` 及 `unslop`；缺少時依照[詳細指南](README.details.zh-HK.md#規劃-skills)安裝。
 
@@ -80,7 +82,7 @@ bun "$ROC_CLI_ENTRY" scheduler run --base-branch main
 ```
 
 保持 terminal 開啟。按 `Ctrl-C` 停止，再執行同一指令恢復已保存的工作。
-任務 branch 位於相鄰的 `<project>.agile-checkout`。
+每項任務位於 `<project>.agile-worktrees/issue-<number>`。
 Pi 沒有內建 sandbox，無人看管時應使用 OS/container 隔離。
 
 ### 4. 查看進度
@@ -98,7 +100,8 @@ bun "$ROC_CLI_ENTRY" task board
 ## 進一步設定
 
 [詳細指南](README.details.zh-HK.md) 包含架構圖、provider 設定、GitHub Issues
-共享任務、daemon 部署與恢復方式。先用同一台機器的兩個 clone，再搬移執行端。
+共享任務、daemon 部署與恢復方式。可在 MacBook 發佈任務，由 Mac mini 執行唯一的 daemon。
+實體雙機流程仍待驗收。
 
 開發與發版：[CONTRIBUTING.md](CONTRIBUTING.md)。
 授權：[Apache 2.0](LICENSE)。

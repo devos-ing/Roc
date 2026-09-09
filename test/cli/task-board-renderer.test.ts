@@ -99,7 +99,7 @@ const doneTwo = task({
 });
 const snapshot: TaskBoardSnapshot = {
   currentCycleId: "2026-W35",
-  scheduler: { activeTaskId: "active", activeAttemptId: "attempt-active" },
+  scheduler: { active: [{ taskId: "active", attemptId: "attempt-active" }] },
   active: {
     taskId: "active",
     attemptId: "attempt-active",

@@ -1,75 +1,62 @@
 import type { Command } from "commander";
-import { openDatabase } from "../../store/database";
-import { OrchestrationRepository } from "../../store/orchestration-repository";
 import {
   commandProjectRoot,
   currentCycle,
   errorMessage,
-  projectDatabasePath,
-  reportOperationalError,
 } from "../command-context";
 import { renderTokenUsageChart } from "../token-chart";
 import type { CliCommandContext } from "../types";
 
-/** Prints token usage for the active Agile cycle. */
-async function executeTokens(
-  context: CliCommandContext,
-  options: { color: boolean },
-): Promise<number> {
-  let dbPath: string;
-  try {
-    dbPath = projectDatabasePath(await commandProjectRoot(context));
-  } catch (error) {
-    context.io.err(errorMessage(error));
-    return 1;
-  }
-  try {
-    const cycle = await currentCycle(context.runtime);
-    const db = openDatabase(dbPath);
-    try {
-      const usage = new OrchestrationRepository(db).getCycleCategoryUsage(
-        cycle.id,
-      );
-      if (usage === undefined) {
-        context.io.out(`No token usage recorded for cycle: ${cycle.id}`);
-        return 0;
-      }
-      context.io.out(
-        renderTokenUsageChart(cycle.id, usage.categories, {
-          color: options.color,
-          width: process.stdout.columns ?? 80,
-        }),
-      );
-      return 0;
-    } finally {
-      db.close();
-    }
-  } catch (error) {
-    return reportOperationalError(
-      error,
-      context,
-      { dbPath },
-      {
-        code: "TOKEN_USAGE_READ_FAILED",
-        category: "infra",
-        retryable: false,
-        component: "cli",
-        message: "Could not read token usage",
-      },
-    );
-  }
-}
-
-/** Registers the active-cycle token usage command. */
+/** Registers recorded GitHub usage reporting for the active Agile cycle. */
 export function registerTokensCommand(
   program: Command,
   context: CliCommandContext,
 ): void {
   program
     .command("tokens")
-    .description("Show token use for the active Agile cycle")
+    .description("Show recorded GitHub task usage for the active cycle")
     .option("--no-color", "disable ANSI color")
     .action(async (options: { color: boolean }) => {
-      context.exitCode = await executeTokens(context, options);
+      try {
+        const root = await commandProjectRoot(context);
+        const cycle = await currentCycle(context.runtime);
+        if (!context.runtime.readTasks)
+          throw Error("GitHub task reads are unavailable");
+        const snapshot = await context.runtime.readTasks(root);
+        const ids = new Set(
+          snapshot.tasks
+            .filter((task) => task.cycleId === cycle.id)
+            .map((task) => task.id),
+        );
+        const attempts = snapshot.inspection.tasks
+          .filter((task) => ids.has(task.id))
+          .flatMap((task) => task.attempts);
+        if (!attempts.length) {
+          context.io.out(`No token usage recorded for cycle: ${cycle.id}`);
+          return;
+        }
+        if (snapshot.usageIncomplete)
+          context.io.out(
+            "Recorded totals are partial: some attempts have no confirmed usage receipt.",
+          );
+        const categories = ["scout", "implement", "review"].map((category) => ({
+          category,
+          inputTokens: attempts
+            .filter((attempt) => attempt.role === category)
+            .reduce((sum, attempt) => sum + attempt.inputTokens, 0),
+          outputTokens: attempts
+            .filter((attempt) => attempt.role === category)
+            .reduce((sum, attempt) => sum + attempt.outputTokens, 0),
+        }));
+        context.io.out(
+          renderTokenUsageChart(cycle.id, categories, {
+            color: options.color,
+            width: process.stdout.columns ?? 80,
+          }),
+        );
+      } catch (error) {
+        context.io.err(errorMessage(error));
+        context.exitCode = 1;
+      }
     });
 }

@@ -21,8 +21,8 @@ test("resolves profiles to actual models without ever selecting low", () => {
   expect(
     advisor.decide({ role: "scout", risk: "high", retryIndex: 0 }),
   ).toMatchObject({
-    profile: "terra",
-    model: "gpt-5.6-terra",
+    profile: "sol",
+    model: "gpt-5.6-sol",
     effort: "xhigh",
   });
   expect(
@@ -34,6 +34,37 @@ test("resolves profiles to actual models without ever selecting low", () => {
       priorErrorCode: "backend_unavailable",
     }),
   ).toMatchObject({ profile: "sol", model: "gpt-5.6-sol", effort: "high" });
+});
+
+test("high-risk roles and retries stay on Sol and never infer around its explicit mapping", () => {
+  const advisor = createModelAdvisor(catalog);
+  for (const role of ["scout", "implement", "review"] as const) {
+    expect(
+      advisor.decide({
+        role,
+        risk: "high",
+        retryIndex: 1,
+        priorProfile: "luna",
+      }),
+    ).toMatchObject({ profile: "sol", effort: "xhigh", fallbacks: [] });
+  }
+  const mapped = createModelAdvisor(
+    [
+      ...catalog,
+      { id: "provider/selected", supportedReasoningEfforts: ["high"] },
+    ],
+    { sol: "provider/selected" },
+  );
+  expect(
+    mapped.decide({ role: "scout", risk: "high", retryIndex: 0 }),
+  ).toBeUndefined();
+  expect(
+    createModelAdvisor(catalog, { sol: "missing" }).decide({
+      role: "review",
+      risk: "medium",
+      retryIndex: 0,
+    }),
+  ).toBeUndefined();
 });
 
 test("returns undefined when no model supports the required effort", () => {

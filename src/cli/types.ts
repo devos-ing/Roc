@@ -2,7 +2,7 @@ import type { RealBackendName } from "../agents/registry";
 import type { AgileCycleSetting } from "../domain/agile-cycle";
 import type { BacklogManifest } from "../domain/schemas";
 import type { SkillIdentity } from "../domain/skill-allowlist";
-import type { GitHubIssueCandidate } from "../github/import-source";
+import type { GitHubTaskSnapshot } from "../github/execution-view";
 import type { PublishedRemoteTask } from "../github/remote-tasks";
 import type { AgileError } from "../runtime/errors";
 import type { DefaultSkillCandidate, DiscoveredSkill } from "../skills/policy";
@@ -37,34 +37,29 @@ export type CliIo = {
 
 export type RealSchedulerRunInput = {
   backend: RealBackendName;
-  dbPath: string;
   repoPath: string;
-  baseRef: string;
-  /** Names the GitHub branch that pull requests target, independently of the local base ref. */
+  /** Names the GitHub target branch used to fetch each task's base. */
   baseBranch?: string;
-  /** Selects local backlog execution or trusted GitHub task admission. */
-  source?: "local" | "github";
+  /** Selects the sole supported GitHub task source. */
+  source?: "github";
+  once?: boolean;
+  concurrency?: 1 | 2;
 };
 
-export type SchedulerRunInput =
-  | { backend: "fake"; dbPath: string; scenario: unknown }
-  | RealSchedulerRunInput;
+export type SchedulerRunInput = RealSchedulerRunInput;
 
 export type CliRuntime = {
   /** Runs one scheduler invocation through an injected backend boundary. */
   runScheduler(input: SchedulerRunInput): Promise<void>;
-  /** Reads raw approved GitHub Issue candidates for an import command. */
-  readGitHubIssues?(): Promise<GitHubIssueCandidate[]>;
+  /** Reads authoritative GitHub task checkpoints for inspection commands. */
+  readTasks?(cwd: string): Promise<GitHubTaskSnapshot>;
   /** Publishes one approved manifest to the current project's GitHub repository. */
   publishGitHubTasks?(
     manifest: BacklogManifest,
     cwd: string,
   ): Promise<PublishedRemoteTask[]>;
   /** Records a normalized operational error at the resolved runtime location. */
-  logError?(
-    error: AgileError,
-    input: { dbPath: string; repoPath?: string },
-  ): Promise<void>;
+  logError?(error: AgileError, input: { repoPath: string }): Promise<void>;
   /** Returns installed trusted skills for onboarding without starting an agent. */
   listWorkspaceSkills?(cwd: string): Promise<DiscoveredSkill[]>;
   /** Connects and verifies the default model through Pi during onboarding. */
