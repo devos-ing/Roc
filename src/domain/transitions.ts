@@ -5,13 +5,20 @@ const allowed: Record<TaskStatus, readonly TaskStatus[]> = {
   needs_input: ["draft", "scouting", "implementing", "reviewing", "publishing"],
   needs_replan: ["draft"],
   ready: ["needs_input", "needs_replan", "claimed"],
-  claimed: ["needs_input", "needs_replan", "scouting", "failed_infra"],
+  claimed: [
+    "needs_input",
+    "needs_replan",
+    "scouting",
+    "implementing",
+    "failed_infra",
+  ],
   scouting: ["needs_input", "needs_replan", "implementing", "failed_infra"],
   implementing: ["needs_input", "needs_replan", "reviewing", "failed_infra"],
   reviewing: [
     "needs_input",
     "needs_replan",
     "publishing",
+    "awaiting_merge",
     "rejected",
     "failed_infra",
   ],
@@ -20,7 +27,7 @@ const allowed: Record<TaskStatus, readonly TaskStatus[]> = {
   rejected: [],
   failed_infra: [],
   retired: [],
-  awaiting_merge: ["done", "needs_replan"],
+  awaiting_merge: ["done", "needs_replan", "reviewing"],
 };
 
 const terminal = new Set<TaskStatus>([

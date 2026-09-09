@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgileError } from "../runtime/errors";
 import type { GitHubCommandRunner } from "./pr-publisher";
 import { withGitHubBodyFile } from "./remote-tasks";
 
@@ -201,27 +202,33 @@ export class GitHubRemoteIssueReader {
     ]);
     const baseIssues = z.array(RemoteIssueBaseSchema).parse(JSON.parse(output));
     const issues: RemoteIssue[] = [];
-    for (const issue of baseIssues) {
-      const commentOutput = await this.mustRun([
-        "gh",
-        "api",
-        "--paginate",
-        "--slurp",
-        `repos/${repository}/issues/${issue.number}/comments?per_page=100`,
-      ]);
-      const pages = z
-        .array(z.array(RestCommentSchema))
-        .parse(JSON.parse(commentOutput));
-      issues.push(
-        RemoteIssueSchema.parse({
-          ...issue,
-          comments: pages.flat().map((comment) => ({
-            body: comment.body,
-            author: { login: comment.user.login },
-            databaseId: comment.id,
-          })),
+    for (let offset = 0; offset < baseIssues.length; offset += 4) {
+      const batch = await Promise.allSettled(
+        baseIssues.slice(offset, offset + 4).map(async (issue) => {
+          const commentOutput = await this.mustRun([
+            "gh",
+            "api",
+            "--paginate",
+            "--slurp",
+            `repos/${repository}/issues/${issue.number}/comments?per_page=100`,
+          ]);
+          const pages = z
+            .array(z.array(RestCommentSchema))
+            .parse(JSON.parse(commentOutput));
+          return RemoteIssueSchema.parse({
+            ...issue,
+            comments: pages.flat().map((comment) => ({
+              body: comment.body,
+              author: { login: comment.user.login },
+              databaseId: comment.id,
+            })),
+          });
         }),
       );
+      for (const result of batch) {
+        if (result.status === "rejected") throw result.reason;
+        issues.push(result.value);
+      }
     }
     if (issues.length >= 1000) {
       throw new Error("GitHub task source reached its 1000-Issue safety bound");
@@ -229,12 +236,28 @@ export class GitHubRemoteIssueReader {
     return issues;
   }
 
-  /** Executes one GitHub read and converts failures into retryable source diagnostics. */
+  /** Executes a GitHub operation and exposes safe read/write diagnostics without raw CLI output. */
   private async mustRun(command: string[]): Promise<string> {
-    const result = await this.runner.run({ command, cwd: this.cwd });
-    if (result.exitCode === 0) return result.stdout;
-    throw new Error(
-      "GitHub task source unavailable; check authentication and repository access",
-    );
+    const write =
+      command.includes("--method") ||
+      command[1] === "label" ||
+      command[2] === "edit";
+    let status: string | undefined;
+    let cause: unknown;
+    try {
+      const result = await this.runner.run({ command, cwd: this.cwd });
+      if (result.exitCode === 0) return result.stdout;
+      status = result.stderr.match(/HTTP (\d{3})\b/u)?.[1];
+    } catch (error) {
+      cause = error;
+    }
+    throw new AgileError({
+      code: write ? "GITHUB_WRITE_FAILED" : "GITHUB_READ_FAILED",
+      category: "infra",
+      component: "github-state",
+      retryable: !write && status !== "401" && status !== "403",
+      message: `GitHub task ${write ? "write" : "read"} failed${status ? ` (HTTP ${status})` : ""}; check connection, authentication and repository access${write ? "; reconcile the remote result before retrying" : ""}`,
+      cause,
+    });
   }
 }

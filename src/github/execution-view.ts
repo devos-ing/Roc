@@ -1,4 +1,8 @@
-import type { InspectionSnapshot, TokenTotals } from "../domain/inspection";
+import type {
+  InspectionSnapshot,
+  InspectionTask,
+  TokenTotals,
+} from "../domain/inspection";
 import type { StoredTask } from "../domain/schemas";
 import type { NativeTask } from "./execution-store";
 
@@ -28,10 +32,77 @@ function sumUsage(items: TokenTotals[]): TokenTotals {
   );
 }
 
+/** Derives phase and attempt durations from recorded boundaries without inventing historical timing. */
+function executionTiming(
+  task: NativeTask,
+  now: number,
+): InspectionTask["timing"] {
+  const record = task.execution;
+  const timeline = record?.timeline;
+  const first = timeline?.[0];
+  const last = timeline?.at(-1);
+  if (
+    !record ||
+    !timeline ||
+    !first ||
+    !last ||
+    task.task.status !== record.phase
+  )
+    return undefined;
+  if (
+    last.phase !== record.phase ||
+    timeline.some(
+      (entry, index) =>
+        index > 0 && Date.parse(entry.at) < Date.parse(timeline[index - 1]!.at),
+    )
+  )
+    return undefined;
+  const active = [
+    "claimed",
+    "scouting",
+    "implementing",
+    "reviewing",
+    "publishing",
+    "awaiting_merge",
+  ].includes(task.task.status);
+  const end = active ? now : Date.parse(last.at);
+  const phaseDurationsMs: Record<string, number> = {};
+  for (const [index, entry] of timeline.entries()) {
+    const next = timeline[index + 1];
+    const until = next ? Math.min(end, Date.parse(next.at)) : end;
+    phaseDurationsMs[entry.phase] =
+      (phaseDurationsMs[entry.phase] ?? 0) +
+      Math.max(0, until - Date.parse(entry.at));
+  }
+  const attemptMs = record.attempts.some(
+    (attempt) => !attempt.endedAt && (attempt.status !== "running" || !active),
+  )
+    ? undefined
+    : record.attempts.reduce(
+        (sum, attempt) =>
+          sum +
+          Math.max(
+            0,
+            Math.min(end, attempt.endedAt ? Date.parse(attempt.endedAt) : end) -
+              Date.parse(attempt.startedAt),
+          ),
+        0,
+      );
+  return {
+    startedAt: first.at,
+    elapsedMs: Math.max(0, end - Date.parse(first.at)),
+    phaseElapsedMs: Math.max(0, end - Date.parse(last.at)),
+    attemptMs,
+    waitingMs: phaseDurationsMs.awaiting_merge ?? 0,
+    phaseDurationsMs,
+  };
+}
+
 /** Adapts remote checkpoints to the existing read-only task board and token views. */
 export function githubTaskSnapshot(
   native: NativeTask[],
   diagnostics: string[] = [],
+  now = Date.now(),
 ): GitHubTaskSnapshot {
   const tasks = native.map((item) => ({
     ...item.task,
@@ -57,6 +128,8 @@ export function githubTaskSnapshot(
       status: attempt.status,
       retryIndex: attempt.descriptor.retryIndex,
       startedAt: attempt.startedAt,
+      usageKnown: attempt.usageKnown,
+      ...(attempt.activity ? { activity: attempt.activity } : {}),
       ...(attempt.endedAt ? { endedAt: attempt.endedAt } : {}),
       ...(attempt.failure ? { failure: attempt.failure } : {}),
       ...(attempt.output?.kind === "review"
@@ -73,6 +146,10 @@ export function githubTaskSnapshot(
       pullRequestUrl: item.execution?.publication?.url,
       failure: item.blockedReason ?? item.execution?.failure,
       status: item.task.status,
+      timing: executionTiming(item, now),
+      usageIncomplete: (item.execution?.attempts ?? []).some(
+        (attempt) => !attempt.usageKnown,
+      ),
       priority: item.task.priority,
       tokenTarget: item.task.spec.tokenCeiling,
       actual: sumUsage(attempts),

@@ -52,6 +52,7 @@ export const TicketSpecSchema = z
     validation: z.array(NonEmpty).min(1),
     dependencies: z.array(NonEmpty),
     risk: z.enum(["low", "medium", "high"]),
+    skipScout: z.boolean().optional(),
     contextCandidates: z.array(ContextRefSchema),
     tokenCeiling: z.number().int().positive(),
     sourceCommit: z
@@ -61,7 +62,28 @@ export const TicketSpecSchema = z
     prehook: TaskHookSchema.optional(),
     posthook: TaskHookSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((spec, context) => {
+    if (!spec.skipScout) return;
+    const files = spec.scope.every(
+      (path) =>
+        !path.startsWith("/") &&
+        /^[\p{L}\p{N}_.@+/-]+$/u.test(path) &&
+        /\.[^/.]+$/u.test(path) &&
+        path
+          .split("/")
+          .every(
+            (segment) => segment !== "" && segment !== "." && segment !== "..",
+          ),
+    );
+    if (spec.risk !== "low" || !files)
+      context.addIssue({
+        code: "custom",
+        path: ["skipScout"],
+        message:
+          "Scout omission requires a low-risk ticket scoped to explicit file paths",
+      });
+  });
 
 export const AgileCyclePlanSchema = z
   .object({

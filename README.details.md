@@ -24,8 +24,8 @@ flowchart LR
 The daemon runs up to two independent Issues. Each task has its own retained worktree at
 `<project>.agile-worktrees/issue-<number>` and branch `agile/issue-<number>`.
 No task database is created. Local files hold configuration, worktrees, locks,
-diagnostic logs and Pi sessions. Automatic PR merge is the next
-[milestone](docs/roadmap.md); Superset is deferred.
+diagnostic logs and Pi sessions. Guarded automatic PR merge is opt-in, with at
+most two clean base refresh/re-review cycles per task. Superset is deferred.
 
 ### Context compaction
 
@@ -103,7 +103,94 @@ The target defaults to the GitHub repository's default branch if omitted.
 can restart it after connectivity returns. Unknown checkpoint writes retain the
 ownership lock until reconciled.
 
+### Optional automatic PR merge
+
+Manual publication is the default. To merge independently reviewed PRs automatically:
+
+```bash
+bun "$ROC_CLI_ENTRY" scheduler run --base-branch main --auto-merge
+```
+
+Configure **classic branch protection** on the target with at least one required
+status check, **Require branches to be up to date before merging**, and enforcement
+for administrators (**Do not allow bypassing the above settings**). Squash merging
+must be enabled. Roc never modifies protection, uses an administrator bypass, or
+pushes directly to the target. GitHub's merge API accepts the expected head SHA,
+not a base SHA condition; strict server protection guards the final base race.
+
+The executor needs Issue/comment write access, PR read/write and contents write
+access for publication/merge, plus checks, commit statuses and branch
+protection/active repository and organization rules read access. Missing or
+unreadable protection/rules (including private repositories without rules API
+access) block merge visibly. Human GitHub reviews remain required when configured;
+Pi Review does not replace them. Every reported check/status must succeed on the
+exact reviewed head, including configured app identities for required checks.
+Skipped, neutral, pending or failed results wait. Merge queues and unsupported
+active rules also wait; Roc does not bypass them.
+
+Only managed, still-open, exactly approved Issues with persisted successful
+independent Review evidence can auto-merge. Pending requirements stay
+`awaiting_merge` with a readable reason, without rerunning agents or rewriting
+identical checkpoints every 30 seconds. Changed external heads, closed-unmerged
+PRs or missing Review evidence (including legacy accepted records) require replan.
+
+If the target advances, Roc allows **at most two clean rebase/re-review cycles**
+per task, with the budget preserved across restarts. It checkpoints intent before
+Git mutation, verifies the retained clean task worktree has exactly its trusted
+commit and expected remote head, then rebases the same patch onto the freshly
+fetched target. Only the task branch is pushed, with an explicit expected-old-head
+force-with-lease. Conflicts abort to the original work. Dirty files, unexpected
+history, external head changes, ambiguous pushes or an exhausted budget require
+`needs_replan`, without discarding work. Old commits remain under
+`refs/agile-refresh/` for inspection.
+
+A confirmed refresh starts a **new independent Pi Review** of the exact rewritten
+head/base, including the approved validation commands. The original specification,
+Implement output, historical attempts and usage stay intact; a Git-only rebase
+is not an Implement/model attempt. Fresh Review records its actual model, effort
+and usage. Rejection requires replan; acceptance waits for CI on the new head
+before all merge guards are checked again. A confirmed refresh can resume its
+Review after restart, but an interrupted intent without a confirmed result must
+be reconciled explicitly, never blindly rerun.
+
+Refresh, fresh Review and merge decisions are serialized even with `--concurrency 2`.
+Shutdown drains selector-owned Git/Review work as well as workers; uncertain
+cleanup or checkpoint writes retain the ownership lock. Roc reads back the
+PR after every merge response, including lost responses, then fetches the target
+and verifies merge ancestry before saving `done` and releasing dependencies.
+`--once` can reconcile already published PRs but does not keep waiting for newly
+published CI; use continuous mode for automatic completion. Automatic merge has
+deterministic transport/Fake Harness tests, including refresh/re-review, and
+real-Git conflict/lease tests. [Live protected-branch acceptance](docs/validation/m3-live-2026-09-09.md)
+also passed for two parallel tasks, including one rebase, fresh independent
+Review and CI before automatic merge. That test used one Mac.
+
 ### Parallel admission
+
+For a sufficiently specified low-risk task, the approved manifest can set
+`skipScout: true` to run Implement and independent Review directly. This is off
+by default. The scope must contain explicit relative file paths with suffixes,
+without whitespace, traversal or glob syntax; acceptance and validation remain
+required. Use the normal Scout flow for broader or uncertain work. The board
+shows Scout as skipped, and a later base refresh still requires a fresh Review.
+See the [M4 measurements and limitations](docs/validation/m4-live-2026-09-09.md).
+
+For failed work, inspect `scheduler inspect` and `.agile/runtime/agile.log` on
+the execution host. Safe error codes identify GitHub reads, uncertain writes,
+the affected Issue, attempt and phase. Check the retained task worktree before
+starting replacement work. A verified existing commit can be supplied as
+`sourceCommit` in a new approved task; preserve the original failed checkpoint
+and review the replacement task's scope and dependencies. Never remove a retained
+ownership lock until its processes and uncertain remote writes are reconciled.
+A timed-out repository lookup during startup gets one read-only retry before
+any task starts; a second failure reports `GITHUB_REPOSITORY_UNAVAILABLE`.
+
+`task board` details show elapsed time, time in agent attempts, merge waiting and
+partial token usage. `scheduler inspect` includes the phase-duration breakdown.
+Recent actions are GitHub checkpoint summaries, refreshed at phase boundaries
+and at most every 30 seconds of tool activity; watch daemon output for individual
+live actions. Historical records without timing, or closed/changed Issues whose
+stop has not been reconciled, show unavailable timing rather than zero.
 
 The default is `--concurrency 2`; use `--concurrency 1` to serialize execution.
 When one task finishes, its slot can start another without waiting for a slower
@@ -261,7 +348,7 @@ task board [--all] [--history]             Open the read-only board
 tui                                      Open the same board
 task trust-hooks ISSUE --phase PHASE      Approve an exact hook configuration
 task retire ISSUE --reason TEXT           Close an Issue without completing it
-scheduler run [--base-branch BRANCH] [--concurrency 1|2] [--once]
+scheduler run [--base-branch BRANCH] [--concurrency 1|2] [--once] [--auto-merge]
 scheduler inspect                        Read GitHub execution checkpoints
 tokens [--no-color]                       Show confirmed token usage
 ```
@@ -270,5 +357,6 @@ Run these after `bun "$ROC_CLI_ENTRY"`. Task identifiers are Issue numbers,
 `#41` or `issue-41`. `task import`, `task import-github`, local queue mode and
 `--base` have been removed. See [architecture](docs/architecture.md),
 [M1 specification](docs/specs/github-native-execution.md),
-[M2 specification](docs/specs/parallel-execution.md) and
+[M2 specification](docs/specs/parallel-execution.md),
+[automatic merge specification](docs/specs/automatic-merge.md) and
 [roadmap](docs/roadmap.md) for implementation scope.

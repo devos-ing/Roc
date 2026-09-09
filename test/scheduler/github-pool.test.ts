@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { HarnessStepRequest } from "../../src/harness/contracts";
 import { createFakeHarness } from "../../src/harness/fake";
+import { AgileError } from "../../src/runtime/errors";
 import { GitHubTaskPool } from "../../src/scheduler/github-pool";
 import { createStaticModelAdvisor } from "../../src/scheduler/model-routing";
 import type { TaskBranchManager } from "../../src/workspace/task-branch";
@@ -16,6 +17,9 @@ const branches: TaskBranchManager = {
       branch: `agile/${taskId}`,
       baseCommit: base,
     };
+  },
+  async refresh() {
+    throw Error("Unexpected base refresh");
   },
   async restoreChanges() {},
   async commitChanges() {
@@ -117,10 +121,16 @@ function fixture(scopes: string[][], concurrency: 1 | 2 = 2) {
   const cancelled: string[] = [];
   const attempts = new Map<string, string>();
   let failedTask: string | undefined;
+  let failure: Error = Error("Private backend diagnostic");
+  const errors: AgileError[] = [];
+  let cleanupFails = false;
   const pool = new GitHubTaskPool({
     store: remote.store,
     branches,
     concurrency,
+    async logError(error) {
+      errors.push(error);
+    },
     advisor: createStaticModelAdvisor(),
     harness: {
       async step(request: HarnessStepRequest) {
@@ -130,8 +140,7 @@ function fixture(scopes: string[][], concurrency: 1 | 2 = 2) {
           started.push(request.attempt.taskId);
           entered[index]?.release();
           await release[index]?.promise;
-          if (request.attempt.taskId === failedTask)
-            throw Error("Private backend diagnostic");
+          if (request.attempt.taskId === failedTask) throw failure;
         }
         return fake.harness.step(request);
       },
@@ -141,6 +150,7 @@ function fixture(scopes: string[][], concurrency: 1 | 2 = 2) {
           cancelled.push(id);
           release[ids.indexOf(id)]?.release();
         }
+        if (cleanupFails) throw Error("Private cleanup cause");
       },
     },
     publisher: {
@@ -184,8 +194,13 @@ function fixture(scopes: string[][], concurrency: 1 | 2 = 2) {
     completed,
     started,
     cancelled,
-    fail(id: string) {
+    errors,
+    failCleanup() {
+      cleanupFails = true;
+    },
+    fail(id: string, error = failure) {
       failedTask = id;
+      failure = error;
     },
   };
 }
@@ -234,6 +249,64 @@ test("a worker that finishes during a remote read is excluded from that stale ad
     await f.pool.cancel();
     await run;
   }
+});
+
+test("worker failures retain a safe code, phase and attempt identity without exposing the cause", async () => {
+  const f = fixture([["a.ts"]]);
+  f.fail(
+    "issue-41",
+    new AgileError({
+      code: "GITHUB_READ_FAILED",
+      category: "infra",
+      component: "github-state",
+      retryable: true,
+      message:
+        "GitHub task read failed; check connection and repository access",
+      cause: Error("Authorization: secret-token"),
+    }),
+  );
+  const run = f.pool.run(new AbortController().signal, true);
+  await f.entered[0]?.promise;
+  f.release[0]?.release();
+  await run;
+  const record = (await f.store.get(41)).execution;
+  expect(f.errors).toHaveLength(1);
+  expect(f.errors[0]).toMatchObject({
+    code: "GITHUB_READ_FAILED",
+    taskId: "issue-41",
+    attemptId: record?.attempts[0]?.descriptor.attemptId,
+  });
+  expect(record?.failure).toContain("GITHUB_READ_FAILED");
+  expect(record?.failure).toContain("scouting");
+  expect(record?.failure).not.toContain("secret-token");
+  expect(record?.phase).toBe("needs_replan");
+});
+
+test("cleanup failure retains the original diagnostic and attributed ownership failure", async () => {
+  const f = fixture([["a.ts"]]);
+  f.fail("issue-41");
+  f.failCleanup();
+  const run = f.pool
+    .run(new AbortController().signal, true)
+    .catch((error: unknown) => error);
+  await f.entered[0]?.promise;
+  f.release[0]?.release();
+  expect(await run).toMatchObject({
+    code: "TASK_CLEANUP_UNCONFIRMED",
+    taskId: "issue-41",
+  });
+  expect(f.errors.map((error) => error.code)).toEqual([
+    "TASK_EXECUTION_FAILED",
+    "TASK_CLEANUP_UNCONFIRMED",
+  ]);
+  expect(
+    f.errors.every(
+      (error) => error.attemptId && error.message.includes("scouting"),
+    ),
+  ).toBe(true);
+  expect(f.errors.map((error) => error.message).join(" ")).not.toContain(
+    "Private",
+  );
 });
 
 test("two slots overlap and refill while a slow Issue stays active without duplicate dispatch or mixed usage", async () => {

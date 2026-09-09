@@ -30,6 +30,10 @@ export function registerSchedulerCommands(
     .option("--source <name>", "Task source (github only)", "github")
     .option("--once", "Process one eligible task and return")
     .option(
+      "--auto-merge",
+      "Squash merge reviewed PR heads after strict GitHub protection, checks and reviews pass",
+    )
+    .option(
       "--concurrency <count>",
       "Concurrent independent Issues (1 or 2)",
       "2",
@@ -40,6 +44,7 @@ export function registerSchedulerCommands(
         backend: string;
         source: string;
         once?: boolean;
+        autoMerge?: boolean;
         concurrency: string;
       }) => {
         if (options.concurrency !== "1" && options.concurrency !== "2") {
@@ -73,6 +78,7 @@ export function registerSchedulerCommands(
             source: "github",
             baseBranch: options.baseBranch,
             once: options.once,
+            autoMerge: options.autoMerge,
             concurrency: options.concurrency === "1" ? 1 : 2,
           });
           context.io.out("Result: Stopped");

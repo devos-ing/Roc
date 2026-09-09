@@ -11,7 +11,16 @@ export type TaskWorkspace = {
   baseCommit: string;
 };
 
+export type TaskBranchRefresh = {
+  expectedHead: string;
+  expectedBase: string;
+  targetBase: string;
+  baseBranch: string;
+};
+
 export type TaskBranchManager = {
+  /** Rebases a retained trusted patch and lease-pushes only its owned task branch. */
+  refresh(taskId: string, input: TaskBranchRefresh): Promise<string>;
   prepare(taskId: string, baseCommit?: string): Promise<TaskWorkspace>;
   /** Restores an approved source commit as uncommitted task work when the branch is untouched. */
   restoreChanges(
@@ -200,6 +209,21 @@ export async function createTaskBranchManager(
     return value;
   }
   return {
+    /** Advances the cached base only after the retained worktree and lease-push are confirmed. */
+    async refresh(id, input) {
+      if (
+        (await pathKind(resolve(root, safeTaskPathComponent(id)))) !==
+        "directory"
+      )
+        throw new Error("Base refresh requires a retained Roc-owned worktree");
+      const value = await manager(id, input.expectedBase);
+      const head = await value.refresh(id, input);
+      managers.set(safeTaskPathComponent(id), {
+        base: input.targetBase,
+        value: Promise.resolve(value),
+      });
+      return head;
+    },
     /** Creates or validates the retained worktree for the task. */
     async prepare(id, base) {
       return (await manager(id, base)).prepare(id, base);
@@ -408,10 +432,149 @@ async function createWorktreeManager(
       `refs/heads/${candidate.branch}`,
     );
     await assertReachableCommit(candidate, commitSha);
+    const parents = (
+      await checkoutGit.raw(["show", "-s", "--format=%P", commitSha])
+    ).trim();
+    if (parents !== candidate.baseCommit)
+      throw new Error(
+        "Trusted task commit must have exactly the recorded base as its parent",
+      );
     return commitSha;
   }
 
   return {
+    /** Replays only a clean single trusted commit onto a freshly verified target with an exact remote lease. */
+    async refresh(taskId, input) {
+      const candidate = workspace(taskId, input.expectedBase);
+      if (
+        ![input.expectedHead, input.expectedBase, input.targetBase].every(
+          (sha) => FULL_SHA.test(sha),
+        )
+      )
+        throw new Error("Invalid base refresh commit identity");
+      await checkoutGit.raw([
+        "check-ref-format",
+        `refs/heads/${input.baseBranch}`,
+      ]);
+      if (
+        candidate.branch === input.baseBranch ||
+        input.targetBase === input.expectedBase
+      )
+        throw new Error("Base refresh must advance a distinct target branch");
+      for (const name of [
+        "rebase-merge",
+        "rebase-apply",
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "BISECT_LOG",
+      ]) {
+        const path = (await checkoutGit.revparse(["--git-path", name])).trim();
+        if ((await pathKind(resolve(checkoutPath, path))) !== "missing")
+          throw new Error(
+            "Interrupted Git operation requires reconciliation before base refresh",
+          );
+      }
+      if ((await validatedSingleCommit(candidate)) !== input.expectedHead)
+        throw new Error("Task HEAD changed before base refresh");
+      const targetRef = `refs/remotes/origin/${input.baseBranch}`;
+      await checkoutGit.raw([
+        "fetch",
+        "--no-tags",
+        "origin",
+        `refs/heads/${input.baseBranch}:${targetRef}`,
+      ]);
+      if ((await fullCommit(checkoutGit, targetRef)) !== input.targetBase)
+        throw new Error(
+          "Target changed again before base refresh; replan required",
+        );
+      await checkoutGit.raw([
+        "merge-base",
+        "--is-ancestor",
+        input.expectedBase,
+        input.targetBase,
+      ]);
+      /** Reads the remote task ref without trusting a cached remote-tracking branch. */
+      async function remoteHead(): Promise<string> {
+        const output = (
+          await checkoutGit.raw([
+            "ls-remote",
+            "--exit-code",
+            "origin",
+            `refs/heads/${candidate.branch}`,
+          ])
+        ).trim();
+        const [sha, ref, extra] = output.split(/\s+/);
+        if (
+          !sha ||
+          !FULL_SHA.test(sha) ||
+          ref !== `refs/heads/${candidate.branch}` ||
+          extra
+        )
+          throw new Error("Remote task head is missing or unreadable");
+        return sha;
+      }
+      if ((await remoteHead()) !== input.expectedHead)
+        throw new Error("External PR head changed before base refresh");
+      if ((await validatedSingleCommit(candidate)) !== input.expectedHead)
+        throw new Error("Task HEAD changed before base refresh");
+      // Retain the old patch even if a later push or readback fails; never reset external work.
+      await checkoutGit.raw([
+        "update-ref",
+        `refs/agile-refresh/${candidate.taskId}/${input.expectedHead}`,
+        input.expectedHead,
+        "0".repeat(40),
+      ]);
+      try {
+        await checkoutGit.raw([
+          "rebase",
+          "--onto",
+          input.targetBase,
+          input.expectedBase,
+          "--no-autostash",
+          "--no-update-refs",
+          "--no-rebase-merges",
+          "--reapply-cherry-picks",
+          "--empty=keep",
+        ]);
+      } catch {
+        await checkoutGit.raw(["rebase", "--abort"]);
+        throw new Error(
+          "Base refresh conflicted; original task work preserved; replan required",
+        );
+      }
+      const refreshed = workspace(taskId, input.targetBase);
+      const head = await validatedSingleCommit(refreshed);
+      if (
+        (
+          await checkoutGit.raw([
+            "diff",
+            "--stat",
+            input.targetBase,
+            head,
+            "--",
+          ])
+        ).trim() === ""
+      )
+        throw new Error(
+          "Base refresh produced an empty patch; replan required",
+        );
+      await checkoutGit.raw([
+        "push",
+        `--force-with-lease=refs/heads/${candidate.branch}:${input.expectedHead}`,
+        "origin",
+        `${head}:refs/heads/${candidate.branch}`,
+      ]);
+      if (
+        (await remoteHead()) !== head ||
+        (await validatedSingleCommit(refreshed)) !== head
+      )
+        throw new Error(
+          "Base refresh push could not be confirmed; reconcile task history",
+        );
+      baseCommit = input.targetBase;
+      return head;
+    },
     /** Activates or creates the isolated branch for a task workspace. */
     async prepare(
       taskId: string,

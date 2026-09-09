@@ -117,6 +117,38 @@ const snapshot: TaskBoardSnapshot = {
   },
 };
 
+test("details show elapsed, attempt and merge waiting time with partial usage", () => {
+  const item = task({
+    id: "timed",
+    rawStatus: "awaiting_merge",
+    column: "inProgress",
+    usageIncomplete: true,
+    timing: {
+      startedAt: "2026-09-09T00:00:00Z",
+      elapsedMs: 90_000,
+      phaseElapsedMs: 30_000,
+      attemptMs: 50_000,
+      waitingMs: 30_000,
+      phaseDurationsMs: { awaiting_merge: 30_000 },
+    },
+  });
+  const board = {
+    ...snapshot,
+    tasks: [item],
+    columns: { ready: [], inProgress: [item], attention: [], done: [] },
+  };
+  const output = renderTaskBoard(board, {
+    width: 80,
+    color: false,
+    detailMode: "full",
+    detailTaskId: "timed",
+  });
+  expect(output).toContain("Elapsed: 1m 30s");
+  expect(output).toContain("Attempt time: 50s");
+  expect(output).toContain("Merge wait: 30s");
+  expect(output).toContain("20/100 · partial usage");
+});
+
 test("keeps ordinary nonactive detail state uncolored", () => {
   const output = renderTaskBoard(snapshot, {
     width: 120,

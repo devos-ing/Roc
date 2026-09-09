@@ -1,0 +1,71 @@
+# Execution visibility and measured speed
+
+M4 completes the current stage. Superset is outside scope. GitHub remains the
+task authority, native worktrees remain isolated and Pi keeps the configured
+GPT-6 model and high-or-higher reasoning policy.
+The user deferred physical two-host acceptance to later work. It is not a gate
+for completing M4 or committing and pushing the verified workflow.
+
+## Delivery order
+
+1. Preserve actionable sanitized failures and expose safe recovery information.
+   A worker failure must identify its Issue, attempt, phase and operational error
+   code in daemon diagnostics. Unknown exceptions must not leak raw messages,
+   command output or credentials. GitHub read/write boundaries supply distinct
+   safe errors. Unknown checkpoint outcomes and cleanup failures still retain
+   ownership. Recovery reuses the existing approved source-commit workflow;
+   never rewrite a failed checkpoint as a successful attempt or blindly replay
+   an interrupted merge/refresh.
+   If the repository lookup in startup preflight times out, retry that read once
+   before any task starts. A second failure returns a safe operational code;
+   this does not retry writes, model roles or merge operations.
+2. Show task phase, recent action, elapsed execution time, attempt/model time,
+   waiting reason and recorded token usage through existing inspection and board
+   interfaces. Distinguish incomplete usage and unavailable historical timing
+   from zero. Keep individual tool activity local to daemon output. Persist only
+   compact action/timing summaries at existing checkpoint boundaries, with at
+   most one additional activity checkpoint per 30 seconds of tool events. Do not
+   add a competing local task database or per-tool GitHub writes.
+3. Measure fixed tasks and starting commits with concurrency one and two, then
+   apply one simplification at a time. Measure GitHub read latency before changing
+   its request scheduling. An optional Scout omission must be explicitly included
+   in an approved, sufficiently specified low-risk ticket, retain real independent
+   Review and truthful attempt/usage history, and remain off by default. Keep an
+   optimization only when measured work or latency decreases without failures of
+   the same unchanged acceptance checks. Report small samples honestly.
+   Comment reads may run in batches of at most four; drain a failed batch fully,
+   return no partial snapshot and retain all authority checks and ordering.
+   The omission candidate uses optional `skipScout: true` in the approved spec.
+   Limit it to low-risk tickets with explicit relative file paths, file suffixes,
+   no whitespace, traversal or glob syntax, and the existing required acceptance
+   and validation lists. Omitted Scout context and attempts remain absent; the
+   prompts explicitly disclose that no Scout inspected the repository. Compare
+   the candidate before deciding to retain it.
+
+## Deferred follow-up
+
+Issue #56 retains physical MacBook publication and Mac mini execution acceptance
+for later work. Verify inspection, interruption/restart and isolation on the
+actual hosts with one active executor. Host access is required when this work
+resumes; a local sandbox does not substitute for physical two-host evidence.
+
+## Verification boundaries
+
+Use the existing Fake Harness and GitHub transport seam for deterministic worker
+failure, sibling isolation, checkpoint uncertainty and usage/timing checks. Use
+CLI/board rendering tests for visible diagnostics and progress. Reuse the actual
+sandboxed Pi runner for fixed-task comparisons with unchanged acceptance files,
+model and reasoning settings. Record all attempts, retries, cached input tokens,
+batch time and quality outcomes; do not present cached tokens as additional
+tokens or missing usage as zero.
+
+Do not infer the original cause of M3 Issue #47 from its generic failure message.
+Reproduce the diagnostic loss with an injected boundary failure and prove that
+future equivalent failures retain a safe code and location. Automated recovery
+must not relax Issue approval, exact-head Review, branch protection, lease,
+refresh-budget or ownership rules established in M1–M3.
+
+No web UI, new daemon transport, SQLite, distributed locking, provider migration,
+release publishing or global wall-clock watchdog is included. `docs/architecture.md`
+will record implemented behavior and the validation report will separate software
+verification, model benchmarks and physical two-host acceptance.

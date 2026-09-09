@@ -14,7 +14,8 @@ CLI -> GitHubExecutionStore -> GitHub Issues
 GitHubTaskPool -> GitHubTaskRunner per Issue -> AgentHarness -> PiHarness -> Pi RPC
              |                  -> TaskBranchManager -> native Git worktrees
              -> BunTaskHookRunner -> argv subprocess
-             -> GitHubPullRequestPublisher -> PR -> confirmed merge
+             -> GitHubPullRequestPublisher -> PR
+             -> GitHubPullRequestMerger (opt-in, serialized) -> confirmed merge
 Tests -> FakeHarness / recorded Pi client / fake GitHub transport
 ```
 
@@ -35,6 +36,11 @@ PR merge has been confirmed.
 A daemon-owned `roc:execution` comment contains the versioned checkpoint:
 Issue/spec identity, revision, pinned base, phase, attempt descriptors, critical
 event hashes/cursors, usage, validated outputs, hook receipts and PR identity.
+At most two refresh receipts retain expected old head/base, fresh target,
+remaining budget and an optional confirmed rewritten head. Review attempts record
+their exact head/base target. Successful independent Review persists merge evidence
+bound to the approved envelope hash, current task head, reviewed base and Review attempt ID.
+Legacy records remain readable but missing evidence never authorizes automatic merge.
 Only comments by `ROC_GITHUB_EXECUTOR` are execution records. Multiple owned
 records fail closed. `ROC_GITHUB_PUBLISHERS` identifies approval authors.
 Both default to the current GitHub login; the daemon must authenticate as its
@@ -114,9 +120,56 @@ and target, fetches the target and checks its actual merge commit ancestry
 before marking `done`. A changed or closed-unmerged publication needs replan.
 
 A dependent task cannot start because its predecessor merely opened a PR.
-Immediately before claiming, the runner verifies every dependency's merged PR
-and recorded implementation head, fetches the target, checks merge ancestry,
-and pins that fresh base. There is no automatic merge in M1.
+Immediately before claiming, the runner requires every dependency's confirmed
+`done` checkpoint, verifies its merged PR, recorded implementation head and merge
+commit, fetches the target, checks merge ancestry, and pins that fresh base.
+
+Manual merge remains the default. `scheduler run --auto-merge` opts into guarded
+synchronous squash merge for managed Issues. Only the pool's single admission
+selector reconciles merges; concurrent role workers never merge. Before each
+request it refreshes exact Review evidence, trusted Issue approval/open state,
+PR/repository/head/base identity, draft/mergeability, configured checks, human
+review decisions and paginated active branch rules. Classic protection must
+require at least one status check, strict up-to-date checks and enforcement for
+administrators. Required checks must pass on the exact head, from the configured
+app when specified; every additional reported check/status must also succeed.
+Unreadable policy, unsupported rules (including merge queues), pending checks
+or missing human approvals wait with a stable visible reason, without agent
+replay or identical checkpoint writes on each poll.
+
+The merge body contains `merge_method=squash` and the expected head SHA, never
+an administrator bypass. GitHub cannot condition this API on the base SHA;
+server-enforced strict checks protect that final race. Changed external heads,
+closed-unmerged PRs or missing Review evidence require `needs_replan`. Every merge
+response, including errors or lost responses, is followed by remote PR readback.
+Only fetched target ancestry plus a confirmed `done` write releases dependencies.
+
+When the target advances, the same selector permits at most two durable clean
+rebase/re-review cycles. Before Git mutation it checkpoints the expected old
+head/base, fresh target and remaining budget, invalidating old merge evidence.
+Only a retained, clean Roc-owned worktree containing its single trusted commit
+with the expected base as its sole parent can refresh. Git fetches and verifies
+the target, checks the actual remote task head, retains the old commit under
+`refs/agile-refresh/`, rebases the same patch and pushes only the task ref with
+an explicit expected-old-head force-with-lease. Conflicts abort to the original
+work; dirty files, unexpected history, external heads or ambiguous pushes are
+preserved for replan, never reset or overwritten.
+
+A confirmed result checkpoints the rewritten publication head/base before a new
+independent Pi Review starts. Original approved specifications, Implement output,
+historical attempts, usage and hook receipts remain unchanged; Git-only rebases
+never manufacture Implement attempts. Fresh Review uses the actual routed model
+and effort, records its own usage and exact target, and must run the approved
+validation commands. Accepted evidence returns to `awaiting_merge` for new-head
+CI and the full guarded-merge policy; rejection or exhausted refresh budget needs
+replan. A confirmed result can resume only its Review after restart, including
+normal bounded infrastructure retries; an intent without a confirmed result
+requires explicit reconciliation, never blind Git replay.
+
+Refresh, fresh Review and merge remain selector-owned and serialized, including
+across restart recovery. Task cancellation drains its coordinator-owned role;
+shutdown also waits for in-flight Git and merge readback as well as workers.
+Unsettled cleanup or unknown checkpoint writes retain repository ownership.
 
 ## Hooks and process ownership
 
@@ -154,6 +207,36 @@ cycle, skill allowlist and execution consent without creating a task database.
 Inspection, boards and tokens read GitHub. Diagnostic logs and Pi sessions stay
 local. The Fake Harness is internal, not a scheduler CLI backend.
 
+Worker and coordinator failures write safe operational codes with run, Issue,
+attempt and phase attribution to `.agile/runtime/agile.log`. GitHub read and
+write failures have distinct codes; write failures still require remote readback
+before retry. Unknown exception messages and raw CLI output are not logged.
+Original errors are recorded before cleanup, and cleanup failures retain their
+own task context while preserving execution ownership.
+
+New execution checkpoints retain a phase timeline and each attempt's latest
+activity. Activity stays local at full detail; at most one additional GitHub
+checkpoint per 30 seconds of tool events refreshes its compact summary. Phase
+boundaries and normal receipts also save that summary. The daemon prints
+confirmed phase changes and wait reasons once. Inspection and task details
+derive elapsed time, attempt time and merge waiting from recorded boundaries,
+and mark incomplete usage explicitly. Missing historical timing or an Issue
+status that no longer matches its checkpoint yields unavailable timing.
+
+GitHub comment reads run in batches of at most four requests. The reader waits
+for all requests in a failed batch and returns no partial snapshot. It preserves
+the original order, request count, complete comment history and approval checks.
+
+An approved low-risk spec may explicitly omit Scout using `skipScout: true`.
+The schema requires conservative literal file scopes and the existing complete
+acceptance/validation fields. Implement and Review then receive no Scout capsule;
+their prompts disclose the omission. Only actual model attempts are recorded,
+and independent Review plus all refresh/merge guards remain required.
+
+Startup preflight retries a timed-out repository lookup once before any task
+starts. A second failure reports a safe startup code. This read-only recovery
+does not repeat model work or GitHub mutations.
+
 SQLite production modules, local queue commands and SQL-only tests were removed
 after replacement boundaries were exercised. Existing databases and old
 checkouts remain on disk. Legacy daemon-owned `roc:status` comments without new
@@ -161,9 +244,12 @@ execution records block admission. Finish old work with its prior runtime or
 migrate it explicitly; there is no automatic SQLite execution conversion.
 
 M1 provides GitHub execution and separate task worktrees; M2 adds bounded parallel admission.
-[Later milestones](roadmap.md) add AI-reviewed automatic PR
-merge, measured performance/visibility, and deferred Superset integration.
+M3 adds opt-in guarded automatic PR merge with at most two clean base refreshes
+and independent re-reviews. [Later milestones](roadmap.md) add measured
+performance/visibility and deferred Superset integration.
 Deterministic checks are complemented by [live GitHub and sandboxed GPT-6 acceptance](validation/m1-m2-live-2026-09-09.md).
+[M3 protected-branch acceptance](validation/m3-live-2026-09-09.md) also verified
+two automatic merges with a real base refresh, new Review and fresh CI.
 Physical two-host operation remains unverified. See the [current specification](specs/github-native-execution.md)
 and [M2 specification](specs/parallel-execution.md), plus
 [validation status](../README.details.md#validation-status).

@@ -6,6 +6,7 @@ import {
 } from "../domain/schemas";
 import { assertTransition } from "../domain/transitions";
 import {
+  HarnessActivitySchema,
   HarnessAttemptSchema,
   ImplementOutputSchema,
   ReviewOutputSchema,
@@ -33,6 +34,7 @@ export const UsageSchema = z
 export const AttemptReceiptSchema = z
   .object({
     descriptor: HarnessAttemptSchema,
+    reviewTarget: z.object({ headSha: Sha, baseSha: Sha }).strict().optional(),
     status: z.enum(["running", "succeeded", "failed_infra", "blocked_policy"]),
     startedAt: z.string().datetime(),
     endedAt: z.string().datetime().optional(),
@@ -41,6 +43,9 @@ export const AttemptReceiptSchema = z
     events: z.record(z.string(), z.string()),
     usage: UsageSchema,
     usageKnown: z.boolean(),
+    activity: HarnessActivitySchema.extend({
+      occurredAt: z.string().datetime(),
+    }).optional(),
     output: z
       .discriminatedUnion("kind", [
         ScoutOutputSchema,
@@ -69,6 +74,14 @@ export const ExecutionRecordSchema = z
     baseCommit: Sha,
     phase: TaskStatusSchema,
     updatedAt: z.string().datetime(),
+    timeline: z
+      .array(
+        z
+          .object({ phase: TaskStatusSchema, at: z.string().datetime() })
+          .strict(),
+      )
+      .min(1)
+      .optional(),
     attempts: z.array(AttemptReceiptSchema),
     hooks: z
       .object({
@@ -83,6 +96,30 @@ export const ExecutionRecordSchema = z
         number: z.number().int().positive().optional(),
         url: z.string().url().optional(),
         mergeCommit: Sha.optional(),
+      })
+      .strict()
+      .optional(),
+    refreshes: z
+      .array(
+        z
+          .object({
+            expectedHead: Sha,
+            expectedBase: Sha,
+            targetBase: Sha,
+            budgetRemaining: z.number().int().min(0).max(1),
+            // Absence of a confirmed result is an interrupted intent, never permission to replay Git.
+            result: z.object({ headSha: Sha }).strict().optional(),
+          })
+          .strict(),
+      )
+      .max(2)
+      .optional(),
+    mergeReview: z
+      .object({
+        specHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+        headSha: Sha,
+        baseSha: Sha,
+        reviewAttemptId: z.string().min(1),
       })
       .strict()
       .optional(),
@@ -111,6 +148,7 @@ export function initialExecution(
   task: NativeTask,
   baseBranch: string,
   baseCommit: string,
+  now = new Date().toISOString(),
 ): ExecutionRecord {
   return ExecutionRecordSchema.parse({
     version: 1,
@@ -120,7 +158,8 @@ export function initialExecution(
     baseBranch,
     baseCommit,
     phase: "claimed",
-    updatedAt: new Date().toISOString(),
+    updatedAt: now,
+    timeline: [{ phase: "claimed", at: now }],
     attempts: [],
     hooks: {},
   });

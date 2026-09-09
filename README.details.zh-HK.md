@@ -22,7 +22,7 @@ flowchart LR
 目前最多同時執行兩項獨立任務。每個 Issue 使用
 `<project>.agile-worktrees/issue-<number>` 及 `agile/issue-<number>` branch。
 Roc 不再建立任務資料庫；設定、worktree、程序鎖、診斷 log 和 Pi session 留在本機。
-下一個 [milestone](docs/roadmap.md) 是自動合併 PR，Superset 暫緩。
+可選擇啟用有保護檢查的自動合併 PR，每項任務最多兩次乾淨的 base refresh／重新 Review；Superset 暫緩。
 
 ### Context 壓縮
 
@@ -85,7 +85,73 @@ Daemon 本身必須以該帳戶登入。
 每 30 秒輪詢。GitHub 讀取失敗會停止本次執行，連線恢復後可重新啟動。
 無法確認 checkpoint 寫入結果時保留本機鎖，須先核對遠端結果。
 
+### 可選的自動合併 PR
+
+預設仍由人手合併。要啟用獨立 Review 後的自動 squash merge：
+
+```bash
+bun "$ROC_CLI_ENTRY" scheduler run --base-branch main --auto-merge
+```
+
+目標 branch 必須設定 **classic branch protection**，至少一項 required status check、
+**Require branches to be up to date before merging**，以及對管理員同樣生效的保護
+（**Do not allow bypassing the above settings**），並允許 squash merge。
+Roc 不會修改保護、不會使用管理員 bypass，也不會直接 push 到目標 branch。
+GitHub merge API 只可指定預期 head SHA，不能指定 base SHA 條件；最後一刻的 base
+變動靠伺服器強制執行的 strict checks 保護。
+
+Daemon 帳戶需要 Issue/comment 寫入、PR 讀寫及 contents 寫入權限，以及 checks、
+commit statuses、branch protection 和 repository／organization active rules 讀取權限。
+缺少保護或無法讀取 policy（包括未能使用 rules API 的 private repository）會顯示等待原因，
+不會繞過。已設定的人類 GitHub Review 仍須通過，Pi Review 不能代替。
+所有回報的 checks/statuses 必須在精確 reviewed head 成功；required checks 亦核對指定
+app 身份。Pending、failed、skipped、neutral、merge queue 或未支援的 active rule 均會等待。
+
+只有仍開啟、具精確可信批准及已保存獨立成功 Review 證據的受管理 Issue 可自動合併。
+等待維持 `awaiting_merge`，原因不變就不重寫 checkpoint，也不重跑 agent。
+外部 head 變動、PR 未合併便關閉、缺少 Review 證據（包括舊 accepted 紀錄）都要求
+明確 `needs_replan`。
+
+目標 branch 前進時，每項任務**最多兩次乾淨的 rebase／重新 Review**，重啟不會重置次數。
+Roc 在修改 Git 前保存 intent，包括舊 head/base、新目標及剩餘次數，核對保留的乾淨
+worktree 只有自己的 trusted commit，且遠端 task head 未變，再把同一 patch rebase 到
+剛 fetch 的目標。只可用指定 expected-old-head 的 force-with-lease push task branch。
+衝突會 abort，保留原有工作；dirty files、異常歷史、外部 head 變動、push 結果不明或
+次數用盡都轉為 `needs_replan`，不會丟棄工作。舊 commit 保留在 `refs/agile-refresh/`。
+
+Refresh 結果確認並寫入後，啟動**新的獨立 Pi Review**，核對精確的新 head/base 並執行
+已批准的 validation commands。原規格、Implement output、歷史 attempts 和用量不變；
+純 Git rebase 不會虛構 Implement／模型 attempt。新 Review 記錄實際模型、effort 和用量。
+被拒絕便須 replan；通過後仍須等新 head 的 CI，再重新核對所有合併保護。
+重啟可繼續已確認 refresh 的 Review；只有 intent、沒有確認結果時必須明確核對，不能盲目重跑 Git。
+
+即使 `--concurrency 2`，refresh、新 Review 和合併決策仍逐項執行。
+Shutdown 等待 selector 擁有的 Git／Review 操作及所有 workers；清理或 checkpoint 結果
+不明時保留 ownership lock。每次 merge 回應（包括遺失回應）後都讀回
+PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依賴任務。
+`--once` 可核對已有 PR，但不會持續等待新 PR 的 CI；完整自動完成請用持續模式。
+自動合併已有涵蓋 refresh／重新 Review 的 transport／Fake Harness 測試，以及真實 Git
+衝突及 lease 測試。[真實 protected branch 驗收](docs/validation/m3-live-2026-09-09.md)
+亦已通過：兩個任務平行執行，其中一個經 rebase、新的獨立 Review 和 CI 後自動合併。
+這次驗收在同一部 Mac 完成，實體雙機流程仍待驗證。
+
 ### 平行執行
+
+資料已足夠的低風險任務，可在批准的 manifest 設定 `skipScout: true`，直接執行 Implement
+及獨立 Review。預設不啟用。Scope 必須是有副檔名的明確相對檔案路徑，不含空白、
+路徑跳轉或 glob；驗收條件和 validation 仍然必填。不確定或較廣的工作保留 Scout。
+Board 會顯示 Scout 已省略，基底更新後仍須新的 Review。詳見 [M4 實測及限制](docs/validation/m4-live-2026-09-09.md)。
+
+`task board` 詳情會顯示總耗時、agent attempt 時間、等待合併時間，以及用量是否完整。
+`scheduler inspect` 另有各階段耗時。最近動作是 GitHub checkpoint 摘要，階段切換時保存，
+工具持續執行時最多每 30 秒補一次；逐項即時動作請看 daemon 輸出。
+舊紀錄沒有時間資料，或 Issue 已關閉但停止尚未確認時，會顯示 unavailable，不會算成零。
+
+失敗時查看執行主機的 `.agile/runtime/agile.log`。紀錄包含安全錯誤代碼、Issue、attempt
+及階段。先核對保留的 worktree；可把已驗證的 commit 填入新批准任務的 `sourceCommit`，
+重用成果並保留原失敗紀錄。程序或 GitHub 寫入結果未確認前，不要移除 ownership lock。
+啟動時若 repository lookup 超時，會在任務開始前重試該讀取一次；第二次失敗回報
+`GITHUB_REPOSITORY_UNAVAILABLE`。
 
 預設為 `--concurrency 2`，`--concurrency 1` 可切回逐項執行。
 一項任務完成後會立即補位，不必等待另一項較慢的任務。

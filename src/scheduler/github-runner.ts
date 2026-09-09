@@ -7,6 +7,7 @@ import {
   initialExecution,
   type NativeTask,
 } from "../github/execution-store";
+import { GitHubPullRequestMerger, type MergeResult } from "../github/pr-merger";
 import type {
   GitHubCommandRunner,
   TaskPublisher,
@@ -20,7 +21,11 @@ import {
   type HarnessRoleInput,
   type HarnessStepRequest,
 } from "../harness/contracts";
-import type { TaskBranchManager } from "../workspace/task-branch";
+import { AgileError, normalizeError } from "../runtime/errors";
+import {
+  type TaskBranchManager,
+  taskBranchName,
+} from "../workspace/task-branch";
 import type { ModelAdvisor } from "./model-routing";
 import { BunTaskHookRunner, type TaskHookRunner } from "./task-hooks";
 
@@ -47,15 +52,51 @@ export type GitHubRunnerInput = {
   command: GitHubCommandRunner;
   cwd: string;
   baseBranch: string;
+  autoMerge?: boolean;
   hooks?: TaskHookRunner;
   activity?: (taskId: string, event: HarnessEvent) => void;
   diagnostic?: (message: string) => void;
+  logError?: (error: AgileError) => Promise<void>;
+  now?: () => string;
+  progress?: (record: ExecutionRecord) => void;
 };
+
+/** Reports a safe error with its task location without exposing unknown exception contents. */
+export async function reportTaskFailure(
+  input: Pick<GitHubRunnerInput, "logError" | "diagnostic">,
+  task: NativeTask,
+  error: unknown,
+): Promise<AgileError> {
+  const normalized = normalizeError(error, {
+    code: "TASK_EXECUTION_FAILED",
+    category: "infra",
+    component: "scheduler",
+    retryable: false,
+    message:
+      "Task execution failed; inspect retained work before creating an approved recovery task",
+  });
+  const diagnostic = new AgileError({
+    ...normalized,
+    message: `${normalized.message} Phase: ${task.execution?.phase ?? task.task.status}.`,
+    taskId: task.task.id,
+    attemptId: task.execution?.attempts.at(-1)?.descriptor.attemptId,
+    cause: error,
+  });
+  await input.logError?.(diagnostic).catch(() => {
+    input.diagnostic?.("Could not write the task diagnostic log");
+  });
+  return diagnostic;
+}
 
 /** Executes one admitted Issue with its own role and hook cancellation scope. */
 export class GitHubTaskRunner {
   private activeAttempt?: string;
   private pendingStart?: Promise<unknown>;
+  private coordinated?: {
+    task: NativeTask;
+    stop: AbortController;
+    done: Promise<void>;
+  };
   /** Connects remote checkpoints to the existing Pi, Git and hook execution boundaries. */
   constructor(private readonly input: GitHubRunnerInput) {
     this.hooks = input.hooks ?? new BunTaskHookRunner();
@@ -89,8 +130,13 @@ export class GitHubTaskRunner {
             `Issue #${task.issue.number}: status label synchronization is pending`,
           ),
         );
-      if (task.execution?.phase === "awaiting_merge" && !task.blockedReason) {
-        await this.reconcileMerge(task, signal);
+      if (
+        !task.blockedReason &&
+        (task.execution?.phase === "awaiting_merge" ||
+          (task.execution?.phase === "reviewing" &&
+            task.execution.refreshes?.length))
+      ) {
+        await this.coordinate(task, signal);
         continue;
       }
       if (!task.approved || task.blockedReason || task.issue.state !== "OPEN")
@@ -137,7 +183,12 @@ export class GitHubTaskRunner {
       if (!task.execution) {
         const base = await this.dependencyBase(task, tasks, signal);
         if (!base) continue;
-        task.execution = initialExecution(task, this.input.baseBranch, base);
+        task.execution = initialExecution(
+          task,
+          this.input.baseBranch,
+          base,
+          this.now(),
+        );
         await this.input.store.save(task, task.execution);
       }
       return task;
@@ -161,21 +212,22 @@ export class GitHubTaskRunner {
     const fresh = await this.input.store.get(task.issue.number);
     const record = fresh.execution;
     if (!record || record.specHash !== jsonHash(fresh.envelope)) return false;
-    if (record.phase === "awaiting_merge" || record.phase === "done")
-      return false;
     if (
-      !["rejected", "failed_infra", "done", "awaiting_merge"].includes(
-        record.phase,
-      )
+      record.phase === "done" ||
+      (record.phase === "awaiting_merge" &&
+        !record.refreshes?.some((refresh) => !refresh.result))
     )
+      return false;
+    if (!["rejected", "failed_infra", "done"].includes(record.phase))
       record.phase = "needs_replan";
     record.failure = reason;
+    if (record.refreshes?.length) delete record.mergeReview;
     for (const attempt of record.attempts) {
       if (attempt.status !== "running") continue;
       attempt.status = "blocked_policy";
       attempt.failure = reason;
       attempt.retryable = false;
-      attempt.endedAt = new Date().toISOString();
+      attempt.endedAt = this.now();
     }
     await this.checkpoint(fresh, record, new AbortController().signal);
     return true;
@@ -193,6 +245,81 @@ export class GitHubTaskRunner {
     ]);
   }
 
+  /** Cancels and drains only the selector-owned Issue, including uncancellable Git mutation and readback. */
+  async cancelCoordinated(taskId?: string): Promise<void> {
+    const owned = this.coordinated;
+    if (!owned || (taskId !== undefined && taskId !== owned.task.task.id))
+      return;
+    owned.stop.abort();
+    await this.cancel();
+    await owned.done.catch((error) => {
+      if (error instanceof AgileError) throw error;
+    });
+  }
+
+  /** Stops selector-owned work when the pool's next remote poll withdraws its authority. */
+  async cancelUnapproved(tasks: NativeTask[]): Promise<void> {
+    const owned = this.coordinated;
+    if (!owned) return;
+    const fresh = tasks.find((task) => task.task.id === owned.task.task.id);
+    if (!fresh?.approved || fresh.blockedReason || fresh.issue.state !== "OPEN")
+      await this.cancelCoordinated(owned.task.task.id);
+  }
+
+  /** Keeps refresh and fresh Review inside the serialized selector with task-local cancellation and recovery. */
+  private async coordinate(
+    task: NativeTask,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const stop = new AbortController();
+    const combined = AbortSignal.any([signal, stop.signal]);
+    const owned = { task, stop, done: Promise.resolve() };
+    this.coordinated = owned;
+    owned.done = (async () => {
+      try {
+        if (task.execution?.phase === "reviewing")
+          await this.reviewRefresh(task, combined);
+        else await this.reconcileMerge(task, combined);
+      } catch (error) {
+        const diagnostic = await reportTaskFailure(this.input, task, error);
+        try {
+          await this.cancel();
+        } catch {
+          throw await reportTaskFailure(
+            this.input,
+            task,
+            new AgileError({
+              code: "TASK_CLEANUP_UNCONFIRMED",
+              category: "infra",
+              component: "scheduler",
+              retryable: false,
+              message:
+                "Coordinator cleanup could not be confirmed; execution ownership must be retained",
+            }),
+          );
+        }
+        if (
+          error instanceof AgileError &&
+          error.code === "GITHUB_CHECKPOINT_UNCONFIRMED"
+        )
+          throw error;
+        const interrupted = await this.interrupt(
+          task,
+          combined.aborted
+            ? "Task cancelled; execution requires replan"
+            : `${diagnostic.code}: ${diagnostic.message}`,
+        );
+        signal.throwIfAborted();
+        if (!interrupted && !combined.aborted) throw error;
+      }
+    })();
+    try {
+      await owned.done;
+    } finally {
+      this.coordinated = undefined;
+    }
+  }
+
   /** Saves a new checkpoint revision after the current operation and before the next one. */
   private async checkpoint(
     task: NativeTask,
@@ -201,9 +328,17 @@ export class GitHubTaskRunner {
   ): Promise<void> {
     signal.throwIfAborted();
     record.revision += 1;
-    record.updatedAt = new Date().toISOString();
+    record.updatedAt = this.now();
+    if (record.timeline && record.timeline.at(-1)?.phase !== record.phase)
+      record.timeline.push({ phase: record.phase, at: record.updatedAt });
     await this.input.store.save(task, record);
+    this.input.progress?.(record);
     signal.throwIfAborted();
+  }
+
+  /** Reads the execution clock for durable phase times and activity coalescing. */
+  private now(): string {
+    return this.input.now?.() ?? new Date().toISOString();
   }
 
   /** Fetches a base containing every dependency's confirmed merge commit. */
@@ -220,7 +355,9 @@ export class GitHubTaskRunner {
           candidate.envelope.task.id === id,
       );
       if (
-        !dependency?.execution?.publication?.number ||
+        dependency?.execution?.phase !== "done" ||
+        !dependency.execution.publication?.number ||
+        !dependency.execution.publication.mergeCommit ||
         dependency.blockedReason
       )
         return undefined;
@@ -230,6 +367,8 @@ export class GitHubTaskRunner {
         pr.state !== "MERGED" ||
         pr.baseRefName !== this.input.baseBranch ||
         !pr.mergeCommit ||
+        pr.mergeCommit.oid !== dependency.execution.publication.mergeCommit ||
+        pr.headRefName !== dependency.execution.publication.branch ||
         pr.headRefOid !== dependency.execution.publication.commitSha
       )
         return undefined;
@@ -266,6 +405,7 @@ export class GitHubTaskRunner {
     await this.input.branches.prepare(task.task.id, record.baseCommit);
     if (!(await this.runHook(task, record, "prehook", signal))) return;
     for (const role of ["scout", "implement", "review"] as const) {
+      if (role === "scout" && task.task.spec.skipScout) continue;
       if (!(await this.runRole(task, record, role, signal))) {
         if (["rejected", "failed_infra"].includes(record.phase))
           await this.runHook(task, record, "posthook", signal);
@@ -325,8 +465,13 @@ export class GitHubTaskRunner {
     role: "scout" | "implement" | "review",
     signal: AbortSignal,
   ): Promise<boolean> {
+    const refresh = role === "review" ? record.refreshes?.at(-1) : undefined;
     let previous = record.attempts.findLast(
-      (attempt) => attempt.descriptor.role === role,
+      (attempt) =>
+        attempt.descriptor.role === role &&
+        (!refresh ||
+          (attempt.reviewTarget?.headSha === refresh.result?.headSha &&
+            attempt.reviewTarget?.baseSha === refresh.targetBase)),
     );
     if (previous?.status === "succeeded")
       return (
@@ -347,7 +492,9 @@ export class GitHubTaskRunner {
       if (attempt?.status !== "running") {
         const retry = attempt ? attempt.descriptor.retryIndex + 1 : 0;
         if (retry > 2 || previous?.retryable === false) {
-          record.phase = "failed_infra";
+          record.phase = refresh ? "needs_replan" : "failed_infra";
+          if (refresh)
+            record.failure = "Fresh Review exhausted retries; replan required";
           await this.checkpoint(task, record, signal);
           return false;
         }
@@ -392,8 +539,16 @@ export class GitHubTaskRunner {
             modelProfile: route.profile,
             effort: route.effort,
           },
+          ...(role === "review"
+            ? {
+                reviewTarget: {
+                  headSha: this.reviewHead(record),
+                  baseSha: record.baseCommit,
+                },
+              }
+            : {}),
           status: "running",
-          startedAt: new Date().toISOString(),
+          startedAt: this.now(),
           sequence: 0,
           events: {},
           usage: { ...zeroUsage },
@@ -409,9 +564,10 @@ export class GitHubTaskRunner {
               : "reviewing";
         await this.checkpoint(task, record, signal);
       }
-      const scout = record.attempts.findLast(
+      const scoutOutput = record.attempts.findLast(
         (item) => item.status === "succeeded" && item.output?.kind === "scout",
       )?.output;
+      const scout = scoutOutput?.kind === "scout" ? scoutOutput : undefined;
       const implementation = record.attempts.findLast(
         (item) =>
           item.status === "succeeded" && item.output?.kind === "implement",
@@ -423,11 +579,26 @@ export class GitHubTaskRunner {
       };
       let input: HarnessRoleInput;
       if (role === "scout") input = { role, ticket };
-      else if (scout?.kind !== "scout") throw Error("Missing Scout output");
+      else if (!scout && !ticket.spec.skipScout)
+        throw Error("Missing Scout output");
       else if (role === "implement") input = { role, ticket, scout };
       else if (implementation?.kind === "implement")
-        input = { role, ticket, scout, implementation };
+        input = {
+          role,
+          ticket,
+          scout,
+          implementation: {
+            ...implementation,
+            commitSha: this.reviewHead(record),
+          },
+        };
       else throw Error("Missing Implement output");
+      if (input.role === "review")
+        await this.input.branches.assertReviewReady(
+          task.task.id,
+          input.implementation.commitSha,
+          record.baseCommit,
+        );
       let request: HarnessStepRequest = {
         mode: created ? "dispatch" : "reconcile",
         attempt: attempt.descriptor,
@@ -466,7 +637,30 @@ export class GitHubTaskRunner {
               throw Error("Non-monotonic attempt event");
             attempt.sequence = event.sequence;
             this.input.activity?.(task.task.id, event);
-            if (event.type !== "attempt.activity") {
+            if (event.type === "attempt.activity") {
+              attempt.activity = {
+                ...event.activity,
+                occurredAt: event.occurredAt,
+              };
+              if (
+                Date.parse(this.now()) - Date.parse(record.updatedAt) >=
+                30_000
+              ) {
+                attempt.cursor = delivered.nextCursor;
+                await this.checkpoint(task, record, signal);
+              }
+            } else {
+              if (
+                event.type === "attempt.completed" &&
+                input.role === "review" &&
+                attempt.output?.kind === "review" &&
+                attempt.output.decision === "accepted"
+              )
+                await this.input.branches.assertReviewReady(
+                  task.task.id,
+                  input.implementation.commitSha,
+                  record.baseCommit,
+                );
               attempt.events[event.eventId] = hash;
               this.applyEvent(record, attempt, event);
               attempt.cursor = delivered.nextCursor;
@@ -512,11 +706,28 @@ export class GitHubTaskRunner {
       attempt.status = "succeeded";
       attempt.endedAt = event.occurredAt;
       attempt.usageKnown = true;
-      if (
-        attempt.output.kind === "review" &&
-        attempt.output.decision === "rejected"
-      )
-        record.phase = "rejected";
+      if (attempt.output.kind === "review") {
+        delete record.mergeReview;
+        if (attempt.output.decision === "rejected") {
+          record.phase = record.refreshes?.length ? "needs_replan" : "rejected";
+          if (record.refreshes?.length)
+            record.failure =
+              "Fresh Review rejected the rebased patch; replan required";
+        } else {
+          const implementation = record.attempts.findLast(
+            (item) =>
+              item.status === "succeeded" && item.output?.kind === "implement",
+          )?.output;
+          if (implementation?.kind !== "implement")
+            throw Error("Missing reviewed implementation");
+          record.mergeReview = {
+            specHash: record.specHash,
+            headSha: attempt.reviewTarget?.headSha ?? implementation.commitSha,
+            baseSha: attempt.reviewTarget?.baseSha ?? record.baseCommit,
+            reviewAttemptId: attempt.descriptor.attemptId,
+          };
+        }
+      }
     } else if (
       event.type === "attempt.failed_infra" ||
       event.type === "attempt.blocked_policy"
@@ -597,31 +808,275 @@ export class GitHubTaskRunner {
     task: NativeTask,
     signal: AbortSignal,
   ): Promise<void> {
+    const fresh = await this.input.store.get(task.issue.number);
+    signal.throwIfAborted();
+    Object.assign(task, fresh);
     const record = task.execution;
-    if (!record?.publication?.number) return;
-    const pr = await this.readPr(record.publication.number);
+    if (!record?.publication?.number || record.phase !== "awaiting_merge")
+      return;
+    if (!fresh.approved || fresh.blockedReason) return;
+    let result: MergeResult;
+    if (record.refreshes?.some((refresh) => !refresh.result)) {
+      result = {
+        kind: "replan",
+        reason:
+          "Interrupted base refresh intent requires reconciliation; Git will not be replayed",
+      };
+    } else if (record.baseBranch !== this.input.baseBranch) {
+      result = { kind: "replan", reason: "Configured target branch changed" };
+    } else if (record.publication.branch !== taskBranchName(task.task.id)) {
+      result = {
+        kind: "replan",
+        reason: "Publication is not the Roc-owned task branch; replan required",
+      };
+    } else if (this.input.autoMerge && fresh.issue.state === "OPEN") {
+      if (!this.hasMergeReview(record)) {
+        result = {
+          kind: "replan",
+          reason:
+            "Exact successful independent Review evidence is missing or mismatched; explicit replan required",
+        };
+      } else {
+        const merger = new GitHubPullRequestMerger(
+          this.input.store.repository,
+          this.input.cwd,
+          this.input.command,
+        );
+        result = await merger.reconcile(
+          {
+            number: record.publication.number,
+            headBranch: record.publication.branch,
+            headSha: record.publication.commitSha,
+            baseBranch: record.baseBranch,
+            baseSha: record.baseCommit,
+          },
+          async () => {
+            const authority = await this.input.store.get(task.issue.number);
+            signal.throwIfAborted();
+            if (
+              !authority.approved ||
+              authority.blockedReason ||
+              authority.issue.state !== "OPEN"
+            )
+              return "Trusted Issue approval is missing or withdrawn, or the Issue is not open";
+            if (
+              jsonHash(authority.envelope) !== record.specHash ||
+              jsonHash(authority.execution) !== jsonHash(record)
+            )
+              return "Issue specification or execution evidence changed before merge; reconcile the remote checkpoint";
+            return undefined;
+          },
+          signal,
+        );
+      }
+    } else {
+      // Auto-closed Issues may recover a completed merge, but never submit one.
+      const pr = await this.readPr(record.publication.number);
+      if (
+        pr.baseRefName !== record.baseBranch ||
+        pr.headRefName !== record.publication.branch ||
+        pr.headRefOid !== record.publication.commitSha ||
+        pr.state === "CLOSED"
+      )
+        result = {
+          kind: "replan",
+          reason: "Published PR changed or closed without merge",
+        };
+      else if (pr.state === "MERGED" && pr.mergeCommit)
+        result = { kind: "merged", mergeCommit: pr.mergeCommit.oid };
+      else return;
+    }
+    signal.throwIfAborted();
+    if (result.kind === "refresh") {
+      await this.refreshBase(task, result.targetBase, signal);
+      return;
+    }
+    if (result.kind === "merged") {
+      try {
+        await this.command(["git", "fetch", "origin", record.baseBranch]);
+        await this.command([
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          result.mergeCommit,
+          `refs/remotes/origin/${record.baseBranch}`,
+        ]);
+      } catch {
+        result = {
+          kind: "waiting",
+          reason:
+            "Remote merge is not yet verified in the fetched target; check origin access and merge ancestry",
+        };
+      }
+    }
+    signal.throwIfAborted();
+    const phase =
+      result.kind === "merged"
+        ? "done"
+        : result.kind === "replan"
+          ? "needs_replan"
+          : "awaiting_merge";
+    const reason = result.kind === "merged" ? undefined : result.reason;
+    if (record.phase === phase && record.failure === reason) return;
+    if (result.kind === "merged")
+      record.publication.mergeCommit = result.mergeCommit;
+    record.phase = phase;
+    if (reason) record.failure = reason;
+    else delete record.failure;
+    await this.checkpoint(task, record, signal);
+  }
+
+  /** Persists a bounded intent before any Git mutation and a confirmed result before dispatching fresh Review. */
+  private async refreshBase(
+    task: NativeTask,
+    targetBase: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const record = task.execution;
+    const publication = record?.publication;
+    if (!record || !publication) throw Error("Missing refresh publication");
+    if ((record.refreshes?.length ?? 0) >= 2) {
+      record.phase = "needs_replan";
+      record.failure =
+        "Automatic base refresh budget exhausted (two cycles); replan required";
+      await this.checkpoint(task, record, signal);
+      return;
+    }
+    const refresh: NonNullable<ExecutionRecord["refreshes"]>[number] = {
+      expectedHead: publication.commitSha,
+      expectedBase: record.baseCommit,
+      targetBase,
+      budgetRemaining: 1 - (record.refreshes?.length ?? 0),
+    };
+    record.refreshes ??= [];
+    record.refreshes.push(refresh);
+    delete record.mergeReview;
+    delete record.failure;
+    await this.checkpoint(task, record, signal);
+    const authority = await this.input.store.get(task.issue.number);
     signal.throwIfAborted();
     if (
-      pr.baseRefName !== record.baseBranch ||
-      pr.headRefName !== record.publication.branch ||
-      pr.headRefOid !== record.publication.commitSha ||
-      pr.state === "CLOSED"
-    ) {
-      record.phase = "needs_replan";
-      record.failure = "Published PR changed or closed without merge";
-    } else if (pr.state === "MERGED" && pr.mergeCommit) {
-      await this.command(["git", "fetch", "origin", record.baseBranch]);
-      await this.command([
-        "git",
-        "merge-base",
-        "--is-ancestor",
-        pr.mergeCommit.oid,
-        `refs/remotes/origin/${record.baseBranch}`,
-      ]);
-      record.publication.mergeCommit = pr.mergeCommit.oid;
-      record.phase = "done";
-    } else return;
+      !authority.approved ||
+      authority.blockedReason ||
+      authority.issue.state !== "OPEN" ||
+      jsonHash(authority.envelope) !== record.specHash ||
+      jsonHash(authority.execution) !== jsonHash(record)
+    )
+      throw Error("Issue authority changed before base refresh");
+    const headSha = await this.input.branches.refresh(task.task.id, {
+      ...refresh,
+      baseBranch: record.baseBranch,
+    });
+    signal.throwIfAborted();
+    refresh.result = { headSha };
+    record.baseCommit = targetBase;
+    publication.commitSha = headSha;
+    record.phase = "reviewing";
     await this.checkpoint(task, record, signal);
+    await this.reviewRefresh(task, signal);
+  }
+
+  /** Resumes only a confirmed refresh's independent Review without replaying Implement, hooks or publication. */
+  private async reviewRefresh(
+    task: NativeTask,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const fresh = await this.input.store.get(task.issue.number);
+    signal.throwIfAborted();
+    Object.assign(task, fresh);
+    const record = task.execution;
+    if (
+      record?.phase !== "reviewing" ||
+      !fresh.approved ||
+      fresh.blockedReason ||
+      fresh.issue.state !== "OPEN"
+    )
+      return;
+    if (record.baseBranch !== this.input.baseBranch)
+      throw Error("Configured target branch changed");
+    const head = this.reviewHead(record);
+    if (!record.refreshes?.length || head !== record.publication?.commitSha)
+      throw Error("Confirmed refreshed publication is missing or mismatched");
+    task.task.baseCommit = record.baseCommit;
+    await this.input.branches.assertReviewReady(
+      task.task.id,
+      head,
+      record.baseCommit,
+    );
+    if (!(await this.runRole(task, record, "review", signal))) return;
+    if (!this.hasMergeReview(record))
+      throw Error("Fresh Review evidence is missing or mismatched");
+    record.phase = "awaiting_merge";
+    delete record.failure;
+    await this.checkpoint(task, record, signal);
+    // CI and PR authority must be reread on a later coordinator poll for the rewritten head.
+  }
+
+  /** Derives the exact Review target from the original Implement output and a complete bounded refresh chain. */
+  private reviewHead(record: ExecutionRecord): string {
+    const implementation = record.attempts.findLast(
+      (attempt) => attempt.descriptor.role === "implement",
+    );
+    if (
+      implementation?.status !== "succeeded" ||
+      implementation.output?.kind !== "implement"
+    )
+      throw Error("Missing validated implementation");
+    let head = implementation.output.commitSha;
+    let base = record.refreshes?.[0]?.expectedBase ?? record.baseCommit;
+    for (const [index, refresh] of (record.refreshes ?? []).entries()) {
+      if (
+        !refresh.result ||
+        refresh.expectedHead !== head ||
+        refresh.expectedBase !== base ||
+        refresh.targetBase === base ||
+        refresh.result.headSha === head ||
+        refresh.budgetRemaining !== 1 - index
+      )
+        throw Error(
+          "Interrupted or mismatched base refresh requires reconciliation",
+        );
+      head = refresh.result.headSha;
+      base = refresh.targetBase;
+    }
+    if (base !== record.baseCommit)
+      throw Error("Confirmed refresh base does not match the checkpoint");
+    return head;
+  }
+
+  /** Requires the latest independent accepted Review to bind the approved spec, published head and pinned base. */
+  private hasMergeReview(record: ExecutionRecord): boolean {
+    const evidence = record.mergeReview;
+    const review = record.attempts.findLast(
+      (attempt) => attempt.descriptor.role === "review",
+    );
+    const implementation = record.attempts.findLast(
+      (attempt) => attempt.descriptor.role === "implement",
+    );
+    let head: string;
+    try {
+      head = this.reviewHead(record);
+    } catch {
+      return false;
+    }
+    return (
+      !!evidence &&
+      evidence.specHash === record.specHash &&
+      evidence.baseSha === record.baseCommit &&
+      evidence.headSha === record.publication?.commitSha &&
+      review?.descriptor.attemptId === evidence.reviewAttemptId &&
+      review.status === "succeeded" &&
+      review.output?.kind === "review" &&
+      review.output.decision === "accepted" &&
+      implementation?.status === "succeeded" &&
+      implementation.output?.kind === "implement" &&
+      head === evidence.headSha &&
+      (!record.refreshes?.length ||
+        (review.reviewTarget?.headSha === head &&
+          review.reviewTarget.baseSha === record.baseCommit)) &&
+      implementation.descriptor.attemptId !== review.descriptor.attemptId &&
+      record.attempts.indexOf(review) > record.attempts.indexOf(implementation)
+    );
   }
 
   /** Reads only the PR fields needed for dependency and completion verification. */

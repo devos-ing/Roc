@@ -4,16 +4,26 @@ Direction updated on 2026-09-08 from the user's request. This roadmap describes
 the target behavior. M1 uses GitHub checkpoints and per-Issue worktrees.
 M2 now adds up to two independent workers, task-local cancellation and all-task
 inspection. [Live GitHub and sandboxed GPT-6 acceptance passed](validation/m1-m2-live-2026-09-09.md)
-on one Mac. Physical two-host acceptance remains outstanding.
-Superset is deferred and is not a prerequisite for core development.
+on one Mac. Physical two-host acceptance is deferred to later work.
+M3 now adds guarded automatic merge and bounded base refresh with fresh Review.
+[Live protected-branch acceptance passed](validation/m3-live-2026-09-09.md)
+for two parallel tasks, including a rebase, new Review and fresh CI before the
+second merge. The implementation exercise still needed coordinator recovery;
+the report distinguishes it from the successful automatic fixture run.
+M4 software now provides failure diagnostics, timing/activity inspection, bounded
+GitHub reads and opt-in Scout omission. [Local fixed-task comparisons](validation/m4-live-2026-09-09.md)
+are complete. M4 is complete for the revised scope; the user deferred physical
+MacBook/Mac mini acceptance in Issue #56, which remains unverified follow-up work.
+The current stage ends at M4. M5 Superset integration is outside this stage and
+will only be reconsidered after a new scope decision, not automatically after M4.
 
 | Milestone | Outcome | Depends on |
 | --- | --- | --- |
 | [M1: GitHub-native tasks and per-issue worktrees](https://github.com/devos-ing/Roc/milestone/1) | One approved GitHub Issue runs in its own native Git worktree through Pi, independent review and a reconciled PR. Production task state no longer uses local SQLite. | None |
 | [M2: Parallel task execution](https://github.com/devos-ing/Roc/milestone/2) | Up to two independent Issues execute concurrently with separate worktrees, sessions and cancellation scopes. | M1 |
 | [M3: AI-reviewed automatic PR merge](https://github.com/devos-ing/Roc/milestone/3) | Roc merges the exact reviewed head after required checks and repository rules pass, then releases dependencies. | M1, M2 |
-| [M4: Execution visibility and measured speed](https://github.com/devos-ing/Roc/milestone/4) | Visible progress, two-Mac operation and measured token/time improvements without lost quality. | M1; parallel and merge comparisons follow M2/M3 |
-| [M5: Superset integration](https://github.com/devos-ing/Roc/milestone/5) | Optional remote UI for Roc-managed worktrees, terminal activity and diffs. | Deferred until the core milestones are established |
+| [M4: Execution visibility and measured speed](https://github.com/devos-ing/Roc/milestone/4) | Visible progress and measured token/time improvements with unchanged acceptance outcomes. Physical two-host acceptance is deferred to Issue #56. | M1; parallel and merge comparisons follow M2/M3 |
+| [M5: Superset integration](https://github.com/devos-ing/Roc/milestone/5) | Future option for a remote UI for Roc-managed worktrees, terminal activity and diffs. | Outside this stage; requires a new scope decision |
 
 GitHub Issues retain requirements, priorities, dependencies and approved spec
 identity. Roc-owned GitHub records retain execution checkpoints, attempt
@@ -64,6 +74,10 @@ attempts, single-task time, batch completion time, retries and escaped defects
 separately. Apply one ablation at a time, such as omitting redundant Scout work
 on a sufficiently specified low-risk task. Retain a removal only when required
 behavior and quality are preserved.
+
+M4 must also preserve useful sanitized failure diagnostics. During M3 development,
+one worker stopped after creating a tested commit but before saving its Implement
+result. Its generic failure message did not establish the original exception.
 
 Superset research, diagrams, login helpers and the unexecuted setup wizard remain
 reference material. The earlier Superset-owned workspace and SQLite plan is

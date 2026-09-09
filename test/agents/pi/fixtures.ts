@@ -202,13 +202,16 @@ export function memoryBranches(
   overrides: Partial<TaskBranchManager> = {},
 ): TaskBranchManager {
   return {
-    async prepare(taskId) {
+    async prepare(taskId, baseCommit = "a".repeat(40)) {
       return {
         taskId,
         path: `/tmp/agile-pi-${taskId}`,
         branch: `agile/${taskId}`,
-        baseCommit: "a".repeat(40),
+        baseCommit,
       };
+    },
+    async refresh() {
+      throw Error("Unexpected base refresh");
     },
     async restoreChanges() {},
     async commitChanges() {

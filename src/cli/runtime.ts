@@ -150,8 +150,10 @@ export async function runBackendSession(
           backend = await factory({ branches });
           retain = false;
           stop.throwIfAborted();
+          const lastProgress = new Map<number, string>();
           const runner = new GitHubTaskPool({
             concurrency: input.concurrency,
+            autoMerge: input.autoMerge,
             store,
             branches,
             harness: backend.harness,
@@ -163,6 +165,23 @@ export async function runBackendSession(
             cwd: input.repoPath,
             baseBranch,
             diagnostic: (message) => process.stderr.write(`${message}\n`),
+            /** Emits confirmed phase changes and wait reasons once while tool activity stays local. */
+            progress(record) {
+              const summary = `Phase: ${record.phase}${record.failure ? ` · ${record.failure}` : ""}`;
+              if (lastProgress.get(record.issueNumber) === summary) return;
+              lastProgress.set(record.issueNumber, summary);
+              const taskId = `issue-${record.issueNumber}`;
+              if (options.onActivity) options.onActivity(taskId, summary);
+              else process.stdout.write(`${taskId}: ${summary}\n`);
+            },
+            logError: (error) =>
+              logger.error(
+                new AgileError({
+                  ...error,
+                  message: error.message,
+                  runId,
+                }),
+              ),
             activity: (taskId, event) => {
               const summary =
                 event.type === "attempt.activity"

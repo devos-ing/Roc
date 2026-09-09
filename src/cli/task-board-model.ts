@@ -5,6 +5,7 @@ import type {
   InspectionRole,
   InspectionScheduler,
   InspectionSnapshot,
+  InspectionTask,
   TokenTotals,
 } from "../domain/inspection";
 import type { StoredTask, TaskStatus, TicketSpec } from "../domain/schemas";
@@ -24,6 +25,8 @@ export type TaskBoardTask = {
   issueUrl?: string;
   pullRequestUrl?: string;
   failure?: string;
+  timing?: InspectionTask["timing"];
+  usageIncomplete?: boolean;
   cycleId: string;
   title: string;
   rawStatus: TaskStatus;
@@ -135,6 +138,8 @@ export function buildTaskBoardSnapshot(
       issueUrl: inspected.issueUrl,
       pullRequestUrl: inspected.pullRequestUrl,
       failure: inspected.failure,
+      timing: inspected.timing,
+      usageIncomplete: inspected.usageIncomplete,
       modelDecisions: inspected.modelDecisions,
       roles: inspected.roles,
       tokenTarget: inspected.tokenTarget,
