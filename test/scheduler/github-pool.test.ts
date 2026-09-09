@@ -17,6 +17,9 @@ const branches: TaskBranchManager = {
       baseCommit: base,
     };
   },
+  async refresh() {
+    throw Error("Unexpected base refresh");
+  },
   async restoreChanges() {},
   async commitChanges() {
     return base;

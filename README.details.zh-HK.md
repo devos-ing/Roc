@@ -22,7 +22,7 @@ flowchart LR
 目前最多同時執行兩項獨立任務。每個 Issue 使用
 `<project>.agile-worktrees/issue-<number>` 及 `agile/issue-<number>` branch。
 Roc 不再建立任務資料庫；設定、worktree、程序鎖、診斷 log 和 Pi session 留在本機。
-可選擇啟用有保護檢查的自動合併 PR；M3 下一部分才加入有限次數的 base refresh／重新 Review，Superset 暫緩。
+可選擇啟用有保護檢查的自動合併 PR，每項任務最多兩次乾淨的 base refresh／重新 Review；Superset 暫緩。
 
 ### 驗證狀態
 
@@ -98,13 +98,29 @@ app 身份。Pending、failed、skipped、neutral、merge queue 或未支援的 
 
 只有仍開啟、具精確可信批准及已保存獨立成功 Review 證據的受管理 Issue 可自動合併。
 等待維持 `awaiting_merge`，原因不變就不重寫 checkpoint，也不重跑 agent。
-外部 head 變動、PR 未合併便關閉、缺少 Review 證據（包括舊 accepted 紀錄），或 reviewed
-base 已前進，都要求明確 `needs_replan`；這一部分**不會自動 rebase／重新 Review**。
+外部 head 變動、PR 未合併便關閉、缺少 Review 證據（包括舊 accepted 紀錄）都要求
+明確 `needs_replan`。
 
-即使 `--concurrency 2`，合併決策仍逐項執行。每次 merge 回應（包括遺失回應）後都讀回
+目標 branch 前進時，每項任務**最多兩次乾淨的 rebase／重新 Review**，重啟不會重置次數。
+Roc 在修改 Git 前保存 intent，包括舊 head/base、新目標及剩餘次數，核對保留的乾淨
+worktree 只有自己的 trusted commit，且遠端 task head 未變，再把同一 patch rebase 到
+剛 fetch 的目標。只可用指定 expected-old-head 的 force-with-lease push task branch。
+衝突會 abort，保留原有工作；dirty files、異常歷史、外部 head 變動、push 結果不明或
+次數用盡都轉為 `needs_replan`，不會丟棄工作。舊 commit 保留在 `refs/agile-refresh/`。
+
+Refresh 結果確認並寫入後，啟動**新的獨立 Pi Review**，核對精確的新 head/base 並執行
+已批准的 validation commands。原規格、Implement output、歷史 attempts 和用量不變；
+純 Git rebase 不會虛構 Implement／模型 attempt。新 Review 記錄實際模型、effort 和用量。
+被拒絕便須 replan；通過後仍須等新 head 的 CI，再重新核對所有合併保護。
+重啟可繼續已確認 refresh 的 Review；只有 intent、沒有確認結果時必須明確核對，不能盲目重跑 Git。
+
+即使 `--concurrency 2`，refresh、新 Review 和合併決策仍逐項執行。
+Shutdown 等待 selector 擁有的 Git／Review 操作及所有 workers；清理或 checkpoint 結果
+不明時保留 ownership lock。每次 merge 回應（包括遺失回應）後都讀回
 PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依賴任務。
 `--once` 可核對已有 PR，但不會持續等待新 PR 的 CI；完整自動完成請用持續模式。
-自動合併已有確定性的 transport／Fake Harness 測試，真實 protected branch 驗收仍待完成。
+自動合併已有涵蓋 refresh／重新 Review 的 transport／Fake Harness 測試，以及真實 Git
+衝突及 lease 測試；真實 protected branch 驗收仍待完成。
 
 ### 平行執行
 

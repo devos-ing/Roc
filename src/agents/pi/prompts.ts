@@ -72,7 +72,7 @@ export function implementPrompt(
   ].join("\n");
 }
 
-/** Builds the read-only review prompt for an exact Implement commit. */
+/** Builds an independent read-only review prompt requiring fresh validation of the exact head and base. */
 export function reviewPrompt(
   input: Extract<HarnessStepRequest["input"], { role: "review" }>,
 ): string {
@@ -81,7 +81,10 @@ export function reviewPrompt(
 
   return [
     "You are the Review agent for an isolated software ticket.",
-    `Review the exact Implement commit ${validated.implementation.commitSha}.`,
+    `Review the exact trusted task head ${validated.implementation.commitSha} against base ${validated.ticket.baseCommit}.`,
+    "This head may be the original Implement commit or the same patch rebased by Roc; review the current exact diff independently.",
+    "Run every approved validation command below against this exact head and report actual results or blockers in findings/remainingGaps; historical Implement validation is not fresh validation.",
+    JSON.stringify(validated.ticket.spec.validation),
     "The Scout capsule is a retrieval guide. Verify the ticket against the actual diff and current source, including the reported risks.",
     "Do not create, edit, rename, or delete files. Do not make commits.",
     "Your final message must be exactly one JSON object and nothing else.",
@@ -97,7 +100,7 @@ export function reviewPrompt(
     "Validated Scout capsule:",
     JSON.stringify(validated.scout, null, 2),
     "",
-    "Validated Implement result:",
+    "Historical Implement report with the trusted current review-target SHA (not a new Implement attempt):",
     JSON.stringify(validated.implementation, null, 2),
   ].join("\n");
 }
