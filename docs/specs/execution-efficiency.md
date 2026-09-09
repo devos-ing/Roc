@@ -3,6 +3,8 @@
 M4 completes the current stage. Superset is outside scope. GitHub remains the
 task authority, native worktrees remain isolated and Pi keeps the configured
 GPT-6 model and high-or-higher reasoning policy.
+The user deferred physical two-host acceptance to later work. It is not a gate
+for completing M4 or committing and pushing the verified workflow.
 
 ## Delivery order
 
@@ -39,10 +41,13 @@ GPT-6 model and high-or-higher reasoning policy.
    and validation lists. Omitted Scout context and attempts remain absent; the
    prompts explicitly disclose that no Scout inspected the repository. Compare
    the candidate before deciding to retain it.
-4. Verify MacBook publication and Mac mini execution through GitHub, with one
-   active executor. Confirm inspection, interruption/restart and isolation on the
-   actual hosts. Host access is a prerequisite for this acceptance item; a local
-   sandbox does not substitute for physical two-host evidence.
+
+## Deferred follow-up
+
+Issue #56 retains physical MacBook publication and Mac mini execution acceptance
+for later work. Verify inspection, interruption/restart and isolation on the
+actual hosts with one active executor. Host access is required when this work
+resumes; a local sandbox does not substitute for physical two-host evidence.
 
 ## Verification boundaries
 
