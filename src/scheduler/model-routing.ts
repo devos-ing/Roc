@@ -17,7 +17,7 @@ export type AdvisorInput = {
 export type Route = {
   profile: ModelProfile;
   model: string;
-  effort: "high" | "xhigh";
+  effort: "medium" | "high";
   fallbacks: string[];
   rationale: string[];
 };
@@ -109,7 +109,8 @@ export function createModelAdvisor(
   return {
     /** Chooses the first compatible routed model and records its fallbacks and rationale. */
     decide(input) {
-      const effort: Route["effort"] = input.risk === "high" ? "xhigh" : "high";
+      const effort: Route["effort"] =
+        input.role === "implement" ? "medium" : "high";
       const choices = routeProfiles(input).flatMap((profile) => {
         const model = modelForProfile(profile, effort);
         return model === undefined ? [] : [{ profile, model }];
@@ -133,7 +134,7 @@ export function createStaticModelAdvisor(): ModelAdvisor {
   return createModelAdvisor(
     profileOrder.map((id) => ({
       id,
-      supportedReasoningEfforts: ["high", "xhigh"],
+      supportedReasoningEfforts: ["medium", "high"],
     })),
     { luna: "luna", terra: "terra", sol: "sol" },
   );

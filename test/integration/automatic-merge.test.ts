@@ -113,7 +113,7 @@ function fixture(count = 1, dependent = false, skipScout = false) {
           taskId: `issue-${issue.number}`,
           role,
           retryIndex: 0,
-          expect: { model, effort: "high" },
+          expect: { model, effort: role === "implement" ? "medium" : "high" },
           deliveries: [
             {
               nextCursor: "output",
@@ -319,7 +319,7 @@ function fixture(count = 1, dependent = false, skipScout = false) {
       async cancel() {},
     },
     advisor: createModelAdvisor(
-      [{ id: model, supportedReasoningEfforts: ["high", "xhigh"] }],
+      [{ id: model, supportedReasoningEfforts: ["medium", "high", "xhigh"] }],
       { luna: model, terra: model, sol: model },
     ),
     publisher: {

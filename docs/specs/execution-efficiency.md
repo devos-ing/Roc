@@ -2,7 +2,9 @@
 
 M4 completes the current stage. Superset is outside scope. GitHub remains the
 task authority, native worktrees remain isolated and Pi keeps the configured
-GPT-6 model and high-or-higher reasoning policy.
+GPT-6 model policy. The later role-routing update uses `high` for new
+Scout/Review attempts and `medium` for Implement; the recorded M4 benchmarks
+used the earlier all-high policy and are not measurements of this update.
 The user deferred physical two-host acceptance to later work. It is not a gate
 for completing M4 or committing and pushing the verified workflow.
 

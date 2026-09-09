@@ -68,7 +68,8 @@ After an ambiguous merge response, read GitHub's actual PR state before retrying
 `done` means the PR was confirmed merged; an open PR is awaiting merge, and a
 closed-unmerged PR or Issue is not successful completion.
 
-Preserve Pi and the user's GPT-6 reasoning policy. Keep progress observable
+Preserve Pi and the user's GPT-6 Astra policy: new Scout/Review attempts use `high`,
+and Implement uses `medium`. Existing attempts keep their recorded settings. Keep progress observable
 without posting every tool event to GitHub. Measure total tokens across all
 attempts, single-task time, batch completion time, retries and escaped defects
 separately. Apply one ablation at a time, such as omitting redundant Scout work

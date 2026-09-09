@@ -74,6 +74,95 @@ test("shutdown after a confirmed publication does not rewrite completed work as 
   expect((await remote.store().get(41)).execution).toEqual(before.execution);
 });
 
+test("a persisted Implement attempt keeps high when new implementation routes use medium", async () => {
+  const remote = memoryGitHub();
+  await seed(remote, (record) => {
+    record.phase = "implementing";
+    record.attempts = [
+      {
+        descriptor: {
+          attemptId: "old-scout",
+          taskId: "issue-41",
+          role: "scout",
+          retryIndex: 0,
+          modelProfile: "luna",
+          model,
+          effort: "high",
+        },
+        status: "succeeded",
+        startedAt: time,
+        endedAt: time,
+        sequence: 1,
+        events: {},
+        usage: { ...zeroUsage },
+        usageKnown: true,
+        output: {
+          kind: "scout",
+          summary: "Inspect answer",
+          files: ["answer.ts"],
+          tests: ["bun test"],
+          risks: [],
+        },
+      },
+      {
+        descriptor: {
+          attemptId: "old-implement",
+          taskId: "issue-41",
+          role: "implement",
+          retryIndex: 0,
+          modelProfile: "terra",
+          model,
+          effort: "high",
+        },
+        status: "running",
+        startedAt: time,
+        sequence: 0,
+        events: {},
+        usage: { ...zeroUsage },
+        usageKnown: false,
+      },
+    ];
+  });
+  const fake = createFakeHarness({
+    attempts: [
+      {
+        taskId: "issue-41",
+        role: "implement",
+        retryIndex: 0,
+        expect: { model, effort: "high" },
+        deliveries: [
+          {
+            nextCursor: "1",
+            event: {
+              type: "attempt.blocked_policy",
+              eventId: "stop",
+              attemptId: "old-implement",
+              sequence: 1,
+              occurredAt: time,
+              code: "interaction_cancelled",
+              message: "Needs input",
+            },
+          },
+        ],
+      },
+    ],
+  });
+  const requests: HarnessStepRequest[] = [];
+  await runner(remote, {
+    async step(request) {
+      requests.push(request);
+      return fake.harness.step(request);
+    },
+    async cancel() {},
+  }).runOnce(new AbortController().signal);
+  expect(requests[0]).toMatchObject({
+    mode: "reconcile",
+    attempt: { attemptId: "old-implement", effort: "high" },
+  });
+  expect((await remote.store().get(41)).execution?.attempts).toHaveLength(2);
+  fake.assertComplete();
+});
+
 test("dependencies wait for the recorded PR head to merge into the target before pinning a fetched base", async () => {
   const remote = memoryGitHub();
   const first = manifest.tasks[0];
@@ -227,7 +316,7 @@ function runner(
       async cancel() {},
     },
     advisor: createModelAdvisor(
-      [{ id: model, supportedReasoningEfforts: ["high", "xhigh"] }],
+      [{ id: model, supportedReasoningEfforts: ["medium", "high", "xhigh"] }],
       { luna: model, terra: model, sol: model },
     ),
     publisher: {
