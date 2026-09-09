@@ -18,6 +18,18 @@ GitHub Issues 保存規格、批准和執行紀錄。Daemon 在自己帳戶擁�
 Roc 不再建立任務資料庫；設定、worktree、程序鎖、診斷 log 和 Pi session 留在本機。
 可選擇啟用有保護檢查的自動合併 PR，每項任務最多兩次乾淨的 base refresh／重新 Review；Superset 暫緩。
 
+### Context 壓縮
+
+Roc 使用 Pi 內建的自動 context 壓縮，除非在 Pi 使用者設定中停用，否則預設啟用。
+接近模型的 context 上限時，Pi 會摘要較舊訊息，保留近期內容供後續請求使用。
+
+Scout、Implement、Review 各自使用獨立的 Pi session，壓縮只處理該 session 的內容。
+GitHub Issues 保存任務規格及執行 checkpoint，本機 Pi session 檔案保留對話歷史。
+Roc 不另寫一套壓縮機制。
+
+觸發條件、保留內容及 `compaction` 設定，請參閱
+[Pi 官方文件](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)。
+
 ### 驗證狀態
 
 M1–M4 已按修訂範圍完成。以下功能請使用這份 checkout 的 `src/cli/main.ts`，

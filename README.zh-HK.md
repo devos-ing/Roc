@@ -36,6 +36,10 @@ flowchart LR
 新 Codex 設定使用 GPT-6 Astra；已有的模型設定會保留。Roc 使用 Pi 的工具與 agent loop，
 不會啟動 Codex CLI 或 Claude Code。
 
+Pi 預設啟用自動 context 壓縮，接近 session 的 context 上限時會摘要較舊內容。
+Roc 沿用 Pi 的設定。詳見[context 壓縮](README.details.zh-HK.md#context-壓縮)及
+[Pi 官方文件](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)。
+
 **目前狀態：** M1–M4 已按修訂範圍完成，真實 GitHub／GPT-6 sandbox 流程已驗收。
 實體雙機驗收延後至 [#56](https://github.com/devos-ing/Roc/issues/56)，Superset 不在本階段。
 [驗收與效能數據](README.details.zh-HK.md#驗證狀態) 會區分成功執行、失敗恢復與未驗證項目。

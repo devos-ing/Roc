@@ -35,6 +35,11 @@ See the [per-task workflow](README.details.md#per-task-workflow) for review and 
 New Codex setups select GPT-6 Astra; existing model settings are preserved.
 Roc uses Pi's tools and agent loop. It does not launch Codex CLI or Claude Code.
 
+Pi automatically summarizes older context as a session approaches its context
+limit. Auto-compaction is enabled by default; Roc uses Pi's setting. See
+[context compaction](README.details.md#context-compaction) and
+[Pi's compaction documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md).
+
 **Current status:** M1–M4 are complete for the revised scope, with real GitHub/GPT-6
 sandbox acceptance. Physical two-host acceptance is deferred to [#56](https://github.com/devos-ing/Roc/issues/56);
 Superset is outside this stage. [Validation and measurements](README.details.md#validation-status)

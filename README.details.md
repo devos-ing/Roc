@@ -21,6 +21,20 @@ No task database is created. Local files hold configuration, worktrees, locks,
 diagnostic logs and Pi sessions. Guarded automatic PR merge is opt-in, with at
 most two clean base refresh/re-review cycles per task. Superset is deferred.
 
+### Context compaction
+
+Roc uses Pi's built-in auto-compaction. It is enabled by default unless disabled
+in Pi's user settings. Near the model's context limit, Pi summarizes older
+messages and keeps recent messages for subsequent requests.
+
+Scout, Implement, and Review each use a separate Pi session. Compaction applies
+within that session. GitHub Issues retain task specifications and execution
+checkpoints; local Pi session files retain conversation history. Roc does not
+add a second compaction mechanism.
+
+See [Pi's compaction documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)
+for triggers, retained context, and the `compaction` settings.
+
 ### Validation status
 
 M1–M4 are complete for the revised scope. Use this checkout's `src/cli/main.ts`
