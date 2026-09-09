@@ -133,6 +133,43 @@ test("reconciles an existing merged pull request without a push", async () => {
   );
 });
 
+test("create and edit bodies reference only canonical managed Issue IDs without closing keywords", async () => {
+  for (const id of [
+    "issue-41",
+    "T1",
+    "issue-01",
+    "issue-0",
+    "issue-41-extra",
+  ]) {
+    for (const existing of [true, false]) {
+      const commands: string[][] = [];
+      const pr = {
+        number: 8,
+        url: "https://example.test/pull/8",
+        state: "OPEN",
+        headRepositoryOwner: { login: "acme" },
+      };
+      const publisher = new GitHubPullRequestPublisher(
+        "main",
+        branches([]),
+        runner(commands, [
+          { stdout: JSON.stringify({ nameWithOwner: "acme/test" }) },
+          { stdout: JSON.stringify(existing ? [pr] : []) },
+          {},
+          { stdout: "https://example.test/pull/8" },
+          ...(!existing ? [{ stdout: JSON.stringify([pr]) }] : []),
+        ]),
+      );
+      await publisher.publish({ ...input, task: { ...task, id } });
+      const command = commands.find((item) => item.includes("--body"))!;
+      const body = command[command.indexOf("--body") + 1]!;
+      expect(body.includes("Related issue: #41")).toBe(id === "issue-41");
+      if (id !== "issue-41") expect(body).not.toContain("Related issue:");
+      expect(body).not.toMatch(/\b(closes|fixes|resolves)\b/i);
+    }
+  }
+});
+
 test("updates an open pull request instead of creating a second one", async () => {
   const commands: string[][] = [];
   const publisher = new GitHubPullRequestPublisher(

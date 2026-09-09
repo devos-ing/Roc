@@ -62,6 +62,8 @@ export function memoryGitHub(posthook?: TaskHook) {
     ],
   };
   let lostResponse = false;
+  const closures: number[] = [];
+  let denyClosure = false;
   const api = {
     async read() {
       return [structuredClone(issue)];
@@ -90,11 +92,23 @@ export function memoryGitHub(posthook?: TaskHook) {
         throw Error("response lost");
       }
     },
+    async closeCompleted(_repo: string, number: number) {
+      closures.push(number);
+      if (denyClosure) throw Error("denied secret");
+      if (issue.state === "OPEN") {
+        issue.state = "CLOSED";
+        issue.stateReason = "COMPLETED";
+      }
+    },
     async setStatusLabel() {},
   };
   return {
     issue,
     api,
+    closures,
+    denyClosure(value: boolean) {
+      denyClosure = value;
+    },
     loseNextResponse() {
       lostResponse = true;
     },
