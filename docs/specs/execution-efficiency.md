@@ -30,6 +30,12 @@ GPT-6 model and high-or-higher reasoning policy.
    the same unchanged acceptance checks. Report small samples honestly.
    Comment reads may run in batches of at most four; drain a failed batch fully,
    return no partial snapshot and retain all authority checks and ordering.
+   The omission candidate uses optional `skipScout: true` in the approved spec.
+   Limit it to low-risk tickets with explicit relative file paths, file suffixes,
+   no whitespace, traversal or glob syntax, and the existing required acceptance
+   and validation lists. Omitted Scout context and attempts remain absent; the
+   prompts explicitly disclose that no Scout inspected the repository. Compare
+   the candidate before deciding to retain it.
 4. Verify MacBook publication and Mac mini execution through GitHub, with one
    active executor. Confirm inspection, interruption/restart and isolation on the
    actual hosts. Host access is a prerequisite for this acceptance item; a local

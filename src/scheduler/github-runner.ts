@@ -405,6 +405,7 @@ export class GitHubTaskRunner {
     await this.input.branches.prepare(task.task.id, record.baseCommit);
     if (!(await this.runHook(task, record, "prehook", signal))) return;
     for (const role of ["scout", "implement", "review"] as const) {
+      if (role === "scout" && task.task.spec.skipScout) continue;
       if (!(await this.runRole(task, record, role, signal))) {
         if (["rejected", "failed_infra"].includes(record.phase))
           await this.runHook(task, record, "posthook", signal);
@@ -563,9 +564,10 @@ export class GitHubTaskRunner {
               : "reviewing";
         await this.checkpoint(task, record, signal);
       }
-      const scout = record.attempts.findLast(
+      const scoutOutput = record.attempts.findLast(
         (item) => item.status === "succeeded" && item.output?.kind === "scout",
       )?.output;
+      const scout = scoutOutput?.kind === "scout" ? scoutOutput : undefined;
       const implementation = record.attempts.findLast(
         (item) =>
           item.status === "succeeded" && item.output?.kind === "implement",
@@ -577,7 +579,8 @@ export class GitHubTaskRunner {
       };
       let input: HarnessRoleInput;
       if (role === "scout") input = { role, ticket };
-      else if (scout?.kind !== "scout") throw Error("Missing Scout output");
+      else if (!scout && !ticket.spec.skipScout)
+        throw Error("Missing Scout output");
       else if (role === "implement") input = { role, ticket, scout };
       else if (implementation?.kind === "implement")
         input = {

@@ -203,6 +203,10 @@ function renderProgress(
         : "Waiting";
     let symbol = "○";
     let tone: keyof typeof colors = "muted";
+    if (role === "scout" && task.spec.skipScout && attempt === undefined) {
+      status = "Skipped by approved ticket";
+      symbol = "·";
+    }
     if (attempt !== undefined) {
       if (attempt.status === "running") {
         status = "Running";

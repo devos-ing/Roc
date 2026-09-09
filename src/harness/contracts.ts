@@ -123,24 +123,34 @@ export const HarnessAttemptSchema = z
   })
   .strict();
 
-export const HarnessRoleInputSchema = z.discriminatedUnion("role", [
-  z.object({ role: z.literal("scout"), ticket: StoredTaskSchema }).strict(),
-  z
-    .object({
-      role: z.literal("implement"),
-      ticket: StoredTaskSchema,
-      scout: ScoutOutputSchema,
-    })
-    .strict(),
-  z
-    .object({
-      role: z.literal("review"),
-      ticket: StoredTaskSchema,
-      scout: ScoutOutputSchema,
-      implementation: ImplementOutputSchema,
-    })
-    .strict(),
-]);
+export const HarnessRoleInputSchema = z
+  .discriminatedUnion("role", [
+    z.object({ role: z.literal("scout"), ticket: StoredTaskSchema }).strict(),
+    z
+      .object({
+        role: z.literal("implement"),
+        ticket: StoredTaskSchema,
+        scout: ScoutOutputSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        role: z.literal("review"),
+        ticket: StoredTaskSchema,
+        scout: ScoutOutputSchema.optional(),
+        implementation: ImplementOutputSchema,
+      })
+      .strict(),
+  ])
+  .superRefine((input, context) => {
+    if (input.role !== "scout" && !input.scout && !input.ticket.spec.skipScout)
+      context.addIssue({
+        code: "custom",
+        path: ["scout"],
+        message:
+          "Scout context is required unless the approved ticket explicitly omits Scout",
+      });
+  });
 
 export const HarnessStepRequestSchema = z
   .object({

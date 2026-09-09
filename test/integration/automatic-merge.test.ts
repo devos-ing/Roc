@@ -30,11 +30,11 @@ function sha(prefix: string, number: number) {
 }
 
 /** Drives real store/runner/pool boundaries with Fake Harness roles and a stateful GitHub transport. */
-function fixture(count = 1, dependent = false) {
+function fixture(count = 1, dependent = false, skipScout = false) {
   const remote = memoryPlan(
     Array.from({ length: count }, (_, i) => [`src/${i}.ts`]),
   );
-  if (dependent) {
+  if (dependent || skipScout) {
     const envelopes = remote.issues.map((issue) =>
       parseRemoteTaskEnvelope(issue.body),
     );
@@ -44,7 +44,11 @@ function fixture(count = 1, dependent = false) {
       goal: first.goal,
       tasks: envelopes.map((envelope, i) => ({
         ...envelope.task,
-        spec: { ...envelope.task.spec, dependencies: i === 1 ? ["T1"] : [] },
+        spec: {
+          ...envelope.task.spec,
+          dependencies: dependent && i === 1 ? ["T1"] : [],
+          ...(skipScout ? { risk: "low" as const, skipScout: true } : {}),
+        },
       })),
     };
     for (const [i, issue] of remote.issues.entries()) {
@@ -103,57 +107,59 @@ function fixture(count = 1, dependent = false) {
   >();
   const fake = createFakeHarness({
     attempts: remote.issues.flatMap((issue) =>
-      ["scout", "implement", "review"].map((role) => ({
-        taskId: `issue-${issue.number}`,
-        role,
-        retryIndex: 0,
-        expect: { model, effort: "high" },
-        deliveries: [
-          {
-            nextCursor: "output",
-            event: {
-              type: "attempt.output",
-              eventId: "output",
-              attemptId: "fixture",
-              sequence: 1,
-              occurredAt: time,
-              output:
-                role === "scout"
-                  ? {
-                      kind: role,
-                      summary: "Inspect approved paths",
-                      files: ["src/0.ts"],
-                      tests: ["bun test"],
-                      risks: [],
-                    }
-                  : role === "implement"
+      ["scout", "implement", "review"]
+        .filter((role) => !skipScout || role !== "scout")
+        .map((role) => ({
+          taskId: `issue-${issue.number}`,
+          role,
+          retryIndex: 0,
+          expect: { model, effort: "high" },
+          deliveries: [
+            {
+              nextCursor: "output",
+              event: {
+                type: "attempt.output",
+                eventId: "output",
+                attemptId: "fixture",
+                sequence: 1,
+                occurredAt: time,
+                output:
+                  role === "scout"
                     ? {
                         kind: role,
-                        commitSha: sha("b", issue.number),
-                        validation: ["Fake validation completed"],
+                        summary: "Inspect approved paths",
+                        files: ["src/0.ts"],
+                        tests: ["bun test"],
                         risks: [],
-                        limitations: [],
                       }
-                    : {
-                        kind: role,
-                        decision: "accepted",
-                        findings: [],
-                        remainingGaps: [],
-                      },
+                    : role === "implement"
+                      ? {
+                          kind: role,
+                          commitSha: sha("b", issue.number),
+                          validation: ["Fake validation completed"],
+                          risks: [],
+                          limitations: [],
+                        }
+                      : {
+                          kind: role,
+                          decision: "accepted",
+                          findings: [],
+                          remainingGaps: [],
+                        },
+              },
             },
-          },
-          {
-            nextCursor: "completed",
-            event: {
-              type: "attempt.completed",
-              eventId: "completed",
-              attemptId: "fixture",
-              sequence: 2,
-              occurredAt: time,
+            {
+              nextCursor: "completed",
+              event: {
+                type: "attempt.completed",
+                eventId: "completed",
+                attemptId: "fixture",
+                sequence: 2,
+                occurredAt: time,
+              },
             },
-          },
-        ],
-      })),
+          ],
+        })),
     ),
   });
   const branches: TaskBranchManager = {
@@ -778,6 +784,36 @@ test("parallel PR merge refreshes the next patch, runs an independent exact-targ
     1,
   );
   f.fake.assertComplete();
+});
+
+test("approved Scout omission retains exact-head Review, re-review after refresh and original Implement history", async () => {
+  const f = fixture(1, false, true);
+  await tick(f, false);
+  const original = await f.record();
+  expect(original.attempts.map((attempt) => attempt.descriptor.role)).toEqual([
+    "implement",
+    "review",
+  ]);
+  f.data.base = sha("c", 42);
+  f.scriptReview();
+  await tick(f);
+  const refreshed = await f.record();
+  expect(refreshed.attempts.map((attempt) => attempt.descriptor.role)).toEqual([
+    "implement",
+    "review",
+    "review",
+  ]);
+  expect(refreshed.attempts[0]).toEqual(original.attempts[0]);
+  expect(refreshed.mergeReview?.headSha).toBe(refreshed.publication?.commitSha);
+  expect(
+    f.requests.every(
+      (request) =>
+        request.input.role === "scout" || request.input.scout === undefined,
+    ),
+  ).toBe(true);
+  f.data.check = "success";
+  await tick(f);
+  expect((await f.record()).phase).toBe("done");
 });
 
 test("two durable refresh cycles are independent of infrastructure retries and a third advancement requires replan across restarts", async () => {

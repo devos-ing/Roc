@@ -6,6 +6,7 @@ import {
   TaskHookSchema,
   TicketSpecSchema,
 } from "../../src/domain/schemas";
+import { HarnessRoleInputSchema } from "../../src/harness/contracts";
 
 const ticket = {
   problem: "Tasks can be claimed twice",
@@ -30,6 +31,52 @@ describe("domain schemas", () => {
 
   test("accepts a complete ticket", () => {
     expect(TicketSpecSchema.parse(ticket)).toEqual(ticket);
+  });
+
+  test("Scout omission is explicit and limited to complete low-risk file-scoped tickets", () => {
+    const direct = {
+      ...ticket,
+      risk: "low",
+      scope: ["src/answer.ts"],
+      skipScout: true,
+    };
+    expect(TicketSpecSchema.safeParse(direct).success).toBe(true);
+    expect(
+      TicketSpecSchema.safeParse({
+        ...direct,
+        scope: ["Update src/answer.ts and its tests"],
+      }).success,
+    ).toBe(false);
+    expect(
+      TicketSpecSchema.safeParse({ ...direct, risk: "high" }).success,
+    ).toBe(false);
+    expect(
+      TicketSpecSchema.safeParse({ ...direct, scope: ["src/"] }).success,
+    ).toBe(false);
+    expect(
+      TicketSpecSchema.safeParse({ ...direct, validation: [] }).success,
+    ).toBe(false);
+    expect(TicketSpecSchema.parse(ticket)).not.toHaveProperty("skipScout");
+    const input = {
+      role: "implement",
+      ticket: {
+        id: "T1",
+        cycleId: "2026-W37",
+        title: "Task",
+        spec: direct,
+        priority: 0,
+        approvalRequired: true,
+        approved: true,
+        status: "implementing",
+      },
+    };
+    expect(HarnessRoleInputSchema.safeParse(input).success).toBe(true);
+    expect(
+      HarnessRoleInputSchema.safeParse({
+        ...input,
+        ticket: { ...input.ticket, spec: { ...direct, skipScout: undefined } },
+      }).success,
+    ).toBe(false);
   });
 
   test("accepts one strict argv hook and rejects unsafe hook shapes", () => {
