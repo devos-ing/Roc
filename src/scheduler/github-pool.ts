@@ -41,6 +41,7 @@ export class GitHubTaskPool {
   private failure?: unknown;
   private completions = 0;
   private readonly selector: GitHubTaskRunner;
+  private readonly admissionStop = new AbortController();
 
   /** Shares provider and Git boundaries while creating hook and cancellation ownership per task. */
   constructor(
@@ -62,6 +63,7 @@ export class GitHubTaskPool {
     if (this.running) throw Error("Task pool is already running");
     this.running = true;
     const limit = once ? 1 : (this.input.concurrency ?? 2);
+    const admission = AbortSignal.any([signal, this.admissionStop.signal]);
     try {
       while (!this.stopped) {
         signal.throwIfAborted();
@@ -91,7 +93,7 @@ export class GitHubTaskPool {
         ) {
           const task = await this.selector.claimNext(
             tasks,
-            signal,
+            admission,
             (candidate) =>
               !selected.has(candidate.task.id) &&
               !this.workers.has(candidate.task.id) &&
@@ -116,7 +118,7 @@ export class GitHubTaskPool {
         if (this.completions !== completedBeforeRead) continue;
         await waitForChange(
           [...this.workers.values()].map((worker) => worker.done),
-          signal,
+          admission,
         );
       }
     } finally {
@@ -126,7 +128,10 @@ export class GitHubTaskPool {
 
   /** Cancels one Issue or all workers and waits for each owned execution and cleanup path to settle. */
   async cancel(taskId?: string): Promise<void> {
-    if (taskId === undefined) this.stopped = true;
+    if (taskId === undefined) {
+      this.stopped = true;
+      this.admissionStop.abort();
+    }
     const workers = [...this.workers.values()].filter(
       (worker) => taskId === undefined || worker.task.task.id === taskId,
     );

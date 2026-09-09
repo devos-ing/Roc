@@ -57,6 +57,7 @@ test("public task reads use GitHub, preserve legacy files, and scheduler rejects
         repoPath: root,
         baseBranch: undefined,
         once: true,
+        autoMerge: undefined,
         concurrency: 2,
       },
     ]);
@@ -70,12 +71,13 @@ test("public task reads use GitHub, preserve legacy files, and scheduler rejects
     expect(runs).toHaveLength(1);
     expect(
       await runCli(
-        ["scheduler", "run", "--concurrency", "1", "--once"],
+        ["scheduler", "run", "--concurrency", "1", "--once", "--auto-merge"],
         io,
         runtime,
       ),
     ).toBe(0);
     expect(runs.at(-1)?.concurrency).toBe(1);
+    expect(runs.at(-1)?.autoMerge).toBe(true);
     expect(await readFile(legacy, "utf8")).toBe(
       "legacy data must remain untouched",
     );
