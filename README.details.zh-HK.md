@@ -120,7 +120,9 @@ Shutdown 等待 selector 擁有的 Git／Review 操作及所有 workers；清理
 PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依賴任務。
 `--once` 可核對已有 PR，但不會持續等待新 PR 的 CI；完整自動完成請用持續模式。
 自動合併已有涵蓋 refresh／重新 Review 的 transport／Fake Harness 測試，以及真實 Git
-衝突及 lease 測試；真實 protected branch 驗收仍待完成。
+衝突及 lease 測試。[真實 protected branch 驗收](docs/validation/m3-live-2026-09-09.md)
+亦已通過：兩個任務平行執行，其中一個經 rebase、新的獨立 Review 和 CI 後自動合併。
+這次驗收在同一部 Mac 完成，實體雙機流程仍待驗證。
 
 ### 平行執行
 

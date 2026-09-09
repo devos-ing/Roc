@@ -148,7 +148,9 @@ and verifies merge ancestry before saving `done` and releasing dependencies.
 `--once` can reconcile already published PRs but does not keep waiting for newly
 published CI; use continuous mode for automatic completion. Automatic merge has
 deterministic transport/Fake Harness tests, including refresh/re-review, and
-real-Git conflict/lease tests, not yet live protected-branch acceptance.
+real-Git conflict/lease tests. [Live protected-branch acceptance](docs/validation/m3-live-2026-09-09.md)
+also passed for two parallel tasks, including one rebase, fresh independent
+Review and CI before automatic merge. That test used one Mac.
 
 ### Parallel admission
 

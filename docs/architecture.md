@@ -218,6 +218,8 @@ M3 adds opt-in guarded automatic PR merge with at most two clean base refreshes
 and independent re-reviews. [Later milestones](roadmap.md) add measured
 performance/visibility and deferred Superset integration.
 Deterministic checks are complemented by [live GitHub and sandboxed GPT-6 acceptance](validation/m1-m2-live-2026-09-09.md).
+[M3 protected-branch acceptance](validation/m3-live-2026-09-09.md) also verified
+two automatic merges with a real base refresh, new Review and fresh CI.
 Physical two-host operation remains unverified. See the [current specification](specs/github-native-execution.md)
 and [M2 specification](specs/parallel-execution.md), plus
 [validation status](../README.details.md#validation-status).

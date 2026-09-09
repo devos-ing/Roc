@@ -5,6 +5,11 @@ the target behavior. M1 uses GitHub checkpoints and per-Issue worktrees.
 M2 now adds up to two independent workers, task-local cancellation and all-task
 inspection. [Live GitHub and sandboxed GPT-6 acceptance passed](validation/m1-m2-live-2026-09-09.md)
 on one Mac. Physical two-host acceptance remains outstanding.
+M3 now adds guarded automatic merge and bounded base refresh with fresh Review.
+[Live protected-branch acceptance passed](validation/m3-live-2026-09-09.md)
+for two parallel tasks, including a rebase, new Review and fresh CI before the
+second merge. The implementation exercise still needed coordinator recovery;
+the report distinguishes it from the successful automatic fixture run.
 Superset is deferred and is not a prerequisite for core development.
 
 | Milestone | Outcome | Depends on |
@@ -64,6 +69,10 @@ attempts, single-task time, batch completion time, retries and escaped defects
 separately. Apply one ablation at a time, such as omitting redundant Scout work
 on a sufficiently specified low-risk task. Retain a removal only when required
 behavior and quality are preserved.
+
+M4 must also preserve useful sanitized failure diagnostics. During M3 development,
+one worker stopped after creating a tested commit but before saving its Implement
+result. Its generic failure message did not establish the original exception.
 
 Superset research, diagrams, login helpers and the unexecuted setup wizard remain
 reference material. The earlier Superset-owned workspace and SQLite plan is
