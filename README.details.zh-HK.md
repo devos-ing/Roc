@@ -7,17 +7,11 @@
 GitHub Issues 保存規格、批准和執行紀錄。Daemon 在自己帳戶擁有的一則 Issue comment
 中保存 attempt、模型、用量、角色結果及 PR 資料。Labels 只顯示狀態，不能代替批准或鎖。
 
-```mermaid
-flowchart LR
-    chat["MacBook：釐清及批准"] --> issues["GitHub Issues"]
-    issues --> daemon["Mac mini：唯一 Roc daemon"]
-    daemon --> worktree["每個 Issue 一個 worktree"]
-    worktree --> scout["Pi Scout"] --> implement["Pi Implement"]
-    implement --> review["獨立 Pi Review"] --> pr["PR：awaiting_merge"]
-    pr --> merge["確認合併：done"]
-    daemon --> checkpoint["執行紀錄"] --> issues
-    issues --> board["唯讀看板"]
-```
+[開啟互動架構圖](output/archify/roc-current/roc-architecture.html)。圖中文字為繁體中文，固定操作介面為英文。下載 HTML 後在瀏覽器開啟；GitHub 頁面顯示原始碼。
+
+![Roc 最新架構](docs/assets/roc-architecture.png)
+
+規劃與執行可在同一台機器；圖中的角色不代表必須部署兩部 Mac。
 
 目前最多同時執行兩項獨立任務。每個 Issue 使用
 `<project>.agile-worktrees/issue-<number>` 及 `agile/issue-<number>` branch。
@@ -26,24 +20,27 @@ Roc 不再建立任務資料庫；設定、worktree、程序鎖、診斷 log 和
 
 ### 驗證狀態
 
-GitHub-native 版本尚未發佈，請把 `ROC_CLI_ENTRY` 設成這份原始碼
-`src/cli/main.ts` 的絕對路徑。
+M1–M4 已按修訂範圍完成。以下功能請使用這份 checkout 的 `src/cli/main.ts`，
+並在各 terminal 設定 `ROC_CLI_ENTRY`。
 
-確定性測試使用真實臨時 Git worktree、Pi harness 和預錄 Pi client，驗證角色流程、
-遠端紀錄、恢復、撤回批准及清理不確定時的處理。測試沒有呼叫真實模型或建立真實 PR。
+| 範圍 | 證據 |
+| --- | --- |
+| GitHub 任務、worktree、平行與恢復 | [M1/M2 真實流程驗收](docs/validation/m1-m2-live-2026-09-09.md) |
+| 自動合併、更新基底與新的 Review | [M3 protected branch 驗收](docs/validation/m3-live-2026-09-09.md) |
+| 診斷、進度、耗時、用量及效率比較 | [M4 實測報告](docs/validation/m4-live-2026-09-09.md)，292 個本地測試通過 |
 
-2026-09-07 的歷史 Codex 測試用 `gpt-5.6-terra`、`high` 完成三個角色，
-耗時 80.42 秒，記錄 62,386 個輸入及輸出 tokens，包含快取輸入。
-當時使用 SQLite，PR 發佈是 stub，不能視為新版 daemon 的驗收。
-2026-09-09 已另用 `openai-codex/gpt-6-astra`、`high` 在 sandbox 跑過真實 GitHub
-流程。七個 Issues 產生六個通過 Review 的 PR，一項取消。重啟、合併依賴、平行執行、
-補位、取消隔離及 scope 重疊的序列執行均通過，詳見[驗收報告](docs/validation/m1-m2-live-2026-09-09.md)。
-Claude/GLM 和實體 MacBook/Mac mini 雙機流程仍待驗收。
+同一組兩個小任務的成功執行，串行為 8分31秒／67,722 tokens，平行為
+6分47秒／67,615 tokens，平行省略 Scout 為 5分4秒／52,925 tokens。
+最後一組曾遇啟動超時，連同人工恢復實際為 12分38秒；後來才加入前置讀取重試。
+這是小樣本，不是普遍速度或成本保證。Cached input 已包含在 input tokens 內。
+
+Claude/GLM 尚未做相同的真實流程驗收。[雙機驗收 #56](https://github.com/devos-ing/Roc/issues/56)
+已延後，不阻擋本階段交付；Superset 不在本階段。歷史 SQLite／stub 結果不當作目前流程的證據。
 
 ## 設定執行端
 
-規劃端和執行端各自 clone 同一 GitHub repository，只在執行端啟動 daemon。
-可先在同一台機器用兩個 clone 核對設定。
+先在一台機器、同一專案 clone 執行規劃和 daemon。若之後分成兩台機器，兩端 clone
+同一 GitHub repository，只在執行端啟動 daemon。實體雙機驗收仍屬後續工作。
 
 規劃端登入 `gh`，透過 `roc-create-tasks` 批准計劃後，skill 會執行：
 
@@ -126,22 +123,6 @@ PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依�
 
 ### 平行執行
 
-資料已足夠的低風險任務，可在批准的 manifest 設定 `skipScout: true`，直接執行 Implement
-及獨立 Review。預設不啟用。Scope 必須是有副檔名的明確相對檔案路徑，不含空白、
-路徑跳轉或 glob；驗收條件和 validation 仍然必填。不確定或較廣的工作保留 Scout。
-Board 會顯示 Scout 已省略，基底更新後仍須新的 Review。詳見 [M4 實測及限制](docs/validation/m4-live-2026-09-09.md)。
-
-`task board` 詳情會顯示總耗時、agent attempt 時間、等待合併時間，以及用量是否完整。
-`scheduler inspect` 另有各階段耗時。最近動作是 GitHub checkpoint 摘要，階段切換時保存，
-工具持續執行時最多每 30 秒補一次；逐項即時動作請看 daemon 輸出。
-舊紀錄沒有時間資料，或 Issue 已關閉但停止尚未確認時，會顯示 unavailable，不會算成零。
-
-失敗時查看執行主機的 `.agile/runtime/agile.log`。紀錄包含安全錯誤代碼、Issue、attempt
-及階段。先核對保留的 worktree；可把已驗證的 commit 填入新批准任務的 `sourceCommit`，
-重用成果並保留原失敗紀錄。程序或 GitHub 寫入結果未確認前，不要移除 ownership lock。
-啟動時若 repository lookup 超時，會在任務開始前重試該讀取一次；第二次失敗回報
-`GITHUB_REPOSITORY_UNAVAILABLE`。
-
 預設為 `--concurrency 2`，`--concurrency 1` 可切回逐項執行。
 一項任務完成後會立即補位，不必等待另一項較慢的任務。
 `--once` 仍只處理一項。看板列出所有執行中 Issue，terminal 事件附有任務 ID。
@@ -156,6 +137,26 @@ Root、glob、文字描述、repository 外的路徑，以及帶 hooks 的任務
 個別任務失敗或取消，確認清理後只把該任務標為待處理，另一項可繼續。
 Pi 子程序退出獲確認後才會放行下一個角色或釋放名額。清理或 checkpoint 寫入結果
 不明時，停止新任務並保留鎖；`Ctrl-C` 會取消全部執行中任務。
+
+### 可選的 Scout 省略
+
+資料已足夠的低風險任務，可在批准的 manifest 設定 `skipScout: true`，直接執行 Implement
+及獨立 Review。預設不啟用。Scope 必須是有副檔名的明確相對檔案路徑，不含空白、
+路徑跳轉或 glob；驗收條件和 validation 仍然必填。不確定或較廣的工作保留 Scout。
+Board 會顯示 Scout 已省略，基底更新後仍須新的 Review。詳見 [M4 實測及限制](docs/validation/m4-live-2026-09-09.md)。
+
+### 進度與失敗恢復
+
+`task board` 詳情會顯示總耗時、agent attempt 時間、等待合併時間，以及用量是否完整。
+`scheduler inspect` 另有各階段耗時。最近動作是 GitHub checkpoint 摘要，階段切換時保存，
+工具持續執行時最多每 30 秒補一次；逐項即時動作請看 daemon 輸出。
+舊紀錄沒有時間資料，或 Issue 已關閉但停止尚未確認時，會顯示 unavailable，不會算成零。
+
+失敗時查看執行主機的 `.agile/runtime/agile.log`。紀錄包含安全錯誤代碼、Issue、attempt
+及階段。先核對保留的 worktree；可把已驗證的 commit 填入新批准任務的 `sourceCommit`，
+重用成果並保留原失敗紀錄。程序或 GitHub 寫入結果未確認前，不要移除 ownership lock。
+啟動時若 repository lookup 超時，會在任務開始前重試該讀取一次；第二次失敗回報
+`GITHUB_REPOSITORY_UNAVAILABLE`。
 
 ### Pi 和模型
 
@@ -206,6 +207,38 @@ npx skills add backnotprop/pstack --skill unslop --global
 Roc onboarding 安裝隨附 skills，並讓你選擇可信 Pi skills。
 目標 skill 檔案已有不同內容時，會拒絕覆寫。
 
+## 每項任務的流程
+
+```mermaid
+flowchart TD
+    work["已批准的 task worktree"]
+    scout["Scout 閱讀"]
+    implement["Implement 修改與驗證"]
+    review["獨立 Review"]
+    pr["PR：awaiting_merge"]
+    human["人手合併"]
+    guard["核對 Review、CI 與保護"]
+    refresh["乾淨 rebase，最多 2 次"]
+    merge["綁定 head SHA 的 squash merge"]
+    done["核對合併 → done"]
+    attention["保留工作，重新規劃"]
+    work --> scout
+    scout --> implement
+    work -->|"已批准 skipScout"| implement
+    implement --> review
+    review -->|"通過"| pr
+    review -->|"拒絕"| attention
+    pr -->|"預設"| human
+    human --> done
+    pr -->|"--auto-merge"| guard
+    guard -->|"等待條件"| pr
+    guard -->|"基底前進"| refresh
+    refresh -->|"新的 head"| review
+    guard -->|"全部通過"| merge
+    merge --> done
+    refresh -->|"不安全或次數用盡"| attention
+```
+
 ## 進度、恢復及 hooks
 
 `task board` 每 30 秒讀取 GitHub checkpoints，顯示狀態、attempt、模型、用量及 PR。
@@ -219,7 +252,7 @@ Daemon 先驗證完整計劃、依賴關係及精確批准。依賴任務的 PR 
 且 head 與保存的 implementation commit 一致。Roc fetch 目標 branch，核對
 merge commit 後才固定新任務的 base。
 
-Scout 閱讀程式，Implement 修改，harness 建立單一可信 commit，再由獨立 Pi session
+預設由 Scout 閱讀程式，Implement 修改，harness 建立單一可信 commit，再由獨立 Pi session
 Review。接受後執行可信 posthook，再發佈 PR。開啟 PR 是 `awaiting_merge`，
 確認合併才是 `done`。拒絕的任務保留 `rejected`，由規劃流程處理後續。
 

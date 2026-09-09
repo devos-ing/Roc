@@ -6,29 +6,40 @@
 
 # Roc
 
-透過聊天把需求拆成程式開發任務，由本機 daemon 執行、建立 pull request，
-並更新任務狀態。你負責審查及合併結果。
+把批准的 GitHub Issues 變成經獨立 Review 的 pull requests。
+Roc daemon 最多平行執行兩項任務，每項使用獨立 worktree；你可手動合併，
+或啟用通過 CI 與 branch protection 檢查後的自動合併。
 
 ## 怎樣運作
 
 ```mermaid
 flowchart LR
-    A["聊天釐清需求"] --> B["批准任務與規格"]
-    B --> C["Roc daemon"]
-    C --> D["Pi：Scout → Implement → Review"]
-    D --> E["Pull request 與任務狀態"]
+    plan["聊天、規劃、批准"] --> issues["GitHub Issues"]
+    issues --> daemon["唯一 Roc daemon"]
+    daemon --> a["任務 A：worktree + Pi"]
+    daemon --> b["任務 B：worktree + Pi"]
+    a --> pr["獨立 Review → PR + CI"]
+    b --> pr
+    pr --> merge["手動或有保護檢查的自動合併"]
+    merge --> done["核對合併 → done → 釋放依賴"]
 ```
 
-**Pi 是唯一執行核心。** Onboarding 會連接你的 ChatGPT 帳戶，選用 Codex 模型。
-Claude、GLM 屬於進階 provider 設定。Roc 使用 Pi 的工具與 agent loop，
-不會啟動 Codex CLI 或 Claude Code。
-GitHub Issues 保存規格、批准及執行紀錄。
-一個 daemon 最多同時執行兩項獨立任務，每個 Issue 有獨立的 Git worktree。
-`--concurrency 1` 可切回逐項執行。Scope 重疊、不明或帶有 hooks 的任務會單獨執行。
-PR 開啟後是 `awaiting_merge`，確認合併後才是 `done`。
+[互動架構圖](output/archify/roc-current/roc-architecture.html) · [每項任務的流程](README.details.zh-HK.md#每項任務的流程)
 
-**開發版本：**請依照下方指令使用這份原始碼。Pi 統一架構尚未發佈到 npm。
-自動測試不代表真實模型流程已通過；詳見[驗證狀態](README.details.zh-HK.md#驗證狀態)。
+互動圖請下載 HTML 後在瀏覽器開啟；GitHub 頁面顯示原始碼。
+
+- **GitHub 保存任務狀態。** 規格、批准、checkpoint 與用量留在 Issues，PR 保存提交與合併證據。本機沒有 SQLite 任務佇列。
+- **Roc 負責協調，Pi 負責執行。** 預設流程是 Scout → Implement → 獨立 Review，每個角色使用不同 Pi session。明確批准的低風險任務可用 `skipScout: true` 省略 Scout。
+- **並行有範圍限制。** Scope 不重疊的任務才可並行；不明、重疊或帶 hooks 的任務單獨執行。每個 repository 只跑一個 daemon。
+- **建立 PR 不等於完成。** PR 開啟時是 `awaiting_merge`，核對合併後才是 `done`。基底前進時最多兩次乾淨 rebase，每次都要新的 Review 與 CI。
+
+新 Codex 設定使用 GPT-6 Astra；已有的模型設定會保留。Roc 使用 Pi 的工具與 agent loop，
+不會啟動 Codex CLI 或 Claude Code。
+
+**目前狀態：** M1–M4 已按修訂範圍完成，真實 GitHub／GPT-6 sandbox 流程已驗收。
+實體雙機驗收延後至 [#56](https://github.com/devos-ing/Roc/issues/56)，Superset 不在本階段。
+[驗收與效能數據](README.details.zh-HK.md#驗證狀態) 會區分成功執行、失敗恢復與未驗證項目。
+以下指令使用這份 development checkout，不假設 npm 版本包含相同功能。
 
 ## 開始使用
 
@@ -77,9 +88,14 @@ bun "$ROC_CLI_ENTRY" task list
 bun "$ROC_CLI_ENTRY" scheduler run --base-branch main
 ```
 
-保持 terminal 開啟。按 `Ctrl-C` 停止，再執行同一指令恢復已保存的工作。
+保持 terminal 開啟。按 `Ctrl-C` 停止。重啟會核對已保存的 checkpoint；
+若出現 `needs_replan` 或保留鎖，先依[恢復指引](README.details.zh-HK.md#進度與失敗恢復)處理。
 每項任務位於 `<project>.agile-worktrees/issue-<number>`。
 Pi 沒有內建 sandbox，無人看管時應使用 OS/container 隔離。
+
+設定好目標 branch 的 required CI、strict up-to-date checks 及管理員保護後，可加入
+`--auto-merge` 啟用自動合併；詳見[合併設定](README.details.zh-HK.md#可選的自動合併-pr)。
+`--concurrency 1` 改為逐項執行，`--once` 只處理一項任務。
 
 ### 4. 查看進度
 
@@ -91,13 +107,16 @@ bun "$ROC_CLI_ENTRY" task board
 
 看板是唯讀的。按 `Enter` 查看詳情，按 `Q` 離開。
 欄位以顏色區分進行中、待處理及已完成，排版會配合終端寬度；重新導向檔案時輸出純文字。
-也可使用 `task list`、`scheduler inspect` 或 `help`。
+詳情會顯示總耗時、attempt 時間、等待合併時間、最近動作與用量是否完整。
+逐項即時動作請看 daemon terminal。GitHub 摘要在階段切換時保存，
+長時間工具活動最多每 30 秒補一次。
+也可使用 `task list`、`scheduler inspect`、`tokens` 或 `help`。
 
 ## 進一步設定
 
 [詳細指南](README.details.zh-HK.md) 包含架構圖、provider 設定、GitHub Issues
 共享任務、daemon 部署與恢復方式。可在 MacBook 發佈任務，由 Mac mini 執行唯一的 daemon。
-實體雙機流程仍待驗收。
+實體雙機流程尚未驗收，已延後處理。
 
 開發與發版：[CONTRIBUTING.md](CONTRIBUTING.md)。
 授權：[Apache 2.0](LICENSE)。
