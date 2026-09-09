@@ -163,24 +163,4 @@ test("README links to the detailed agile Scout, Implement, Review guide", async 
   const end = readme.indexOf("## Commands", start);
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
-  const howItWorks = readme.slice(start, end);
-
-  expect(howItWorks).toContain(
-    "Roc picks one ready task and passes it through three agent roles",
-  );
-  expect(howItWorks).toContain('S["Scout<br/>Understand the task"]');
-  expect(howItWorks).toContain('I["Implement<br/>Write code"]');
-  expect(howItWorks).toContain(
-    'I --> C["Trusted harness<br/>Create the commit"]',
-  );
-  expect(howItWorks).toContain('R["Review<br/>Check the exact commit"]');
-  expect(howItWorks).toContain('P["Posthook and pull request"]');
-  expect(howItWorks).toContain(
-    "creates or updates one\npull request before the task becomes done",
-  );
-  expect(howItWorks).toContain(
-    "If Review rejects it,\nRoc creates a follow-up ticket and moves on to the next ready task",
-  );
-  expect(howItWorks).not.toContain("Token ledger");
-  expect(howItWorks).not.toContain("GitHub Release");
 });

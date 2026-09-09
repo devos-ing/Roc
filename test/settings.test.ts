@@ -9,12 +9,34 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RocSettingsSchema } from "../src/domain/agile-cycle";
 import {
   loadRocSettings,
   loadRocSettingsIfPresent,
   rocSettingsPath,
   saveRocSettings,
 } from "../src/settings";
+
+test("round-trips optional profile mappings and rejects malformed configuration", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "roc-model-settings-"));
+  const settings = {
+    cycle: { type: "weekly" as const },
+    models: { luna: "openai-codex/gpt-5.6-luna" },
+  };
+  await saveRocSettings(settings, homeRoot);
+  expect(await loadRocSettings(homeRoot)).toEqual(settings);
+  for (const models of [
+    { scout: "provider/model" },
+    { luna: "model" },
+    { luna: "provider/" },
+    { luna: "provider/model\nsecret" },
+  ]) {
+    expect(
+      RocSettingsSchema.safeParse({ cycle: { type: "weekly" }, models })
+        .success,
+    ).toBe(false);
+  }
+});
 
 test("saves and loads strict global settings", async () => {
   const homeRoot = await mkdtemp(join(tmpdir(), "roc-settings-"));

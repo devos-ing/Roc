@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { activeAgileCycle } from "../domain/agile-cycle";
 import { normalizeError } from "../runtime/errors";
 import { loadRocSettings } from "../settings";
@@ -36,16 +36,11 @@ export async function commandProjectRoot(
   return resolveProjectRoot(process.cwd(), options);
 }
 
-/** Returns the fixed scheduler database path beneath a project root. */
-export function projectDatabasePath(projectRoot: string): string {
-  return join(projectRoot, ".agile", "runtime", "agile.db");
-}
-
 /** Safely reports an operational failure to structured logging and standard error. */
 export async function reportOperationalError(
   error: unknown,
   context: CliCommandContext,
-  input: { dbPath: string; repoPath?: string },
+  input: { repoPath: string },
   fallback: OperationalErrorFallback = {
     code: "SCHEDULER_RUN_FAILED",
     category: "infra",

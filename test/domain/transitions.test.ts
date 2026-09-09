@@ -10,7 +10,9 @@ describe("task transitions", () => {
     expect(canTransition("draft", "ready")).toBe(true);
     expect(canTransition("ready", "claimed")).toBe(true);
     expect(canTransition("reviewing", "publishing")).toBe(true);
-    expect(canTransition("publishing", "done")).toBe(true);
+    expect(canTransition("publishing", "awaiting_merge")).toBe(true);
+    expect(canTransition("awaiting_merge", "done")).toBe(true);
+    expect(canTransition("publishing", "done")).toBe(false);
   });
 
   test("permits ready tasks to return for input or replanning", () => {

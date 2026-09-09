@@ -1,120 +1,102 @@
 import type { Command } from "commander";
 import { backends, isRealBackendName } from "../../agents/registry";
-import { openDatabase } from "../../store/database";
-import { OrchestrationRepository } from "../../store/orchestration-repository";
 import {
   commandProjectRoot,
   errorMessage,
-  projectDatabasePath,
   reportOperationalError,
 } from "../command-context";
-import type { CliCommandContext, SchedulerRunInput } from "../types";
+import type { CliCommandContext } from "../types";
 
-/** Runs the public scheduler against a registered backend in the current project. */
-async function executeSchedulerRun(
-  context: CliCommandContext,
-  options: {
-    base: string;
-    baseBranch?: string;
-    backend: string;
-    source: string;
-  },
-): Promise<number> {
-  if (!isRealBackendName(options.backend)) {
-    context.io.err(
-      `scheduler run requires --backend ${Object.keys(backends).join("|")}`,
-    );
-    return 2;
-  }
-  if (options.source !== "local" && options.source !== "github") {
-    context.io.err("scheduler run requires --source local|github");
-    return 2;
-  }
-  let repoPath: string;
-  try {
-    repoPath = await commandProjectRoot(context);
-  } catch (error) {
-    context.io.err(errorMessage(error));
-    return 1;
-  }
-  const dbPath = projectDatabasePath(repoPath);
-  const input: SchedulerRunInput = {
-    backend: options.backend,
-    dbPath,
-    repoPath,
-    baseRef: options.base,
-    ...(options.source === "github" ? { source: "github" as const } : {}),
-    ...(options.baseBranch === undefined
-      ? {}
-      : { baseBranch: options.baseBranch }),
-  };
-  try {
-    context.io.out("Status: Starting");
-    await context.runtime.runScheduler(input);
-    context.io.out("Result: Stopped");
-    return 0;
-  } catch (error) {
-    return reportOperationalError(error, context, { dbPath, repoPath });
-  }
-}
-
-/** Prints the current project's durable scheduler snapshot. */
-async function executeSchedulerInspect(
-  context: CliCommandContext,
-): Promise<number> {
-  try {
-    const projectRoot = await commandProjectRoot(context);
-    const db = openDatabase(projectDatabasePath(projectRoot));
-    try {
-      context.io.out(
-        JSON.stringify(new OrchestrationRepository(db).inspect(), null, 2),
-      );
-      return 0;
-    } finally {
-      db.close();
-    }
-  } catch (error) {
-    context.io.err(errorMessage(error));
-    return 1;
-  }
-}
-
-/** Registers scheduler execution and inspection commands. */
+/** Registers GitHub-only scheduler execution and remote inspection. */
 export function registerSchedulerCommands(
   program: Command,
   context: CliCommandContext,
 ): void {
   const scheduler = program
     .command("scheduler")
-    .description("Run and inspect the scheduler");
+    .description("Run and inspect GitHub tasks");
   scheduler
     .command("run")
-    .description("Run ready tasks through Pi")
-    .option("--base <ref>", "Git ref used as the task base", "HEAD")
+    .description("Run approved GitHub Issues through Pi")
     .option(
       "--base-branch <branch>",
-      "GitHub branch targeted by published pull requests",
+      "PR target branch (defaults to repository default)",
     )
     .option(
       "--backend <name>",
       `Scheduler backend (${Object.keys(backends).join("|")})`,
       "pi",
     )
-    .option("--source <name>", "Task source (local|github)", "local")
+    .option("--source <name>", "Task source (github only)", "github")
+    .option("--once", "Process one eligible task and return")
+    .option(
+      "--concurrency <count>",
+      "Concurrent independent Issues (1 or 2)",
+      "2",
+    )
     .action(
       async (options: {
-        base: string;
         baseBranch?: string;
         backend: string;
         source: string;
+        once?: boolean;
+        concurrency: string;
       }) => {
-        context.exitCode = await executeSchedulerRun(context, options);
+        if (options.concurrency !== "1" && options.concurrency !== "2") {
+          context.io.err("--concurrency must be 1 or 2");
+          context.exitCode = 2;
+          return;
+        }
+        if (
+          !isRealBackendName(options.backend) ||
+          options.source !== "github"
+        ) {
+          context.io.err(
+            "scheduler run requires --backend pi and --source github; local SQLite queues are no longer supported",
+          );
+          context.exitCode = 2;
+          return;
+        }
+        let repoPath: string;
+        try {
+          repoPath = await commandProjectRoot(context);
+        } catch (error) {
+          context.io.err(errorMessage(error));
+          context.exitCode = 1;
+          return;
+        }
+        try {
+          context.io.out("Status: Starting GitHub task execution");
+          await context.runtime.runScheduler({
+            backend: options.backend,
+            repoPath,
+            source: "github",
+            baseBranch: options.baseBranch,
+            once: options.once,
+            concurrency: options.concurrency === "1" ? 1 : 2,
+          });
+          context.io.out("Result: Stopped");
+        } catch (error) {
+          context.exitCode = await reportOperationalError(error, context, {
+            repoPath,
+          });
+        }
       },
     );
   scheduler
     .command("inspect")
-    .description("Print the durable scheduler state")
+    .description("Read execution checkpoints from GitHub")
     .action(async () => {
-      context.exitCode = await executeSchedulerInspect(context);
+      try {
+        const root = await commandProjectRoot(context);
+        if (!context.runtime.readTasks)
+          throw Error("GitHub task reads are unavailable");
+        context.io.out(
+          JSON.stringify(await context.runtime.readTasks(root), null, 2),
+        );
+      } catch (error) {
+        context.io.err(errorMessage(error));
+        context.exitCode = 1;
+      }
     });
 }

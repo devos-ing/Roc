@@ -1,186 +1,172 @@
 # Architecture
 
-Roc is a sequential CLI scheduler. SQLite owns the durable task state,
-the Scheduler chooses the next ready task, and an `AgentHarness` executes Scout,
-Implement, and Review attempts. `FakeHarness` provides deterministic tests;
-`PiHarness` runs Pi RPC children and uses provider models directly.
-Pi is the only registered production backend. Codex CLI and Claude Code CLI
-are not invoked.
-
-The global Agile Cycle setting selects the active calendar window used by task
-manifests and token reporting. It supports Daily, Weekly, and custom-day cycles.
-
-Onboarding installs every repository-owned package below `skills/` into both
-`.agents/skills` and `.claude/skills`. It copies regular files only, rejects
-symbolic-link path components, and refuses to overwrite a file whose contents
-differ from the packaged source.
-
-Commander owns the public CLI command tree and command-scoped argument
-validation. Project commands find the nearest `.agile` ancestor and otherwise
-use the Git checkout root. SQLite and runtime logs stay beneath the resolved
-project at `.agile/runtime/`; the CLI does not accept path overrides. The Fake
-Harness remains an internal deterministic test backend and is not exposed by
-the public scheduler command.
+GitHub Issues own Roc's task specifications, approvals and execution checkpoints.
+`GitHubTaskPool` admits up to two independent Issues. Each `GitHubTaskRunner`
+executes Scout, Implement and independent
+Review through `AgentHarness`. Pi is the only production backend; the Fake
+Harness scripts deterministic tests. Roc does not invoke Codex CLI or Claude
+Code CLI.
 
 ```text
-CLI -> Scheduler -> AgentHarness -> PiHarness -> PiClient -> bundled Pi RPC
-                 |                                        -> provider model
-                 |              -> TaskBranchManager -> Git
-                 -> TaskHookService -> Bun argv subprocess
-GitHub Issues -> RemoteSchedulerSource -> SQLite -> Scheduler
-SQLite -> GitHubRemoteTaskWriter -> GitHub Issues
-Tests -> FakeHarness
+CLI -> GitHubExecutionStore -> GitHub Issues
+             ^
+             |
+GitHubTaskPool -> GitHubTaskRunner per Issue -> AgentHarness -> PiHarness -> Pi RPC
+             |                  -> TaskBranchManager -> native Git worktrees
+             -> BunTaskHookRunner -> argv subprocess
+             -> GitHubPullRequestPublisher -> PR -> confirmed merge
+Tests -> FakeHarness / recorded Pi client / fake GitHub transport
 ```
 
-The sole factory in `src/agents/registry.ts` is Pi. The shared run loop owns
-branch setup, the database, model advising, daemon, logging, and cleanup.
-Provider support comes from Pi; Roc does not add a CLI adapter per model vendor.
+## Task authority and admission
 
-The session runtime uses Effect scopes for checkout, backend and database ownership.
-The daemon owns its lease, heartbeat and tick worker in a nested scope.
-Signals close admission immediately; pending work has a bounded grace period
-before a separate continuation signal prevents late scheduler, hook and
-publication callbacks from accessing the database. SQLite lease fencing
-remains authoritative. Backend close is requested once before database close;
-a close timeout reports incomplete cleanup rather than confirmed process exit.
-Backend startup remains uncancellable while a `BackendFactory` Promise is
-pending because that interface has no `AbortSignal`; a late startup may only be
-cleaned once its Promise returns.
+`task publish-github` validates and publishes a complete manifest as managed
+Issues. It reconciles task identities, writes approval comments for exact
+envelope hashes, and then adds `roc:ready`. There is no local task import.
+Because GitHub's label lists can lag new Issues, a missing identity is checked
+against an unfiltered repository REST list before creation. Returned Issue
+numbers are read directly against the fixed repository and their envelopes
+are verified before approval.
+`GitHubExecutionStore.list` validates complete plan identity and dependency DAGs
+while isolating malformed Issues. Role boundaries recheck the task envelope,
+trusted approval and open Issue state. Closing an Issue retires it unless its
+PR merge has been confirmed.
 
-Every backend session first acquires an exclusive persistent ownership file at
-`<canonical-repo>.agile-checkout.lock`, before checkout setup, backend startup
-or SQLite acquisition. Repository aliases and different database paths share
-the same guard. Its 0600 metadata records the run ID, owning process PID and
-acquisition time; existing or malformed locks fail closed with
-`SCHEDULER_CHECKOUT_IN_USE`. The pure Fake runtime does not use a dedicated
-checkout and does not acquire this guard.
+A daemon-owned `roc:execution` comment contains the versioned checkpoint:
+Issue/spec identity, revision, pinned base, phase, attempt descriptors, critical
+event hashes/cursors, usage, validated outputs, hook receipts and PR identity.
+Only comments by `ROC_GITHUB_EXECUTOR` are execution records. Multiple owned
+records fail closed. `ROC_GITHUB_PUBLISHERS` identifies approval authors.
+Both default to the current GitHub login; the daemon must authenticate as its
+configured executor.
 
-Cleanup order is drain, seal, worker interruption, lease release, backend close,
-database close, then owner-verified guard release. Idle polling wakes on any
-drain reason without interrupting an active tick's grace period. Existing 250ms
-drain and backend-close waits, 100ms diagnostic wait, 3s heartbeat and 10s lease
-remain unchanged. Guard release requires confirmed backend close inside the
-deadline and no cancellation rejection or drain timeout. A failed or pending
-backend factory, failed or timed-out close, or uncertain work retains ownership;
-late successful completion never unlocks it. Bounded safe diagnostics use
-`SCHEDULER_CHECKOUT_RETAINED`. Ownership verification failure preserves the
-lock and reports `SCHEDULER_CHECKOUT_OWNERSHIP_LOST` without replacing an existing
-primary error. No PID-, age- or lease-based automatic takeover is permitted.
+Each write rereads the current revision and reads back exact content before
+advancing. A failed response may follow a successful write, so readback also
+runs after write errors. Unknown outcomes raise `GITHUB_CHECKPOINT_UNCONFIRMED`
+and retain local ownership. GitHub labels are repairable projections, not locks
+or authoritative execution state. There is no distributed compare-and-swap
+claim protocol; only one host and daemon may execute the repository.
 
-Pi client close rejects with a sanitized
-`PI_PROCESS_EXIT_UNCONFIRMED` error when the final exit wait cannot confirm their
-owned child's exit. Rejected exit observation is not success. Pi also preserves
-earlier client-close failures and attempts all remaining clients and its probe
-before propagating cleanup failure. These are direct-child lifecycle contracts,
-not a guarantee against hostile detached descendants or out-of-sandbox writers.
+GitHub reads use complete paginated comment lists. Issue discovery has a
+1,000-managed-Issue safety bound and fails visibly rather than treating a
+truncated result as a complete plan. Idle polling waits 30 seconds. A read
+outage stops the invocation; it cannot advance roles offline.
 
-A retained guard intentionally quarantines the checkout. Before upgrading,
-stop all pre-guard Roc sessions for the repository; older versions do not obey
-this ownership boundary. For manual recovery, stop every Roc session, inspect
-the exact lock's metadata, verify and terminate remaining owned backend/hook
-and checkout-mutating child work, and inspect the dedicated checkout. Only then
-manually remove the exact `<canonical-repo>.agile-checkout.lock` file. PID absence
-alone is insufficient because descendants can survive. Never remove a live
-owner's lock, the checkout, database or task branches as a recovery shortcut.
-This is cooperative local ownership, not a hostile-user or distributed-filesystem
-security boundary. A crash can require the same manual recovery.
+## Parallel admission
 
-Deterministic validation includes an actual PiClient with a controlled
-non-agent child writing after session return: a successor is refused before
-checkout validation, and the lock remains after eventual child exit. Live Pi provider flows remain unverified; deterministic checks do not replace
-provider acceptance.
+One pool owns an Issue-keyed map of live workers. The default capacity is two;
+`--concurrency 1` serializes work and `--once` admits one task. Admission reserves
+the Issue before starting its worker and captures existing worker IDs before
+each remote read. Those IDs stay excluded for the entire snapshot, even if
+their worker finishes while the read is pending. Completion wakes admission to
+refill free slots; a completion during a read triggers a fresh read immediately.
 
-Roc prepares a sibling checkout instead of editing the resolved project checkout. A
-`TaskBranchManager` creates or reuses one sibling checkout at
-`<repo>.agile-checkout`. It runs one task at a time and switches that checkout
-between retained `agile/<taskId>` branches. Every task branch is tied to its
-persisted base commit and contains exactly one trusted final implementation
-commit. An interrupted dirty branch receives one amendable WIP checkpoint before
-the manager switches tasks.
+Only disjoint literal repository-relative path scopes can overlap. Prefix paths
+overlap and comparison ignores case. Ambiguous paths, prose/shared-resource
+scopes and hooks are exclusive. This policy uses the approved specification;
+it does not discover undeclared shared resources or sandbox tools.
 
-Scout and Review are instructed to inspect; Implement writes in the task
-checkout. Pi tools have the process user's permissions: these role instructions
-are not filesystem isolation. The trusted harness stages and commits the final
-changes, then Review checks that exact clean commit in a separate Pi session.
-Roc compares checkout state around Review; this does not detect external writes.
-Accepted and rejected branches are retained. After an accepted Review, Roc runs
-the trusted posthook, pushes the task branch, and creates or reconciles one
-pull request before marking the task done; v1 does not merge or delete branches,
-execute tasks concurrently, or enforce token budgets.
+Each worker owns an AbortController, runner and hook runner. Pi's harness retains
+separate attempt/session state. Task-local exceptions and cancellation confirm
+cleanup then checkpoint attention, leaving siblings running. Closing an Issue,
+withdrawing approval or invalidating its plan requests cancellation at the next
+remote poll. Unknown remote writes or child cleanup remain daemon-wide failures.
 
-Tasks may optionally carry one `prehook` and one `posthook`. SQLite's
-`task_hooks` table stores the task-scoped configuration hash, explicit trust,
-attempt receipt, bounded output, and final status. Scheduler runs a trusted
-prehook in the prepared task workspace before Scout and a posthook before
-publishing accepted work or after `rejected` and `failed_infra`. A prehook
-exhausts three attempts before failing the task; a failed publishing posthook
-returns the task to `needs_replan` while a terminal posthook failure preserves
-the task outcome and fails the scheduler invocation. Hooks use direct argv
-execution rather than a shell and are cancelled with the scheduler on shutdown.
+The pool keeps cancellation acknowledgements inside the slot lifetime. Pi saves
+terminal child-close promises and confirms them before returning terminal
+deliveries; failed close evidence remains available to cancellation and shutdown.
+A first dispatch may still be registering its child, so cancellation waits for
+that dispatch boundary before asking the harness to abort the attempt. Global
+cleanup deadlines still retain ownership if that wait cannot finish.
 
-## Remote GitHub task source
+Inspection reports all running task/attempt pairs. The board marks every running
+Issue and derives its progress from its own attempts. Tool output is task-tagged.
 
-`task publish-github` turns one strict backlog manifest into managed GitHub
-Issues without importing it locally. The embedded v1 task envelope contains the
-complete plan and a repository-stable plan identity. Publication reconciles all
-task identities before adding dependency links, an approval comment containing
-the exact envelope hash, and `roc:ready`. Commands use argv and bounded wall
-clock execution; ambiguous creates are resolved by reading the stable identity
-back before another create is allowed.
+## Worktrees and role recovery
 
-`scheduler run --source github` makes GitHub the admission authority for one
-daemon. `GitHubRemoteTaskSource` polls every managed Issue, groups complete
-plans, validates their dependency graph and trusted publisher approval, and
-atomically imports a plan with its frozen remote bindings. The ready label is an
-initial claim signal. Later boundaries revalidate the immutable envelope hash
-and approval author/hash without requiring the label after Roc changes it to
-running. A changed or withdrawn approval pauses the task at the next safe role
-boundary. Missing approved context becomes `needs_input`; invalid plans remain
-isolated from valid plans.
+Each Issue gets `<canonical-project>.agile-worktrees/issue-<number>` and
+`agile/issue-<number>`. Worktrees share the repository's Git directory. Preparing
+one task never stages or switches another task's files. Existing worktrees must
+belong to that Git repository and match their expected branch and pinned base.
 
-The daemon performs GitHub and Git I/O outside SQLite transactions while
-renewing its scheduler lease. A poll outage blocks idle advancement and new
-claims, but lets an already-running harness delivery persist locally. Polling
-uses bounded exponential retry and returns to the 30-second interval after a
-successful read. Validation and network diagnostics pass through the existing
-structured logger with controlled, sanitized messages.
+The runner saves an attempt descriptor before starting a role. Confirmed
+outputs survive process replacement. Persisted running attempts always reconcile,
+including when no first cursor was saved. Pi emits orphan recovery when it
+cannot recover a settled output. Retrying is bounded at three attempts per
+role; an Implement branch with history but no confirmed result requires
+replanning rather than a blind replay.
 
-The `remote_tasks` table holds the immutable remote identity, approval snapshot,
-status-comment receipt, and pending synchronization state. Local SQLite updates
-are authoritative. `GitHubRemoteTaskWriter` retries Roc-owned status labels and
-one comment owned by the authenticated daemon account, preserving human labels and
-comments. It acknowledges the exact projected local revision, so a concurrent
-newer transition remains pending. Rejected tasks keep their outcome and their
-one existing local draft child; the writer publishes that child once without
-approval, and a later matching trusted approval promotes the same child.
+Critical event IDs and content hashes prevent repeated usage from being counted
+twice. Conflicting duplicates and non-monotonic new events fail. Tool activity
+goes to the daemon terminal; it is not written to GitHub event by event.
+The board and token command read remote checkpoints and mark incomplete usage.
 
-Remote dependency release is stricter than local `done`. Immediately before a
-claim, `GitHubRemoteDependencyGate` requires each named dependency's pull request
-to be merged into the configured target branch, fetches that branch, verifies it
-contains GitHub's actual merge commit, and pins the fetched target commit. The
-pin survives claim and recovery. Open pull requests wait; closed-unmerged pull
-requests, target mismatches, and retired dependencies require explicit replan.
-The gate does not infer a replacement dependency from retirement metadata.
+Scout and Review inspect; Implement writes. The harness stages the final
+implementation and requires one trusted commit. A separate Pi session reviews
+that exact clean commit. Accepted work runs its posthook before publication.
+Rejected work retains its branch and outcome for explicit replanning.
 
-Publisher and execution clones may share a physical host while retaining separate
-databases and task checkouts. CLI project discovery checks for `.agile` only
-within the containing Git checkout; an outer Roc project cannot capture a nested
-execution clone that has not initialized its own database.
+## Publication and dependencies
 
-One Roc daemon runs per project. There is no multi-daemon claim protocol, hot
-failover, automatic merge, or automatic provider switching. Issue discovery has
-a 1,000-managed-Issue safety bound and fails visibly at that bound rather than
-assuming an absent identity. Comment recovery uses complete paginated REST
-reads. Live GitHub, real-provider, and two-machine behavior is operator release
-evidence; deterministic local tests exercise the same publication, admission,
-scheduler, writeback, and dependency seams.
+Publication reconciles the same task branch and PR target before creating a PR.
+An open PR is `awaiting_merge`. The runner verifies the recorded head, branch
+and target, fetches the target and checks its actual merge commit ancestry
+before marking `done`. A changed or closed-unmerged publication needs replan.
 
-## Upgrading from native adapters
+A dependent task cannot start because its predecessor merely opened a PR.
+Immediately before claiming, the runner verifies every dependency's merged PR
+and recorded implementation head, fetches the target, checks merge ancestry,
+and pins that fresh base. There is no automatic merge in M1.
 
-Native Codex and ZCode adapters and their dedicated tests have been removed.
-Finish active native-adapter work using the prior version before upgrading;
-native session cursors cannot resume in Pi. Keep existing databases, task
-branches and checkouts intact. Models from these vendors run through Pi providers.
+## Hooks and process ownership
+
+Hooks need a separate trusted comment for their exact phase/configuration hash.
+The runner saves receipts before and after argv-only execution. Known failures
+get at most three attempts. Interrupted hooks require explicit reconciliation
+because their side effects may already have occurred. Pending terminal posthooks
+remain eligible after restart; untrusted or interrupted ones preserve the
+task's rejected or failed outcome and record the reason for attention.
+
+Each session acquires `<canonical-project>.agile-checkout.lock` before branch
+setup or backend startup. Its owner-verified metadata uses exclusive file
+creation and 0600 permissions. An existing guard fails closed. This is
+cooperative local ownership for the chosen project checkout; independent clones
+and hosts do not share the guard and must not run concurrent daemons.
+
+Signals stop admission. Cancellation/drain has a five-second deadline so in-flight
+GitHub checkpoint acknowledgements can finish. Backend close has a 250ms deadline;
+retained-owner diagnostics have a 100ms limit. Pending or rejected
+backend startup, uncertain cancellation, unresolved close or unknown checkpoint
+writes retain the guard. Late completion never unlocks it. The backend factory
+has no AbortSignal, so startup can only be cleaned after its promise settles.
+
+A retained guard quarantines further execution. Stop all Roc sessions, inspect
+its metadata, confirm backend/hook children have exited, and inspect worktrees
+and GitHub state before removing that exact lock. PID absence alone is not
+proof of child cleanup. Pi process-close checks cover owned children, not hostile
+detached descendants. Worktrees and role instructions are not OS sandboxes.
+
+## CLI and migration
+
+Commander validates public commands. Project discovery stays within the
+containing Git checkout. Onboarding installs packaged skills and saves model,
+cycle, skill allowlist and execution consent without creating a task database.
+Inspection, boards and tokens read GitHub. Diagnostic logs and Pi sessions stay
+local. The Fake Harness is internal, not a scheduler CLI backend.
+
+SQLite production modules, local queue commands and SQL-only tests were removed
+after replacement boundaries were exercised. Existing databases and old
+checkouts remain on disk. Legacy daemon-owned `roc:status` comments without new
+execution records block admission. Finish old work with its prior runtime or
+migrate it explicitly; there is no automatic SQLite execution conversion.
+
+M1 provides GitHub execution and separate task worktrees; M2 adds bounded parallel admission.
+[Later milestones](roadmap.md) add AI-reviewed automatic PR
+merge, measured performance/visibility, and deferred Superset integration.
+Deterministic checks are complemented by [live GitHub and sandboxed GPT-6 acceptance](validation/m1-m2-live-2026-09-09.md).
+Physical two-host operation remains unverified. See the [current specification](specs/github-native-execution.md)
+and [M2 specification](specs/parallel-execution.md), plus
+[validation status](../README.details.md#validation-status).
 
 ## Pi backend
 
@@ -215,7 +201,9 @@ these limits. Project files cannot grant this execution permission.
 
 **Codex onboarding.** `roc-it onboard` uses Pi's public `ModelRuntime` SDK for
 OAuth, credential reuse, refresh, and one small connection test. Browser login
-is the default. After a verified response, `SettingsManager` saves the Codex
+is the default. Model catalog refresh uses Pi's bounded network refresh. A new
+Codex setup selects `gpt-6-astra`; an explicitly saved Codex model is preserved.
+After a verified response, `SettingsManager` saves the Codex
 provider/model and high reasoning in Pi's user settings. Roc stores the selected
 cycle, skills, and execution consent separately. A failed or cancelled login
 never reports completion or saves new Roc settings. Pi project configuration
@@ -227,13 +215,27 @@ internal module paths when upgrading Pi.
 
 **Model attribution.** A short-lived probe process answers
 `get_available_models` and `get_state`; the probe's effective default model
-becomes the single attributed session model, catalog ids are
-`provider/modelId` pairs, and each attempt re-asserts its routed pair with
+fills profiles omitted from the user's optional `models.luna`, `models.terra`,
+and `models.sol` settings. Explicit mappings must exist in the catalog and
+support `high`, or startup fails with `PI_MODEL_MAPPING_INVALID`. Onboarding
+preserves these mappings. Catalog ids are `provider/modelId` pairs, and each
+attempt re-asserts its routed pair with
 `set_model` plus `set_thinking_level` (Roc efforts map one-to-one onto Pi
 thinking levels). A probe with no resolvable default model fails startup
 with `PI_MODEL_UNRESOLVED` instead of running an unobservable default. The
 resolved default must advertise `high` reasoning; otherwise startup fails with
 `PI_MODEL_UNSUPPORTED` rather than selecting a different model or provider.
+
+Low- and medium-risk tasks start Scout on Luna, Implement on Terra, and Review
+on Sol. High-risk roles use only Sol with `xhigh`; unsupported
+effort routes the task to `needs_replan`. The operator chooses which actual
+model each profile represents. Existing attempt descriptors remain authoritative
+during recovery; new attempts use the mappings loaded at scheduler startup.
+
+Pi Scout capsules use the existing structured output schema without a separate
+byte limit or truncation. Usage delivery and historical role-input recovery
+follow the shared harness flow. Prompts request concise source references,
+tests, and risks, with current-source inspection by later roles.
 
 **Recovery.** The Pi session file is an append-only entry tree on disk, and
 the backend cursor persists `{sessionId, sessionFile, entryAnchor}`, where

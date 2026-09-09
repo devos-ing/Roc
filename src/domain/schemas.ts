@@ -14,6 +14,7 @@ export const TaskStatusSchema = z.enum([
   "implementing",
   "reviewing",
   "publishing",
+  "awaiting_merge",
   "done",
   "rejected",
   "failed_infra",

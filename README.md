@@ -22,8 +22,11 @@ flowchart LR
 **Pi is the execution core.** Onboarding connects your ChatGPT account and selects
 a Codex model. Claude and GLM are advanced provider options.
 Roc uses Pi's tools and agent loop; it does not launch Codex CLI or Claude Code.
-One daemon runs one task at a time. Each task keeps its own branch.
-`done` means the PR is published; you still merge it yourself.
+GitHub Issues hold specifications, approvals and execution checkpoints.
+One daemon runs up to two independent tasks, with a native Git worktree per Issue.
+Use `--concurrency 1` for sequential execution. Overlapping or unclear scopes
+and tasks with hooks run alone.
+An open PR is `awaiting_merge`; `done` means its merge has been confirmed.
 
 **Development version:** use this checkout, as shown below. The Pi-only workflow
 is not yet published to npm. Automated checks do not establish live provider
@@ -32,7 +35,7 @@ success; see [validation status](README.details.md#validation-status).
 ## Quick start
 
 You need Bun 1.3+, Node.js 22.19+, Git, GitHub CLI, and your project's build/test
-tools. Start with the local task queue on one machine.
+tools. Tasks live in GitHub Issues. Run one execution daemon for the repository.
 
 ### 1. Set up Roc
 
@@ -63,11 +66,11 @@ are automatic.
 Open the project in your usual coding assistant and ask:
 
 ```text
-Use roc-create-tasks to add team invitations. Use the local queue and the Roc entrypoint in ROC_CLI_ENTRY.
+Use roc-create-tasks to add team invitations. Publish approved tasks to this repository's GitHub Issues using the Roc entrypoint in ROC_CLI_ENTRY.
 ```
 
 The skill asks questions and proposes tasks with acceptance criteria. It saves
-them after you approve the complete plan. If the assistant cannot read your
+them to GitHub after you approve the complete plan. If the assistant cannot read your
 terminal environment, give it the absolute Roc entrypoint path.
 Install `grilling` and `unslop` in your planning assistant if missing; see
 [planning skills](README.details.md#planning-skills).
@@ -82,7 +85,7 @@ bun "$ROC_CLI_ENTRY" scheduler run --base-branch main
 ```
 
 Leave the terminal open. Press `Ctrl-C` to stop; repeat the command to recover
-saved work. Roc keeps task branches in a sibling `<project>.agile-checkout`.
+saved work. Roc keeps each task in `<project>.agile-worktrees/issue-<number>`.
 For unattended work, use OS/container isolation because Pi has no built-in sandbox.
 
 ### 4. Follow progress
@@ -102,7 +105,8 @@ Use `task list`, `scheduler inspect`, or `help` for more information.
 
 The [detailed guide](README.details.md) covers the architecture diagram, provider
 setup, GitHub Issues as a shared task source, daemon deployment, and recovery.
-Start with two clones on the same machine; move the execution clone later.
+You can publish from a MacBook and run the sole daemon on a Mac mini.
+Physical two-host operation still needs acceptance testing.
 
 Development and releases: [CONTRIBUTING.md](CONTRIBUTING.md).
 License: [Apache 2.0](LICENSE).

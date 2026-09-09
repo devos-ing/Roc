@@ -1,4 +1,4 @@
-import type { CategoryTokenUsage } from "../store/orchestration-repository";
+import type { CategoryTokenUsage } from "../domain/inspection";
 
 type DisplayCategory =
   | "Scout"

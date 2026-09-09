@@ -1,13 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  appendFile,
-  chmod,
-  mkdtemp,
-  readFile,
-  realpath,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTaskBranchManager } from "../../src/workspace/task-branch";
@@ -26,7 +18,7 @@ async function createRepository(): Promise<string> {
 
 async function removeRepository(root: string): Promise<void> {
   await rm(root, { recursive: true, force: true });
-  await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+  await rm(`${root}.agile-worktrees`, { recursive: true, force: true });
 }
 
 test("project ignores Codex sandbox and test artifacts before task commits", async () => {
@@ -46,160 +38,6 @@ test("project ignores Codex sandbox and test artifacts before task commits", asy
   expect(
     (await git(["check-ignore", ...artifacts], process.cwd())).split("\n"),
   ).toEqual(artifacts);
-});
-
-test("preserves a GitHub source origin in new and legacy scheduler checkouts", async () => {
-  const sourceOrigin = "https://github.com/agile-agents/roc.git";
-  const root = await createRepository();
-  try {
-    await git(["remote", "add", "origin", sourceOrigin], root);
-    const manager = await createTaskBranchManager(root, "HEAD");
-    const newCheckout = (await manager.prepare("T1")).path;
-    expect(
-      await git(["config", "--get", "remote.origin.url"], newCheckout),
-    ).toBe(sourceOrigin);
-
-    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
-    const legacyCheckout = `${root}.agile-checkout`;
-    await git(["clone", root, legacyCheckout], root);
-    await appendFile(
-      join(legacyCheckout, ".git", "config"),
-      `\n[url "file://${root}"]\n\tinsteadOf = ${sourceOrigin}\n`,
-    );
-    const legacy = await createTaskBranchManager(root, "HEAD");
-    const legacyCheckoutPath = (await legacy.prepare("T1")).path;
-    expect(
-      await git(["config", "--get", "remote.origin.url"], legacyCheckoutPath),
-    ).toBe(sourceOrigin);
-    await expect(
-      (await createTaskBranchManager(root, "HEAD")).prepare("T1"),
-    ).resolves.toMatchObject({ path: legacyCheckoutPath });
-  } finally {
-    await removeRepository(root);
-  }
-}, 30_000);
-
-test("recognizes a no-user SCP SSH alias when restarting a scheduler checkout", async () => {
-  const sourceOrigin = "github-work:agile-agents/roc.git";
-  const root = await createRepository();
-  const sshCommand = join(root, "ssh");
-  const priorPath = process.env.PATH;
-  try {
-    await git(["remote", "add", "origin", sourceOrigin], root);
-    const manager = await createTaskBranchManager(root, "HEAD");
-    const checkout = (await manager.prepare("T1")).path;
-    await writeFile(sshCommand, `#!/bin/sh\nexec git-upload-pack "${root}"\n`);
-    await chmod(sshCommand, 0o755);
-    process.env.PATH = `${root}:${priorPath ?? "/usr/bin:/bin"}`;
-
-    const restarted = await createTaskBranchManager(root, "HEAD");
-    expect((await restarted.prepare("T1")).path).toBe(checkout);
-  } finally {
-    if (priorPath === undefined) delete process.env.PATH;
-    else process.env.PATH = priorPath;
-    await removeRepository(root);
-  }
-});
-
-test("uses global Git configuration when fetching a legacy scheduler checkout", async () => {
-  const sourceOrigin = "https://127.0.0.1:1/agile-agents/roc.git";
-  const root = await createRepository();
-  const globalConfig = join(root, "gitconfig");
-  const priorGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
-  try {
-    await git(["remote", "add", "origin", sourceOrigin], root);
-    const checkout = `${root}.agile-checkout`;
-    await git(["clone", root, checkout], root);
-    await writeFile(
-      globalConfig,
-      `[url "file://${root}"]\n\tinsteadOf = ${sourceOrigin}\n`,
-    );
-    process.env.GIT_CONFIG_GLOBAL = globalConfig;
-
-    const restarted = await createTaskBranchManager(root, "HEAD");
-    expect((await restarted.prepare("T1")).path).toBe(checkout);
-    await expect(
-      (await createTaskBranchManager(root, "HEAD")).prepare("T1"),
-    ).resolves.toMatchObject({ path: checkout });
-  } finally {
-    if (priorGlobalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
-    else process.env.GIT_CONFIG_GLOBAL = priorGlobalConfig;
-    await removeRepository(root);
-  }
-});
-
-test("switches retained task branches in a scheduler-owned checkout", async () => {
-  const root = await createRepository();
-  try {
-    const sourceBranch = await git(["branch", "--show-current"], root);
-    const sourceHead = await git(["rev-parse", "HEAD"], root);
-    const manager = await createTaskBranchManager(root, "HEAD");
-
-    const first = await manager.prepare("T1");
-    expect(first.path).toBe(`${root}.agile-checkout`);
-    expect(first.branch).toBe("agile/T1");
-    await writeFile(join(first.path, "answer.txt"), "42\n");
-    const firstCommit = await manager.commitChanges("T1", first.baseCommit);
-
-    const second = await manager.prepare("T2");
-    expect(second.path).toBe(first.path);
-    expect(await Bun.file(join(second.path, "answer.txt")).exists()).toBe(
-      false,
-    );
-    expect(await git(["branch", "--show-current"], second.path)).toBe(
-      "agile/T2",
-    );
-
-    const restarted = await createTaskBranchManager(root, "HEAD");
-    const reopened = await restarted.prepare("T1", first.baseCommit);
-    expect(await readFile(join(reopened.path, "answer.txt"), "utf8")).toBe(
-      "42\n",
-    );
-    await expect(
-      restarted.assertCommit("T1", firstCommit, first.baseCommit),
-    ).resolves.toBeUndefined();
-
-    expect(await git(["branch", "--show-current"], root)).toBe(sourceBranch);
-    expect(await git(["rev-parse", "HEAD"], root)).toBe(sourceHead);
-    expect(await git(["status", "--porcelain"], root)).toBe("");
-    expect(await Bun.file(join(root, "answer.txt")).exists()).toBe(false);
-    await expect(manager.prepare("../escape")).rejects.toThrow(
-      "Unsafe task path component",
-    );
-  } finally {
-    await removeRepository(root);
-  }
-});
-
-test("checkpoints interrupted work and folds it into one final task commit", async () => {
-  const root = await createRepository();
-  try {
-    const manager = await createTaskBranchManager(root, "HEAD");
-    const first = await manager.prepare("T1");
-    await writeFile(join(first.path, "partial.txt"), "partial\n");
-
-    await manager.prepare("T2");
-    expect(
-      await git(["show", "-s", "--format=%s", "agile/T1"], first.path),
-    ).toBe("agile(T1): WIP checkpoint");
-
-    await manager.prepare("T1", first.baseCommit);
-    await writeFile(join(first.path, "final.txt"), "done\n");
-    const commit = await manager.commitChanges("T1", first.baseCommit);
-
-    expect(
-      await git(
-        ["rev-list", "--count", `${first.baseCommit}..agile/T1`],
-        first.path,
-      ),
-    ).toBe("1");
-    expect(await git(["show", "-s", "--format=%s", commit], first.path)).toBe(
-      "agile(T1): implement ticket",
-    );
-    expect(await manager.commitChanges("T1", first.baseCommit)).toBe(commit);
-  } finally {
-    await removeRepository(root);
-  }
 });
 
 test("restores an approved source commit as uncommitted task changes", async () => {
@@ -374,7 +212,9 @@ test("requires Review to inspect the exact clean implementation commit", async (
       await git(["rev-parse", "--verify", "refs/agile-review/T1"], root),
     ).toBe(commit);
     expect(await git(["cat-file", "-e", `${commit}^{commit}`], root)).toBe("");
-    expect(await git(["branch", "--list", "agile/T1"], root)).toBe("");
+    expect(await git(["branch", "--list", "agile/T1"], root)).toContain(
+      "agile/T1",
+    );
     expect(await git(["branch", "--show-current"], root)).toBe(sourceBranch);
     expect(await git(["rev-parse", "HEAD"], root)).toBe(sourceHead);
     expect(await git(["status", "--porcelain"], root)).toBe(sourceStatus);
@@ -402,9 +242,7 @@ test("rejects reuse of a task branch with a different base identity", async () =
     await expect(nextManager.prepare("T1", first.baseCommit)).resolves.toEqual(
       first,
     );
-    await expect(nextManager.prepare("T1")).rejects.toThrow(
-      /does not descend from its base commit/i,
-    );
+    await expect(nextManager.prepare("T1")).rejects.toThrow(/base changed/i);
   } finally {
     await removeRepository(root);
   }

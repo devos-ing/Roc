@@ -51,16 +51,16 @@ python3 -B .agents/skills/pr-review-to-closure/scripts/test_evidence.py -v
 python3 -B .agents/skills/pr-review-to-closure/scripts/test_ledger.py -v
 ```
 
-You can test an import with a temporary strict JSON manifest, then inspect its
-ready tasks locally:
+Use the fake GitHub transport in tests for deterministic task publication and
+execution. To exercise a real repository, explicitly approve a manifest, then:
 
 ```bash
-bun dev -- task import /absolute/path/to/backlog.json
+bun dev -- task publish-github /absolute/path/to/backlog.json
 bun dev -- task list
 ```
 
-Run them inside the target project. Roc resolves the project's `.agile`
-database from the current directory; the public CLI has no `--db` flag.
+Run these inside the target project. Publication writes GitHub Issues;
+inspection reads their execution checkpoints without opening SQLite.
 
 Run the checks that match your change:
 

@@ -52,6 +52,27 @@ const manifest: BacklogManifest = {
   ],
 };
 
+/** Adapts fixture records to paginated repository REST data without relying on the search index. */
+function restPages(
+  issues: {
+    number: number;
+    title: string;
+    body: string;
+    url: string;
+    state: string;
+  }[],
+) {
+  return JSON.stringify([
+    issues.map((issue) => ({
+      number: issue.number,
+      title: issue.title,
+      body: issue.body,
+      html_url: issue.url,
+      state: issue.state.toLowerCase(),
+    })),
+  ]);
+}
+
 test("round-trips a complete stable remote task envelope", () => {
   const envelope = remoteTaskEnvelope(manifest, "REMOTE-B");
   expect(remotePlanId(structuredClone(manifest))).toBe(envelope.planId);
@@ -78,7 +99,7 @@ test("round-trips task prose containing the envelope delimiters", () => {
   expect(body).toContain("\\u003c!-- roc:task-envelope");
 });
 
-test("reconciles partially published tasks before applying approvals and ready labels", async () => {
+test("reconciles lost create responses through repository REST even while Issue search is stale", async () => {
   const issues: Array<{
     number: number;
     title: string;
@@ -99,7 +120,27 @@ test("reconciles partially published tasks before applying approvals and ready l
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (command.slice(0, 3).join(" ") === "gh issue list") {
-        return { exitCode: 0, stdout: JSON.stringify(issues), stderr: "" };
+        return { exitCode: 0, stdout: "[]", stderr: "" };
+      }
+      if (command[1] === "api")
+        return {
+          exitCode: 0,
+          stdout: restPages(
+            issues.length === 2 &&
+              command.some((part) => part.includes("labels="))
+              ? issues.slice(0, 1)
+              : issues,
+          ),
+          stderr: "",
+        };
+      if (command.slice(0, 3).join(" ") === "gh issue view") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify(
+            issues.find((issue) => issue.number === Number(command[3])),
+          ),
+          stderr: "",
+        };
       }
       if (command.slice(0, 3).join(" ") === "gh issue create") {
         const bodyPath = command[command.indexOf("--body-file") + 1] ?? "";
@@ -149,6 +190,7 @@ test("reconciles partially published tasks before applying approvals and ready l
   const createsAfterFirstRun = commands.filter(
     (command) => command[2] === "create" && command[1] === "issue",
   ).length;
+  // Reuse both Issues while label discovery still lags on the repeated call.
   await publisher.publish(manifest);
   expect(issues).toHaveLength(2);
   expect(
@@ -175,7 +217,7 @@ test("rejects conflicting duplicate remote identities", async () => {
         return { exitCode: 0, stdout: "", stderr: "" };
       return {
         exitCode: 0,
-        stdout: JSON.stringify([duplicate(1), duplicate(2)]),
+        stdout: restPages([duplicate(1), duplicate(2)]),
         stderr: "",
       };
     },
@@ -201,10 +243,57 @@ test("fails visibly when the managed Issue search reaches its safety bound", asy
         url: `https://example.test/issues/${index + 1}`,
         state: "CLOSED",
       }));
-      return { exitCode: 0, stdout: JSON.stringify(issues), stderr: "" };
+      return { exitCode: 0, stdout: restPages(issues), stderr: "" };
     },
   };
   await expect(
     new GitHubTaskPublisher("/repo", runner).publish(manifest),
   ).rejects.toThrow("1000-Issue safety bound");
+});
+
+test("a direct-read create receipt cannot bypass the discovery bound or grant approval", async () => {
+  const task = manifest.tasks[0];
+  if (!task) throw Error("Missing fixture task");
+  const input = { ...manifest, tasks: [task] };
+  const envelope = remoteTaskEnvelope(input, task.id);
+  const old = Array.from({ length: 999 }, (_, index) => ({
+    number: index + 1,
+    title: "Old Issue",
+    body: "",
+    url: `https://example.test/issues/${index + 1}`,
+    state: "CLOSED",
+  }));
+  let approvals = 0;
+  const runner: GitHubCommandRunner = {
+    async run({ command }) {
+      if (command[1] === "repo")
+        return { exitCode: 0, stdout: "owner/repo", stderr: "" };
+      if (command[1] === "api")
+        return { exitCode: 0, stdout: restPages(old), stderr: "" };
+      if (command[1] === "issue" && command[2] === "create")
+        return {
+          exitCode: 0,
+          stdout: "https://example.test/issues/1000",
+          stderr: "",
+        };
+      if (command[2] === "view")
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            number: 1000,
+            title: task.title,
+            body: renderRemoteTaskBody(envelope),
+            url: "https://example.test/issues/1000",
+            state: "OPEN",
+          }),
+          stderr: "",
+        };
+      if (command[2] === "comment") approvals++;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  };
+  await expect(
+    new GitHubTaskPublisher("/repo", runner).publish(input),
+  ).rejects.toThrow("1000-Issue safety bound");
+  expect(approvals).toBe(0);
 });

@@ -37,6 +37,7 @@ function profilesFrom(profile: ModelProfile): ModelProfile[] {
 
 /** Selects the eligible profile sequence for an initial attempt or retry. */
 function routeProfiles(input: AdvisorInput): ModelProfile[] {
+  if (input.risk === "high") return ["sol"];
   const baseline = baselineProfile(input.role);
   if (input.retryIndex === 0 || input.priorProfile === undefined)
     return profilesFrom(baseline);
@@ -91,12 +92,13 @@ export function createModelAdvisor(
     effort: Route["effort"],
   ): string | undefined => {
     const mapped = mappingSnapshot[profile];
-    const configured =
-      mapped === undefined
-        ? undefined
-        : catalogSnapshot.find((model) => model.id === mapped);
-    if (configured?.supportedReasoningEfforts.includes(effort))
-      return configured.id;
+    if (mapped !== undefined) {
+      return catalogSnapshot.find(
+        (model) =>
+          model.id === mapped &&
+          model.supportedReasoningEfforts.includes(effort),
+      )?.id;
+    }
     return catalogSnapshot.find(
       (model) =>
         profileForModel(model.id) === profile &&

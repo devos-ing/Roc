@@ -1,8 +1,20 @@
 import { z } from "zod";
 import type { StoredTask } from "../domain/schemas";
 import type { ImplementOutput } from "../harness/contracts";
-import type { TaskPublicationRecord } from "../store/orchestration-repository";
+import { gitPathResolutionEnvironment } from "../workspace/git-environment";
 import type { TaskBranchManager } from "../workspace/task-branch";
+
+export type TaskPublicationRecord = {
+  taskId: string;
+  branch: string;
+  baseBranch: string;
+  commitSha: string;
+  status: "pending" | "published" | "failed";
+  pullRequestNumber?: number;
+  pullRequestUrl?: string;
+  pullRequestState?: "OPEN" | "MERGED";
+  failureMessage?: string;
+};
 
 const NonEmpty = z.string().trim().min(1);
 const PullRequestSchema = z
@@ -66,6 +78,7 @@ export class BunGitHubCommandRunner implements GitHubCommandRunner {
     const process = Bun.spawn({
       cmd: input.command,
       cwd: input.cwd,
+      env: gitPathResolutionEnvironment(),
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",

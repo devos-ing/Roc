@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import type { z } from "zod";
 import { AgileError, normalizeError } from "../../runtime/errors";
+import { gitPathResolutionEnvironment } from "../../workspace/git-environment";
 import { PiEventEnvelopeSchema, PiResponseEnvelopeSchema } from "./protocol";
 
 type PiEvent = z.infer<typeof PiEventEnvelopeSchema>;
@@ -94,7 +95,7 @@ export class PiClient implements PiClientApi {
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, ...(input.env ?? {}) },
+        env: { ...gitPathResolutionEnvironment(), ...(input.env ?? {}) },
       });
     } catch (error) {
       throw normalizeError(error, {

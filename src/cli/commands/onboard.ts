@@ -12,22 +12,17 @@ import {
   buildDefaultSkillCandidates,
   loadDefaultSkillPolicy,
 } from "../../skills/policy";
-import { openDatabase } from "../../store/database";
-import {
-  commandProjectRoot,
-  errorMessage,
-  projectDatabasePath,
-} from "../command-context";
+import { commandProjectRoot, errorMessage } from "../command-context";
 import {
   formatOnboardingMessage,
   renderAllowlistStep,
   renderCycleStep,
-  renderDatabaseStep,
   renderOnboardingComplete,
   renderOnboardingHeader,
   renderOnboardingStopped,
   renderSettingsStep,
   renderSkillsStep,
+  renderTaskSourceStep,
 } from "../presentation";
 import type { CliCommandContext, CliIo } from "../types";
 
@@ -94,24 +89,10 @@ async function executeOnboard(
   const completedSteps: string[] = [];
   context.io.out(renderOnboardingHeader(scope));
   try {
-    let installed: Awaited<ReturnType<typeof installPackagedSkills>>;
-    if (global) {
-      const databaseStep = renderDatabaseStep({ scope });
-      completedSteps.push(databaseStep);
-      context.io.out(databaseStep);
-      installed = await installPackagedSkills({ sourceRoot, root });
-    } else {
-      const dbPath = projectDatabasePath(root);
-      const db = openDatabase(dbPath);
-      try {
-        const databaseStep = renderDatabaseStep({ dbPath, scope });
-        completedSteps.push(databaseStep);
-        context.io.out(databaseStep);
-        installed = await installPackagedSkills({ sourceRoot, root });
-      } finally {
-        db.close();
-      }
-    }
+    const taskSourceStep = renderTaskSourceStep();
+    completedSteps.push(taskSourceStep);
+    context.io.out(taskSourceStep);
+    const installed = await installPackagedSkills({ sourceRoot, root });
     const skillsStep = renderSkillsStep(installed);
     completedSteps.push(skillsStep);
     context.io.out(skillsStep);
@@ -153,6 +134,9 @@ async function executeOnboard(
         cycle: setting,
         skills: { allowlist: selection.identities },
         execution: { allowUnsandboxed: true },
+        ...(priorSettings?.models === undefined
+          ? {}
+          : { models: priorSettings.models }),
       },
       homeRoot,
     );

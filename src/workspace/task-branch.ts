@@ -1,6 +1,6 @@
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { type SimpleGit, simpleGit } from "simple-git";
 import { safeTaskPathComponent } from "../domain/task-path";
 
@@ -156,111 +156,127 @@ function finalMessage(taskId: string): string {
   return `agile(${taskId}): implement ticket`;
 }
 
-/** Builds the temporary checkpoint commit subject for a task. */
-function checkpointMessage(taskId: string): string {
-  return `agile(${taskId}): WIP checkpoint`;
-}
-
-/** Reports whether a Git remote uses a URL rather than a local filesystem path. */
-function isRemoteUrl(remote: string): boolean {
-  return (
-    /^[a-z][a-z\d+.-]*:\/\//i.test(remote) ||
-    /^(?:[^/\s:@]+@)?[^/\s:]+:(?![\\/]).+$/.test(remote)
-  );
-}
-
-/** Verifies that a local remote points to the source scheduler repository. */
-async function isSourceRepositoryRemote(
-  remote: string,
-  checkoutPath: string,
-  canonicalRepo: string,
-): Promise<boolean> {
-  if (isRemoteUrl(remote)) return false;
-  return (
-    (await realpath(resolve(dirname(checkoutPath), remote))) === canonicalRepo
-  );
-}
-
-/** Creates a branch manager backed by a dedicated validated scheduler checkout. */
+/** Creates one native Git worktree per task without sharing working directories. */
 export async function createTaskBranchManager(
   repoPath: string,
   baseRef: string,
 ): Promise<TaskBranchManager> {
   const canonicalRepo = await realpath(resolve(repoPath));
   const sourceGit = gitAt(canonicalRepo);
-  const reportedRoot = (await sourceGit.revparse("--show-toplevel")).trim();
-  if (reportedRoot !== canonicalRepo) {
-    throw new Error(
-      `Repository path is not the Git checkout root: ${canonicalRepo}`,
+  if ((await sourceGit.revparse("--show-toplevel")).trim() !== canonicalRepo) {
+    throw new Error("Repository path is not the Git checkout root");
+  }
+  const defaultBase = await fullCommit(sourceGit, baseRef);
+  const root = `${canonicalRepo}.agile-worktrees`;
+  if ((await pathKind(root)) === "other")
+    throw new Error("Task worktree root is not a real directory");
+  await mkdir(root, { recursive: true });
+  const managers = new Map<
+    string,
+    { base: string; value: Promise<TaskBranchManager> }
+  >();
+  /** Resolves one task manager and rejects a changed persisted base within the session. */
+  function manager(
+    taskId: string,
+    persistedBase?: string,
+  ): Promise<TaskBranchManager> {
+    const safeId = safeTaskPathComponent(taskId);
+    const base = persistedBase ?? defaultBase;
+    if (!FULL_SHA.test(base)) throw new Error("Invalid persisted base commit");
+    const existing = managers.get(safeId);
+    if (existing) {
+      if (existing.base !== base)
+        throw new Error("Task base changed during execution");
+      return existing.value;
+    }
+    const value = createWorktreeManager(
+      canonicalRepo,
+      sourceGit,
+      root,
+      safeId,
+      base,
+    );
+    managers.set(safeId, { base, value });
+    return value;
+  }
+  return {
+    /** Creates or validates the retained worktree for the task. */
+    async prepare(id, base) {
+      return (await manager(id, base)).prepare(id, base);
+    },
+    /** Restores only the approved source changes into this task's worktree. */
+    async restoreChanges(id, source, base) {
+      return (await manager(id, base)).restoreChanges(id, source, base);
+    },
+    /** Creates or reuses the task's trusted final commit. */
+    async commitChanges(id, base) {
+      return (await manager(id, base)).commitChanges(id, base);
+    },
+    /** Verifies a commit belongs to the task branch. */
+    async assertCommit(id, commit, base) {
+      return (await manager(id, base)).assertCommit(id, commit, base);
+    },
+    /** Requires the clean task branch to match the reviewed commit exactly. */
+    async assertReviewReady(id, commit, base) {
+      return (await manager(id, base)).assertReviewReady(id, commit, base);
+    },
+    /** Reads the status of this task without switching another worktree. */
+    async status(id, base) {
+      return (await manager(id, base)).status(id, base);
+    },
+  };
+}
+
+/** Attaches a task branch to its own directory and verifies shared Git ownership. */
+async function createWorktreeManager(
+  canonicalRepo: string,
+  sourceGit: SimpleGit,
+  root: string,
+  taskId: string,
+  baseCommit: string,
+): Promise<TaskBranchManager> {
+  const checkoutPath = resolve(root, taskId);
+  const branch = taskBranchName(taskId);
+  const kind = await pathKind(checkoutPath);
+  if (kind === "other")
+    throw new Error("Task worktree path is not a real directory");
+  await sourceGit.raw(["cat-file", "-e", `${baseCommit}^{commit}`]);
+  if (kind === "missing") {
+    const exists = (await sourceGit.branchLocal()).all.includes(branch);
+    const remote = await fullCommit(
+      sourceGit,
+      `refs/remotes/origin/${branch}`,
+    ).catch(() => undefined);
+    await sourceGit.raw(
+      exists
+        ? ["worktree", "add", checkoutPath, branch]
+        : ["worktree", "add", "-b", branch, checkoutPath, remote ?? baseCommit],
     );
   }
-  const sourceOrigin = (await sourceGit.getRemotes()).some(
-    (remote) => remote.name === "origin",
-  )
-    ? (
-        await sourceGit.raw(["config", "--local", "--get", "remote.origin.url"])
-      ).trim()
-    : undefined;
-
-  const baseCommit = await fullCommit(sourceGit, baseRef);
-  const checkoutPath = `${canonicalRepo}.agile-checkout`;
-  const checkoutKind = await pathKind(checkoutPath);
-  if (checkoutKind === "other") {
-    throw new Error(
-      `Scheduler checkout path is not a real directory: ${checkoutPath}`,
-    );
-  }
-
-  if (checkoutKind === "missing") {
-    await sourceGit.clone(canonicalRepo, checkoutPath, ["--no-checkout"]);
-  }
-
   const checkoutGit = gitAt(checkoutPath, true);
-  const checkoutIdentityGit = gitAt(checkoutPath);
-  const checkoutRoot = (await checkoutGit.revparse("--show-toplevel")).trim();
-  if (checkoutRoot !== checkoutPath) {
-    throw new Error(
-      `Scheduler checkout path is not its Git root: ${checkoutPath}`,
-    );
-  }
-  const origin = (
-    await checkoutIdentityGit.raw([
-      "config",
-      "--local",
-      "--get",
-      "remote.origin.url",
-    ])
-  ).trim();
-  const sourceRepositoryRemote = await isSourceRepositoryRemote(
-    origin,
-    checkoutPath,
-    canonicalRepo,
+  const identityGit = gitAt(checkoutPath);
+  const reportedRoot = (await identityGit.revparse("--show-toplevel")).trim();
+  const sourceCommon = await realpath(
+    resolve(
+      canonicalRepo,
+      (await sourceGit.revparse("--git-common-dir")).trim(),
+    ),
   );
-  if (sourceOrigin === undefined && !sourceRepositoryRemote) {
-    throw new Error(
-      `Scheduler checkout belongs to a different repository: ${checkoutPath}`,
-    );
-  }
+  const taskCommon = await realpath(
+    resolve(
+      checkoutPath,
+      (await identityGit.revparse("--git-common-dir")).trim(),
+    ),
+  );
   if (
-    sourceOrigin !== undefined &&
-    origin !== sourceOrigin &&
-    !sourceRepositoryRemote
+    reportedRoot !== checkoutPath ||
+    sourceCommon !== taskCommon ||
+    (await identityGit.status()).current !== branch
   ) {
     throw new Error(
-      `Scheduler checkout belongs to a different repository: ${checkoutPath}`,
+      "Task worktree belongs to a different repository or branch",
     );
   }
-  if (sourceOrigin !== undefined && origin !== sourceOrigin) {
-    await checkoutGit.raw(["remote", "set-url", "origin", sourceOrigin]);
-  }
-
-  if (checkoutKind === "missing") {
-    await checkoutGit.checkout(baseCommit, ["--detach"]);
-  } else {
-    await checkoutGit.raw(["fetch", "origin", "--prune"]);
-  }
-  await checkoutGit.raw(["cat-file", "-e", `${baseCommit}^{commit}`]);
-
   /** Builds and validates the workspace identity for a task branch. */
   function workspace(
     taskId: string,
@@ -277,11 +293,6 @@ export async function createTaskBranchManager(
       branch: taskBranchName(safeTaskId),
       baseCommit: taskBaseCommit,
     };
-  }
-
-  /** Reports whether a local task branch already exists. */
-  async function branchExists(branch: string): Promise<boolean> {
-    return (await checkoutGit.branchLocal()).all.includes(branch);
   }
 
   /** Returns the checkout's raw porcelain status without trailing whitespace. */
@@ -341,33 +352,6 @@ export async function createTaskBranchManager(
       );
     }
     return Number(encoded);
-  }
-
-  /** Checkpoints dirty work on the active task branch before switching branches. */
-  async function checkpointBeforeSwitch(nextBranch: string): Promise<void> {
-    const status = await checkoutGit.status();
-    if (status.current === nextBranch || status.isClean()) return;
-    if (
-      status.current === null ||
-      !status.current.startsWith(TASK_BRANCH_PREFIX)
-    ) {
-      throw new Error("Scheduler checkout is dirty outside a task branch");
-    }
-
-    const activeTaskId = safeTaskPathComponent(
-      status.current.slice(TASK_BRANCH_PREFIX.length),
-    );
-    const currentSubject = await subject();
-    if (currentSubject === finalMessage(activeTaskId)) {
-      throw new Error(`Completed task branch ${status.current} became dirty`);
-    }
-
-    await checkoutGit.add("-A");
-    if (currentSubject === checkpointMessage(activeTaskId)) {
-      await checkoutGit.raw(["commit", "--amend", "--no-edit"]);
-    } else {
-      await checkoutGit.commit(checkpointMessage(activeTaskId));
-    }
   }
 
   /** Verifies that a full commit SHA is reachable from the expected task branch. */
@@ -447,17 +431,6 @@ export async function createTaskBranchManager(
           "-e",
           `${candidate.baseCommit}^{commit}`,
         ]);
-      }
-      await checkpointBeforeSwitch(candidate.branch);
-
-      if (await branchExists(candidate.branch)) {
-        await assertBase(candidate);
-        await checkoutGit.checkout(candidate.branch);
-      } else {
-        await checkoutGit.checkoutBranch(
-          candidate.branch,
-          candidate.baseCommit,
-        );
       }
       await assertActive(candidate);
       return candidate;
@@ -566,7 +539,7 @@ export async function createTaskBranchManager(
       }
     },
 
-    /** Converts task changes or a checkpoint into the single trusted final commit. */
+    /** Converts task changes into the single trusted final commit. */
     async commitChanges(
       taskId: string,
       persistedBaseCommit?: string,
@@ -584,17 +557,6 @@ export async function createTaskBranchManager(
         }
         await checkoutGit.add("-A");
         await checkoutGit.commit(finalMessage(candidate.taskId));
-      } else if (
-        count === 1 &&
-        (await subject()) === checkpointMessage(candidate.taskId)
-      ) {
-        if (dirty) await checkoutGit.add("-A");
-        await checkoutGit.raw([
-          "commit",
-          "--amend",
-          "-m",
-          finalMessage(candidate.taskId),
-        ]);
       } else if (count !== 1) {
         throw new Error(
           `Task branch ${candidate.branch} must contain exactly one task commit; found ${count}`,
@@ -631,13 +593,7 @@ export async function createTaskBranchManager(
         );
       }
       const reviewRef = `refs/agile-review/${candidate.taskId}`;
-      await sourceGit.raw([
-        "fetch",
-        "--no-tags",
-        "--no-write-fetch-head",
-        checkoutPath,
-        `refs/heads/${candidate.branch}:${reviewRef}`,
-      ]);
+      await sourceGit.raw(["update-ref", reviewRef, commitSha]);
       if ((await fullCommit(sourceGit, reviewRef)) !== commitSha) {
         throw new Error(
           `Detached Review ref is not the exact implementation commit ${commitSha}`,
