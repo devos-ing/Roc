@@ -473,40 +473,87 @@ test("aborted settles fail as retryable interrupted turns", async () => {
   });
 });
 
-test("review verifies the workspace stayed untouched and completes", async () => {
-  const client = new RecordedPiClient();
+test("original and refreshed Reviews use independent Pi children, fresh exact-target validation prompts and attributable usage", async () => {
+  const clients: RecordedPiClient[] = [];
+  const targets: string[][] = [];
   let statusCalls = 0;
   const harness = createPiHarness({
     branches: memoryBranches({
+      async assertReviewReady(_id, head, base) {
+        targets.push([head, base!]);
+      },
       async status() {
-        statusCalls += 1;
+        statusCalls++;
         return "clean";
       },
     }),
-    startClient: async () => client,
+    startClient: async () => {
+      const client = new RecordedPiClient(
+        [
+          messageEnd({
+            text: JSON.stringify({
+              kind: "review",
+              decision: "accepted",
+              findings: [],
+              remainingGaps: [],
+            }),
+          }),
+          { type: "agent_settled" },
+        ],
+        { thinkingLevel: clients.length === 0 ? "high" : "xhigh" },
+      );
+      clients.push(client);
+      return client;
+    },
   });
-
-  const started = await harness.step(
-    makeReviewRequest({ commitSha: "b".repeat(40) }),
-  );
-  if (started.kind !== "event") throw new Error("unreachable");
-  client.enqueue(
-    messageEnd({
-      text: JSON.stringify({
-        kind: "review",
-        decision: "accepted",
-        findings: [],
-        remainingGaps: [],
-      }),
-    }),
-    { type: "agent_settled" },
-  );
-  const { events } = await collect(harness, {
-    ...makeReviewRequest({ commitSha: "b".repeat(40) }),
-    backendCursor: started.nextCursor,
-  });
-  expect(statusCalls).toBe(2);
-  expect(events.at(-1)?.type).toBe("attempt.completed");
+  for (const refreshed of [false, true]) {
+    const head = (refreshed ? "d" : "b").repeat(40);
+    const base = (refreshed ? "c" : "a").repeat(40);
+    const request = makeReviewRequest(
+      { commitSha: head },
+      refreshed ? "fresh-review" : "original-review",
+    );
+    request.input.ticket.baseCommit = base;
+    request.attempt.effort = refreshed ? "xhigh" : "high";
+    const { events } = await collect(harness, request);
+    expect(events.at(-1)?.type).toBe("attempt.completed");
+    expect(
+      events.find((event) => event.type === "attempt.started"),
+    ).toMatchObject({ baseCommit: base, attemptId: request.attempt.attemptId });
+    expect(
+      events.find((event) => event.type === "attempt.usage_delta"),
+    ).toMatchObject({
+      attemptId: request.attempt.attemptId,
+      inputTokens: 1400,
+      cachedInputTokens: 400,
+      outputTokens: 50,
+      reasoningOutputTokens: 20,
+    });
+    const client = clients.at(-1)!;
+    expect(client.requests.slice(0, 3)).toEqual([
+      {
+        command: "set_model",
+        params: { provider: "anthropic", modelId: "claude-sonnet-4-6" },
+      },
+      {
+        command: "set_thinking_level",
+        params: { level: request.attempt.effort },
+      },
+      { command: "get_state", params: undefined },
+    ]);
+    const prompt = client.requests.find((item) => item.command === "prompt")!
+      .params!.message;
+    expect(prompt).toContain(`head ${head} against base ${base}`);
+    expect(prompt).toContain(
+      "historical Implement validation is not fresh validation",
+    );
+    expect(prompt).toContain(request.input.ticket.spec.validation[0]!);
+    expect(client.closeCount).toBe(1);
+    expect(targets).toContainEqual([head, base]);
+  }
+  expect(clients).toHaveLength(2);
+  expect(clients[0]).not.toBe(clients[1]);
+  expect(statusCalls).toBe(4);
 });
 
 test("review fails closed when the workspace changed during the turn", async () => {

@@ -33,6 +33,7 @@ export const UsageSchema = z
 export const AttemptReceiptSchema = z
   .object({
     descriptor: HarnessAttemptSchema,
+    reviewTarget: z.object({ headSha: Sha, baseSha: Sha }).strict().optional(),
     status: z.enum(["running", "succeeded", "failed_infra", "blocked_policy"]),
     startedAt: z.string().datetime(),
     endedAt: z.string().datetime().optional(),
@@ -85,6 +86,21 @@ export const ExecutionRecordSchema = z
         mergeCommit: Sha.optional(),
       })
       .strict()
+      .optional(),
+    refreshes: z
+      .array(
+        z
+          .object({
+            expectedHead: Sha,
+            expectedBase: Sha,
+            targetBase: Sha,
+            budgetRemaining: z.number().int().min(0).max(1),
+            // Absence of a confirmed result is an interrupted intent, never permission to replay Git.
+            result: z.object({ headSha: Sha }).strict().optional(),
+          })
+          .strict(),
+      )
+      .max(2)
       .optional(),
     mergeReview: z
       .object({

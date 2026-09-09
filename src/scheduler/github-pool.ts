@@ -42,6 +42,7 @@ export class GitHubTaskPool {
   private completions = 0;
   private readonly selector: GitHubTaskRunner;
   private readonly admissionStop = new AbortController();
+  private selection?: Promise<NativeTask | undefined>;
 
   /** Shares provider and Git boundaries while creating hook and cancellation ownership per task. */
   constructor(
@@ -70,37 +71,32 @@ export class GitHubTaskPool {
         if (this.failure) throw this.failure;
         const selected = new Set(this.workers.keys());
         const completedBeforeRead = this.completions;
-        const { tasks, diagnostics } = await this.input.store.list();
-        signal.throwIfAborted();
-        for (const message of diagnostics) this.input.diagnostic?.(message);
-        for (const worker of this.workers.values()) {
-          const fresh = tasks.find(
-            (task) => task.task.id === worker.task.task.id,
-          );
-          if (
-            !fresh?.approved ||
-            fresh.blockedReason ||
-            fresh.issue.state !== "OPEN"
-          ) {
-            this.requestStop(worker);
-          }
-        }
+        const tasks = await this.refreshAuthority(admission);
         while (
           !this.stopped &&
           !signal.aborted &&
           !this.failure &&
           this.workers.size < limit
         ) {
-          const task = await this.selector.claimNext(
+          this.selection = this.selector.claimNext(
             tasks,
             admission,
             (candidate) =>
+              !this.stopped &&
+              !this.failure &&
+              !admission.aborted &&
               !selected.has(candidate.task.id) &&
               !this.workers.has(candidate.task.id) &&
               [...this.workers.values()].every((worker) =>
                 canRunTogether(worker.task, candidate),
               ),
           );
+          let task: NativeTask | undefined;
+          try {
+            task = await this.awaitSelection(this.selection, admission);
+          } finally {
+            this.selection = undefined;
+          }
           if (!task) break;
           selected.add(task.task.id);
           if (signal.aborted || this.stopped || this.failure) break;
@@ -121,12 +117,63 @@ export class GitHubTaskPool {
           admission,
         );
       }
+    } catch (error) {
+      if (error instanceof AgileError) {
+        this.failure ??= error;
+        this.admissionStop.abort();
+      }
+      throw error;
     } finally {
       this.running = false;
     }
   }
 
-  /** Cancels one Issue or all workers and waits for each owned execution and cleanup path to settle. */
+  /** Refreshes Issue authority for workers and selector-owned Review even while admission is occupied. */
+  private async refreshAuthority(signal: AbortSignal): Promise<NativeTask[]> {
+    const { tasks, diagnostics } = await this.input.store.list();
+    signal.throwIfAborted();
+    for (const message of diagnostics) this.input.diagnostic?.(message);
+    for (const worker of this.workers.values()) {
+      const fresh = tasks.find((task) => task.task.id === worker.task.task.id);
+      if (
+        !fresh?.approved ||
+        fresh.blockedReason ||
+        fresh.issue.state !== "OPEN"
+      )
+        this.requestStop(worker);
+    }
+    await this.selector.cancelUnapproved(tasks);
+    return tasks;
+  }
+
+  /** Maintains authority polling during a long refresh/Review while keeping its entire selection owned until drained. */
+  private async awaitSelection(
+    selection: Promise<NativeTask | undefined>,
+    signal: AbortSignal,
+  ): Promise<NativeTask | undefined> {
+    let settled = false;
+    const owned = selection.finally(() => {
+      settled = true;
+    });
+    try {
+      while (!settled && !signal.aborted) {
+        await waitForChange([owned.then(() => undefined)], signal);
+        if (!settled && !signal.aborted) await this.refreshAuthority(signal);
+      }
+      return await owned;
+    } catch (error) {
+      this.admissionStop.abort();
+      try {
+        await this.selector.cancelCoordinated();
+        await owned.catch(() => undefined);
+      } catch (cleanup) {
+        throw cleanup instanceof AgileError ? cleanup : this.cleanupFailure();
+      }
+      throw error;
+    }
+  }
+
+  /** Cancels workers and selector-owned refresh/merge work, draining mutations and cleanup before releasing ownership. */
   async cancel(taskId?: string): Promise<void> {
     if (taskId === undefined) {
       this.stopped = true;
@@ -136,7 +183,24 @@ export class GitHubTaskPool {
       (worker) => taskId === undefined || worker.task.task.id === taskId,
     );
     for (const worker of workers) this.requestStop(worker);
-    await Promise.all(workers.map((worker) => worker.done));
+    await Promise.all([
+      ...workers.map((worker) => worker.done),
+      this.selector.cancelCoordinated(taskId).catch((error) => {
+        this.failure ??=
+          error instanceof AgileError ? error : this.cleanupFailure();
+        throw this.failure;
+      }),
+      ...(taskId === undefined && this.selection
+        ? [
+            this.selection.catch((error) => {
+              if (error instanceof AgileError) {
+                this.failure ??= error;
+                throw error;
+              }
+            }),
+          ]
+        : []),
+    ]);
     if (this.failure) throw this.failure;
   }
 
@@ -153,6 +217,7 @@ export class GitHubTaskPool {
       })
       .catch((error) => {
         this.failure ??= error;
+        this.admissionStop.abort();
       })
       .finally(() => {
         this.workers.delete(task.task.id);

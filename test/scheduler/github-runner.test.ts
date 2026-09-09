@@ -40,6 +40,9 @@ const branches: TaskBranchManager = {
       baseCommit: base,
     };
   },
+  async refresh() {
+    throw Error("Unexpected base refresh");
+  },
   async restoreChanges() {},
   async commitChanges() {
     return base;
@@ -255,6 +258,205 @@ async function seed(
     body: renderExecution(record),
   });
 }
+
+test("confirmed refresh recovery selects only the new exact-target Review and never replays historical roles, hooks or publication", async () => {
+  for (const recovering of [false, true]) {
+    const remote = memoryGitHub({
+      command: "must-not-replay",
+      args: [],
+      timeoutSeconds: 1,
+    });
+    const targetBase = "c".repeat(40);
+    const head = "d".repeat(40);
+    const accepted = {
+      kind: "review" as const,
+      decision: "accepted" as const,
+      findings: [],
+      remainingGaps: [],
+    };
+    await seed(remote, (record) => {
+      record.phase = "reviewing";
+      record.baseCommit = targetBase;
+      record.publication = {
+        number: 7,
+        branch: "agile/issue-41",
+        commitSha: head,
+      };
+      record.refreshes = [
+        {
+          expectedHead: "b".repeat(40),
+          expectedBase: base,
+          targetBase,
+          budgetRemaining: 1,
+          result: { headSha: head },
+        },
+      ];
+      record.hooks.posthook = {
+        hash: "historical-hook",
+        status: "succeeded",
+        attempts: 1,
+      };
+      for (const output of [
+        {
+          kind: "scout" as const,
+          summary: "Inspect",
+          files: ["answer.ts"],
+          tests: ["bun test"],
+          risks: [],
+        },
+        {
+          kind: "implement" as const,
+          commitSha: "b".repeat(40),
+          validation: ["original validation"],
+          risks: [],
+          limitations: [],
+        },
+        accepted,
+      ])
+        record.attempts.push({
+          descriptor: {
+            attemptId: `original-${output.kind}`,
+            taskId: "issue-41",
+            role: output.kind,
+            retryIndex: 0,
+            model,
+            modelProfile: "sol",
+            effort: "high",
+          },
+          status: "succeeded",
+          startedAt: time,
+          endedAt: time,
+          sequence: 2,
+          events: {},
+          output,
+          usage: { ...zeroUsage, inputTokens: 50 },
+          usageKnown: true,
+        });
+      if (recovering)
+        record.attempts.push({
+          descriptor: {
+            attemptId: "persisted-fresh-review",
+            taskId: "issue-41",
+            role: "review",
+            retryIndex: 0,
+            model,
+            modelProfile: "sol",
+            effort: "xhigh",
+          },
+          reviewTarget: { headSha: head, baseSha: targetBase },
+          status: "running",
+          startedAt: time,
+          sequence: 2,
+          events: {},
+          cursor: "output",
+          output: accepted,
+          usage: { ...zeroUsage, inputTokens: 11 },
+          usageKnown: false,
+        });
+    });
+    const before = (await remote.store().get(41)).execution!;
+    const fake = createFakeHarness({
+      attempts: [
+        {
+          taskId: "issue-41",
+          role: "review",
+          retryIndex: 0,
+          expect: { model, effort: recovering ? "xhigh" : "high" },
+          deliveries: [
+            {
+              nextCursor: "usage",
+              event: {
+                type: "attempt.usage_delta",
+                eventId: "usage",
+                attemptId: "fixture",
+                sequence: 1,
+                occurredAt: time,
+                ...zeroUsage,
+                inputTokens: 11,
+              },
+            },
+            {
+              nextCursor: "output",
+              event: {
+                type: "attempt.output",
+                eventId: "output",
+                attemptId: "fixture",
+                sequence: 2,
+                occurredAt: time,
+                output: accepted,
+              },
+            },
+            {
+              nextCursor: "completed",
+              event: {
+                type: "attempt.completed",
+                eventId: "completed",
+                attemptId: "fixture",
+                sequence: 3,
+                occurredAt: time,
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const requests: HarnessStepRequest[] = [];
+    const run = runner(
+      remote,
+      {
+        async step(request) {
+          requests.push(request);
+          return fake.harness.step(request);
+        },
+        async cancel() {},
+      },
+      {
+        async run() {
+          throw Error("Must not replay posthook");
+        },
+        async stop() {},
+      },
+    );
+    expect(await run.runOnce(new AbortController().signal)).toBe(false);
+    const record = (await remote.store().get(41)).execution!;
+    expect(record.phase).toBe("awaiting_merge");
+    expect(record.attempts.slice(0, 3)).toEqual(before.attempts.slice(0, 3));
+    expect(record.hooks).toEqual(before.hooks);
+    expect(record.attempts).toHaveLength(4);
+    const review = record.attempts[3]!;
+    expect(review.usage).toEqual({ ...zeroUsage, inputTokens: 11 });
+    expect(review.usageKnown).toBe(true);
+    expect(record.mergeReview).toEqual({
+      specHash: record.specHash,
+      headSha: head,
+      baseSha: targetBase,
+      reviewAttemptId: review.descriptor.attemptId,
+    });
+    expect(requests[0]).toMatchObject({
+      mode: recovering ? "reconcile" : "dispatch",
+      attempt: { role: "review", effort: recovering ? "xhigh" : "high" },
+      input: {
+        role: "review",
+        ticket: { baseCommit: targetBase, spec: { validation: ["bun test"] } },
+        implementation: { commitSha: head },
+      },
+    });
+    fake.assertComplete();
+
+    // A completed fresh Review whose next phase write was interrupted is reused, not rerun.
+    record.phase = "reviewing";
+    remote.issue.comments.find(
+      (comment) => comment.author?.login === "daemon",
+    )!.body = renderExecution(record);
+    await runner(remote).runOnce(new AbortController().signal);
+    expect((await remote.store().get(41)).execution!.attempts).toEqual(
+      record.attempts,
+    );
+    expect((await remote.store().get(41)).execution!.phase).toBe(
+      "awaiting_merge",
+    );
+  }
+});
 
 test("cursorless persisted attempts reconcile, account duplicate usage once, and consume a bounded retry", async () => {
   const remote = memoryGitHub();

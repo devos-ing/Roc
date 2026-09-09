@@ -433,7 +433,7 @@ test("fails closed on protection, unreadable policy, queue, checks and human rev
   }
 });
 
-test("changed identity, closed PR, stale base and withdrawn authority cannot merge, including final-read races", async () => {
+test("changed identity, closed PR and withdrawn authority cannot merge, including final-read races", async () => {
   for (const change of [
     (f: ReturnType<typeof fixture>) => {
       f.data.pr.head.sha = base;
@@ -449,12 +449,6 @@ test("changed identity, closed PR, stale base and withdrawn authority cannot mer
     },
     (f: ReturnType<typeof fixture>) => {
       f.data.pr.state = "closed";
-    },
-    (f: ReturnType<typeof fixture>) => {
-      f.data.pr.base.sha = merge;
-    },
-    (f: ReturnType<typeof fixture>) => {
-      f.data.base.sha = merge;
     },
   ]) {
     for (const atFinalRead of [false, true]) {
@@ -480,6 +474,51 @@ test("changed identity, closed PR, stale base and withdrawn authority cannot mer
     ),
   ).toEqual({ kind: "waiting", reason: "approval withdrawn" });
   expect(f.writes()).toBe(0);
+});
+
+test("target advancement requests authorized refresh at either base check but inconsistent snapshots wait", async () => {
+  for (const final of [false, true]) {
+    const f = fixture();
+    const change = () => {
+      f.data.base.sha = merge;
+      f.data.pr.base.sha = merge;
+    };
+    if (final) f.data.beforeFinalRead = change;
+    else change();
+    let approvals = 0;
+    expect(
+      await f.merger.reconcile(
+        candidate,
+        async () => {
+          approvals++;
+          return undefined;
+        },
+        new AbortController().signal,
+      ),
+    ).toEqual({ kind: "refresh", targetBase: merge });
+    expect(approvals).toBe(1);
+    expect(f.writes()).toBe(0);
+    expect(
+      await f.merger.reconcile(
+        candidate,
+        async () => "approval withdrawn",
+        new AbortController().signal,
+      ),
+    ).toEqual({ kind: "waiting", reason: "approval withdrawn" });
+  }
+  const inconsistent = fixture();
+  inconsistent.data.pr.base.sha = merge;
+  expect(
+    await inconsistent.merger.reconcile(
+      candidate,
+      async () => undefined,
+      new AbortController().signal,
+    ),
+  ).toMatchObject({
+    kind: "waiting",
+    reason: expect.stringContaining("disagree"),
+  });
+  expect(inconsistent.writes()).toBe(0);
 });
 
 test("denied or unreadable merge readback never claims success; restart reads before another write", async () => {

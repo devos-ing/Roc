@@ -124,6 +124,7 @@ export type MergeCandidate = {
 };
 export type MergeResult =
   | { kind: "waiting" | "replan"; reason: string }
+  | { kind: "refresh"; targetBase: string }
   | { kind: "merged"; mergeCommit: string };
 
 /** Carries only stable, operator-readable failures across the transport boundary. */
@@ -149,29 +150,20 @@ export class GitHubPullRequestMerger {
       const pr = await this.readPr(candidate.number);
       const existing = this.classify(pr, candidate);
       if (existing) return existing;
-      if (
-        pr.base.sha !== candidate.baseSha ||
-        (await this.baseSha(candidate.baseBranch)) !== candidate.baseSha
-      )
-        return {
-          kind: "replan",
-          reason:
-            "Reviewed base changed; explicit replan required (base refresh is not supported yet)",
-        };
+      const refresh = await this.changedBase(pr, candidate, authorize, signal);
+      if (refresh) return refresh;
       const reason = await this.policy(candidate, pr, signal);
       if (reason) return { kind: "waiting", reason };
       const final = await this.readPr(candidate.number);
       const changed = this.classify(final, candidate);
       if (changed) return changed;
-      if (
-        final.base.sha !== candidate.baseSha ||
-        (await this.baseSha(candidate.baseBranch)) !== candidate.baseSha
-      )
-        return {
-          kind: "replan",
-          reason:
-            "Reviewed base changed; explicit replan required (base refresh is not supported yet)",
-        };
+      const finalRefresh = await this.changedBase(
+        final,
+        candidate,
+        authorize,
+        signal,
+      );
+      if (finalRefresh) return finalRefresh;
       if (
         final.draft ||
         final.mergeable !== true ||
@@ -221,6 +213,30 @@ export class GitHubPullRequestMerger {
       if (!(error instanceof MergeReadError)) throw error;
       return { kind: "waiting", reason: error.message };
     }
+  }
+
+  /** Offers a fresh target only after unchanged PR identity and current Issue authority have been checked. */
+  private async changedBase(
+    pr: z.infer<typeof PrSchema>,
+    candidate: MergeCandidate,
+    authorize: () => Promise<string | undefined>,
+    signal: AbortSignal,
+  ): Promise<MergeResult | undefined> {
+    const targetBase = await this.baseSha(candidate.baseBranch);
+    if (targetBase !== candidate.baseSha) {
+      const denied = await authorize();
+      signal.throwIfAborted();
+      return denied
+        ? { kind: "waiting", reason: denied }
+        : { kind: "refresh", targetBase };
+    }
+    if (pr.base.sha !== candidate.baseSha)
+      return {
+        kind: "waiting",
+        reason:
+          "PR base snapshot and target ref disagree; waiting for consistent GitHub state",
+      };
+    return undefined;
   }
 
   /** Rejects changed PR identity and recognizes only a remotely confirmed merge of the exact head. */

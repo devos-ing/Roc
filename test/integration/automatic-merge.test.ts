@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   type ExecutionRecord,
   GitHubExecutionStore,
@@ -12,6 +12,7 @@ import {
   renderRemoteTaskApproval,
   renderRemoteTaskBody,
 } from "../../src/github/remote-tasks";
+import type { HarnessStepRequest } from "../../src/harness/contracts";
 import { createFakeHarness } from "../../src/harness/fake";
 import { GitHubTaskPool } from "../../src/scheduler/github-pool";
 import { GitHubTaskRunner } from "../../src/scheduler/github-runner";
@@ -59,11 +60,18 @@ function fixture(count = 1, dependent = false) {
     denyCheckpoint: false,
     afterPolicy: undefined as (() => void) | undefined,
     beforeMerge: undefined as ((number: number) => Promise<void>) | undefined,
+    beforeRefresh: undefined as (() => Promise<void>) | undefined,
+    afterRefresh: undefined as (() => void) | undefined,
+    beforeRole: undefined as
+      | ((request: HarnessStepRequest) => Promise<void>)
+      | undefined,
+    refreshError: false,
     responses: new Map<number, "success" | "denied" | "lost">(),
   };
   let writes = 0;
   let roleCalls = 0;
   const events: string[] = [];
+  const requests: HarnessStepRequest[] = [];
   const store = new GitHubExecutionStore(
     "acme/test",
     "daemon",
@@ -155,6 +163,32 @@ function fixture(count = 1, dependent = false) {
         branch: `agile/${taskId}`,
         baseCommit,
       };
+    },
+    async refresh(taskId, input) {
+      const number = Number(taskId.slice(6));
+      const record = (await store.get(number)).execution!;
+      const receipt = record.refreshes!.at(-1)!;
+      expect(receipt).toEqual({
+        expectedHead: input.expectedHead,
+        expectedBase: input.expectedBase,
+        targetBase: input.targetBase,
+        budgetRemaining: 2 - record.refreshes!.length,
+      });
+      expect(record.mergeReview).toBeUndefined();
+      expect(record.baseCommit).toBe(input.expectedBase);
+      expect(record.publication!.commitSha).toBe(input.expectedHead);
+      events.push(`refresh-start:${number}`);
+      await data.beforeRefresh?.();
+      if (data.refreshError) throw Error("Conflict or unsafe workspace");
+      const pr = prs.get(number)!;
+      expect(pr.head.sha).toBe(input.expectedHead);
+      const head = sha(record.refreshes!.length === 1 ? "d" : "e", number);
+      pr.head.sha = head;
+      pr.base.sha = input.targetBase;
+      data.check = "pending";
+      events.push(`refresh-end:${number}`);
+      data.afterRefresh?.();
+      return head;
     },
     async restoreChanges() {},
     async commitChanges() {
@@ -271,6 +305,8 @@ function fixture(count = 1, dependent = false) {
     harness: {
       async step(request: Parameters<typeof fake.harness.step>[0]) {
         roleCalls++;
+        requests.push(structuredClone(request));
+        await data.beforeRole?.(request);
         return fake.harness.step(request);
       },
       async cancel() {},
@@ -322,6 +358,57 @@ function fixture(count = 1, dependent = false) {
     data,
     prs,
     events,
+    requests,
+    scriptReview(number = 41, decision: "accepted" | "rejected" = "accepted") {
+      fake.scriptAttempt({
+        taskId: `issue-${number}`,
+        role: "review",
+        retryIndex: 0,
+        expect: { model, effort: "high" },
+        deliveries: [
+          {
+            nextCursor: "usage",
+            event: {
+              type: "attempt.usage_delta",
+              eventId: "usage",
+              attemptId: "fresh-review",
+              sequence: 1,
+              occurredAt: time,
+              inputTokens: 101,
+              cachedInputTokens: 10,
+              outputTokens: 12,
+              reasoningOutputTokens: 3,
+            },
+          },
+          {
+            nextCursor: "output",
+            event: {
+              type: "attempt.output",
+              eventId: "output",
+              attemptId: "fresh-review",
+              sequence: 2,
+              occurredAt: time,
+              output: {
+                kind: "review",
+                decision,
+                findings: [],
+                remainingGaps: [],
+              },
+            },
+          },
+          {
+            nextCursor: "completed",
+            event: {
+              type: "attempt.completed",
+              eventId: "completed",
+              attemptId: "fresh-review",
+              sequence: 3,
+              occurredAt: time,
+            },
+          },
+        ],
+      });
+    },
     writes: () => writes,
     roleCalls: () => roleCalls,
     runner: (autoMerge = false) =>
@@ -496,13 +583,10 @@ test("approval withdrawal at the last policy read blocks merge without replaying
   }
 });
 
-test("changed external head/base, closed PR and missing or rejected Review evidence require replan", async () => {
+test("changed external head, closed PR and missing or rejected Review evidence require replan", async () => {
   for (const change of [
     async (f: ReturnType<typeof fixture>) => {
       f.prs.get(41)!.head.sha = sha("d", 41);
-    },
-    async (f: ReturnType<typeof fixture>) => {
-      f.data.base = sha("d", 41);
     },
     async (f: ReturnType<typeof fixture>) => {
       f.prs.get(41)!.state = "closed";
@@ -586,8 +670,14 @@ test("shutdown drains submitted merge readback without completing or starting an
   const running = pool.run(new AbortController().signal, true);
   const settled = running.catch((error) => error);
   await started.promise;
-  await pool.cancel();
+  let drained = false;
+  const cancelled = pool.cancel().then(() => {
+    drained = true;
+  });
+  await Bun.sleep(10);
+  expect(drained).toBe(false);
   finish.release();
+  await cancelled;
   expect(await settled).toBeInstanceOf(Error);
   expect(f.events.filter((event) => event.startsWith("merge-start"))).toEqual([
     "merge-start:41",
@@ -597,7 +687,347 @@ test("shutdown drains submitted merge readback without completing or starting an
   // A new coordinator confirms the already merged PR rather than submitting again.
   await tick(f);
   expect((await f.record()).phase).toBe("done");
-  expect((await f.record(42)).phase).toBe("needs_replan");
+  expect((await f.record(42)).phase).toBe("awaiting_merge");
+  expect((await f.record(42)).refreshes).toHaveLength(1);
+});
+
+test("parallel PR merge refreshes the next patch, runs an independent exact-target Review and waits for new CI", async () => {
+  const f = fixture(2);
+  await tick(f, false);
+  await tick(f, false);
+  const original = await f.record(42);
+  const envelope = (await f.store.get(42)).envelope;
+  const body = f.issues[1]!.body;
+  f.scriptReview(42);
+  f.data.check = "success";
+  await tick(f);
+  expect((await f.record()).phase).toBe("done");
+  const refreshed = await f.record(42);
+  expect(refreshed).toMatchObject({
+    phase: "awaiting_merge",
+    specHash: jsonHash(envelope),
+    baseCommit: sha("c", 41),
+    refreshes: [
+      {
+        expectedHead: sha("b", 42),
+        expectedBase: initialBase,
+        targetBase: sha("c", 41),
+        budgetRemaining: 1,
+        result: { headSha: sha("d", 42) },
+      },
+    ],
+    publication: { number: 42, commitSha: sha("d", 42) },
+    mergeReview: { headSha: sha("d", 42), baseSha: sha("c", 41) },
+  });
+  expect(f.issues[1]!.body).toBe(body);
+  expect(refreshed.attempts.slice(0, 3)).toEqual(original.attempts);
+  expect(refreshed.hooks).toEqual(original.hooks);
+  expect(refreshed.attempts).toHaveLength(4);
+  const review = refreshed.attempts[3]!;
+  expect(review).toMatchObject({
+    descriptor: {
+      role: "review",
+      model,
+      effort: "high",
+      retryIndex: 0,
+      modelProfile: "sol",
+    },
+    status: "succeeded",
+    usageKnown: true,
+    reviewTarget: { headSha: sha("d", 42), baseSha: sha("c", 41) },
+    usage: {
+      inputTokens: 101,
+      cachedInputTokens: 10,
+      outputTokens: 12,
+      reasoningOutputTokens: 3,
+    },
+  });
+  expect(review.descriptor.attemptId).not.toBe(
+    original.attempts[2]!.descriptor.attemptId,
+  );
+  expect(refreshed.mergeReview!.reviewAttemptId).toBe(
+    review.descriptor.attemptId,
+  );
+  expect(f.requests.at(-1)!.input).toMatchObject({
+    role: "review",
+    ticket: { spec: envelope.task.spec, baseCommit: sha("c", 41) },
+    implementation: {
+      commitSha: sha("d", 42),
+      validation: ["Fake validation completed"],
+    },
+  });
+  expect(f.events).toContain(
+    `review-ready:issue-42:${sha("d", 42)}:${sha("c", 41)}`,
+  );
+  expect(f.events.indexOf("refresh-start:42")).toBeGreaterThan(
+    f.events.indexOf("merge-end:41"),
+  );
+  const roles = f.roleCalls();
+  await tick(f);
+  expect((await f.record(42)).failure).toContain("must pass");
+  const writes = f.writes();
+  await tick(f);
+  expect(f.writes()).toBe(writes);
+  expect(f.roleCalls()).toBe(roles);
+  expect(f.prs.get(42)!.merged).toBe(false);
+  f.data.check = "success";
+  await tick(f);
+  expect((await f.record(42)).phase).toBe("done");
+  expect(f.events.filter((event) => event === "merge-start:42")).toHaveLength(
+    1,
+  );
+  f.fake.assertComplete();
+});
+
+test("two durable refresh cycles are independent of infrastructure retries and a third advancement requires replan across restarts", async () => {
+  const f = fixture();
+  await tick(f, false);
+  const original = await f.record();
+  for (let cycle = 1; cycle <= 2; cycle++) {
+    f.data.base = sha("c", 41 + cycle);
+    f.scriptReview();
+    await tick(f);
+    const record = await f.record();
+    expect(record.phase).toBe("awaiting_merge");
+    expect(record.refreshes).toHaveLength(cycle);
+    expect(record.refreshes!.at(-1)!.budgetRemaining).toBe(2 - cycle);
+    expect(record.attempts).toHaveLength(3 + cycle);
+    expect(record.attempts.at(-1)!.descriptor.retryIndex).toBe(0);
+    expect(record.attempts.slice(0, 3)).toEqual(original.attempts);
+  }
+  f.data.base = sha("c", 44);
+  f.data.check = "success";
+  const roles = f.roleCalls();
+  await tick(f);
+  expect(await f.record()).toMatchObject({
+    phase: "needs_replan",
+    failure: expect.stringContaining("budget exhausted"),
+  });
+  expect((await f.record()).refreshes).toHaveLength(2);
+  expect(
+    new Set(
+      (await f.record()).attempts.map(
+        (attempt) => attempt.descriptor.attemptId,
+      ),
+    ).size,
+  ).toBe(5);
+  await tick(f);
+  expect(f.roleCalls()).toBe(roles);
+  expect(f.events.filter((event) => event === "refresh-start:41")).toHaveLength(
+    2,
+  );
+  expect(f.prs.get(41)!.merged).toBe(false);
+  f.fake.assertComplete();
+});
+
+test("rejected fresh Review and unsafe Git refresh require replan without altering historical attempts or replaying publication", async () => {
+  for (const unsafe of [false, true]) {
+    const f = fixture();
+    await tick(f, false);
+    const original = await f.record();
+    f.data.base = sha("c", 42);
+    f.data.refreshError = unsafe;
+    if (!unsafe) f.scriptReview(41, "rejected");
+    await tick(f);
+    const record = await f.record();
+    expect(record.phase).toBe("needs_replan");
+    expect(record.mergeReview).toBeUndefined();
+    expect(record.attempts.slice(0, 3)).toEqual(original.attempts);
+    expect(record.attempts).toHaveLength(unsafe ? 3 : 4);
+    expect(record.publication!.commitSha).toBe(
+      unsafe ? original.publication!.commitSha : sha("d", 41),
+    );
+    if (!unsafe) expect(record.failure).toContain("Review rejected");
+    const roles = f.roleCalls();
+    await tick(f);
+    expect(f.roleCalls()).toBe(roles);
+    expect(f.prs.get(41)!.merged).toBe(false);
+    f.fake.assertComplete();
+  }
+});
+
+test("an interrupted refresh intent never authorizes merge or blindly restarts Git, even with stale accepted evidence", async () => {
+  for (const phase of ["awaiting_merge", "reviewing"] as const) {
+    const f = fixture();
+    await tick(f, false);
+    await f.alter((record) => {
+      record.phase = phase;
+      record.refreshes = [
+        {
+          expectedHead: record.publication!.commitSha,
+          expectedBase: initialBase,
+          targetBase: sha("c", 42),
+          budgetRemaining: 1,
+        },
+      ];
+    });
+    f.data.check = "success";
+    await tick(f);
+    expect((await f.record()).phase).toBe("needs_replan");
+    expect(f.roleCalls()).toBe(6);
+    expect(f.events.some((event) => /^(refresh|merge)-start/.test(event))).toBe(
+      false,
+    );
+  }
+});
+
+test("unknown refresh intent/result checkpoint writes retain daemon ownership and never start a Review", async () => {
+  for (const afterPush of [false, true]) {
+    const f = fixture();
+    await tick(f, false);
+    f.data.base = sha("c", 42);
+    if (afterPush)
+      f.data.afterRefresh = () => {
+        f.data.denyCheckpoint = true;
+      };
+    else f.data.denyCheckpoint = true;
+    const pool = new GitHubTaskPool({ ...f.input, autoMerge: true });
+    await expect(
+      pool.run(new AbortController().signal, true),
+    ).rejects.toMatchObject({ code: "GITHUB_CHECKPOINT_UNCONFIRMED" });
+    expect(f.roleCalls()).toBe(6);
+    const record = await f.record();
+    expect(record.phase).toBe("awaiting_merge");
+    expect(record.refreshes?.[0]?.result).toBeUndefined();
+    expect(
+      f.events.filter((event) => event === "refresh-start:41"),
+    ).toHaveLength(afterPush ? 1 : 0);
+    if (afterPush) {
+      f.data.denyCheckpoint = false;
+      await tick(f);
+      expect((await f.record()).phase).toBe("needs_replan");
+      expect(
+        f.events.filter((event) => event === "refresh-start:41"),
+      ).toHaveLength(1);
+    }
+  }
+});
+
+test("shutdown waits for selector-owned refresh and preserves an ambiguous intent instead of dispatching Review or a sibling merge", async () => {
+  const f = fixture(2);
+  await tick(f, false);
+  await tick(f, false);
+  f.data.base = sha("c", 43);
+  const started = barrier();
+  const finish = barrier();
+  f.data.beforeRefresh = async () => {
+    started.release();
+    await finish.promise;
+  };
+  const pool = new GitHubTaskPool({ ...f.input, autoMerge: true });
+  const running = pool
+    .run(new AbortController().signal, true)
+    .catch((error) => error);
+  await started.promise;
+  let drained = false;
+  const cancelled = pool.cancel().then(() => {
+    drained = true;
+  });
+  await Bun.sleep(10);
+  expect(drained).toBe(false);
+  finish.release();
+  await cancelled;
+  expect(await running).toBeInstanceOf(Error);
+  expect(
+    f.events.filter((event) => /^(refresh|merge)-start/.test(event)),
+  ).toEqual(["refresh-start:41"]);
+  expect(await f.record()).toMatchObject({
+    phase: "needs_replan",
+    failure: expect.stringContaining("cancelled"),
+  });
+  expect((await f.record()).refreshes![0]!.result).toBeUndefined();
+  expect(f.roleCalls()).toBe(12);
+});
+
+test("cancelling a selector-owned fresh Review drains its child before returning and cannot reuse the old acceptance", async () => {
+  const f = fixture();
+  await tick(f, false);
+  f.data.base = sha("c", 42);
+  f.scriptReview();
+  const started = barrier();
+  const finish = barrier();
+  f.data.beforeRole = async () => {
+    started.release();
+    await finish.promise;
+  };
+  let cancelledAttempt: string | undefined;
+  const pool = new GitHubTaskPool({
+    ...f.input,
+    autoMerge: true,
+    harness: {
+      ...f.input.harness,
+      async cancel(attemptId) {
+        cancelledAttempt = attemptId;
+      },
+    },
+  });
+  const running = pool.run(new AbortController().signal, true);
+  await started.promise;
+  let drained = false;
+  const cancelled = pool.cancel("issue-41").then(() => {
+    drained = true;
+  });
+  await Bun.sleep(10);
+  expect(drained).toBe(false);
+  finish.release();
+  await cancelled;
+  await running;
+  const record = await f.record();
+  expect(record.phase).toBe("needs_replan");
+  expect(record.attempts.at(-1)!.status).toBe("blocked_policy");
+  expect(cancelledAttempt).toBe(record.attempts.at(-1)!.descriptor.attemptId);
+  expect(record.mergeReview).toBeUndefined();
+  expect(f.prs.get(41)!.merged).toBe(false);
+});
+
+test("selector-owned Review keeps authority polling alive and cancels on approval withdrawal", async () => {
+  const f = fixture();
+  await tick(f, false);
+  f.data.base = sha("c", 42);
+  f.scriptReview();
+  const started = barrier();
+  const finish = barrier();
+  f.data.beforeRole = async (request) => {
+    if (request.backendCursor) {
+      started.release();
+      await finish.promise;
+    }
+  };
+  let cancellations = 0;
+  const pool = new GitHubTaskPool({
+    ...f.input,
+    autoMerge: true,
+    harness: {
+      ...f.input.harness,
+      async cancel() {
+        cancellations++;
+        finish.release();
+      },
+    },
+  });
+  const setTimer = globalThis.setTimeout;
+  const accelerated = Object.assign(
+    (...[handler, delay, ...args]: Parameters<typeof setTimeout>) =>
+      setTimer(handler, delay === 30_000 ? 1 : delay, ...args),
+    { __promisify__: setTimer.__promisify__ },
+  );
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(
+    accelerated as typeof setTimeout,
+  );
+  try {
+    const running = pool.run(new AbortController().signal, true);
+    await started.promise;
+    f.issues[0]!.comments = f.issues[0]!.comments.filter(
+      (comment) => comment.author?.login !== "owner",
+    );
+    await running;
+    expect(cancellations).toBeGreaterThan(0);
+    expect((await f.record()).phase).toBe("needs_replan");
+    expect((await f.record()).mergeReview).toBeUndefined();
+    expect(f.prs.get(41)!.merged).toBe(false);
+  } finally {
+    timer.mockRestore();
+  }
 });
 
 test("unknown done checkpoint writes remain daemon failures and cannot release dependencies", async () => {

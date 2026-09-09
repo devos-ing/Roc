@@ -24,8 +24,8 @@ flowchart LR
 The daemon runs up to two independent Issues. Each task has its own retained worktree at
 `<project>.agile-worktrees/issue-<number>` and branch `agile/issue-<number>`.
 No task database is created. Local files hold configuration, worktrees, locks,
-diagnostic logs and Pi sessions. Guarded automatic PR merge is opt-in;
-bounded base refresh/re-review is the next M3 slice. Superset is deferred.
+diagnostic logs and Pi sessions. Guarded automatic PR merge is opt-in, with at
+most two clean base refresh/re-review cycles per task. Superset is deferred.
 
 ### Validation status
 
@@ -118,16 +118,37 @@ active rules also wait; Roc does not bypass them.
 Only managed, still-open, exactly approved Issues with persisted successful
 independent Review evidence can auto-merge. Pending requirements stay
 `awaiting_merge` with a readable reason, without rerunning agents or rewriting
-identical checkpoints every 30 seconds. Changed heads, closed-unmerged PRs,
-missing Review evidence (including legacy accepted records), or an advanced
-reviewed base require explicit replan. This slice does **not** rebase/re-review.
+identical checkpoints every 30 seconds. Changed external heads, closed-unmerged
+PRs or missing Review evidence (including legacy accepted records) require replan.
 
-Merge decisions are serialized even with `--concurrency 2`. Roc reads back the
+If the target advances, Roc allows **at most two clean rebase/re-review cycles**
+per task, with the budget preserved across restarts. It checkpoints intent before
+Git mutation, verifies the retained clean task worktree has exactly its trusted
+commit and expected remote head, then rebases the same patch onto the freshly
+fetched target. Only the task branch is pushed, with an explicit expected-old-head
+force-with-lease. Conflicts abort to the original work. Dirty files, unexpected
+history, external head changes, ambiguous pushes or an exhausted budget require
+`needs_replan`, without discarding work. Old commits remain under
+`refs/agile-refresh/` for inspection.
+
+A confirmed refresh starts a **new independent Pi Review** of the exact rewritten
+head/base, including the approved validation commands. The original specification,
+Implement output, historical attempts and usage stay intact; a Git-only rebase
+is not an Implement/model attempt. Fresh Review records its actual model, effort
+and usage. Rejection requires replan; acceptance waits for CI on the new head
+before all merge guards are checked again. A confirmed refresh can resume its
+Review after restart, but an interrupted intent without a confirmed result must
+be reconciled explicitly, never blindly rerun.
+
+Refresh, fresh Review and merge decisions are serialized even with `--concurrency 2`.
+Shutdown drains selector-owned Git/Review work as well as workers; uncertain
+cleanup or checkpoint writes retain the ownership lock. Roc reads back the
 PR after every merge response, including lost responses, then fetches the target
 and verifies merge ancestry before saving `done` and releasing dependencies.
 `--once` can reconcile already published PRs but does not keep waiting for newly
 published CI; use continuous mode for automatic completion. Automatic merge has
-deterministic transport/Fake Harness tests, not yet live protected-branch acceptance.
+deterministic transport/Fake Harness tests, including refresh/re-review, and
+real-Git conflict/lease tests, not yet live protected-branch acceptance.
 
 ### Parallel admission
 
