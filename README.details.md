@@ -182,6 +182,11 @@ even when the Issue is already closed; a failed label write does not block
 closure. Candidates rejected by admission trigger neither label repair nor
 closure checks or writes.
 
+[Live closure and restart validation](docs/validation/issue-closure-live-2026-09-09.md)
+confirmed real GitHub closure on a non-default branch, including recovery without
+model replay. The report also records two interrupted attempts and the use of
+single-run execution for the successful tasks.
+
 ### Parallel admission
 
 The default is `--concurrency 2`; use `--concurrency 1` to serialize execution.

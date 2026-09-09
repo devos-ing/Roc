@@ -151,6 +151,10 @@ PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依�
 關閉 Issue。未通過 admission 的候選任務不會觸發 label 修復，也不會進行關閉所需的
 檢查或寫入。
 
+[實際關閉與重啟驗收](docs/validation/issue-closure-live-2026-09-09.md)
+已確認非預設 branch 的 GitHub Issue 關閉及不重跑模型的恢復流程。報告亦保留了
+兩次中斷紀錄，並註明成功任務使用單次執行模式。
+
 ### 平行執行
 
 預設為 `--concurrency 2`，`--concurrency 1` 可切回逐項執行。
