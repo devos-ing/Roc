@@ -167,6 +167,21 @@ real-Git conflict/lease tests. [Live protected-branch acceptance](docs/validatio
 also passed for two parallel tasks, including one rebase, fresh independent
 Review and CI before automatic merge. That test used one Mac.
 
+### Issue closure
+
+Published PRs include a plain Issue link, not an automatic-closing keyword.
+After a manual or automatic merge, Roc verifies the recorded PR head and merge
+commit in the configured target branch, confirms the `done` checkpoint by
+reading it back, then closes the still-open Issue as completed. Non-default
+`--base-branch` targets work too. Closure rechecks the exact checkpoint,
+approved specification, complete plan and merge evidence.
+
+If closure fails, `done` stays intact and polling or restart retries closure
+without rerunning models. Admitted done tasks also repair stale status labels,
+even when the Issue is already closed; a failed label write does not block
+closure. Candidates rejected by admission trigger neither label repair nor
+closure checks or writes.
+
 ### Parallel admission
 
 The default is `--concurrency 2`; use `--concurrency 1` to serialize execution.

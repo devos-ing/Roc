@@ -138,6 +138,19 @@ PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依�
 亦已通過：兩個任務平行執行，其中一個經 rebase、新的獨立 Review 和 CI 後自動合併。
 這次驗收在同一部 Mac 完成，實體雙機流程仍待驗證。
 
+### 關閉 Issue
+
+發佈的 PR 附有普通 Issue 連結，不使用自動關閉關鍵字。人手或自動合併後，Roc 核對
+已記錄的 PR head 及 merge commit 確實合併到設定的目標 branch，寫入並讀回確認
+`done` checkpoint，才把仍開啟的 Issue 以 completed 原因關閉。`--base-branch`
+指定非預設 branch 也適用。關閉前會重新核對精確 checkpoint、已批准規格、完整計劃
+及合併證據。
+
+關閉失敗會保留 `done`，後續輪詢或重啟會自動重試，不會重跑模型。通過 admission
+的 done 任務也會修復過時的狀態 label，即使 Issue 已關閉；label 寫入失敗不會阻止
+關閉 Issue。未通過 admission 的候選任務不會觸發 label 修復，也不會進行關閉所需的
+檢查或寫入。
+
 ### 平行執行
 
 預設為 `--concurrency 2`，`--concurrency 1` 可切回逐項執行。
