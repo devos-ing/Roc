@@ -7,6 +7,7 @@ import {
   initialExecution,
   type NativeTask,
 } from "../github/execution-store";
+import { GitHubPullRequestMerger, type MergeResult } from "../github/pr-merger";
 import type {
   GitHubCommandRunner,
   TaskPublisher,
@@ -47,6 +48,7 @@ export type GitHubRunnerInput = {
   command: GitHubCommandRunner;
   cwd: string;
   baseBranch: string;
+  autoMerge?: boolean;
   hooks?: TaskHookRunner;
   activity?: (taskId: string, event: HarnessEvent) => void;
   diagnostic?: (message: string) => void;
@@ -220,7 +222,9 @@ export class GitHubTaskRunner {
           candidate.envelope.task.id === id,
       );
       if (
-        !dependency?.execution?.publication?.number ||
+        dependency?.execution?.phase !== "done" ||
+        !dependency.execution.publication?.number ||
+        !dependency.execution.publication.mergeCommit ||
         dependency.blockedReason
       )
         return undefined;
@@ -230,6 +234,8 @@ export class GitHubTaskRunner {
         pr.state !== "MERGED" ||
         pr.baseRefName !== this.input.baseBranch ||
         !pr.mergeCommit ||
+        pr.mergeCommit.oid !== dependency.execution.publication.mergeCommit ||
+        pr.headRefName !== dependency.execution.publication.branch ||
         pr.headRefOid !== dependency.execution.publication.commitSha
       )
         return undefined;
@@ -428,6 +434,12 @@ export class GitHubTaskRunner {
       else if (implementation?.kind === "implement")
         input = { role, ticket, scout, implementation };
       else throw Error("Missing Implement output");
+      if (input.role === "review")
+        await this.input.branches.assertReviewReady(
+          task.task.id,
+          input.implementation.commitSha,
+          record.baseCommit,
+        );
       let request: HarnessStepRequest = {
         mode: created ? "dispatch" : "reconcile",
         attempt: attempt.descriptor,
@@ -467,6 +479,17 @@ export class GitHubTaskRunner {
             attempt.sequence = event.sequence;
             this.input.activity?.(task.task.id, event);
             if (event.type !== "attempt.activity") {
+              if (
+                event.type === "attempt.completed" &&
+                input.role === "review" &&
+                attempt.output?.kind === "review" &&
+                attempt.output.decision === "accepted"
+              )
+                await this.input.branches.assertReviewReady(
+                  task.task.id,
+                  input.implementation.commitSha,
+                  record.baseCommit,
+                );
               attempt.events[event.eventId] = hash;
               this.applyEvent(record, attempt, event);
               attempt.cursor = delivered.nextCursor;
@@ -512,11 +535,24 @@ export class GitHubTaskRunner {
       attempt.status = "succeeded";
       attempt.endedAt = event.occurredAt;
       attempt.usageKnown = true;
-      if (
-        attempt.output.kind === "review" &&
-        attempt.output.decision === "rejected"
-      )
-        record.phase = "rejected";
+      if (attempt.output.kind === "review") {
+        delete record.mergeReview;
+        if (attempt.output.decision === "rejected") record.phase = "rejected";
+        else {
+          const implementation = record.attempts.findLast(
+            (item) =>
+              item.status === "succeeded" && item.output?.kind === "implement",
+          )?.output;
+          if (implementation?.kind !== "implement")
+            throw Error("Missing reviewed implementation");
+          record.mergeReview = {
+            specHash: record.specHash,
+            headSha: implementation.commitSha,
+            baseSha: record.baseCommit,
+            reviewAttemptId: attempt.descriptor.attemptId,
+          };
+        }
+      }
     } else if (
       event.type === "attempt.failed_infra" ||
       event.type === "attempt.blocked_policy"
@@ -597,31 +633,133 @@ export class GitHubTaskRunner {
     task: NativeTask,
     signal: AbortSignal,
   ): Promise<void> {
-    const record = task.execution;
-    if (!record?.publication?.number) return;
-    const pr = await this.readPr(record.publication.number);
+    const fresh = await this.input.store.get(task.issue.number);
     signal.throwIfAborted();
-    if (
-      pr.baseRefName !== record.baseBranch ||
-      pr.headRefName !== record.publication.branch ||
-      pr.headRefOid !== record.publication.commitSha ||
-      pr.state === "CLOSED"
-    ) {
-      record.phase = "needs_replan";
-      record.failure = "Published PR changed or closed without merge";
-    } else if (pr.state === "MERGED" && pr.mergeCommit) {
-      await this.command(["git", "fetch", "origin", record.baseBranch]);
-      await this.command([
-        "git",
-        "merge-base",
-        "--is-ancestor",
-        pr.mergeCommit.oid,
-        `refs/remotes/origin/${record.baseBranch}`,
-      ]);
-      record.publication.mergeCommit = pr.mergeCommit.oid;
-      record.phase = "done";
-    } else return;
+    Object.assign(task, fresh);
+    const record = task.execution;
+    if (!record?.publication?.number || record.phase !== "awaiting_merge")
+      return;
+    if (!fresh.approved || fresh.blockedReason || fresh.issue.state !== "OPEN")
+      return;
+    let result: MergeResult;
+    if (record.baseBranch !== this.input.baseBranch) {
+      result = { kind: "replan", reason: "Configured target branch changed" };
+    } else if (this.input.autoMerge) {
+      if (!this.hasMergeReview(record)) {
+        result = {
+          kind: "replan",
+          reason:
+            "Exact successful independent Review evidence is missing or mismatched; explicit replan required",
+        };
+      } else {
+        const merger = new GitHubPullRequestMerger(
+          this.input.store.repository,
+          this.input.cwd,
+          this.input.command,
+        );
+        result = await merger.reconcile(
+          {
+            number: record.publication.number,
+            headBranch: record.publication.branch,
+            headSha: record.publication.commitSha,
+            baseBranch: record.baseBranch,
+            baseSha: record.baseCommit,
+          },
+          async () => {
+            const authority = await this.input.store.get(task.issue.number);
+            signal.throwIfAborted();
+            if (
+              !authority.approved ||
+              authority.blockedReason ||
+              authority.issue.state !== "OPEN"
+            )
+              return "Trusted Issue approval is missing or withdrawn, or the Issue is not open";
+            if (
+              jsonHash(authority.envelope) !== record.specHash ||
+              jsonHash(authority.execution) !== jsonHash(record)
+            )
+              return "Issue specification or execution evidence changed before merge; reconcile the remote checkpoint";
+            return undefined;
+          },
+          signal,
+        );
+      }
+    } else {
+      const pr = await this.readPr(record.publication.number);
+      if (
+        pr.baseRefName !== record.baseBranch ||
+        pr.headRefName !== record.publication.branch ||
+        pr.headRefOid !== record.publication.commitSha ||
+        pr.state === "CLOSED"
+      )
+        result = {
+          kind: "replan",
+          reason: "Published PR changed or closed without merge",
+        };
+      else if (pr.state === "MERGED" && pr.mergeCommit)
+        result = { kind: "merged", mergeCommit: pr.mergeCommit.oid };
+      else return;
+    }
+    signal.throwIfAborted();
+    if (result.kind === "merged") {
+      try {
+        await this.command(["git", "fetch", "origin", record.baseBranch]);
+        await this.command([
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          result.mergeCommit,
+          `refs/remotes/origin/${record.baseBranch}`,
+        ]);
+      } catch {
+        result = {
+          kind: "waiting",
+          reason:
+            "Remote merge is not yet verified in the fetched target; check origin access and merge ancestry",
+        };
+      }
+    }
+    signal.throwIfAborted();
+    const phase =
+      result.kind === "merged"
+        ? "done"
+        : result.kind === "replan"
+          ? "needs_replan"
+          : "awaiting_merge";
+    const reason = result.kind === "merged" ? undefined : result.reason;
+    if (record.phase === phase && record.failure === reason) return;
+    if (result.kind === "merged")
+      record.publication.mergeCommit = result.mergeCommit;
+    record.phase = phase;
+    if (reason) record.failure = reason;
+    else delete record.failure;
     await this.checkpoint(task, record, signal);
+  }
+
+  /** Requires the latest independent accepted Review to bind the approved spec, published head and pinned base. */
+  private hasMergeReview(record: ExecutionRecord): boolean {
+    const evidence = record.mergeReview;
+    const review = record.attempts.findLast(
+      (attempt) => attempt.descriptor.role === "review",
+    );
+    const implementation = record.attempts.findLast(
+      (attempt) => attempt.descriptor.role === "implement",
+    );
+    return (
+      !!evidence &&
+      evidence.specHash === record.specHash &&
+      evidence.baseSha === record.baseCommit &&
+      evidence.headSha === record.publication?.commitSha &&
+      review?.descriptor.attemptId === evidence.reviewAttemptId &&
+      review.status === "succeeded" &&
+      review.output?.kind === "review" &&
+      review.output.decision === "accepted" &&
+      implementation?.status === "succeeded" &&
+      implementation.output?.kind === "implement" &&
+      implementation.output.commitSha === evidence.headSha &&
+      implementation.descriptor.attemptId !== review.descriptor.attemptId &&
+      record.attempts.indexOf(review) > record.attempts.indexOf(implementation)
+    );
   }
 
   /** Reads only the PR fields needed for dependency and completion verification. */

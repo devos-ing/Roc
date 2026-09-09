@@ -108,6 +108,7 @@ test("dependencies wait for the recorded PR head to merge into the target before
       number: 7,
       branch: "agile/issue-41",
       commitSha: base,
+      mergeCommit: "c".repeat(40),
     };
   });
   const api = {

@@ -152,6 +152,7 @@ export async function runBackendSession(
           stop.throwIfAborted();
           const runner = new GitHubTaskPool({
             concurrency: input.concurrency,
+            autoMerge: input.autoMerge,
             store,
             branches,
             harness: backend.harness,

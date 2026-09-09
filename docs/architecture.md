@@ -14,7 +14,8 @@ CLI -> GitHubExecutionStore -> GitHub Issues
 GitHubTaskPool -> GitHubTaskRunner per Issue -> AgentHarness -> PiHarness -> Pi RPC
              |                  -> TaskBranchManager -> native Git worktrees
              -> BunTaskHookRunner -> argv subprocess
-             -> GitHubPullRequestPublisher -> PR -> confirmed merge
+             -> GitHubPullRequestPublisher -> PR
+             -> GitHubPullRequestMerger (opt-in, serialized) -> confirmed merge
 Tests -> FakeHarness / recorded Pi client / fake GitHub transport
 ```
 
@@ -35,6 +36,9 @@ PR merge has been confirmed.
 A daemon-owned `roc:execution` comment contains the versioned checkpoint:
 Issue/spec identity, revision, pinned base, phase, attempt descriptors, critical
 event hashes/cursors, usage, validated outputs, hook receipts and PR identity.
+Successful independent Review also persists merge evidence bound to the exact
+approved envelope hash, implementation head, reviewed base and Review attempt ID.
+Legacy records remain readable but missing evidence never authorizes automatic merge.
 Only comments by `ROC_GITHUB_EXECUTOR` are execution records. Multiple owned
 records fail closed. `ROC_GITHUB_PUBLISHERS` identifies approval authors.
 Both default to the current GitHub login; the daemon must authenticate as its
@@ -114,9 +118,32 @@ and target, fetches the target and checks its actual merge commit ancestry
 before marking `done`. A changed or closed-unmerged publication needs replan.
 
 A dependent task cannot start because its predecessor merely opened a PR.
-Immediately before claiming, the runner verifies every dependency's merged PR
-and recorded implementation head, fetches the target, checks merge ancestry,
-and pins that fresh base. There is no automatic merge in M1.
+Immediately before claiming, the runner requires every dependency's confirmed
+`done` checkpoint, verifies its merged PR, recorded implementation head and merge
+commit, fetches the target, checks merge ancestry, and pins that fresh base.
+
+Manual merge remains the default. `scheduler run --auto-merge` opts into guarded
+synchronous squash merge for managed Issues. Only the pool's single admission
+selector reconciles merges; concurrent role workers never merge. Before each
+request it refreshes exact Review evidence, trusted Issue approval/open state,
+PR/repository/head/base identity, draft/mergeability, configured checks, human
+review decisions and paginated active branch rules. Classic protection must
+require at least one status check, strict up-to-date checks and enforcement for
+administrators. Required checks must pass on the exact head, from the configured
+app when specified; every additional reported check/status must also succeed.
+Unreadable policy, unsupported rules (including merge queues), pending checks
+or missing human approvals wait with a stable visible reason, without agent
+replay or identical checkpoint writes on each poll.
+
+The merge body contains `merge_method=squash` and the expected head SHA, never
+an administrator bypass. GitHub cannot condition this API on the base SHA;
+server-enforced strict checks protect that final race. Any observed changed
+reviewed base requires `needs_replan` in this slice, as do changed heads,
+closed-unmerged PRs or missing Review evidence. Bounded rebase/re-review belongs
+to the next M3 slice. Every merge response, including errors or lost responses,
+is followed by remote PR readback. Only fetched target ancestry plus a confirmed
+`done` write releases dependencies. Cancellation drains coordinator operations
+as well as workers; unknown checkpoint writes still retain ownership.
 
 ## Hooks and process ownership
 
@@ -161,8 +188,9 @@ execution records block admission. Finish old work with its prior runtime or
 migrate it explicitly; there is no automatic SQLite execution conversion.
 
 M1 provides GitHub execution and separate task worktrees; M2 adds bounded parallel admission.
-[Later milestones](roadmap.md) add AI-reviewed automatic PR
-merge, measured performance/visibility, and deferred Superset integration.
+M3's first slice adds opt-in guarded automatic PR merge; bounded base refresh and
+independent re-review remain pending. [Later milestones](roadmap.md) add measured
+performance/visibility and deferred Superset integration.
 Deterministic checks are complemented by [live GitHub and sandboxed GPT-6 acceptance](validation/m1-m2-live-2026-09-09.md).
 Physical two-host operation remains unverified. See the [current specification](specs/github-native-execution.md)
 and [M2 specification](specs/parallel-execution.md), plus
