@@ -44,6 +44,8 @@ export type RealSchedulerRunInput = {
   source?: "github";
   once?: boolean;
   concurrency?: 1 | 2;
+  /** Opts into strict-policy squash merge of the exact independently reviewed PR head. */
+  autoMerge?: boolean;
 };
 
 export type SchedulerRunInput = RealSchedulerRunInput;

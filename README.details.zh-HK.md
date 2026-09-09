@@ -22,7 +22,7 @@ flowchart LR
 目前最多同時執行兩項獨立任務。每個 Issue 使用
 `<project>.agile-worktrees/issue-<number>` 及 `agile/issue-<number>` branch。
 Roc 不再建立任務資料庫；設定、worktree、程序鎖、診斷 log 和 Pi session 留在本機。
-下一個 [milestone](docs/roadmap.md) 是自動合併 PR，Superset 暫緩。
+可選擇啟用有保護檢查的自動合併 PR；M3 下一部分才加入有限次數的 base refresh／重新 Review，Superset 暫緩。
 
 ### 驗證狀態
 
@@ -73,6 +73,38 @@ Daemon 本身必須以該帳戶登入。
 不必加 `--source github`。`--once` 處理一項符合條件的任務後結束；持續模式閒置時
 每 30 秒輪詢。GitHub 讀取失敗會停止本次執行，連線恢復後可重新啟動。
 無法確認 checkpoint 寫入結果時保留本機鎖，須先核對遠端結果。
+
+### 可選的自動合併 PR
+
+預設仍由人手合併。要啟用獨立 Review 後的自動 squash merge：
+
+```bash
+bun "$ROC_CLI_ENTRY" scheduler run --base-branch main --auto-merge
+```
+
+目標 branch 必須設定 **classic branch protection**，至少一項 required status check、
+**Require branches to be up to date before merging**，以及對管理員同樣生效的保護
+（**Do not allow bypassing the above settings**），並允許 squash merge。
+Roc 不會修改保護、不會使用管理員 bypass，也不會直接 push 到目標 branch。
+GitHub merge API 只可指定預期 head SHA，不能指定 base SHA 條件；最後一刻的 base
+變動靠伺服器強制執行的 strict checks 保護。
+
+Daemon 帳戶需要 Issue/comment 寫入、PR 讀寫及 contents 寫入權限，以及 checks、
+commit statuses、branch protection 和 repository／organization active rules 讀取權限。
+缺少保護或無法讀取 policy（包括未能使用 rules API 的 private repository）會顯示等待原因，
+不會繞過。已設定的人類 GitHub Review 仍須通過，Pi Review 不能代替。
+所有回報的 checks/statuses 必須在精確 reviewed head 成功；required checks 亦核對指定
+app 身份。Pending、failed、skipped、neutral、merge queue 或未支援的 active rule 均會等待。
+
+只有仍開啟、具精確可信批准及已保存獨立成功 Review 證據的受管理 Issue 可自動合併。
+等待維持 `awaiting_merge`，原因不變就不重寫 checkpoint，也不重跑 agent。
+外部 head 變動、PR 未合併便關閉、缺少 Review 證據（包括舊 accepted 紀錄），或 reviewed
+base 已前進，都要求明確 `needs_replan`；這一部分**不會自動 rebase／重新 Review**。
+
+即使 `--concurrency 2`，合併決策仍逐項執行。每次 merge 回應（包括遺失回應）後都讀回
+PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依賴任務。
+`--once` 可核對已有 PR，但不會持續等待新 PR 的 CI；完整自動完成請用持續模式。
+自動合併已有確定性的 transport／Fake Harness 測試，真實 protected branch 驗收仍待完成。
 
 ### 平行執行
 
