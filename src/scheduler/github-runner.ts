@@ -97,6 +97,7 @@ export class GitHubTaskRunner {
     task: NativeTask;
     stop: AbortController;
     done: Promise<void>;
+    stopReason?: string;
   };
   /** Connects remote checkpoints to the existing Pi, Git and hook execution boundaries. */
   constructor(private readonly input: GitHubRunnerInput) {
@@ -251,10 +252,18 @@ export class GitHubTaskRunner {
   }
 
   /** Cancels and drains only the selector-owned Issue, including uncancellable Git mutation and readback. */
-  async cancelCoordinated(taskId?: string): Promise<void> {
+  async cancelCoordinated(
+    taskId?: string,
+    reason = "Task cancellation requested",
+  ): Promise<void> {
     const owned = this.coordinated;
     if (!owned || (taskId !== undefined && taskId !== owned.task.task.id))
       return;
+    if (owned.stopReason === undefined)
+      this.input.diagnostic?.(
+        `Issue #${owned.task.issue.number}: cancelling coordinated work; ${reason}`,
+      );
+    owned.stopReason ??= reason;
     owned.stop.abort();
     await this.cancel();
     await owned.done.catch((error) => {
@@ -263,12 +272,20 @@ export class GitHubTaskRunner {
   }
 
   /** Stops selector-owned work when the pool's next remote poll withdraws its authority. */
-  async cancelUnapproved(tasks: NativeTask[]): Promise<void> {
+  async cancelUnapproved(
+    tasks: NativeTask[],
+    signal: AbortSignal,
+  ): Promise<void> {
     const owned = this.coordinated;
     if (!owned) return;
     const fresh = tasks.find((task) => task.task.id === owned.task.task.id);
-    if (!fresh?.approved || fresh.blockedReason || fresh.issue.state !== "OPEN")
-      await this.cancelCoordinated(owned.task.task.id);
+    const reason = await this.input.store.confirmCancellation(
+      owned.task,
+      fresh,
+    );
+    signal.throwIfAborted();
+    if (this.coordinated === owned && reason)
+      await this.cancelCoordinated(owned.task.task.id, reason);
   }
 
   /** Keeps refresh and fresh Review inside the serialized selector with task-local cancellation and recovery. */
@@ -278,7 +295,11 @@ export class GitHubTaskRunner {
   ): Promise<void> {
     const stop = new AbortController();
     const combined = AbortSignal.any([signal, stop.signal]);
-    const owned = { task, stop, done: Promise.resolve() };
+    const owned: NonNullable<GitHubTaskRunner["coordinated"]> = {
+      task,
+      stop,
+      done: Promise.resolve(),
+    };
     this.coordinated = owned;
     owned.done = (async () => {
       try {
@@ -311,7 +332,7 @@ export class GitHubTaskRunner {
         const interrupted = await this.interrupt(
           task,
           combined.aborted
-            ? "Task cancelled; execution requires replan"
+            ? `Task cancelled: ${owned.stopReason ?? "Daemon shutdown requested"}; execution requires replan`
             : `${diagnostic.code}: ${diagnostic.message}`,
         );
         signal.throwIfAborted();

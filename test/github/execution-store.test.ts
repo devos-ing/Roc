@@ -85,3 +85,21 @@ test("withdrawn approval blocks a previously admitted task and human checkpoint 
   );
   expect((await store.get(41)).approved).toBe(false);
 });
+
+test("authority confirmation does not authorize cached state when a direct read fails", async () => {
+  const remote = memoryGitHub();
+  const store = remote.store();
+  const task = (await store.list()).tasks[0];
+  if (!task) throw Error("Missing approved task");
+  const before = structuredClone(remote.issue);
+  remote.api.get = async () => {
+    throw Error("private credential detail");
+  };
+  await expect(store.confirmCancellation(task, task)).resolves.toBeUndefined();
+  await expect(store.confirmCancellation(task)).rejects.toMatchObject({
+    code: "GITHUB_AUTHORITY_UNCONFIRMED",
+    taskId: "issue-41",
+    message: expect.stringContaining("authority confirmation failed"),
+  });
+  expect(remote.issue).toEqual(before);
+});

@@ -172,6 +172,12 @@ Root、glob、文字描述、repository 外的路徑，以及帶 hooks 的任務
 Pi 子程序退出獲確認後才會放行下一個角色或釋放名額。清理或 checkpoint 寫入結果
 不明時，停止新任務並保留鎖；`Ctrl-C` 會取消全部執行中任務。
 
+輪詢結果顯示授權失效時，Roc 會先直接讀取該 Issue 與已知的同計劃 Issues，重新驗證
+授權，再決定是否取消。列表暫時漏項不會取消仍獲批准的任務，正常輪詢也不會增加讀取。
+確認失敗時會以 `GITHUB_AUTHORITY_UNCONFIRMED` 安全停止，取消紀錄會包含具體原因。
+[輪詢回歸驗證](docs/validation/polling-authority-2026-09-09.md)涵蓋 worker、refresh 後的
+Review，以及真正撤回批准或關閉 Issue 的情況。
+
 ### 可選的 Scout 省略
 
 資料已足夠的低風險任務，可在批准的 manifest 設定 `skipScout: true`，直接執行 Implement

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { HarnessStepRequest } from "../../src/harness/contracts";
 import { createFakeHarness } from "../../src/harness/fake";
 import { AgileError } from "../../src/runtime/errors";
@@ -401,3 +401,129 @@ test("cancellation and task-local exceptions preserve sibling execution and pers
     }
   }
 });
+
+for (const mode of [
+  "complete",
+  "omit-active",
+  "omit-sibling",
+  "changed-sibling",
+  "read-failure",
+  "withdraw-approval",
+  "closed",
+] as const) {
+  test(`authority confirmation during continuous polling: ${mode}`, async () => {
+    const f = fixture(
+      ["omit-sibling", "changed-sibling"].includes(mode)
+        ? [["a.ts"], ["b.ts"]]
+        : [["a.ts"]],
+      1,
+    );
+    const issue = f.issues[0];
+    const entered = f.entered[0];
+    if (!issue || !entered) throw Error("Missing first worker fixture");
+    const stop = new AbortController();
+    const setTimer = globalThis.setTimeout;
+    const timer = spyOn(globalThis, "setTimeout").mockImplementation(
+      Object.assign(
+        (...[handler, delay, ...args]: Parameters<typeof setTimeout>) =>
+          setTimer(handler, delay === 30_000 ? 2 : delay, ...args),
+        { __promisify__: setTimer.__promisify__ },
+      ) as typeof setTimeout,
+    );
+    const apiRead = f.api.read;
+    const apiGet = f.api.get;
+    let failRead = false;
+    let loopFailure: unknown;
+    f.api.get = async (...args) => {
+      if (failRead) {
+        failRead = false;
+        throw Error("private transport detail");
+      }
+      return apiGet(...args);
+    };
+    let injected = false;
+    f.api.read = async () => {
+      const snapshot = await apiRead();
+      if (injected || f.started.length === 0) return snapshot;
+      injected = true;
+      setTimer(() => f.release[0]?.release(), 5);
+      if (mode === "read-failure") {
+        failRead = true;
+        return [];
+      }
+      if (mode === "omit-active") return [];
+      if (mode === "omit-sibling")
+        return snapshot.filter((issue) => issue.number === 41);
+      if (mode === "changed-sibling") {
+        const sibling = f.issues[1];
+        if (!sibling) throw Error("Missing plan sibling");
+        sibling.body = sibling.body.replaceAll(
+          "Wrong answer",
+          "Changed requirement",
+        );
+        return apiRead();
+      }
+      if (mode === "withdraw-approval") {
+        issue.comments = issue.comments.filter(
+          (comment) => comment.author?.login !== "owner",
+        );
+        return apiRead();
+      }
+      if (mode === "closed") {
+        issue.state = "CLOSED";
+        return apiRead();
+      }
+      return snapshot;
+    };
+    const run = f.pool.run(stop.signal).catch(async (error) => {
+      if (!stop.signal.aborted) {
+        if (mode !== "read-failure") throw error;
+        loopFailure = error;
+        await f.pool.cancel().catch(() => undefined);
+      }
+    });
+    try {
+      await entered.promise;
+      let task = await f.store.get(41);
+      for (let i = 0; i < 100; i++) {
+        await Bun.sleep(2);
+        task = await f.store.get(41);
+        if (
+          task.task.status === "awaiting_merge" ||
+          (f.cancelled.length > 0 && task.execution?.phase === "needs_replan")
+        )
+          break;
+      }
+      const shouldCancel =
+        mode === "withdraw-approval" ||
+        mode === "closed" ||
+        mode === "changed-sibling" ||
+        mode === "read-failure";
+      expect(f.cancelled.length > 0).toBe(shouldCancel);
+      if (!shouldCancel) expect(task.task.status).toBe("awaiting_merge");
+      else
+        expect(task.execution?.failure).toContain(
+          mode === "closed"
+            ? "Issue is closed"
+            : mode === "read-failure"
+              ? "GITHUB_AUTHORITY_UNCONFIRMED"
+              : mode === "changed-sibling"
+                ? "Remote plan is incomplete"
+                : "Trusted approval is missing or withdrawn",
+        );
+    } finally {
+      stop.abort();
+      for (const gate of f.release) gate.release();
+      await f.pool.cancel().catch((error) => {
+        if (mode !== "read-failure") throw error;
+      });
+      await run;
+      timer.mockRestore();
+      if (mode === "read-failure")
+        expect(loopFailure).toMatchObject({
+          code: "GITHUB_AUTHORITY_UNCONFIRMED",
+          taskId: "issue-41",
+        });
+    }
+  });
+}

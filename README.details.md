@@ -208,6 +208,14 @@ must be confirmed before a role completes or a worker releases its slot.
 Unconfirmed cleanup or checkpoint writes stop admission and retain the daemon
 lock. Global `Ctrl-C` cancels every active task.
 
+Before cancelling because of a negative poll result, Roc directly reads the
+Issue and its known plan members and revalidates their authority. A temporary
+list omission therefore does not cancel approved work. Normal polls add no
+extra reads. Failed confirmation stops safely with `GITHUB_AUTHORITY_UNCONFIRMED`;
+cancellation records include the specific reason.
+[Polling regression evidence](docs/validation/polling-authority-2026-09-09.md)
+covers workers, refreshed Review, and genuine withdrawal or closure.
+
 ### Optional Scout omission
 
 For a sufficiently specified low-risk task, the approved manifest can set

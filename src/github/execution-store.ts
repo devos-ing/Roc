@@ -199,8 +199,24 @@ function statusLabel(phase: ExecutionRecord["phase"]): string {
   return "roc:running";
 }
 
+/** Explains why a remote observation no longer authorizes the owned task. */
+function authorityFailure(
+  task: NativeTask,
+  fresh?: NativeTask,
+): string | undefined {
+  if (!fresh) return "Issue is missing from the task snapshot";
+  if (fresh.issue.number !== task.issue.number) return "Issue identity changed";
+  if (fresh.issue.state !== "OPEN") return "Issue is closed";
+  if (!fresh.approved) return "Trusted approval is missing or withdrawn";
+  if (jsonHash(fresh.envelope) !== jsonHash(task.envelope))
+    return "Task specification changed";
+  return fresh.blockedReason;
+}
+
 /** Stores all task checkpoints in daemon-owned GitHub comments, without a local task database. */
 export class GitHubExecutionStore {
+  // Issue numbers locate fresh reads; cached entries never authorize work.
+  private readonly planIssues = new Map<string, number[]>();
   /** Binds remote state to one repository, daemon identity and publisher allowlist. */
   constructor(
     readonly repository: string,
@@ -222,6 +238,18 @@ export class GitHubExecutionStore {
         );
       }
     }
+    this.validatePlans(tasks);
+    return {
+      tasks: tasks.sort(
+        (a, b) =>
+          a.task.priority - b.task.priority || a.issue.number - b.issue.number,
+      ),
+      diagnostics,
+    };
+  }
+
+  /** Rechecks complete plans and remembers their Issue numbers for negative-observation confirmation. */
+  private validatePlans(tasks: NativeTask[]): void {
     const groups = new Map<string, NativeTask[]>();
     for (const task of tasks)
       groups.set(task.envelope.planId, [
@@ -264,6 +292,10 @@ export class GitHubExecutionStore {
           visited.add(id);
         }
         for (const task of group) visit(task.envelope.task.id);
+        this.planIssues.set(
+          first.envelope.planId,
+          group.map((task) => task.issue.number),
+        );
       } catch {
         for (const task of group) {
           task.blockedReason = "Remote plan is incomplete, changed or cyclic";
@@ -271,13 +303,48 @@ export class GitHubExecutionStore {
         }
       }
     }
-    return {
-      tasks: tasks.sort(
-        (a, b) =>
-          a.task.priority - b.task.priority || a.issue.number - b.issue.number,
-      ),
-      diagnostics,
-    };
+  }
+
+  /** Confirms a negative list observation with fresh reads of the previously validated plan. */
+  async confirmCancellation(
+    task: NativeTask,
+    observed?: NativeTask,
+  ): Promise<string | undefined> {
+    if (!authorityFailure(task, observed)) return;
+    try {
+      const numbers = this.planIssues.get(task.envelope.planId);
+      if (!numbers?.includes(task.issue.number))
+        throw Error("Known plan membership is unavailable");
+      const current = await this.get(task.issue.number);
+      const reason = authorityFailure(task, current);
+      if (reason) return reason;
+      const fresh: NativeTask[] = [current];
+      const siblings = numbers.filter((number) => number !== task.issue.number);
+      for (let offset = 0; offset < siblings.length; offset += 4) {
+        const batch = await Promise.allSettled(
+          siblings.slice(offset, offset + 4).map((number) => this.get(number)),
+        );
+        for (const result of batch) {
+          if (result.status === "rejected") throw result.reason;
+          fresh.push(result.value);
+        }
+      }
+      this.validatePlans(fresh);
+      return authorityFailure(
+        task,
+        fresh.find((item) => item.issue.number === task.issue.number),
+      );
+    } catch (cause) {
+      throw new AgileError({
+        code: "GITHUB_AUTHORITY_UNCONFIRMED",
+        category: "infra",
+        component: "github-state",
+        retryable: false,
+        taskId: task.task.id,
+        message: `Issue #${task.issue.number}: authority confirmation failed; check GitHub access and the approved plan before restarting`,
+        cause,
+      });
+    }
   }
 
   /** Refreshes one Issue before a role boundary or checkpoint mutation. */

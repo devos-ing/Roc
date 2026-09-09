@@ -1103,6 +1103,76 @@ test("selector-owned Review keeps authority polling alive and cancels on approva
   }
 });
 
+test("selector-owned Review survives a missing list entry after direct authority confirmation", async () => {
+  const f = fixture();
+  await tick(f, false);
+  f.data.base = sha("c", 42);
+  f.scriptReview();
+  const finish = barrier();
+  let reviewing = false;
+  let omitted = false;
+  let confirmations = 0;
+  let cancellations = 0;
+  f.data.beforeRole = async (request) => {
+    if (request.backendCursor) {
+      reviewing = true;
+      await finish.promise;
+    }
+  };
+  const list = f.store.list.bind(f.store);
+  f.store.list = async () => {
+    const snapshot = await list();
+    if (reviewing && !omitted) {
+      omitted = true;
+      return { ...snapshot, tasks: [] };
+    }
+    return snapshot;
+  };
+  const confirm = f.store.confirmCancellation.bind(f.store);
+  f.store.confirmCancellation = async (task, observed) => {
+    const reason = await confirm(task, observed);
+    if (reviewing && !observed) {
+      confirmations++;
+      finish.release();
+    }
+    return reason;
+  };
+  const pool = new GitHubTaskPool({
+    ...f.input,
+    autoMerge: true,
+    harness: {
+      ...f.input.harness,
+      async cancel() {
+        cancellations++;
+        finish.release();
+      },
+    },
+  });
+  const setTimer = globalThis.setTimeout;
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(
+    Object.assign(
+      (...[handler, delay, ...args]: Parameters<typeof setTimeout>) =>
+        setTimer(handler, delay === 30_000 ? 1 : delay, ...args),
+      { __promisify__: setTimer.__promisify__ },
+    ) as typeof setTimeout,
+  );
+  try {
+    await pool.run(new AbortController().signal, true);
+    expect(confirmations).toBe(1);
+    expect(cancellations).toBe(0);
+    const record = await f.record();
+    expect(record.phase).toBe("awaiting_merge");
+    expect(record.mergeReview?.headSha).toBe(record.publication?.commitSha);
+    expect(record.refreshes).toHaveLength(1);
+    expect(record.attempts.at(-1)?.status).toBe("succeeded");
+    expect(f.prs.get(41)?.merged).toBe(false);
+  } finally {
+    finish.release();
+    await pool.cancel();
+    timer.mockRestore();
+  }
+});
+
 test("unknown done checkpoint writes remain daemon failures and cannot release dependencies", async () => {
   const f = fixture(2, true);
   await tick(f, false);
