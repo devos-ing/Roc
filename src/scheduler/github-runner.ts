@@ -57,6 +57,8 @@ export type GitHubRunnerInput = {
   activity?: (taskId: string, event: HarnessEvent) => void;
   diagnostic?: (message: string) => void;
   logError?: (error: AgileError) => Promise<void>;
+  now?: () => string;
+  progress?: (record: ExecutionRecord) => void;
 };
 
 /** Reports a safe error with its task location without exposing unknown exception contents. */
@@ -181,7 +183,12 @@ export class GitHubTaskRunner {
       if (!task.execution) {
         const base = await this.dependencyBase(task, tasks, signal);
         if (!base) continue;
-        task.execution = initialExecution(task, this.input.baseBranch, base);
+        task.execution = initialExecution(
+          task,
+          this.input.baseBranch,
+          base,
+          this.now(),
+        );
         await this.input.store.save(task, task.execution);
       }
       return task;
@@ -220,7 +227,7 @@ export class GitHubTaskRunner {
       attempt.status = "blocked_policy";
       attempt.failure = reason;
       attempt.retryable = false;
-      attempt.endedAt = new Date().toISOString();
+      attempt.endedAt = this.now();
     }
     await this.checkpoint(fresh, record, new AbortController().signal);
     return true;
@@ -321,9 +328,17 @@ export class GitHubTaskRunner {
   ): Promise<void> {
     signal.throwIfAborted();
     record.revision += 1;
-    record.updatedAt = new Date().toISOString();
+    record.updatedAt = this.now();
+    if (record.timeline && record.timeline.at(-1)?.phase !== record.phase)
+      record.timeline.push({ phase: record.phase, at: record.updatedAt });
     await this.input.store.save(task, record);
+    this.input.progress?.(record);
     signal.throwIfAborted();
+  }
+
+  /** Reads the execution clock for durable phase times and activity coalescing. */
+  private now(): string {
+    return this.input.now?.() ?? new Date().toISOString();
   }
 
   /** Fetches a base containing every dependency's confirmed merge commit. */
@@ -532,7 +547,7 @@ export class GitHubTaskRunner {
               }
             : {}),
           status: "running",
-          startedAt: new Date().toISOString(),
+          startedAt: this.now(),
           sequence: 0,
           events: {},
           usage: { ...zeroUsage },
@@ -619,7 +634,19 @@ export class GitHubTaskRunner {
               throw Error("Non-monotonic attempt event");
             attempt.sequence = event.sequence;
             this.input.activity?.(task.task.id, event);
-            if (event.type !== "attempt.activity") {
+            if (event.type === "attempt.activity") {
+              attempt.activity = {
+                ...event.activity,
+                occurredAt: event.occurredAt,
+              };
+              if (
+                Date.parse(this.now()) - Date.parse(record.updatedAt) >=
+                30_000
+              ) {
+                attempt.cursor = delivered.nextCursor;
+                await this.checkpoint(task, record, signal);
+              }
+            } else {
               if (
                 event.type === "attempt.completed" &&
                 input.role === "review" &&

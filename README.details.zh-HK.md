@@ -126,6 +126,15 @@ PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依�
 
 ### 平行執行
 
+`task board` 詳情會顯示總耗時、agent attempt 時間、等待合併時間，以及用量是否完整。
+`scheduler inspect` 另有各階段耗時。最近動作是 GitHub checkpoint 摘要，階段切換時保存，
+工具持續執行時最多每 30 秒補一次；逐項即時動作請看 daemon 輸出。
+舊紀錄沒有時間資料，或 Issue 已關閉但停止尚未確認時，會顯示 unavailable，不會算成零。
+
+失敗時查看執行主機的 `.agile/runtime/agile.log`。紀錄包含安全錯誤代碼、Issue、attempt
+及階段。先核對保留的 worktree；可把已驗證的 commit 填入新批准任務的 `sourceCommit`，
+重用成果並保留原失敗紀錄。程序或 GitHub 寫入結果未確認前，不要移除 ownership lock。
+
 預設為 `--concurrency 2`，`--concurrency 1` 可切回逐項執行。
 一項任務完成後會立即補位，不必等待另一項較慢的任務。
 `--once` 仍只處理一項。看板列出所有執行中 Issue，terminal 事件附有任務 ID。

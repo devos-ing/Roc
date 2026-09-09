@@ -162,6 +162,13 @@ starting replacement work. A verified existing commit can be supplied as
 and review the replacement task's scope and dependencies. Never remove a retained
 ownership lock until its processes and uncertain remote writes are reconciled.
 
+`task board` details show elapsed time, time in agent attempts, merge waiting and
+partial token usage. `scheduler inspect` includes the phase-duration breakdown.
+Recent actions are GitHub checkpoint summaries, refreshed at phase boundaries
+and at most every 30 seconds of tool activity; watch daemon output for individual
+live actions. Historical records without timing, or closed/changed Issues whose
+stop has not been reconciled, show unavailable timing rather than zero.
+
 The default is `--concurrency 2`; use `--concurrency 1` to serialize execution.
 When one task finishes, its slot can start another without waiting for a slower
 task. `--once` still processes only one task. The board shows all running Issues,

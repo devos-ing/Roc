@@ -213,11 +213,13 @@ function runner(
   remote: ReturnType<typeof memoryGitHub>,
   harness?: AgentHarness,
   hooks?: TaskHookRunner,
+  now?: () => string,
 ) {
   return new GitHubTaskRunner({
     store: remote.store(),
     branches,
     hooks,
+    now,
     harness: harness ?? {
       async step() {
         throw Error("Unexpected agent work");
@@ -243,6 +245,85 @@ function runner(
     baseBranch: "main",
   });
 }
+
+test("activity checkpoints are coalesced while phase timing and the latest action survive restart", async () => {
+  const remote = memoryGitHub();
+  const start = Date.parse(time);
+  let now = start;
+  const saved: ExecutionRecord[] = [];
+  const write = remote.api.writeComment;
+  remote.api.writeComment = async (...args) => {
+    saved.push(
+      JSON.parse(
+        args[2]
+          .split("<!-- roc:execution\n")[1]!
+          .split("\nroc:execution -->")[0]!,
+      ),
+    );
+    await write(...args);
+  };
+  const fake = createFakeHarness({
+    attempts: [
+      {
+        taskId: "issue-41",
+        role: "scout",
+        retryIndex: 0,
+        expect: { model, effort: "high" },
+        deliveries: [1, 2, 31, 32, 62, 63].map((second, index) => ({
+          nextCursor: String(index + 1),
+          event: {
+            eventId: `activity-${index}`,
+            attemptId: "fixture",
+            sequence: index + 1,
+            occurredAt: new Date(start + second * 1000).toISOString(),
+            ...(second === 63
+              ? {
+                  type: "attempt.blocked_policy",
+                  code: "interaction_cancelled",
+                  message: "Needs input",
+                }
+              : {
+                  type: "attempt.activity",
+                  activity: {
+                    itemId: String(index),
+                    action: "read",
+                    summary: `Read file ${second}`,
+                    status: "completed",
+                  },
+                }),
+          },
+        })),
+      },
+    ],
+  });
+  await runner(
+    remote,
+    {
+      async step(request) {
+        const delivery = await fake.harness.step(request);
+        if (delivery.kind === "event")
+          now = Date.parse(delivery.event.occurredAt);
+        return delivery;
+      },
+      async cancel() {},
+    },
+    undefined,
+    () => new Date(now).toISOString(),
+  ).runOnce(new AbortController().signal);
+  const checkpoints = saved.filter(
+    (record) => record.phase === "scouting" && record.attempts[0]?.activity,
+  );
+  expect(
+    checkpoints.map((record) => record.attempts[0]?.activity?.summary),
+  ).toEqual(["Read file 31", "Read file 62"]);
+  const record = (await remote.store().get(41)).execution;
+  expect(record?.attempts[0]?.activity?.summary).toBe("Read file 62");
+  expect(record?.timeline?.map((entry) => entry.phase)).toEqual([
+    "claimed",
+    "scouting",
+    "needs_replan",
+  ]);
+});
 
 /** Seeds the durable comment as if an earlier process stopped at the supplied checkpoint. */
 async function seed(

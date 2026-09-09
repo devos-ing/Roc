@@ -214,6 +214,19 @@ before retry. Unknown exception messages and raw CLI output are not logged.
 Original errors are recorded before cleanup, and cleanup failures retain their
 own task context while preserving execution ownership.
 
+New execution checkpoints retain a phase timeline and each attempt's latest
+activity. Activity stays local at full detail; at most one additional GitHub
+checkpoint per 30 seconds of tool events refreshes its compact summary. Phase
+boundaries and normal receipts also save that summary. The daemon prints
+confirmed phase changes and wait reasons once. Inspection and task details
+derive elapsed time, attempt time and merge waiting from recorded boundaries,
+and mark incomplete usage explicitly. Missing historical timing or an Issue
+status that no longer matches its checkpoint yields unavailable timing.
+
+GitHub comment reads run in batches of at most four requests. The reader waits
+for all requests in a failed batch and returns no partial snapshot. It preserves
+the original order, request count, complete comment history and approval checks.
+
 SQLite production modules, local queue commands and SQL-only tests were removed
 after replacement boundaries were exercised. Existing databases and old
 checkouts remain on disk. Legacy daemon-owned `roc:status` comments without new

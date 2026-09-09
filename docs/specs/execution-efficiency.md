@@ -18,8 +18,9 @@ GPT-6 model and high-or-higher reasoning policy.
    waiting reason and recorded token usage through existing inspection and board
    interfaces. Distinguish incomplete usage and unavailable historical timing
    from zero. Keep individual tool activity local to daemon output. Persist only
-   compact action/timing summaries at existing checkpoint boundaries, without a
-   competing local task database or per-tool GitHub writes.
+   compact action/timing summaries at existing checkpoint boundaries, with at
+   most one additional activity checkpoint per 30 seconds of tool events. Do not
+   add a competing local task database or per-tool GitHub writes.
 3. Measure fixed tasks and starting commits with concurrency one and two, then
    apply one simplification at a time. Measure GitHub read latency before changing
    its request scheduling. An optional Scout omission must be explicitly included
@@ -27,6 +28,8 @@ GPT-6 model and high-or-higher reasoning policy.
    Review and truthful attempt/usage history, and remain off by default. Keep an
    optimization only when measured work or latency decreases without failures of
    the same unchanged acceptance checks. Report small samples honestly.
+   Comment reads may run in batches of at most four; drain a failed batch fully,
+   return no partial snapshot and retain all authority checks and ordering.
 4. Verify MacBook publication and Mac mini execution through GitHub, with one
    active executor. Confirm inspection, interruption/restart and isolation on the
    actual hosts. Host access is a prerequisite for this acceptance item; a local

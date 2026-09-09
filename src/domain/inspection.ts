@@ -65,6 +65,7 @@ const InspectionAttemptSchema = z
     retryIndex: RetryIndexSchema,
     startedAt: z.string().datetime(),
     endedAt: z.string().datetime().optional(),
+    usageKnown: z.boolean().optional(),
     activity: HarnessActivitySchema.extend({
       occurredAt: z.string().datetime(),
     }).optional(),
@@ -83,6 +84,18 @@ const InspectionTaskSchema = z
     pullRequestUrl: z.string().url().optional(),
     failure: NonEmpty.optional(),
     status: TaskStatusSchema,
+    usageIncomplete: z.boolean().optional(),
+    timing: z
+      .object({
+        startedAt: z.string().datetime(),
+        elapsedMs: z.number().nonnegative(),
+        phaseElapsedMs: z.number().nonnegative(),
+        attemptMs: z.number().nonnegative().optional(),
+        waitingMs: z.number().nonnegative(),
+        phaseDurationsMs: z.record(z.string(), z.number().nonnegative()),
+      })
+      .strict()
+      .optional(),
     priority: z.number().int().nonnegative(),
     tokenTarget: z.number().int().positive(),
     actual: TokenTotalsSchema,

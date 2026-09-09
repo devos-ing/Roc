@@ -6,6 +6,7 @@ import {
 } from "../domain/schemas";
 import { assertTransition } from "../domain/transitions";
 import {
+  HarnessActivitySchema,
   HarnessAttemptSchema,
   ImplementOutputSchema,
   ReviewOutputSchema,
@@ -42,6 +43,9 @@ export const AttemptReceiptSchema = z
     events: z.record(z.string(), z.string()),
     usage: UsageSchema,
     usageKnown: z.boolean(),
+    activity: HarnessActivitySchema.extend({
+      occurredAt: z.string().datetime(),
+    }).optional(),
     output: z
       .discriminatedUnion("kind", [
         ScoutOutputSchema,
@@ -70,6 +74,14 @@ export const ExecutionRecordSchema = z
     baseCommit: Sha,
     phase: TaskStatusSchema,
     updatedAt: z.string().datetime(),
+    timeline: z
+      .array(
+        z
+          .object({ phase: TaskStatusSchema, at: z.string().datetime() })
+          .strict(),
+      )
+      .min(1)
+      .optional(),
     attempts: z.array(AttemptReceiptSchema),
     hooks: z
       .object({
@@ -136,6 +148,7 @@ export function initialExecution(
   task: NativeTask,
   baseBranch: string,
   baseCommit: string,
+  now = new Date().toISOString(),
 ): ExecutionRecord {
   return ExecutionRecordSchema.parse({
     version: 1,
@@ -145,7 +158,8 @@ export function initialExecution(
     baseBranch,
     baseCommit,
     phase: "claimed",
-    updatedAt: new Date().toISOString(),
+    updatedAt: now,
+    timeline: [{ phase: "claimed", at: now }],
     attempts: [],
     hooks: {},
   });

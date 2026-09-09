@@ -202,27 +202,33 @@ export class GitHubRemoteIssueReader {
     ]);
     const baseIssues = z.array(RemoteIssueBaseSchema).parse(JSON.parse(output));
     const issues: RemoteIssue[] = [];
-    for (const issue of baseIssues) {
-      const commentOutput = await this.mustRun([
-        "gh",
-        "api",
-        "--paginate",
-        "--slurp",
-        `repos/${repository}/issues/${issue.number}/comments?per_page=100`,
-      ]);
-      const pages = z
-        .array(z.array(RestCommentSchema))
-        .parse(JSON.parse(commentOutput));
-      issues.push(
-        RemoteIssueSchema.parse({
-          ...issue,
-          comments: pages.flat().map((comment) => ({
-            body: comment.body,
-            author: { login: comment.user.login },
-            databaseId: comment.id,
-          })),
+    for (let offset = 0; offset < baseIssues.length; offset += 4) {
+      const batch = await Promise.allSettled(
+        baseIssues.slice(offset, offset + 4).map(async (issue) => {
+          const commentOutput = await this.mustRun([
+            "gh",
+            "api",
+            "--paginate",
+            "--slurp",
+            `repos/${repository}/issues/${issue.number}/comments?per_page=100`,
+          ]);
+          const pages = z
+            .array(z.array(RestCommentSchema))
+            .parse(JSON.parse(commentOutput));
+          return RemoteIssueSchema.parse({
+            ...issue,
+            comments: pages.flat().map((comment) => ({
+              body: comment.body,
+              author: { login: comment.user.login },
+              databaseId: comment.id,
+            })),
+          });
         }),
       );
+      for (const result of batch) {
+        if (result.status === "rejected") throw result.reason;
+        issues.push(result.value);
+      }
     }
     if (issues.length >= 1000) {
       throw new Error("GitHub task source reached its 1000-Issue safety bound");
