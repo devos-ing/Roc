@@ -2,6 +2,68 @@ import { expect, test } from "bun:test";
 import { GitHubRemoteIssueReader } from "../../src/github/issue-reader";
 import { AgileError } from "../../src/runtime/errors";
 
+test("completed closure reconciles lost responses and preserves human-closed reasons", async () => {
+  for (const mode of ["success", "lost", "denied", "closed"]) {
+    let state = mode === "closed" ? "CLOSED" : "OPEN";
+    const commands: string[][] = [];
+    const reader = new GitHubRemoteIssueReader("/fixture", {
+      async run({ command }) {
+        commands.push(command);
+        if (command[2] === "close") {
+          if (mode !== "denied") state = "CLOSED";
+          return {
+            exitCode: mode === "success" ? 0 : 1,
+            stdout: "",
+            stderr: "secret HTTP 403",
+          };
+        }
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout:
+            command[1] === "api"
+              ? "[[]]"
+              : JSON.stringify({
+                  number: 41,
+                  title: "Task",
+                  body: "",
+                  url: "https://example.test/41",
+                  labels: [],
+                  state,
+                }),
+        };
+      },
+    });
+    if (mode === "denied") {
+      const error = await reader
+        .closeCompleted("acme/test", 41)
+        .catch((error: unknown) => error);
+      expect(error).toMatchObject({
+        code: "GITHUB_ISSUE_CLOSE_PENDING",
+        retryable: true,
+      });
+      expect(String(error)).not.toContain("secret");
+    } else await reader.closeCompleted("acme/test", 41);
+    const closes = commands.filter((command) => command[2] === "close");
+    expect(closes).toEqual(
+      mode === "closed"
+        ? []
+        : [
+            [
+              "gh",
+              "issue",
+              "close",
+              "41",
+              "--repo",
+              "acme/test",
+              "--reason",
+              "completed",
+            ],
+          ],
+    );
+  }
+});
+
 test("GitHub failures distinguish reads and uncertain writes without exposing CLI secrets", async () => {
   const reader = new GitHubRemoteIssueReader("/fixture", {
     async run() {

@@ -36,6 +36,7 @@ const zeroUsage = {
   reasoningOutputTokens: 0,
 };
 const PrSchema = z.object({
+  number: z.number().int().positive().optional(),
   state: z.enum(["OPEN", "CLOSED", "MERGED"]),
   baseRefName: z.string(),
   headRefName: z.string(),
@@ -122,6 +123,10 @@ export class GitHubTaskRunner {
   ): Promise<NativeTask | undefined> {
     for (const task of tasks) {
       signal.throwIfAborted();
+      if (task.execution?.phase === "done") {
+        if (task.issue.state === "OPEN") await this.repairClosure(task, signal);
+        continue;
+      }
       if (!admit(task)) continue;
       await this.input.store
         .syncLabels(task)
@@ -803,6 +808,59 @@ export class GitHubTaskRunner {
     return false;
   }
 
+  /** Repairs only Issue closure, rechecking merge evidence without replaying completed execution. */
+  private async repairClosure(
+    task: NativeTask,
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      signal.throwIfAborted();
+      const record = task.execution;
+      const publication = record?.publication;
+      if (
+        task.blockedReason ||
+        !task.approved ||
+        record?.phase !== "done" ||
+        !publication?.number ||
+        !publication.mergeCommit ||
+        record.baseBranch !== this.input.baseBranch ||
+        publication.branch !== taskBranchName(task.task.id)
+      )
+        throw Error("Missing closure evidence");
+      const pr = await this.readPr(publication.number);
+      if (
+        pr.number !== publication.number ||
+        pr.state !== "MERGED" ||
+        pr.baseRefName !== record.baseBranch ||
+        pr.headRefName !== publication.branch ||
+        pr.headRefOid !== publication.commitSha ||
+        pr.mergeCommit?.oid !== publication.mergeCommit
+      )
+        throw Error("Merge evidence changed");
+      await this.command(["git", "fetch", "origin", record.baseBranch]);
+      await this.command([
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        publication.mergeCommit,
+        `refs/remotes/origin/${record.baseBranch}`,
+      ]);
+      signal.throwIfAborted();
+      await this.input.store.closeCompleted(task);
+    } catch {
+      const error = new AgileError({
+        code: "GITHUB_ISSUE_CLOSE_PENDING",
+        category: "infra",
+        component: "github-state",
+        retryable: true,
+        taskId: task.task.id,
+        message: `Issue #${task.issue.number}: completed checkpoint retained; closure pending. Check approval, specification, PR merge evidence and repository access; polling will retry`,
+      });
+      this.input.diagnostic?.(error.message);
+      await this.input.logError?.(error).catch(() => undefined);
+    }
+  }
+
   /** Marks completion only after the intended PR head was merged into the configured target. */
   private async reconcileMerge(
     task: NativeTask,
@@ -924,6 +982,7 @@ export class GitHubTaskRunner {
     if (reason) record.failure = reason;
     else delete record.failure;
     await this.checkpoint(task, record, signal);
+    if (record.phase === "done") await this.repairClosure(task, signal);
   }
 
   /** Persists a bounded intent before any Git mutation and a confirmed result before dispatching fresh Review. */
@@ -1091,7 +1150,7 @@ export class GitHubTaskRunner {
           "--repo",
           this.input.store.repository,
           "--json",
-          "state,baseRefName,headRefName,headRefOid,mergeCommit",
+          "number,state,baseRefName,headRefName,headRefOid,mergeCommit",
         ]),
       ),
     );

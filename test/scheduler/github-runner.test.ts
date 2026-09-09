@@ -54,6 +54,88 @@ const branches: TaskBranchManager = {
   },
 };
 
+test("done-open repair rejects absent or mismatched authority and merge evidence without checkpoint changes", async () => {
+  for (const fault of [
+    "none",
+    "label-only",
+    "number",
+    "mergeCommit",
+    "pr-number",
+    "head",
+    "branch",
+    "target",
+    "merge",
+    "ancestry",
+    "approval",
+    "spec",
+  ]) {
+    const remote = memoryGitHub();
+    if (fault !== "label-only")
+      await seed(remote, (record) => {
+        record.phase = "done";
+        record.publication = {
+          number: 7,
+          branch: "agile/issue-41",
+          commitSha: base,
+          mergeCommit: base,
+        };
+        if (fault === "number") delete record.publication.number;
+        if (fault === "mergeCommit") delete record.publication.mergeCommit;
+      });
+    else remote.issue.labels = [{ name: "roc:task" }, { name: "roc:done" }];
+    if (fault === "approval") remote.issue.comments.shift();
+    if (fault === "spec")
+      remote.issue.body = remote.issue.body.replaceAll(
+        "Wrong answer",
+        "Changed answer",
+      );
+    const before = structuredClone(remote.issue.comments);
+    const diagnostics: string[] = [];
+    const taskRunner = new GitHubTaskRunner({
+      store: remote.store(),
+      branches,
+      harness: {
+        async step() {
+          throw Error("No replay");
+        },
+        async cancel() {},
+      },
+      advisor: createModelAdvisor([]),
+      publisher: {
+        baseBranch: "main",
+        async publish() {
+          throw Error("No publication");
+        },
+      },
+      command: {
+        async run({ command }) {
+          return {
+            exitCode:
+              fault === "ancestry" && command[1] === "merge-base" ? 1 : 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              number: fault === "pr-number" ? 9 : 7,
+              state: "MERGED",
+              baseRefName: fault === "target" ? "other" : "main",
+              headRefName: fault === "branch" ? "other" : "agile/issue-41",
+              headRefOid: fault === "head" ? "b".repeat(40) : base,
+              mergeCommit: { oid: fault === "merge" ? "b".repeat(40) : base },
+            }),
+          };
+        },
+      },
+      cwd: "/fixture",
+      baseBranch: "main",
+      diagnostic: (message) => diagnostics.push(message),
+    });
+    expect(await taskRunner.runOnce(new AbortController().signal)).toBe(false);
+    expect(remote.issue.comments).toEqual(before);
+    expect(remote.issue.state).toBe(fault === "none" ? "CLOSED" : "OPEN");
+    if (!["none", "label-only"].includes(fault))
+      expect(diagnostics.join()).toContain("closure pending");
+  }
+});
+
 test("shutdown after a confirmed publication does not rewrite completed work as cancelled", async () => {
   const remote = memoryGitHub();
   await seed(remote, (record) => {
