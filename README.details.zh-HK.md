@@ -45,6 +45,7 @@ M1–M4 已按修訂範圍完成。以下功能請使用這份 checkout 的 `src
 6分47秒／67,615 tokens，平行省略 Scout 為 5分4秒／52,925 tokens。
 最後一組曾遇啟動超時，連同人工恢復實際為 12分38秒；後來才加入前置讀取重試。
 這是小樣本，不是普遍速度或成本保證。Cached input 已包含在 input tokens 內。
+當時所有角色都使用 `high`，數據不是目前 Scout／Review `high`、Implement `medium` 的測量。
 
 Claude/GLM 尚未做相同的真實流程驗收。[雙機驗收 #56](https://github.com/devos-ing/Roc/issues/56)
 已延後，不阻擋本階段交付；Superset 不在本階段。歷史 SQLite／stub 結果不當作目前流程的證據。
@@ -181,7 +182,8 @@ Pi 設定及憑證位於 `~/.pi/agent/settings.json`、`~/.pi/agent/auth.json`�
 Onboarding 和 daemon 要使用同一個 OS 帳戶。
 
 `models.luna`、`models.terra`、`models.sol` 分別指定 Scout、Implement、Review
-的 Pi `provider/modelId`，未指定時用 Pi 預設。高風險任務使用 Sol、`xhigh`；
+的 Pi `provider/modelId`，未指定時用 Pi 預設。新 Scout／Review 使用 `high`，
+Implement 使用 `medium`，各風險等級及重試均相同。高風險任務保留 Sol profile；
 模型不支援時轉為 `needs_replan`。每個角色最多三次 attempt，重啟會保留已有 attempt
 的模型和 reasoning。三個角色都用 GPT-6 時，把以下欄位合併進現有 Roc 設定：
 

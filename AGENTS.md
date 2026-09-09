@@ -12,7 +12,7 @@
 - Add the smallest test set that proves the critical happy path and load-bearing failure, recovery, and safety invariants.
 - Prefer one vertical integration test plus focused boundary tests over exhaustive unit-test matrices.
 - Reuse the Fake Harness for deterministic orchestration cases such as retry, rejection, restart, and event deduplication.
-- For Pi, focus on one accepted Scout → Implement → independent Review flow, confirmed provider/model and reasoning settings with no `low` effort, dedicated-checkout branch isolation and commit validation, interaction cancellation to `needs_replan`, and sanitized `AgileError` logging.
+- For Pi, focus on one accepted Scout → Implement → independent Review flow, confirmed provider/model with `high` Scout/Review and `medium` Implement for new attempts, preservation of recorded effort on recovery, dedicated-checkout branch isolation and commit validation, interaction cancellation to `needs_replan`, and sanitized `AgileError` logging.
 - Do not build exhaustive notification fixtures, protocol-version matrices, logging edge-case suites, or coverage targets unless a real regression or load-bearing risk justifies them.
 
 ## Function Documentation

@@ -43,7 +43,7 @@ function scripts(ids: string[]) {
         expect: {
           model:
             role === "scout" ? "luna" : role === "implement" ? "terra" : "sol",
-          effort: "high",
+          effort: role === "implement" ? "medium" : "high",
         },
         deliveries: [
           {

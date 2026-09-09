@@ -51,7 +51,8 @@ sequentially, 6m47s / 67,615 tokens in parallel, and 5m4s / 52,925 tokens in
 parallel with Scout omitted. The last mode also hit a startup timeout; including
 manual recovery, its observed trial took 12m38s. A preflight read retry was added
 afterward. This small sample is not a general speed or cost guarantee. Cached
-input is already included in input tokens.
+input is already included in input tokens. These runs used `high` for every role
+and predate the current Scout/Review `high`, Implement `medium` policy.
 
 Claude/GLM have not passed equivalent live acceptance. [Physical two-host acceptance #56](https://github.com/devos-ing/Roc/issues/56)
 is deferred and does not block this stage. Superset is outside this stage.
@@ -227,12 +228,15 @@ Use the same OS account for onboarding and the daemon.
 Optional `models.luna`, `models.terra` and `models.sol` map Scout, Implement and
 Review profiles to exact Pi `provider/modelId` values. Omitted profiles use the
 Pi default. Configured models must exist in the catalog and support `high`.
-High-risk tasks use Sol with `xhigh`; unsupported routes become `needs_replan`.
+New Scout and Review attempts use `high`; Implement uses `medium` across risk
+levels and retries. High-risk tasks retain the Sol profile; unsupported efforts
+become `needs_replan`.
 Each role gets at most three attempts. A first retry normally keeps its profile;
 model unavailability or the final retry can advance the profile. Existing
 attempts keep their recorded model and effort on restart.
 
-For the same model across all roles, merge this field into existing Roc settings:
+For GPT-6 Astra across all roles, merge this field into existing Roc settings.
+The role routing applies `high` to Scout/Review and `medium` to Implement:
 
 ```json
 "models": {

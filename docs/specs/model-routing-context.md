@@ -3,7 +3,9 @@
 Approved by the user's request to implement the model-routing-context plan on
 2026-09-08. Updated on the user's subsequent request to remove the Scout byte
 limit. This specification covers Pi profile configuration and concise Scout
-handoffs. Cost improvements require separate live evidence.
+handoffs. The latest user request sets new Scout/Review attempts to GPT-6 Astra
+with high reasoning and Implement to GPT-6 Astra with medium reasoning, chosen
+from the requested medium-or-low range. Cost improvements require separate live evidence.
 
 1. Global Roc settings accept optional `models.luna`, `models.terra`, and
    `models.sol`, each an exact `provider/modelId`. Omitted profiles use the Pi
@@ -13,7 +15,10 @@ handoffs. Cost improvements require separate live evidence.
    explicit mapping cannot fall back to a similarly named catalog entry.
 3. Low- and medium-risk tasks retain Scout/Luna, Implement/Terra, Review/Sol
    baselines and existing retry escalation. High-risk roles and retries use
-   Sol with `xhigh`. No compatible Sol means `needs_replan`, not lower effort.
+   Sol. New Scout/Review attempts use `high`; new Implement attempts use
+   `medium`, including high-risk tasks and retries. A model must advertise that
+   exact effort or routing returns `needs_replan`. Existing descriptors, including
+   historical `high` and `xhigh` Implement attempts, keep their recorded effort.
 4. Each attempt persists and confirms its actual provider/model and effort.
    Existing attempts recover using their persisted descriptor. Review remains
    an independent session checking the trusted implementation commit.

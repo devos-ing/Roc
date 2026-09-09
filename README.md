@@ -33,6 +33,7 @@ See the [per-task workflow](README.details.md#per-task-workflow) for review and 
 - **An open PR is not done.** It stays `awaiting_merge` until Roc verifies the merge. An advanced base permits at most two clean rebases, each followed by fresh Review and CI.
 
 New Codex setups select GPT-6 Astra; existing model settings are preserved.
+New Scout/Review attempts use `high` reasoning; Implement uses `medium`.
 Roc uses Pi's tools and agent loop. It does not launch Codex CLI or Claude Code.
 
 Pi automatically summarizes older context as a session approaches its context

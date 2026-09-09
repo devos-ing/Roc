@@ -78,6 +78,7 @@ for (const skipScout of [false, true])
         },
       ].filter((output) => !skipScout || output.kind !== "scout");
       const roles: string[] = [];
+      const clients: RecordedPiClient[] = [];
       const harness = createPiHarness({
         branches,
         startClient: async (cwd) => {
@@ -85,12 +86,12 @@ for (const skipScout of [false, true])
           const output = outputs[index];
           if (!output) throw Error("Unexpected additional role");
           roles.push(output.kind);
-          return new RecordedPiClient(
+          const client = new RecordedPiClient(
             [
               messageEnd({ text: JSON.stringify(output) }),
               { type: "agent_settled" },
             ],
-            {},
+            { model: { provider: "openai-codex", id: "gpt-6-astra" } },
             async () => {
               if (output.kind === "implement")
                 await writeFile(
@@ -99,16 +100,23 @@ for (const skipScout of [false, true])
                 );
             },
           );
+          clients.push(client);
+          return client;
         },
       });
-      const model = "anthropic/claude-sonnet-4-6";
+      const model = "openai-codex/gpt-6-astra";
       let publications = 0;
       const runner = new GitHubTaskRunner({
         store: remote.store(),
         harness,
         branches,
         advisor: createModelAdvisor(
-          [{ id: model, supportedReasoningEfforts: ["high", "xhigh"] }],
+          [
+            {
+              id: model,
+              supportedReasoningEfforts: ["medium", "high", "xhigh"],
+            },
+          ],
           { luna: model, terra: model, sol: model },
         ),
         publisher: {
@@ -138,6 +146,16 @@ for (const skipScout of [false, true])
         expectedRoles.map(() => "succeeded"),
       );
       expect(roles).toEqual(expectedRoles);
+      expect(
+        clients.map(
+          (client) =>
+            client.requests.find(
+              (request) => request.command === "set_thinking_level",
+            )?.params?.level,
+        ),
+      ).toEqual(
+        expectedRoles.map((role) => (role === "implement" ? "medium" : "high")),
+      );
       expect(publications).toBe(1);
       expect(
         task.execution?.attempts.every((attempt) => attempt.usageKnown),
