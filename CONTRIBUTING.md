@@ -73,6 +73,11 @@ bun run check
 Always run `bun run check` before submitting a change. It runs linting, type
 checks, and the test suite.
 
+The `Lint and format` GitHub Actions workflow runs on branch pushes and pull
+requests. It runs `bun run lint`, which checks Biome lint rules, formatting and
+import ordering without editing files. Run `bun run format` locally to apply
+available fixes.
+
 ## Reviewing Roc pull requests
 
 Use the repository's [pr-review-to-closure skill](.agents/skills/pr-review-to-closure/SKILL.md)
