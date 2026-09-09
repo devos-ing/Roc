@@ -24,8 +24,8 @@ flowchart LR
 The daemon runs up to two independent Issues. Each task has its own retained worktree at
 `<project>.agile-worktrees/issue-<number>` and branch `agile/issue-<number>`.
 No task database is created. Local files hold configuration, worktrees, locks,
-diagnostic logs and Pi sessions. Automatic PR merge is the next
-[milestone](docs/roadmap.md); Superset is deferred.
+diagnostic logs and Pi sessions. Guarded automatic PR merge is opt-in;
+bounded base refresh/re-review is the next M3 slice. Superset is deferred.
 
 ### Validation status
 
@@ -89,6 +89,45 @@ The target defaults to the GitHub repository's default branch if omitted.
 30 seconds for remote changes while idle or running. GitHub read failures stop the invocation; a service manager
 can restart it after connectivity returns. Unknown checkpoint writes retain the
 ownership lock until reconciled.
+
+### Optional automatic PR merge
+
+Manual publication is the default. To merge independently reviewed PRs automatically:
+
+```bash
+bun "$ROC_CLI_ENTRY" scheduler run --base-branch main --auto-merge
+```
+
+Configure **classic branch protection** on the target with at least one required
+status check, **Require branches to be up to date before merging**, and enforcement
+for administrators (**Do not allow bypassing the above settings**). Squash merging
+must be enabled. Roc never modifies protection, uses an administrator bypass, or
+pushes directly to the target. GitHub's merge API accepts the expected head SHA,
+not a base SHA condition; strict server protection guards the final base race.
+
+The executor needs Issue/comment write access, PR read/write and contents write
+access for publication/merge, plus checks, commit statuses and branch
+protection/active repository and organization rules read access. Missing or
+unreadable protection/rules (including private repositories without rules API
+access) block merge visibly. Human GitHub reviews remain required when configured;
+Pi Review does not replace them. Every reported check/status must succeed on the
+exact reviewed head, including configured app identities for required checks.
+Skipped, neutral, pending or failed results wait. Merge queues and unsupported
+active rules also wait; Roc does not bypass them.
+
+Only managed, still-open, exactly approved Issues with persisted successful
+independent Review evidence can auto-merge. Pending requirements stay
+`awaiting_merge` with a readable reason, without rerunning agents or rewriting
+identical checkpoints every 30 seconds. Changed heads, closed-unmerged PRs,
+missing Review evidence (including legacy accepted records), or an advanced
+reviewed base require explicit replan. This slice does **not** rebase/re-review.
+
+Merge decisions are serialized even with `--concurrency 2`. Roc reads back the
+PR after every merge response, including lost responses, then fetches the target
+and verifies merge ancestry before saving `done` and releasing dependencies.
+`--once` can reconcile already published PRs but does not keep waiting for newly
+published CI; use continuous mode for automatic completion. Automatic merge has
+deterministic transport/Fake Harness tests, not yet live protected-branch acceptance.
 
 ### Parallel admission
 
@@ -248,7 +287,7 @@ task board [--all] [--history]             Open the read-only board
 tui                                      Open the same board
 task trust-hooks ISSUE --phase PHASE      Approve an exact hook configuration
 task retire ISSUE --reason TEXT           Close an Issue without completing it
-scheduler run [--base-branch BRANCH] [--concurrency 1|2] [--once]
+scheduler run [--base-branch BRANCH] [--concurrency 1|2] [--once] [--auto-merge]
 scheduler inspect                        Read GitHub execution checkpoints
 tokens [--no-color]                       Show confirmed token usage
 ```
@@ -257,5 +296,6 @@ Run these after `bun "$ROC_CLI_ENTRY"`. Task identifiers are Issue numbers,
 `#41` or `issue-41`. `task import`, `task import-github`, local queue mode and
 `--base` have been removed. See [architecture](docs/architecture.md),
 [M1 specification](docs/specs/github-native-execution.md),
-[M2 specification](docs/specs/parallel-execution.md) and
+[M2 specification](docs/specs/parallel-execution.md),
+[automatic merge specification](docs/specs/automatic-merge.md) and
 [roadmap](docs/roadmap.md) for implementation scope.

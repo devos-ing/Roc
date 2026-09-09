@@ -86,6 +86,15 @@ export const ExecutionRecordSchema = z
       })
       .strict()
       .optional(),
+    mergeReview: z
+      .object({
+        specHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+        headSha: Sha,
+        baseSha: Sha,
+        reviewAttemptId: z.string().min(1),
+      })
+      .strict()
+      .optional(),
     failure: z.string().optional(),
   })
   .strict();
