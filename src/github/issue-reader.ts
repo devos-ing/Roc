@@ -34,6 +34,37 @@ const RestCommentSchema = z
   .passthrough();
 
 export type RemoteIssue = z.infer<typeof RemoteIssueSchema>;
+
+type GitHubOperation =
+  | "repository-lookup"
+  | "authenticated-login"
+  | "issue-read"
+  | "issue-comments-read"
+  | "issue-list-read"
+  | "comment-write"
+  | "label-create"
+  | "issue-label-write"
+  | "issue-close";
+
+const GitHubOperationNames: Record<GitHubOperation, string> = {
+  "repository-lookup": "repository lookup",
+  "authenticated-login": "authenticated login",
+  "issue-read": "Issue read",
+  "issue-comments-read": "Issue comment read",
+  "issue-list-read": "Issue list",
+  "comment-write": "comment write",
+  "label-create": "label create",
+  "issue-label-write": "Issue label update",
+  "issue-close": "Issue close",
+};
+
+/** Returns a safe allowlisted category for a failed GitHub command result. */
+function failureCategory(exitCode: number, status: string | undefined): string {
+  if (exitCode === 124) return "timeout";
+  if (status !== undefined) return `HTTP ${status}`;
+  return `exit ${exitCode}`;
+}
+
 /** Parses a comma-separated allowlist while rejecting an unsafe empty configuration. */
 export function trustedGitHubPublishers(
   value: string | undefined,
@@ -63,50 +94,64 @@ export class GitHubRemoteIssueReader {
   /** Resolves the repository selected by the configured checkout. */
   async repository(): Promise<string> {
     return (
-      await this.mustRun([
-        "gh",
-        "repo",
-        "view",
-        "--json",
-        "nameWithOwner",
-        "--jq",
-        ".nameWithOwner",
-      ])
+      await this.mustRun(
+        [
+          "gh",
+          "repo",
+          "view",
+          "--json",
+          "nameWithOwner",
+          "--jq",
+          ".nameWithOwner",
+        ],
+        "repository-lookup",
+      )
     ).trim();
   }
 
   /** Resolves the authenticated GitHub login that owns Roc status comments. */
   async authenticatedLogin(): Promise<string> {
-    return (await this.mustRun(["gh", "api", "user", "--jq", ".login"])).trim();
+    return (
+      await this.mustRun(
+        ["gh", "api", "user", "--jq", ".login"],
+        "authenticated-login",
+      )
+    ).trim();
   }
 
   /** Reads one Issue and its complete comment history for a role boundary. */
   async get(repository: string, number: number): Promise<RemoteIssue> {
     const issue = RemoteIssueBaseSchema.parse(
       JSON.parse(
-        await this.mustRun([
-          "gh",
-          "issue",
-          "view",
-          String(number),
-          "--repo",
-          repository,
-          "--json",
-          "number,title,body,url,state,labels",
-        ]),
+        await this.mustRun(
+          [
+            "gh",
+            "issue",
+            "view",
+            String(number),
+            "--repo",
+            repository,
+            "--json",
+            "number,title,body,url,state,labels",
+          ],
+          "issue-read",
+        ),
       ),
     );
     const pages = z
       .array(z.array(RestCommentSchema))
       .parse(
         JSON.parse(
-          await this.mustRun([
-            "gh",
-            "api",
-            "--paginate",
-            "--slurp",
-            `repos/${repository}/issues/${number}/comments?per_page=100`,
-          ]),
+          await this.mustRun(
+            [
+              "gh",
+              "api",
+              "--paginate",
+              "--slurp",
+              `repos/${repository}/issues/${number}/comments?per_page=100`,
+            ],
+            "issue-comments-read",
+          ),
         ),
       );
     return {
@@ -123,16 +168,19 @@ export class GitHubRemoteIssueReader {
   async closeCompleted(repository: string, number: number): Promise<void> {
     if ((await this.get(repository, number)).state === "CLOSED") return;
     try {
-      await this.mustRun([
-        "gh",
-        "issue",
-        "close",
-        String(number),
-        "--repo",
-        repository,
-        "--reason",
-        "completed",
-      ]);
+      await this.mustRun(
+        [
+          "gh",
+          "issue",
+          "close",
+          String(number),
+          "--repo",
+          repository,
+          "--reason",
+          "completed",
+        ],
+        "issue-close",
+      );
     } catch {
       // The server may have applied a write whose response was lost.
     }
@@ -155,17 +203,20 @@ export class GitHubRemoteIssueReader {
     commentId?: number,
   ): Promise<void> {
     await withGitHubBodyFile(JSON.stringify({ body }), (path) =>
-      this.mustRun([
-        "gh",
-        "api",
-        "--method",
-        commentId === undefined ? "POST" : "PATCH",
-        commentId === undefined
-          ? `repos/${repository}/issues/${number}/comments`
-          : `repos/${repository}/issues/comments/${commentId}`,
-        "--input",
-        path,
-      ]),
+      this.mustRun(
+        [
+          "gh",
+          "api",
+          "--method",
+          commentId === undefined ? "POST" : "PATCH",
+          commentId === undefined
+            ? `repos/${repository}/issues/${number}/comments`
+            : `repos/${repository}/issues/comments/${commentId}`,
+          "--input",
+          path,
+        ],
+        "comment-write",
+      ),
     );
   }
 
@@ -184,62 +235,74 @@ export class GitHubRemoteIssueReader {
       "roc:done",
       "roc:awaiting-merge",
     ]);
-    await this.mustRun([
-      "gh",
-      "label",
-      "create",
-      label,
-      "--repo",
-      repository,
-      "--color",
-      "5319E7",
-      "--force",
-    ]);
+    await this.mustRun(
+      [
+        "gh",
+        "label",
+        "create",
+        label,
+        "--repo",
+        repository,
+        "--color",
+        "5319E7",
+        "--force",
+      ],
+      "label-create",
+    );
     const remove = issue.labels
       .filter((item) => owned.has(item.name) && item.name !== label)
       .flatMap((item) => ["--remove-label", item.name]);
-    await this.mustRun([
-      "gh",
-      "issue",
-      "edit",
-      String(number),
-      "--repo",
-      repository,
-      "--add-label",
-      label,
-      ...remove,
-    ]);
+    await this.mustRun(
+      [
+        "gh",
+        "issue",
+        "edit",
+        String(number),
+        "--repo",
+        repository,
+        "--add-label",
+        label,
+        ...remove,
+      ],
+      "issue-label-write",
+    );
   }
 
   /** Lists managed active and completed Issues independently of their ready label. */
   async read(repository: string): Promise<RemoteIssue[]> {
-    const output = await this.mustRun([
-      "gh",
-      "issue",
-      "list",
-      "--repo",
-      repository,
-      "--state",
-      "all",
-      "--label",
-      "roc:task",
-      "--limit",
-      "1000",
-      "--json",
-      "number,title,body,url,state,labels",
-    ]);
+    const output = await this.mustRun(
+      [
+        "gh",
+        "issue",
+        "list",
+        "--repo",
+        repository,
+        "--state",
+        "all",
+        "--label",
+        "roc:task",
+        "--limit",
+        "1000",
+        "--json",
+        "number,title,body,url,state,labels",
+      ],
+      "issue-list-read",
+    );
     const baseIssues = z.array(RemoteIssueBaseSchema).parse(JSON.parse(output));
     const issues: RemoteIssue[] = [];
     for (let offset = 0; offset < baseIssues.length; offset += 4) {
       const batch = await Promise.allSettled(
         baseIssues.slice(offset, offset + 4).map(async (issue) => {
-          const commentOutput = await this.mustRun([
-            "gh",
-            "api",
-            "--paginate",
-            "--slurp",
-            `repos/${repository}/issues/${issue.number}/comments?per_page=100`,
-          ]);
+          const commentOutput = await this.mustRun(
+            [
+              "gh",
+              "api",
+              "--paginate",
+              "--slurp",
+              `repos/${repository}/issues/${issue.number}/comments?per_page=100`,
+            ],
+            "issue-comments-read",
+          );
           const pages = z
             .array(z.array(RestCommentSchema))
             .parse(JSON.parse(commentOutput));
@@ -265,18 +328,23 @@ export class GitHubRemoteIssueReader {
   }
 
   /** Executes a GitHub operation and exposes safe read/write diagnostics without raw CLI output. */
-  private async mustRun(command: string[]): Promise<string> {
+  private async mustRun(
+    command: string[],
+    operation: GitHubOperation,
+  ): Promise<string> {
     const write =
       command.includes("--method") ||
       command[1] === "label" ||
       command[2] === "edit" ||
       command[2] === "close";
+    let category = "runner or process-start failure";
     let status: string | undefined;
     let cause: unknown;
     try {
       const result = await this.runner.run({ command, cwd: this.cwd });
       if (result.exitCode === 0) return result.stdout;
       status = result.stderr.match(/HTTP (\d{3})\b/u)?.[1];
+      category = failureCategory(result.exitCode, status);
     } catch (error) {
       cause = error;
     }
@@ -285,7 +353,7 @@ export class GitHubRemoteIssueReader {
       category: "infra",
       component: "github-state",
       retryable: !write && status !== "401" && status !== "403",
-      message: `GitHub task ${write ? "write" : "read"} failed${status ? ` (HTTP ${status})` : ""}; check connection, authentication and repository access${write ? "; reconcile the remote result before retrying" : ""}`,
+      message: `GitHub task ${write ? "write" : "read"} failed (${GitHubOperationNames[operation]}; ${category}); check connection, authentication and repository access${write ? "; reconcile the remote result before retrying" : ""}`,
       cause,
     });
   }

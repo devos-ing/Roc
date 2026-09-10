@@ -85,9 +85,59 @@ test("GitHub failures distinguish reads and uncertain writes without exposing CL
     expect(error).toBeInstanceOf(AgileError);
     expect(error).toMatchObject({ code, retryable: false });
     expect(String(error)).toContain("HTTP 403");
+    expect(String(error)).toContain(
+      code === "GITHUB_READ_FAILED" ? "repository lookup" : "comment write",
+    );
     expect(String(error)).not.toContain("secret-token");
     expect(String(error)).not.toContain("private response");
   }
+});
+
+test("GitHub read failures retain safe timeout, exit, and runner classifications", async () => {
+  for (const [result, expected] of [
+    [
+      {
+        exitCode: 124,
+        stdout: "private response",
+        stderr: "command timed out",
+      },
+      "repository lookup; timeout",
+    ],
+    [
+      { exitCode: 9, stdout: "private response", stderr: "untrusted output" },
+      "repository lookup; exit 9",
+    ],
+  ] as const) {
+    const reader = new GitHubRemoteIssueReader("/fixture", {
+      /** Returns a controlled failed command result for diagnostic classification. */
+      async run() {
+        return result;
+      },
+    });
+
+    await expect(reader.repository()).rejects.toMatchObject({
+      code: "GITHUB_READ_FAILED",
+      message: expect.stringContaining(expected),
+      retryable: true,
+    });
+  }
+
+  const reader = new GitHubRemoteIssueReader("/fixture", {
+    /** Simulates a runner start failure without exposing its details. */
+    async run() {
+      throw new Error("private runner failure");
+    },
+  });
+
+  const error = await reader.repository().catch((error: unknown) => error);
+  expect(error).toMatchObject({
+    code: "GITHUB_READ_FAILED",
+    message: expect.stringContaining(
+      "repository lookup; runner or process-start failure",
+    ),
+    retryable: true,
+  });
+  expect(String(error)).not.toContain("private runner failure");
 });
 
 test("bounded comment reads preserve ordering and drain failed batches before returning", async () => {
