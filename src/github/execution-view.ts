@@ -1,3 +1,4 @@
+import { projectAcceptanceChecklist } from "../domain/acceptance-checklist";
 import type {
   InspectionSnapshot,
   InspectionTask,
@@ -5,6 +6,7 @@ import type {
 } from "../domain/inspection";
 import type { StoredTask } from "../domain/schemas";
 import type { NativeTask } from "./execution-store";
+import { jsonHash } from "./remote-tasks";
 
 export type GitHubTaskSnapshot = {
   tasks: StoredTask[];
@@ -98,6 +100,30 @@ function executionTiming(
   };
 }
 
+/** Projects the latest Review result only when its exact recorded target still matches the task checkpoint. */
+function acceptanceChecklist(task: NativeTask) {
+  const record = task.execution;
+  const review = record?.attempts.findLast(
+    (attempt) => attempt.output?.kind === "review",
+  );
+  const output = review?.output;
+  const head = record?.publication?.commitSha ?? review?.reviewTarget?.headSha;
+  return projectAcceptanceChecklist(
+    task.task.spec.acceptanceCriteria,
+    output?.kind === "review" ? output.acceptanceResults : undefined,
+    review?.reviewTarget
+      ? {
+          currentSpecHash: jsonHash(task.envelope),
+          reviewedSpecHash: record?.specHash ?? "",
+          currentHeadSha: head ?? "",
+          reviewedHeadSha: review.reviewTarget.headSha,
+          currentBaseSha: record?.baseCommit ?? "",
+          reviewedBaseSha: review.reviewTarget.baseSha,
+        }
+      : undefined,
+  );
+}
+
 /** Adapts remote checkpoints to the existing read-only task board and token views. */
 export function githubTaskSnapshot(
   native: NativeTask[],
@@ -144,6 +170,7 @@ export function githubTaskSnapshot(
       id: item.task.id,
       issueUrl: item.issue.url,
       pullRequestUrl: item.execution?.publication?.url,
+      acceptanceChecklist: acceptanceChecklist(item),
       failure: item.blockedReason ?? item.execution?.failure,
       status: item.task.status,
       timing: executionTiming(item, now),

@@ -85,3 +85,36 @@ test("public task reads use GitHub, preserve legacy files, and scheduler rejects
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("task acceptance reads recorded criteria without mutating GitHub state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "roc-task-acceptance-"));
+  const remote = memoryGitHub();
+  const output: string[] = [];
+  const errors: string[] = [];
+  try {
+    const runtime: CliRuntime = {
+      projectRoot: root,
+      async runScheduler() {},
+      async readTasks() {
+        const data = await remote.store().list();
+        return githubTaskSnapshot(data.tasks, data.diagnostics);
+      },
+    };
+    const io = {
+      out: (line: string) => output.push(line),
+      err: (line: string) => errors.push(line),
+    };
+    expect(await runCli(["task", "acceptance", "#41"], io, runtime)).toBe(0);
+    expect(output.join("\n")).toContain("Acceptance checklist for issue-41");
+    expect(output.join("\n")).toContain("[ ] answer is 42");
+    expect(output.join("\n")).toContain("No item-level evidence recorded.");
+    expect(errors).toEqual([]);
+    expect(remote.issue.comments).toHaveLength(1);
+    expect(
+      await runCli(["task", "acceptance", "not-an-issue"], io, runtime),
+    ).toBe(1);
+    expect(errors.at(-1)).toBe("Use a GitHub Issue number");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

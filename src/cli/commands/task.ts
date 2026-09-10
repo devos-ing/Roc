@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import type { Command } from "commander";
+import type { AcceptanceChecklistItem } from "../../domain/acceptance-checklist";
 import { BacklogManifestSchema } from "../../domain/schemas";
 import { BunGitHubCommandRunner } from "../../github/pr-publisher";
 import { jsonHash, withGitHubBodyFile } from "../../github/remote-tasks";
@@ -18,6 +19,27 @@ function issueNumber(value: string): number {
   if (!/^[1-9][0-9]*$/u.test(raw) || !Number.isSafeInteger(Number(raw)))
     throw Error("Use a GitHub Issue number");
   return Number(raw);
+}
+
+/** Renders one read-only acceptance checklist without treating it as human approval. */
+function renderAcceptanceChecklist(
+  task: { id: string; title: string },
+  checklist: readonly AcceptanceChecklistItem[],
+): string {
+  return [
+    `Acceptance checklist for ${task.id} · ${task.title}`,
+    "Automated Review evidence; human acceptance is separate.",
+    ...checklist.flatMap((item) => [
+      `[${item.status === "passed" ? "x" : " "}] ${item.criterion}`,
+      `  Status: ${item.status}`,
+      ...(item.evidence === undefined
+        ? ["  Evidence: No item-level evidence recorded."]
+        : [
+            "  Evidence:",
+            ...item.evidence.split("\n").map((line) => `    ${line}`),
+          ]),
+    ]),
+  ].join("\n");
 }
 
 /** Registers task commands that read or modify GitHub directly. */
@@ -90,6 +112,32 @@ export function registerTaskCommands(
         options.all,
         options.history,
       );
+    });
+  task
+    .command("acceptance <issue>")
+    .description("Show read-only per-item Review evidence for one GitHub task")
+    .action(async (value: string) => {
+      try {
+        if (!context.runtime.readTasks)
+          throw Error("GitHub task reads are unavailable");
+        const root = await commandProjectRoot(context);
+        const snapshot = await context.runtime.readTasks(root);
+        const taskId = `issue-${issueNumber(value)}`;
+        const item = snapshot.tasks.find(
+          (candidate) => candidate.id === taskId,
+        );
+        const inspected = snapshot.inspection.tasks.find(
+          (candidate) => candidate.id === taskId,
+        );
+        if (!item || !inspected)
+          throw Error(`GitHub task ${taskId} was not found`);
+        context.io.out(
+          renderAcceptanceChecklist(item, inspected.acceptanceChecklist),
+        );
+      } catch (error) {
+        context.io.err(errorMessage(error));
+        context.exitCode = 1;
+      }
     });
   task
     .command("trust-hooks <issue>")

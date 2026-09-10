@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import { z } from "zod";
+import { AcceptanceResultSchema } from "../domain/acceptance-checklist";
 import {
   ContextRefSchema,
   ModelProfileSchema,
@@ -67,6 +68,7 @@ export const ReviewOutputSchema = z
     decision: z.enum(["accepted", "rejected"]),
     findings: z.array(NonEmpty),
     remainingGaps: z.array(NonEmpty),
+    acceptanceResults: z.array(AcceptanceResultSchema).optional(),
   })
   .strict();
 
@@ -238,6 +240,7 @@ export const FakeScenarioSchema = z
 export type HarnessEvent = z.infer<typeof HarnessEventSchema>;
 export type ScoutOutput = z.infer<typeof ScoutOutputSchema>;
 export type ImplementOutput = z.infer<typeof ImplementOutputSchema>;
+export type ReviewOutput = z.infer<typeof ReviewOutputSchema>;
 export type HarnessRoleInput = z.infer<typeof HarnessRoleInputSchema>;
 export type HarnessStepRequest = z.infer<typeof HarnessStepRequestSchema>;
 export type HarnessDelivery = z.infer<typeof HarnessDeliverySchema>;

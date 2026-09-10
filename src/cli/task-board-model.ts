@@ -1,3 +1,4 @@
+import type { AcceptanceChecklistItem } from "../domain/acceptance-checklist";
 import type {
   InspectionAttempt,
   InspectionCycle,
@@ -24,6 +25,7 @@ export type TaskBoardTask = {
   id: string;
   issueUrl?: string;
   pullRequestUrl?: string;
+  acceptanceChecklist: AcceptanceChecklistItem[];
   failure?: string;
   timing?: InspectionTask["timing"];
   usageIncomplete?: boolean;
@@ -137,6 +139,7 @@ export function buildTaskBoardSnapshot(
       attempts: inspected.attempts,
       issueUrl: inspected.issueUrl,
       pullRequestUrl: inspected.pullRequestUrl,
+      acceptanceChecklist: inspected.acceptanceChecklist,
       failure: inspected.failure,
       timing: inspected.timing,
       usageIncomplete: inspected.usageIncomplete,

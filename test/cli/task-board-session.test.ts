@@ -40,6 +40,7 @@ function task(
     blockingDependencyIds: [],
     isActive: false,
     spec,
+    acceptanceChecklist: [],
     attempts: [],
     modelDecisions: [],
     roles: [],

@@ -46,6 +46,7 @@ function task(
     blockingDependencyIds: [],
     isActive: false,
     spec,
+    acceptanceChecklist: [],
     attempts: [],
     modelDecisions: [],
     roles: [],
@@ -147,6 +148,35 @@ test("details show elapsed, attempt and merge waiting time with partial usage", 
   expect(output).toContain("Attempt time: 50s");
   expect(output).toContain("Merge wait: 30s");
   expect(output).toContain("20/100 · partial usage");
+});
+
+test("details retain original acceptance text with safe item evidence", () => {
+  const item = task({
+    id: "accepted",
+    acceptanceChecklist: [
+      {
+        criterionIndex: 0,
+        criterion: spec.acceptanceCriteria[0]!,
+        status: "passed",
+        evidence: "bun test\npassed",
+      },
+    ],
+  });
+  const board = {
+    ...snapshot,
+    tasks: [item],
+    columns: { ready: [item], inProgress: [], attention: [], done: [] },
+  };
+  const output = renderTaskBoard(board, {
+    width: 80,
+    color: false,
+    detailMode: "full",
+    detailTaskId: "accepted",
+  });
+  expect(output).toContain("Acceptance checklist");
+  expect(output).toContain("[x] A deliberately long acceptance criterion");
+  expect(output).toContain("Evidence: bun test");
+  expect(output).toContain("Evidence: passed");
 });
 
 test("keeps ordinary nonactive detail state uncolored", () => {
