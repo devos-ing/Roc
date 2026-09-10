@@ -10,7 +10,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTaskBranchManager } from "../../src/workspace/task-branch";
+import {
+  createParallelTaskBranchManager,
+  createTaskBranchManager,
+} from "../../src/workspace/task-branch";
 import { git } from "../helpers/git";
 
 async function createRepository(): Promise<string> {
@@ -27,7 +30,87 @@ async function createRepository(): Promise<string> {
 async function removeRepository(root: string): Promise<void> {
   await rm(root, { recursive: true, force: true });
   await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+  await rm(`${root}.agile-checkouts`, { recursive: true, force: true });
 }
+
+test("parallel tasks preserve separate dirty trees, review commits, and source-commit recovery", async () => {
+  const root = await createRepository();
+  try {
+    const manager = await createParallelTaskBranchManager(root, "HEAD");
+    const [a, b] = await Promise.all([
+      manager.prepare("A"),
+      manager.prepare("a"),
+    ]);
+    expect(a.path).not.toBe(b.path);
+    await Promise.all([
+      writeFile(join(a.path, "README.md"), "task A\n"),
+      writeFile(join(b.path, "README.md"), "task B\n"),
+    ]);
+    const commit = await manager.commitChanges("A");
+    await manager.assertReviewReady("A", commit);
+    expect(await readFile(join(b.path, "README.md"), "utf8")).toBe("task B\n");
+    expect(await manager.status("a")).toContain("README.md");
+    const lowercaseCommit = await manager.commitChanges("a");
+    await manager.assertReviewReady("a", lowercaseCommit);
+    await manager.assertReviewReady("A", commit);
+    expect(await readFile(join(root, "README.md"), "utf8")).toBe("seed\n");
+    const restarted = await createParallelTaskBranchManager(root, "HEAD");
+    const restored = await restarted.prepare("C");
+    await restarted.restoreChanges("C", commit);
+    expect(await readFile(join(restored.path, "README.md"), "utf8")).toBe(
+      "task A\n",
+    );
+    await restarted.assertReviewReady("A", commit);
+  } finally {
+    await removeRepository(root);
+  }
+});
+
+test("legacy task work requires sequential recovery and remains intact", async () => {
+  const root = await createRepository();
+  try {
+    const legacy = await createTaskBranchManager(root, "HEAD");
+    const workspace = await legacy.prepare("T1");
+    await writeFile(
+      join(workspace.path, "README.md"),
+      "unfinished legacy work\n",
+    );
+    const parallel = await createParallelTaskBranchManager(root, "HEAD");
+    await expect(parallel.prepare("T1")).rejects.toThrow("--concurrency 1");
+    const recovery = await createParallelTaskBranchManager(root, "HEAD", true);
+    expect((await recovery.prepare("T1")).path).toBe(workspace.path);
+    expect(await readFile(join(workspace.path, "README.md"), "utf8")).toBe(
+      "unfinished legacy work\n",
+    );
+  } finally {
+    await removeRepository(root);
+  }
+});
+
+test("a replacement task restores an unpublished legacy commit from the old checkout", async () => {
+  const root = await createRepository();
+  try {
+    const legacy = await createTaskBranchManager(root, "HEAD");
+    const previous = await legacy.prepare("previous");
+    await writeFile(
+      join(previous.path, "README.md"),
+      "legacy implementation\n",
+    );
+    const commit = await legacy.commitChanges("previous");
+    await expect(
+      git(["cat-file", "-e", `${commit}^{commit}`], root),
+    ).rejects.toThrow();
+    const parallel = await createParallelTaskBranchManager(root, "HEAD");
+    const replacement = await parallel.prepare("replacement");
+    await parallel.restoreChanges("replacement", commit);
+    expect(await readFile(join(replacement.path, "README.md"), "utf8")).toBe(
+      "legacy implementation\n",
+    );
+    expect(await readFile(join(root, "README.md"), "utf8")).toBe("seed\n");
+  } finally {
+    await removeRepository(root);
+  }
+});
 
 test("project ignores Codex sandbox and test artifacts before task commits", async () => {
   const artifacts = [

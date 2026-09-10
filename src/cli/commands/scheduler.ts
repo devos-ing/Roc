@@ -1,4 +1,4 @@
-import type { Command } from "commander";
+import { type Command, InvalidArgumentError } from "commander";
 import { backends, isRealBackendName } from "../../agents/registry";
 import { openDatabase } from "../../store/database";
 import { OrchestrationRepository } from "../../store/orchestration-repository";
@@ -18,6 +18,7 @@ async function executeSchedulerRun(
     baseBranch?: string;
     backend: string;
     source: string;
+    concurrency: number;
   },
 ): Promise<number> {
   if (!isRealBackendName(options.backend)) {
@@ -43,6 +44,7 @@ async function executeSchedulerRun(
     dbPath,
     repoPath,
     baseRef: options.base,
+    concurrency: options.concurrency,
     ...(options.source === "github" ? { source: "github" as const } : {}),
     ...(options.baseBranch === undefined
       ? {}
@@ -87,9 +89,23 @@ export function registerSchedulerCommands(
   const scheduler = program
     .command("scheduler")
     .description("Run and inspect the scheduler");
+  /** Parses a bounded worker count before any runtime resources are acquired. */
+  const parseConcurrency = (value: string): number => {
+    if (!/^[1-8]$/.test(value))
+      throw new InvalidArgumentError(
+        "concurrency must be an integer from 1 through 8",
+      );
+    return Number(value);
+  };
   scheduler
     .command("run")
     .description("Run ready tasks through Pi")
+    .option(
+      "--concurrency <count>",
+      "Maximum independent tasks running at once (1-8)",
+      parseConcurrency,
+      2,
+    )
     .option("--base <ref>", "Git ref used as the task base", "HEAD")
     .option(
       "--base-branch <branch>",
@@ -107,6 +123,7 @@ export function registerSchedulerCommands(
         baseBranch?: string;
         backend: string;
         source: string;
+        concurrency: number;
       }) => {
         context.exitCode = await executeSchedulerRun(context, options);
       },

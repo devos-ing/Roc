@@ -1,7 +1,8 @@
 # Architecture
 
-Roc is a sequential CLI scheduler. SQLite owns the durable task state,
-the Scheduler chooses the next ready task, and an `AgentHarness` executes Scout,
+Roc is a bounded parallel CLI scheduler. SQLite owns the durable task state,
+the Scheduler claims approved dependency-ready tasks up to its concurrency limit,
+and an `AgentHarness` executes Scout,
 Implement, and Review attempts. `FakeHarness` provides deterministic tests;
 `PiHarness` runs Pi RPC children and uses provider models directly.
 Pi is the only registered production backend. Codex CLI and Claude Code CLI
@@ -90,13 +91,31 @@ non-agent child writing after session return: a successor is refused before
 checkout validation, and the lock remains after eventual child exit. Live Pi provider flows remain unverified; deterministic checks do not replace
 provider acceptance.
 
-Roc prepares a sibling checkout instead of editing the resolved project checkout. A
-`TaskBranchManager` creates or reuses one sibling checkout at
-`<repo>.agile-checkout`. It runs one task at a time and switches that checkout
-between retained `agile/<taskId>` branches. Every task branch is tied to its
-persisted base commit and contains exactly one trusted final implementation
-commit. An interrupted dirty branch receives one amendable WIP checkpoint before
-the manager switches tasks.
+The public CLI defaults to two concurrent tasks; `--concurrency 1` through `8`
+selects the session limit. Each task still runs Scout, Implement, and Review
+sequentially. The Scheduler owns at most one pending step per task and returns
+whichever step finishes first, so slow work does not block another task.
+SQLite atomically enforces the claim limit and dependencies. Publishing remains
+active until its receipt is stored. A reduced limit after restart drains retained
+active tasks before claiming more work.
+
+Roc prepares retained task checkouts under `<repo>.agile-checkouts/` instead of
+editing the resolved project checkout. Each task directory includes a hash of its
+identity to remain distinct on case-insensitive filesystems. Each checkout owns
+its `agile/<taskId>` branch, index, and working tree. Trusted implementation commits
+are also retained as `refs/roc/commits/<sha>` in the source repository so replacement
+tasks can recover an unpublished source commit. This changes Git objects and refs,
+not the user's working tree. One repository ownership guard covers all task
+checkouts. Shutdown cancels every running attempt and drains every pending task
+step before sealing callbacks and closing SQLite.
+
+Sequential execution without a parallel checkout directory retains the existing
+`<repo>.agile-checkout` layout. Parallel startup refuses unfinished legacy task
+branches before dispatch; `--concurrency 1` can recover them. Once task checkouts
+exist, reducing concurrency preserves their locations. Every task branch is tied
+to its persisted base commit and contains exactly one trusted final implementation
+commit. In the legacy shared checkout, an interrupted dirty branch receives one
+amendable WIP checkpoint before the manager switches tasks.
 
 Scout and Review are instructed to inspect; Implement writes in the task
 checkout. Pi tools have the process user's permissions: these role instructions
@@ -106,7 +125,7 @@ Roc compares checkout state around Review; this does not detect external writes.
 Accepted and rejected branches are retained. After an accepted Review, Roc runs
 the trusted posthook, pushes the task branch, and creates or reconciles one
 pull request before marking the task done; v1 does not merge or delete branches,
-execute tasks concurrently, or enforce token budgets.
+enforce token budgets.
 
 Tasks may optionally carry one `prehook` and one `posthook`. SQLite's
 `task_hooks` table stores the task-scoped configuration hash, explicit trust,
@@ -139,8 +158,9 @@ boundary. Missing approved context becomes `needs_input`; invalid plans remain
 isolated from valid plans.
 
 The daemon performs GitHub and Git I/O outside SQLite transactions while
-renewing its scheduler lease. A poll outage blocks idle advancement and new
-claims, but lets an already-running harness delivery persist locally. Polling
+renewing its scheduler lease. A poll outage blocks new role attempts and claims while allowing already-running
+harness deliveries to persist locally. Each completed role forces an authority
+refresh even when another task remains running. Polling
 uses bounded exponential retry and returns to the 30-second interval after a
 successful read. Validation and network diagnostics pass through the existing
 structured logger with controlled, sanitized messages.

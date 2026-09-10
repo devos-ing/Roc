@@ -348,16 +348,16 @@ export class RemoteTaskRepository {
     }));
   }
 
-  /** Reports whether any task currently owns the sequential scheduler slot. */
-  hasActiveTask(): boolean {
+  /** Counts occupied task slots, including attempts paused by remote authority. */
+  activeTaskCount(): number {
     return (
       this.db
-        .query<{ active: number }, []>(`
-          SELECT 1 AS active FROM tasks
-          WHERE status IN ('claimed', 'scouting', 'implementing', 'reviewing', 'publishing')
-          LIMIT 1
-        `)
-        .get() !== null
+        .query<{ count: number }, []>(`
+      SELECT COUNT(*) AS count FROM tasks
+      WHERE status IN ('claimed', 'scouting', 'implementing', 'reviewing', 'publishing')
+         OR EXISTS (SELECT 1 FROM attempts WHERE task_id = tasks.id AND status = 'running')
+    `)
+        .get()?.count ?? 0
     );
   }
 

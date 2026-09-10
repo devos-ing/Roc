@@ -44,8 +44,8 @@ flowchart LR
     sync --> github
 ```
 
-Only B runs a daemon. Reuse the same daemon sequentially, with a branch per task
-in `<project>.agile-checkout`. A has no executable task imported by remote
+Only B runs a daemon. The daemon runs up to two independent tasks by default, with a checkout and
+branch per task under `<project>.agile-checkouts/`. A has no executable task imported by remote
 publication. The clones keep separate `.agile/runtime/agile.db` files; even a
 nested clone cannot resolve to an outer project's database.
 
@@ -55,8 +55,9 @@ the daemon transfer procedure below. A can then go
 offline after publication; physical two-host operation still needs validation.
 
 Pi is the sole execution backend. It calls provider models directly, without
-launching Codex CLI or Claude Code CLI. Roc reuses its daemon, database and
-checkout sequentially; each role gets a separate Pi child/session. The selected
+launching Codex CLI or Claude Code CLI. Roc reuses one daemon and database while running tasks in separate
+checkouts; each task runs its roles sequentially, and each
+role gets a separate Pi child/session. The selected
 provider/model is fixed for the daemon session, including independent Review.
 Roc retains scheduling, approvals, trusted commits, PR publication, and status.
 
@@ -279,7 +280,7 @@ stores:
 To move the daemon, stop the old service first and leave it stopped. With no Roc
 process running, copy the project checkout, its complete `.agile/runtime/`
 directory including any SQLite sidecar files, and the sibling
-`<project>.agile-checkout` to the new machine. Run onboarding as the new service account to authorize execution and reconnect
+`<project>.agile-checkouts/` and any legacy `<project>.agile-checkout` to the new machine. Run onboarding as the new service account to authorize execution and reconnect
 Codex, restore GitHub credentials, verify the target branch and paths, then start the new
 service. Roc does not provide hot failover or multi-daemon coordination.
 
@@ -434,7 +435,7 @@ bun "$ROC_CLI_ENTRY" task list [--history]   List active tasks or retained histo
 bun "$ROC_CLI_ENTRY" task retire TASK_ID --reason TEXT [--replacement TASK_ID]
 bun "$ROC_CLI_ENTRY" task board [--all] [--history] Open the read-only board
 bun "$ROC_CLI_ENTRY" tui                     Open the read-only board
-bun "$ROC_CLI_ENTRY" scheduler run --base-branch BRANCH [--base REF] [--backend pi]
+bun "$ROC_CLI_ENTRY" scheduler run --base-branch BRANCH [--base REF] [--backend pi] [--concurrency 1-8]
 bun "$ROC_CLI_ENTRY" scheduler inspect       Inspect scheduler state
 bun "$ROC_CLI_ENTRY" tokens [--no-color]     Show token use
 bun "$ROC_CLI_ENTRY" help                    Show all commands
@@ -442,7 +443,10 @@ bun "$ROC_CLI_ENTRY" help                    Show all commands
 
 ## Current limits
 
-One Pi backend, one task at a time, one daemon per project. Pi uses one resolved
+One Pi backend and one daemon per project, with two concurrent tasks by default.
+`--concurrency 1` through `8` controls the limit. Dependencies and approval still
+gate task admission, and each task uses its own checkout. A stop cancels all
+active attempts. Unfinished legacy task branches require `--concurrency 1`. Pi uses one resolved
 provider/model per daemon session, with no automatic provider switching.
 Roc does not merge PRs or send notifications. Scout/Review role instructions
 and checkout checks do not constrain Pi's process permissions.

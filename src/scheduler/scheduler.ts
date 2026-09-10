@@ -5,7 +5,12 @@ import { taskBranchName } from "../workspace/task-branch";
 import type { TaskHookService } from "./task-hooks";
 
 export type TickResult =
-  | { kind: "delivery"; attemptId: string; eventId: string }
+  | {
+      kind: "delivery";
+      attemptId: string;
+      eventId: string;
+      roleEnded?: boolean;
+    }
   | { kind: "attempt_started"; attemptId: string }
   | { kind: "task_claimed"; taskId: string }
   | { kind: "hook_retry"; taskId: string; phase: "prehook" | "posthook" }
@@ -30,8 +35,14 @@ function publicationFailureMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+type PendingTick = { taskId: string } & (
+  | { ok: true; result: TickResult }
+  | { ok: false; error: unknown }
+);
+
 export class Scheduler {
   private readonly reconcile = new Set<string>();
+  private readonly pending = new Map<string, Promise<PendingTick>>();
 
   /** Creates a scheduler and marks any recovered running attempt for reconciliation. */
   constructor(
@@ -42,15 +53,78 @@ export class Scheduler {
     private readonly publisher?: TaskPublisher,
     private readonly remoteOnly = false,
     private readonly localOnly = false,
+    private readonly concurrency = 1,
   ) {
-    const active = repo.getRunningAttempt();
-    if (active) this.reconcile.add(active.descriptor.attemptId);
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8)
+      throw new Error("Concurrency must be an integer from 1 through 8");
+    for (const active of repo.getRunningAttempts())
+      this.reconcile.add(active.descriptor.attemptId);
   }
 
   /** Advances one orchestration step unless its owning session has sealed continuation. */
-  async tick(leaseOwnerId?: string, signal?: AbortSignal): Promise<TickResult> {
+  async tick(
+    leaseOwnerId?: string,
+    signal?: AbortSignal,
+    allowStart = true,
+  ): Promise<TickResult> {
     signal?.throwIfAborted();
-    const running = this.repo.getRunningAttempt();
+    if (allowStart && this.pending.size < this.concurrency) {
+      const claimed = this.repo.claimNext(
+        leaseOwnerId,
+        this.remoteOnly,
+        this.localOnly,
+        this.concurrency,
+      );
+      if (claimed) return { kind: "task_claimed", taskId: claimed.taskId };
+    }
+    const candidates = new Set(this.repo.activeTaskIds());
+    if (allowStart && this.hooks !== undefined) {
+      for (const task of this.repo.listPosthookTasks()) {
+        if (
+          task.spec.posthook !== undefined &&
+          this.repo.getTaskHook(task.id, "posthook")?.status !== "succeeded"
+        )
+          candidates.add(task.id);
+      }
+    }
+    for (const taskId of candidates) {
+      if (this.pending.size >= this.concurrency) break;
+      if (
+        this.pending.has(taskId) ||
+        (!allowStart && this.repo.getRunningAttempt(taskId) === undefined)
+      )
+        continue;
+      const work = this.tickTask(taskId, leaseOwnerId, signal).then(
+        (result): PendingTick => ({ taskId, ok: true, result }),
+        (error: unknown): PendingTick => ({ taskId, ok: false, error }),
+      );
+      this.pending.set(taskId, work);
+    }
+    while (this.pending.size > 0) {
+      const completed = await Promise.race(this.pending.values());
+      this.pending.delete(completed.taskId);
+      if (!completed.ok) throw completed.error;
+      if (completed.result.kind !== "idle") return completed.result;
+    }
+    return { kind: "idle" };
+  }
+
+  /** Waits for every owned task step before the daemon closes its database. */
+  async drain(): Promise<void> {
+    const results = await Promise.all(this.pending.values());
+    for (const result of results) {
+      if (!result.ok) throw result.error;
+    }
+  }
+
+  /** Advances one task without reading or switching another task's active attempt. */
+  private async tickTask(
+    taskId: string,
+    leaseOwnerId?: string,
+    signal?: AbortSignal,
+  ): Promise<TickResult> {
+    signal?.throwIfAborted();
+    const running = this.repo.getRunningAttempt(taskId);
     if (running) {
       const attemptId = running.descriptor.attemptId;
       const request: HarnessStepRequest = {
@@ -73,11 +147,24 @@ export class Scheduler {
         leaseOwnerId,
       );
       this.fault("after_delivery_commit");
-      return { kind: "delivery", attemptId, eventId: delivery.event.eventId };
+      return {
+        kind: "delivery",
+        attemptId,
+        eventId: delivery.event.eventId,
+        ...([
+          "attempt.completed",
+          "attempt.failed_infra",
+          "attempt.blocked_policy",
+        ].includes(delivery.event.type)
+          ? { roleEnded: true }
+          : {}),
+      };
     }
 
     if (this.hooks !== undefined) {
-      for (const task of this.repo.listPosthookTasks()) {
+      for (const task of this.repo
+        .listPosthookTasks()
+        .filter((task) => task.id === taskId)) {
         const posthook = await this.hooks.run(
           task,
           "posthook",
@@ -101,8 +188,8 @@ export class Scheduler {
         throw new TaskPosthookFailedError(task.id);
       }
 
-      const claimed = this.repo.getClaimedTask();
-      if (claimed !== undefined) {
+      const claimed = this.repo.getTask(taskId);
+      if (claimed?.status === "claimed") {
         const prehook = await this.hooks.run(
           claimed,
           "prehook",
@@ -121,7 +208,9 @@ export class Scheduler {
     }
 
     if (this.publisher !== undefined) {
-      const publishing = this.repo.listPublishingTasks()[0];
+      const publishing = this.repo
+        .listPublishingTasks()
+        .find((entry) => entry.task.id === taskId);
       if (publishing !== undefined) {
         try {
           const publication = this.repo.beginPublication({
@@ -164,15 +253,9 @@ export class Scheduler {
       }
     }
 
-    const started = this.repo.beginNextAttempt(leaseOwnerId);
+    const started = this.repo.beginNextAttempt(leaseOwnerId, taskId);
     if (started)
       return { kind: "attempt_started", attemptId: started.attemptId };
-    const claimed = this.repo.claimNext(
-      leaseOwnerId,
-      this.remoteOnly,
-      this.localOnly,
-    );
-    if (claimed) return { kind: "task_claimed", taskId: claimed.taskId };
     return { kind: "idle" };
   }
 

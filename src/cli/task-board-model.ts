@@ -65,7 +65,8 @@ function boardColumn(status: TaskStatus): TaskBoardColumn {
     status === "claimed" ||
     status === "scouting" ||
     status === "implementing" ||
-    status === "reviewing"
+    status === "reviewing" ||
+    status === "publishing"
   ) {
     return "inProgress";
   }
@@ -102,7 +103,6 @@ export function buildTaskBoardSnapshot(
     input.inspection.tasks.map((task) => [task.id, task]),
   );
   const statuses = new Map(input.tasks.map((task) => [task.id, task.status]));
-  const activeTaskId = input.inspection.scheduler.activeTaskId;
   const taskBoard = tasks.map((task) => {
     const inspected = inspectedTasks.get(task.id);
     if (inspected === undefined)
@@ -118,7 +118,7 @@ export function buildTaskBoardSnapshot(
       blockingDependencyIds: task.spec.dependencies.filter(
         (dependencyId) => statuses.get(dependencyId) !== "done",
       ),
-      isActive: task.id === activeTaskId,
+      isActive: boardColumn(task.status) === "inProgress",
       spec: task.spec,
       attempts: inspected.attempts,
       modelDecisions: inspected.modelDecisions,
@@ -148,7 +148,11 @@ export function buildTaskBoardSnapshot(
                 retryCount: activeAttempt.retryIndex,
               }),
         };
-  const orderedTasks = taskBoard.sort(compareTasks);
+  const orderedTasks = taskBoard.sort(
+    (left, right) =>
+      Number(right.isActive) - Number(left.isActive) ||
+      compareTasks(left, right),
+  );
   if (activeTask !== undefined) {
     orderedTasks.splice(orderedTasks.indexOf(activeTask), 1);
     orderedTasks.unshift(activeTask);

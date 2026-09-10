@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { buildTaskBoardSnapshot } from "../../src/cli/task-board-model";
+import { renderTaskBoard } from "../../src/cli/task-board-renderer";
 import { openDatabase } from "../../src/store/database";
 import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
@@ -16,6 +17,31 @@ const spec = {
   contextCandidates: [],
   tokenCeiling: 1_000,
 };
+
+test("the board marks every concurrent task active and keeps publication in progress", () => {
+  const { db, planning, orchestration } = setup();
+  try {
+    planning.importBacklog({
+      cycleId: "2026-W35",
+      goal: "Parallel board",
+      tasks: [
+        { id: "A", title: "First task", priority: 0, spec },
+        { id: "B", title: "Second task", priority: 1, spec },
+      ],
+    });
+    orchestration.claimNext(undefined, false, false, 2);
+    orchestration.claimNext(undefined, false, false, 2);
+    db.query("UPDATE tasks SET status = 'publishing' WHERE id = 'B'").run();
+    const board = snapshot({ planning, orchestration });
+    expect(
+      board.tasks.filter((task) => task.isActive).map((task) => task.id),
+    ).toEqual(["A", "B"]);
+    expect(board.columns.inProgress.map((task) => task.id)).toEqual(["A", "B"]);
+    expect(renderTaskBoard(board, { color: false })).toContain("2 active");
+  } finally {
+    db.close();
+  }
+});
 
 /** Creates a task-board model backed by an in-memory project database. */
 function setup() {

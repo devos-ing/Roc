@@ -1,4 +1,5 @@
-import { lstat, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { type SimpleGit, simpleGit } from "simple-git";
@@ -181,10 +182,18 @@ async function isSourceRepositoryRemote(
   );
 }
 
+/** Resolves a bounded task directory that remains distinct on case-insensitive filesystems. */
+function taskCheckoutPath(repoPath: string, taskId: string): string {
+  const safe = safeTaskPathComponent(taskId);
+  const hash = createHash("sha256").update(safe).digest("hex");
+  return resolve(`${repoPath}.agile-checkouts`, `${safe.slice(0, 40)}-${hash}`);
+}
+
 /** Creates a branch manager backed by a dedicated validated scheduler checkout. */
 export async function createTaskBranchManager(
   repoPath: string,
   baseRef: string,
+  isolatedTaskId?: string,
 ): Promise<TaskBranchManager> {
   const canonicalRepo = await realpath(resolve(repoPath));
   const sourceGit = gitAt(canonicalRepo);
@@ -203,7 +212,16 @@ export async function createTaskBranchManager(
     : undefined;
 
   const baseCommit = await fullCommit(sourceGit, baseRef);
-  const checkoutPath = `${canonicalRepo}.agile-checkout`;
+  let checkoutPath = `${canonicalRepo}.agile-checkout`;
+  if (isolatedTaskId !== undefined) {
+    const root = `${canonicalRepo}.agile-checkouts`;
+    await mkdir(root, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+    if ((await pathKind(root)) !== "directory")
+      throw new Error(`Task checkout parent is not a real directory: ${root}`);
+    checkoutPath = taskCheckoutPath(canonicalRepo, isolatedTaskId);
+  }
   const checkoutKind = await pathKind(checkoutPath);
   if (checkoutKind === "other") {
     throw new Error(
@@ -630,7 +648,10 @@ export async function createTaskBranchManager(
           `Task branch ${candidate.branch} HEAD is not the exact implementation commit ${commitSha}`,
         );
       }
-      const reviewRef = `refs/agile-review/${candidate.taskId}`;
+      const reviewRef =
+        isolatedTaskId === undefined
+          ? `refs/agile-review/${candidate.taskId}`
+          : `refs/roc/review/${commitSha}`;
       await sourceGit.raw([
         "fetch",
         "--no-tags",
@@ -653,6 +674,111 @@ export async function createTaskBranchManager(
       const candidate = workspace(taskId, persistedBaseCommit);
       await assertActive(candidate);
       return porcelainStatus();
+    },
+  };
+}
+
+/** Routes each task to its own retained checkout under one repository ownership guard. */
+export async function createParallelTaskBranchManager(
+  repoPath: string,
+  baseRef: string,
+  allowLegacy = false,
+): Promise<TaskBranchManager> {
+  const canonicalRepo = await realpath(resolve(repoPath));
+  const sourceGit = gitAt(canonicalRepo);
+  if ((await sourceGit.revparse("--show-toplevel")).trim() !== canonicalRepo)
+    throw new Error(
+      `Repository path is not the Git checkout root: ${canonicalRepo}`,
+    );
+  const baseCommit = await fullCommit(sourceGit, baseRef);
+  const managers = new Map<string, Promise<TaskBranchManager>>();
+
+  /** Initializes each task's checkout once, rejecting unsafe identities before filesystem work. */
+  function managerFor(taskId: string): Promise<TaskBranchManager> {
+    const id = safeTaskPathComponent(taskId);
+    let manager = managers.get(id);
+    if (manager === undefined) {
+      manager = openManager(id);
+      managers.set(id, manager);
+    }
+    return manager;
+  }
+
+  /** Keeps existing legacy branches out of parallel execution instead of abandoning unfinished work. */
+  async function openManager(taskId: string): Promise<TaskBranchManager> {
+    const ownPath = taskCheckoutPath(canonicalRepo, taskId);
+    const legacy = `${canonicalRepo}.agile-checkout`;
+    if (
+      (await pathKind(ownPath)) === "missing" &&
+      (await pathKind(legacy)) === "directory"
+    ) {
+      const legacyBranches = await gitAt(legacy, true).branchLocal();
+      if (legacyBranches.all.includes(taskBranchName(taskId))) {
+        if (!allowLegacy)
+          throw new Error(
+            `Task ${taskId} has a legacy checkout; resume with --concurrency 1 before enabling parallel execution`,
+          );
+        return createTaskBranchManager(canonicalRepo, baseCommit);
+      }
+    }
+    return createTaskBranchManager(canonicalRepo, baseCommit, taskId);
+  }
+
+  return {
+    /** Prepares the requested task without switching any sibling task branch. */
+    async prepare(taskId, pinnedBase) {
+      return (await managerFor(taskId)).prepare(taskId, pinnedBase);
+    },
+    /** Imports approved implementation objects before restoring a previous task's patch. */
+    async restoreChanges(taskId, commit, pinnedBase) {
+      if (!FULL_SHA.test(commit)) throw new Error("Invalid source commit");
+      const manager = await managerFor(taskId);
+      await manager.prepare(taskId, pinnedBase);
+      try {
+        await sourceGit.raw(["cat-file", "-e", `${commit}^{commit}`]);
+      } catch {
+        const legacy = `${canonicalRepo}.agile-checkout`;
+        if ((await pathKind(legacy)) !== "directory")
+          throw new Error("Source commit is unavailable");
+        await sourceGit.raw([
+          "fetch",
+          "--no-tags",
+          "--no-write-fetch-head",
+          legacy,
+          `${commit}:refs/roc/commits/${commit}`,
+        ]);
+      }
+      await manager.restoreChanges(taskId, commit, pinnedBase);
+    },
+    /** Commits one task and retains its objects in the source repository for later recovery. */
+    async commitChanges(taskId, pinnedBase) {
+      const manager = await managerFor(taskId);
+      const commit = await manager.commitChanges(taskId, pinnedBase);
+      const workspace = await manager.prepare(taskId, pinnedBase);
+      await sourceGit.raw([
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        workspace.path,
+        `${commit}:refs/roc/commits/${commit}`,
+      ]);
+      return commit;
+    },
+    /** Verifies the requested task's single final commit. */
+    async assertCommit(taskId, commit, pinnedBase) {
+      await (await managerFor(taskId)).assertCommit(taskId, commit, pinnedBase);
+    },
+    /** Verifies the exact clean commit in the requested task's review checkout. */
+    async assertReviewReady(taskId, commit, pinnedBase) {
+      await (await managerFor(taskId)).assertReviewReady(
+        taskId,
+        commit,
+        pinnedBase,
+      );
+    },
+    /** Reads only the requested task's working-tree status. */
+    async status(taskId, pinnedBase) {
+      return (await managerFor(taskId)).status(taskId, pinnedBase);
     },
   };
 }

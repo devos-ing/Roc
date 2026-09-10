@@ -10,6 +10,7 @@ import {
 import { GitHubRemoteDependencyGate } from "../../src/github/remote-dependencies";
 import { remoteTaskEnvelope } from "../../src/github/remote-tasks";
 import { openDatabase } from "../../src/store/database";
+import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
 import { RemoteTaskRepository } from "../../src/store/remote-task-repository";
 
@@ -69,6 +70,65 @@ const manifest: BacklogManifest = {
     },
   ],
 };
+
+test("independent GitHub tasks receive bases and fill available parallel slots", async () => {
+  const db = openDatabase(":memory:");
+  const planning = new PlanningRepository(db);
+  const independent: BacklogManifest = {
+    ...manifest,
+    tasks: ["A", "B", "C"].map((id, priority) => ({
+      ...manifest.tasks[0]!,
+      id,
+      priority,
+    })),
+  };
+  planning.importBacklog(independent);
+  const remote = new RemoteTaskRepository(db);
+  for (const [index, task] of independent.tasks.entries()) {
+    remote.add({
+      taskId: task.id,
+      repository: "owner/repo",
+      planId: "parallel-plan",
+      issueNumber: index + 1,
+      issueUrl: `https://example.test/issues/${index + 1}`,
+      envelopeHash: `sha256:${"a".repeat(64)}`,
+      approvalAuthor: "trusted",
+      approvalHash: `sha256:${"a".repeat(64)}`,
+      remoteState: "OPEN",
+    });
+  }
+  const base = "b".repeat(40);
+  const gate = new GitHubRemoteDependencyGate(
+    "/workspace",
+    "owner/repo",
+    "main",
+    remote,
+    {
+      async run({ command }) {
+        return {
+          exitCode: 0,
+          stdout: command[1] === "rev-parse" ? base : "",
+          stderr: "",
+        };
+      },
+    },
+    2,
+  );
+  try {
+    await gate.prepare();
+    const repo = new OrchestrationRepository(db);
+    expect(repo.claimNext(undefined, true, false, 2)?.taskId).toBe("A");
+    expect(repo.claimNext(undefined, true, false, 2)?.taskId).toBe("B");
+    expect(repo.claimNext(undefined, true, false, 2)).toBeUndefined();
+    expect(repo.getTask("C")?.baseCommit).toBeUndefined();
+    db.query("UPDATE tasks SET status = 'done' WHERE id = 'B'").run();
+    await gate.prepare();
+    expect(repo.claimNext(undefined, true, false, 2)?.taskId).toBe("C");
+    expect(repo.inspectTask("A")?.status).toBe("claimed");
+  } finally {
+    db.close();
+  }
+});
 
 test("waits for merge then pins the fetched target commit containing its squash result", async () => {
   const root = await mkdtemp(join(tmpdir(), "roc-remote-deps-"));

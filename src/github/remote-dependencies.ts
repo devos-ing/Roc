@@ -22,6 +22,7 @@ export class GitHubRemoteDependencyGate {
     private readonly baseBranch: string,
     private readonly remote: RemoteTaskRepository,
     private readonly runner: GitHubCommandRunner,
+    private readonly concurrency = 1,
   ) {
     if (
       baseBranch === "" ||
@@ -33,9 +34,10 @@ export class GitHubRemoteDependencyGate {
     }
   }
 
-  /** Pins the next eligible ready task while leaving unmerged dependencies blocked. */
+  /** Pins eligible task bases up to the available slots while preserving merge requirements. */
   async prepare(): Promise<void> {
-    if (this.remote.hasActiveTask()) return;
+    let available = this.concurrency - this.remote.activeTaskCount();
+    if (available <= 0) return;
     for (const task of this.remote.readyDependencyChecks()) {
       const mergedDependencies: Array<{
         taskId: string;
@@ -163,7 +165,7 @@ export class GitHubRemoteDependencyGate {
         this.remote.markDependencyMerged(dependency.taskId);
       }
       this.remote.pinBaseCommit(task.taskId, baseCommit);
-      return;
+      if (--available === 0) return;
     }
   }
 

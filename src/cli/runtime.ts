@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Cause, Effect, Exit } from "effect";
 import { backends } from "../agents/registry";
@@ -43,6 +44,7 @@ import { PlanningRepository } from "../store/planning-repository";
 import { RemoteTaskRepository } from "../store/remote-task-repository";
 import { acquireCheckoutOwnership } from "../workspace/checkout-ownership";
 import {
+  createParallelTaskBranchManager,
   createTaskBranchManager,
   type TaskBranchManager,
 } from "../workspace/task-branch";
@@ -112,6 +114,7 @@ function daemonFor(
   hooks?: TaskHookService,
   publisher?: TaskPublisher,
   source?: SchedulerSource,
+  concurrency = 1,
 ): SchedulerDaemon {
   return new SchedulerDaemon(
     new Scheduler(
@@ -122,6 +125,7 @@ function daemonFor(
       publisher,
       source !== undefined,
       source === undefined,
+      concurrency,
     ),
     repo,
     {
@@ -283,6 +287,11 @@ export function runBackendSession(
   runId: string,
   options: BackendSessionOptions = {},
 ): Promise<void> {
+  const concurrency = input.concurrency ?? 1;
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8)
+    return Promise.reject(
+      new Error("Concurrency must be an integer from 1 through 8"),
+    );
   return runSession((stop) =>
     Effect.gen(function* () {
       const backendLabel = input.backend;
@@ -337,7 +346,14 @@ export function runBackendSession(
           }),
       );
       const branches = yield* Effect.tryPromise({
-        try: () => createTaskBranchManager(ownership.repoPath, input.baseRef),
+        try: () =>
+          concurrency > 1 || existsSync(`${ownership.repoPath}.agile-checkouts`)
+            ? createParallelTaskBranchManager(
+                ownership.repoPath,
+                input.baseRef,
+                concurrency === 1,
+              )
+            : createTaskBranchManager(ownership.repoPath, input.baseRef),
         catch: (error) =>
           attachRunId(error, runId, {
             code: "BACKEND_BRANCH_STARTUP_FAILED",
@@ -465,6 +481,18 @@ export function runBackendSession(
           publisher: options.publisherFactory?.(branches),
         };
       });
+      if (concurrency > 1) {
+        yield* Effect.tryPromise({
+          try: async () => {
+            // Validate retained work before starting any role in the new layout.
+            for (const taskId of repo.activeTaskIds()) {
+              if (stop.aborted) return;
+              await branches.prepare(taskId, repo.getTask(taskId)?.baseCommit);
+            }
+          },
+          catch: (error) => error,
+        });
+      }
       const source = yield* Effect.tryPromise({
         try: async () => {
           let source: SchedulerSource | undefined;
@@ -498,6 +526,7 @@ export function runBackendSession(
               input.baseBranch ?? "",
               remote,
               runner,
+              concurrency,
             );
             source = new RemoteSchedulerSource(
               {
@@ -554,18 +583,19 @@ export function runBackendSession(
         hooks,
         publisher,
         source,
+        concurrency,
       ).runEffect({
         stop,
         onDrainTimeout: retainCheckout,
         /** Requests both agent and hook cancellation while recording only safe diagnostics. */
         async cancel() {
-          const active = repo.getRunningAttempt();
+          const active = repo.getRunningAttempts();
           await Promise.allSettled(
             [
-              Promise.resolve().then(() =>
-                active === undefined
-                  ? undefined
-                  : backend.harness.cancel(active.descriptor.attemptId),
+              ...active.map((attempt) =>
+                Promise.resolve().then(() =>
+                  backend.harness.cancel(attempt.descriptor.attemptId),
+                ),
               ),
               Promise.resolve().then(() => hooks.stop()),
             ].map((action) =>

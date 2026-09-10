@@ -313,11 +313,14 @@ export class OrchestrationRepository {
     leaseOwnerId?: string,
     remoteOnly = false,
     localOnly = false,
+    concurrency = 1,
   ): { taskId: string } | undefined {
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8)
+      throw new Error("Concurrency must be an integer from 1 through 8");
     return this.db.transaction(() => {
       this.assertLeaseOwner(leaseOwnerId);
       const row = this.db
-        .query<{ id: string }, []>(`
+        .query<{ id: string }, [number]>(`
         SELECT task.id
         FROM tasks AS task
         WHERE task.status = 'ready'
@@ -328,10 +331,11 @@ export class OrchestrationRepository {
             NOT EXISTS (SELECT 1 FROM remote_tasks WHERE remote_tasks.task_id = task.id)
             OR task.base_commit IS NOT NULL
           )
-          AND NOT EXISTS (
-            SELECT 1 FROM tasks AS active
+          AND (
+            SELECT COUNT(*) FROM tasks AS active
             WHERE active.status IN ('claimed', 'scouting', 'implementing', 'reviewing', 'publishing')
-          )
+               OR EXISTS (SELECT 1 FROM attempts WHERE task_id = active.id AND status = 'running')
+          ) < ?
           AND NOT EXISTS (
             SELECT 1
             FROM task_deps AS dep
@@ -341,7 +345,7 @@ export class OrchestrationRepository {
         ORDER BY task.priority ASC, task.created_at ASC, task.id ASC
         LIMIT 1
       `)
-        .get();
+        .get(concurrency);
       if (!row) return undefined;
 
       const changed = this.db
@@ -412,21 +416,6 @@ export class OrchestrationRepository {
         `)
         .get() !== null
     );
-  }
-
-  /** Returns the single claimed task that must finish its prehook before Scout can start. */
-  getClaimedTask(): z.infer<typeof StoredTaskSchema> | undefined {
-    const row = this.db
-      .query<TaskRow, []>(`
-        SELECT id, cycle_id, title, spec_json, spec_path, spec_hash, base_commit, status,
-               priority, approval_required, approved, context_id
-        FROM tasks
-        WHERE status = 'claimed'
-        ORDER BY priority ASC, created_at ASC, id ASC
-        LIMIT 1
-      `)
-      .get();
-    return row === null ? undefined : storedTask(row);
   }
 
   /** Returns one validated stored task by identity for task-scoped lifecycle operations. */
@@ -860,10 +849,31 @@ export class OrchestrationRepository {
     })();
   }
 
+  /** Lists active task identities, including attempts paused by remote authority. */
+  activeTaskIds(): string[] {
+    return this.db
+      .query<{ id: string }, []>(`
+      SELECT id FROM tasks
+      WHERE status IN ('claimed', 'scouting', 'implementing', 'reviewing', 'publishing')
+         OR EXISTS (SELECT 1 FROM attempts WHERE task_id = tasks.id AND status = 'running')
+      ORDER BY priority ASC, created_at ASC, id ASC
+    `)
+      .all()
+      .map((row) => row.id);
+  }
+
+  /** Reconstructs every running attempt for restart and cancellation. */
+  getRunningAttempts(): RunningAttempt[] {
+    return this.activeTaskIds().flatMap((taskId) => {
+      const running = this.getRunningAttempt(taskId);
+      return running === undefined ? [] : [running];
+    });
+  }
+
   /** Reconstructs the earliest running attempt and its validated role input. */
-  getRunningAttempt(): RunningAttempt | undefined {
+  getRunningAttempt(taskId?: string): RunningAttempt | undefined {
     const row = this.db
-      .query<RunningAttemptRow, []>(`
+      .query<RunningAttemptRow, [string | null, string | null]>(`
       SELECT
         attempt.id AS attempt_id,
         attempt.role,
@@ -892,11 +902,11 @@ export class OrchestrationRepository {
       FROM attempts AS attempt
       JOIN tasks AS task ON task.id = attempt.task_id
       LEFT JOIN contexts AS context ON context.id = task.context_id
-      WHERE attempt.status = 'running'
+      WHERE attempt.status = 'running' AND (? IS NULL OR task.id = ?)
       ORDER BY attempt.started_at ASC, attempt.id ASC
       LIMIT 1
     `)
-      .get();
+      .get(taskId ?? null, taskId ?? null);
     if (!row) return undefined;
 
     const ticket = storedTask(row);
@@ -948,7 +958,10 @@ export class OrchestrationRepository {
   }
 
   /** Atomically selects, routes, and starts the next role attempt for an active task. */
-  beginNextAttempt(leaseOwnerId?: string):
+  beginNextAttempt(
+    leaseOwnerId?: string,
+    taskId?: string,
+  ):
     | {
         attemptId: string;
         taskId: string;
@@ -958,11 +971,12 @@ export class OrchestrationRepository {
     return this.db.transaction(() => {
       this.assertLeaseOwner(leaseOwnerId);
       const row = this.db
-        .query<TaskRow, []>(`
+        .query<TaskRow, [string | null, string | null]>(`
         SELECT id, cycle_id, title, spec_json, spec_path, spec_hash, base_commit, status,
                priority, approval_required, approved, context_id
         FROM tasks AS task
         WHERE task.status IN ('claimed', 'scouting', 'implementing', 'reviewing')
+          AND (? IS NULL OR task.id = ?)
           AND NOT EXISTS (
             SELECT 1 FROM attempts AS attempt
             WHERE attempt.task_id = task.id AND attempt.status = 'running'
@@ -970,7 +984,7 @@ export class OrchestrationRepository {
         ORDER BY task.priority ASC, task.created_at ASC, task.id ASC
         LIMIT 1
       `)
-        .get();
+        .get(taskId ?? null, taskId ?? null);
       if (!row) return undefined;
 
       const ticket = storedTask(row);

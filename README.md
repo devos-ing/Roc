@@ -22,7 +22,8 @@ flowchart LR
 **Pi is the execution core.** Onboarding connects your ChatGPT account and selects
 a Codex model. Claude and GLM are advanced provider options.
 Roc uses Pi's tools and agent loop; it does not launch Codex CLI or Claude Code.
-One daemon runs one task at a time. Each task keeps its own branch.
+One daemon runs two independent tasks at a time by default. Each task keeps its
+own checkout and branch. Set `--concurrency 1` through `8` to change the limit.
 `done` means the PR is published; you still merge it yourself.
 
 **Development version:** use this checkout, as shown below. The Pi-only workflow
@@ -82,7 +83,9 @@ bun "$ROC_CLI_ENTRY" scheduler run --base-branch main
 ```
 
 Leave the terminal open. Press `Ctrl-C` to stop; repeat the command to recover
-saved work. Roc keeps task branches in a sibling `<project>.agile-checkout`.
+saved work. Roc keeps parallel task branches in separate checkouts under
+`<project>.agile-checkouts/`. Use `--concurrency 1` to resume unfinished work in
+a legacy `<project>.agile-checkout`.
 For unattended work, use OS/container isolation because Pi has no built-in sandbox.
 
 ### 4. Follow progress

@@ -11,13 +11,16 @@ type Runtime = { ownerId: string };
 
 export type SchedulerSource = {
   beforeTick(): Promise<boolean>;
+  /** Allows only already-running attempts to settle while remote authority is unavailable. */
+  canStartWork?(): boolean;
   afterTick?(result: TickResult): Promise<void>;
 };
 
 export class SchedulerDaemon {
   /** Creates a daemon from scheduler, lease-store, and ownership dependencies. */
   constructor(
-    private readonly scheduler: Pick<Scheduler, "tick">,
+    private readonly scheduler: Pick<Scheduler, "tick"> &
+      Partial<Pick<Scheduler, "drain">>,
     private readonly leases: LeaseStore,
     private readonly runtime: Runtime,
     private readonly source?: SchedulerSource,
@@ -74,7 +77,12 @@ export class SchedulerDaemon {
               continue;
             }
             const result = yield* Effect.tryPromise({
-              try: () => self.scheduler.tick(self.runtime.ownerId, seal.signal),
+              try: () =>
+                self.scheduler.tick(
+                  self.runtime.ownerId,
+                  seal.signal,
+                  source?.canStartWork?.() ?? true,
+                ),
               catch: (error) => error,
             });
             if (source?.afterTick !== undefined && !seal.signal.aborted) {
@@ -100,12 +108,25 @@ export class SchedulerDaemon {
             yield* Deferred.succeed(draining, undefined);
             // Keep a completed tick's failure even if cancellation consumes the remaining grace.
             let drained: Exit.Exit<void, unknown> | undefined;
+            let taskDrain: Exit.Exit<void, unknown> | undefined;
             const completed = yield* Effect.all(
               [
                 Fiber.await(worker).pipe(
                   Effect.tap((exit) =>
                     Effect.sync(() => {
                       drained = exit;
+                    }),
+                  ),
+                ),
+                Effect.exit(
+                  Effect.tryPromise({
+                    try: () => self.scheduler.drain?.() ?? Promise.resolve(),
+                    catch: (error) => error,
+                  }),
+                ).pipe(
+                  Effect.tap((exit) =>
+                    Effect.sync(() => {
+                      taskDrain = exit;
                     }),
                   ),
                 ),
@@ -124,6 +145,12 @@ export class SchedulerDaemon {
             if (Option.isNone(completed)) input.onDrainTimeout?.();
             seal.abort(new Error("Scheduler session sealed"));
             yield* Fiber.interrupt(worker);
+            if (
+              Exit.isSuccess(sessionExit) &&
+              taskDrain !== undefined &&
+              Exit.isFailure(taskDrain)
+            )
+              yield* Effect.die(Cause.squash(taskDrain.cause));
             if (
               Exit.isSuccess(sessionExit) &&
               drained !== undefined &&

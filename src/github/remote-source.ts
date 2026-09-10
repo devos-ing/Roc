@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type BacklogManifest, BacklogManifestSchema } from "../domain/schemas";
+import type { TickResult } from "../scheduler/scheduler";
 import type { PlanningRepository } from "../store/planning-repository";
 import type {
   RemoteTaskRecord,
@@ -98,8 +99,14 @@ export class RemoteSchedulerSource {
     }
   }
 
-  /** Projects durable state while containing writeback failures to synchronization. */
-  async afterTick(): Promise<void> {
+  /** Blocks new work during an outage while existing attempts may still finish. */
+  canStartWork(): boolean {
+    return this.available;
+  }
+
+  /** Projects durable state and refreshes authority after each task's role boundary. */
+  async afterTick(result?: TickResult): Promise<void> {
+    if (result?.kind === "delivery" && result.roleEnded) this.nextPollAt = 0;
     try {
       await this.sync();
     } catch (error) {

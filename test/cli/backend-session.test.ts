@@ -20,6 +20,7 @@ import type {
 } from "../../src/harness/contracts";
 import { AgileError } from "../../src/runtime/errors";
 import { openDatabase } from "../../src/store/database";
+import { OrchestrationRepository } from "../../src/store/orchestration-repository";
 import { PlanningRepository } from "../../src/store/planning-repository";
 import { RemoteTaskRepository } from "../../src/store/remote-task-repository";
 import { git } from "../helpers/git";
@@ -39,6 +40,7 @@ async function createRepository(): Promise<string> {
 async function cleanupRepository(root: string): Promise<void> {
   await rm(root, { recursive: true, force: true });
   await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+  await rm(`${root}.agile-checkouts`, { recursive: true, force: true });
   await rm(`${root}.agile-checkout.lock`, { force: true });
 }
 
@@ -142,6 +144,102 @@ function fakeBackend(catalog: typeof compatibleCatalog): {
 function sessionInput(repoPath: string, dbPath: string): RealSchedulerRunInput {
   return { backend: "pi", dbPath, repoPath, baseRef: "HEAD" };
 }
+
+test("parallel shutdown cancels both task attempts and releases ownership only after they settle", async () => {
+  const root = await createRepository();
+  const dbPath = join(root, ".agile", "runtime", "agile.db");
+  await seedReadyTask(dbPath);
+  const db = openDatabase(dbPath);
+  const planning = new PlanningRepository(db);
+  const first = planning.listTasks()[0]!;
+  planning.createTask({
+    id: "T2",
+    cycleId: first.cycleId,
+    title: "Second task",
+    spec: first.spec,
+    priority: 1,
+    approvalRequired: false,
+    approved: true,
+  });
+  planning.transitionTask("T2", "ready", "T2:ready");
+  db.close();
+  const entered = Promise.withResolvers<void>();
+  const pending = new Map<
+    string,
+    ReturnType<typeof Promise.withResolvers<void>>
+  >();
+  const cancelled: string[] = [];
+  let closed = false;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const running = runBackendSession(
+    async ({ branches }) => ({
+      catalog: compatibleCatalog,
+      harness: {
+        async step(request) {
+          await branches.prepare(request.attempt.taskId);
+          const gate = Promise.withResolvers<void>();
+          pending.set(request.attempt.attemptId, gate);
+          if (pending.size === 2) entered.resolve();
+          await gate.promise;
+          return {
+            kind: "event",
+            nextCursor: "cancelled",
+            event: {
+              type: "attempt.blocked_policy",
+              sequence: 1,
+              eventId: `${request.attempt.attemptId}:cancelled`,
+              attemptId: request.attempt.attemptId,
+              occurredAt: new Date().toISOString(),
+              code: "cancelled",
+              message: "Cancelled by user",
+            },
+          };
+        },
+        async cancel(id) {
+          cancelled.push(id);
+          pending.get(id)?.resolve();
+        },
+      },
+      async close() {
+        closed = true;
+      },
+    }),
+    { ...sessionInput(root, dbPath), concurrency: 2 },
+    "parallel-shutdown",
+  );
+  try {
+    await Promise.race([
+      entered.promise,
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(
+          () => reject(new Error("Both tasks did not start")),
+          4000,
+        );
+      }),
+    ]);
+    process.emit("SIGINT");
+    await running;
+    expect(cancelled).toHaveLength(2);
+    expect(new Set(cancelled).size).toBe(2);
+    expect(closed).toBe(true);
+    expect(await Bun.file(`${root}.agile-checkout.lock`).exists()).toBe(false);
+    const readDb = openDatabase(dbPath);
+    try {
+      const repo = new OrchestrationRepository(readDb);
+      expect(repo.getRunningAttempts()).toEqual([]);
+      expect(repo.inspectTask("T1")?.status).toBe("needs_replan");
+      expect(repo.inspectTask("T2")?.status).toBe("needs_replan");
+    } finally {
+      readDb.close();
+    }
+  } finally {
+    clearTimeout(deadline);
+    for (const gate of pending.values()) gate.resolve();
+    if (!closed) process.emit("SIGINT");
+    await running.catch(() => {});
+    await cleanupRepository(root);
+  }
+}, 10000);
 
 test("a missing repository preserves the sanitized branch-startup error before backend startup", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-missing-repository-"));

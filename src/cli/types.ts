@@ -40,6 +40,8 @@ export type RealSchedulerRunInput = {
   dbPath: string;
   repoPath: string;
   baseRef: string;
+  /** Limits concurrently active tasks in this scheduler session. */
+  concurrency?: number;
   /** Names the GitHub branch that pull requests target, independently of the local base ref. */
   baseBranch?: string;
   /** Selects local backlog execution or trusted GitHub task admission. */

@@ -55,6 +55,34 @@ const manifest: BacklogManifest = {
   ],
 };
 
+test("a completed parallel role refreshes remote authority while another role remains active", async () => {
+  let available = true;
+  let polls = 0;
+  const source = new RemoteSchedulerSource(
+    {
+      async poll() {
+        polls++;
+        if (!available) throw new Error("offline");
+        return { imported: 0, tracked: 2, errors: [] };
+      },
+    },
+    { getRunningAttempt: () => ({ id: "other-still-running" }) },
+    () => 0,
+  );
+  expect(await source.beforeTick()).toBe(true);
+  expect(source.canStartWork()).toBe(true);
+  await source.afterTick({
+    kind: "delivery",
+    attemptId: "finished",
+    eventId: "completed",
+    roleEnded: true,
+  });
+  available = false;
+  expect(await source.beforeTick()).toBe(true);
+  expect(polls).toBe(2);
+  expect(source.canStartWork()).toBe(false);
+});
+
 /** Creates a ready managed Issue with an exact trusted approval. */
 function issueFor(
   source: BacklogManifest,

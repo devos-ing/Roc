@@ -189,6 +189,7 @@ test("passes fixed project paths and the selected base to the Pi runtime", async
     expect(calls).toEqual([
       {
         backend: "pi",
+        concurrency: 2,
         repoPath: root,
         baseRef: "origin/main",
         dbPath: join(root, ".agile", "runtime", "agile.db"),
@@ -197,6 +198,29 @@ test("passes fixed project paths and the selected base to the Pi runtime", async
     expect(output).toEqual(["Status: Starting", "Result: Stopped"]);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("scheduler concurrency is bounded and rejects invalid input before starting", async () => {
+  for (const value of ["1", "3", "0", "9", "1.5", "abc"]) {
+    const calls: SchedulerRunInput[] = [];
+    const valid = value === "1" || value === "3";
+    const code = await runCli(
+      ["scheduler", "run", "--concurrency", value],
+      {
+        out: () => {},
+        err: () => {},
+      },
+      {
+        projectRoot: "/project",
+        async runScheduler(input) {
+          calls.push(input);
+        },
+      },
+    );
+    expect(code).toBe(valid ? 0 : 2);
+    expect(calls).toHaveLength(valid ? 1 : 0);
+    if (valid) expect(calls[0]).toMatchObject({ concurrency: Number(value) });
   }
 });
 
@@ -269,6 +293,7 @@ test("routes a registered --backend name into the scheduler run input", async ()
     expect(calls).toEqual([
       {
         backend: "pi",
+        concurrency: 2,
         repoPath: root,
         baseRef: "HEAD",
         dbPath: join(root, ".agile", "runtime", "agile.db"),
