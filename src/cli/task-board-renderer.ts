@@ -586,6 +586,24 @@ function renderDetails(
           ...criteria.flatMap((criterion) => wrap(criterion, width, "- ")),
         ]),
   ].flat();
+  const acceptance =
+    task.acceptanceChecklist.length === 0
+      ? []
+      : [
+          detailSection("Acceptance checklist", width, colorEnabled),
+          ...task.acceptanceChecklist.flatMap((item) => [
+            ...wrap(
+              `${item.status === "passed" ? "[x]" : "[ ]"} ${item.criterion}`,
+              width,
+            ),
+            ...wrap(`Status: ${item.status}`, width, "  "),
+            ...(item.evidence
+              ? item.evidence
+                  .split("\n")
+                  .flatMap((line) => wrap(`Evidence: ${line}`, width, "  "))
+              : ["  Evidence: No item-level evidence recorded."]),
+          ]),
+        ];
   const retirement =
     task.rawStatus !== "retired"
       ? []
@@ -627,6 +645,7 @@ function renderDetails(
     ...(brief.length === 0
       ? []
       : ["", detailSection("Brief", width, colorEnabled), ...brief]),
+    ...(acceptance.length === 0 ? [] : ["", ...acceptance]),
     ...retirement,
   ];
 }

@@ -466,8 +466,13 @@ export class GitHubTaskRunner {
       publishingAuthority.issue.state !== "OPEN"
     )
       return;
+    const acceptance = this.publicationAcceptance(record);
     const pr = await this.input.publisher.publish({
-      task: { ...task.task, status: "publishing" },
+      task: {
+        ...task.task,
+        status: "publishing",
+        baseCommit: record.baseCommit,
+      },
       implementation,
       publication: {
         taskId: task.task.id,
@@ -476,6 +481,7 @@ export class GitHubTaskRunner {
         commitSha: record.publication.commitSha,
         status: "pending",
       },
+      ...(acceptance === undefined ? {} : { acceptance }),
     });
     signal.throwIfAborted();
     record.publication.number = pr.number;
@@ -1043,6 +1049,7 @@ export class GitHubTaskRunner {
       jsonHash(authority.execution) !== jsonHash(record)
     )
       throw Error("Issue authority changed before base refresh");
+    await this.invalidateChecklistPublication(task, record, signal);
     const headSha = await this.input.branches.refresh(task.task.id, {
       ...refresh,
       baseBranch: record.baseBranch,
@@ -1086,6 +1093,7 @@ export class GitHubTaskRunner {
     if (!(await this.runRole(task, record, "review", signal))) return;
     if (!this.hasMergeReview(record))
       throw Error("Fresh Review evidence is missing or mismatched");
+    await this.refreshChecklistPublication(task, record, signal);
     record.phase = "awaiting_merge";
     delete record.failure;
     await this.checkpoint(task, record, signal);
@@ -1157,6 +1165,92 @@ export class GitHubTaskRunner {
       implementation.descriptor.attemptId !== review.descriptor.attemptId &&
       record.attempts.indexOf(review) > record.attempts.indexOf(implementation)
     );
+  }
+
+  /** Returns only Review evidence that is bound to the current specification, base, and published head. */
+  private publicationAcceptance(record: ExecutionRecord) {
+    if (!this.hasMergeReview(record) || !record.mergeReview) return undefined;
+    const review = record.attempts.find(
+      (attempt) =>
+        attempt.descriptor.attemptId === record.mergeReview?.reviewAttemptId,
+    );
+    if (review?.output?.kind !== "review") return undefined;
+    return {
+      review: review.output,
+      binding: {
+        currentSpecHash: record.specHash,
+        reviewedSpecHash: record.mergeReview.specHash,
+        currentHeadSha: record.publication?.commitSha ?? "",
+        reviewedHeadSha: record.mergeReview.headSha,
+        currentBaseSha: record.baseCommit,
+        reviewedBaseSha: record.mergeReview.baseSha,
+      },
+    };
+  }
+
+  /** Reconciles the existing PR body after a rebased head receives fresh independent Review evidence. */
+  private async refreshChecklistPublication(
+    task: NativeTask,
+    record: ExecutionRecord,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const acceptance = this.publicationAcceptance(record);
+    if (acceptance === undefined || record.publication === undefined)
+      throw Error("Fresh Review publication evidence is missing");
+    await this.reconcileChecklistPublication(task, record, signal, acceptance);
+  }
+
+  /** Replaces stale checked rows with unverified rows after a refreshed head is lease-pushed and before fresh Review begins. */
+  private async invalidateChecklistPublication(
+    task: NativeTask,
+    record: ExecutionRecord,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await this.reconcileChecklistPublication(task, record, signal, undefined);
+  }
+
+  /** Updates only the existing PR body after verifying its current remote head without pushing the task branch. */
+  private async reconcileChecklistPublication(
+    task: NativeTask,
+    record: ExecutionRecord,
+    signal: AbortSignal,
+    acceptance: ReturnType<typeof this.publicationAcceptance> | undefined,
+  ): Promise<void> {
+    const implementation = record.attempts.findLast(
+      (attempt) =>
+        attempt.status === "succeeded" && attempt.output?.kind === "implement",
+    )?.output;
+    const publication = record.publication;
+    if (implementation?.kind !== "implement" || publication === undefined)
+      throw Error("Refreshed publication implementation is missing");
+    const authority = await this.input.store.get(task.issue.number);
+    signal.throwIfAborted();
+    if (
+      !authority.approved ||
+      authority.blockedReason ||
+      authority.issue.state !== "OPEN"
+    )
+      return;
+    const pr = await this.input.publisher.publish({
+      task: {
+        ...task.task,
+        status: "publishing",
+        baseCommit: record.baseCommit,
+      },
+      implementation,
+      publication: {
+        taskId: task.task.id,
+        branch: publication.branch,
+        baseBranch: record.baseBranch,
+        commitSha: publication.commitSha,
+        status: "pending",
+      },
+      reconcileOnly: true,
+      ...(acceptance === undefined ? {} : { acceptance }),
+    });
+    signal.throwIfAborted();
+    publication.number = pr.number;
+    publication.url = pr.url;
   }
 
   /** Reads only the PR fields needed for dependency and completion verification. */

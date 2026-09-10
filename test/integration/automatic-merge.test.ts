@@ -77,6 +77,9 @@ function fixture(count = 1, dependent = false, skipScout = false) {
   let roleCalls = 0;
   const events: string[] = [];
   const requests: HarnessStepRequest[] = [];
+  const publications: Parameters<
+    import("../../src/github/pr-publisher").TaskPublisher["publish"]
+  >[0][] = [];
   const store = new GitHubExecutionStore(
     "acme/test",
     "daemon",
@@ -329,7 +332,11 @@ function fixture(count = 1, dependent = false, skipScout = false) {
           import("../../src/github/pr-publisher").TaskPublisher["publish"]
         >[0],
       ) {
+        publications.push(structuredClone(input));
         const number = Number(input.task.id.slice(6));
+        events.push(
+          `publish:${number}:${input.acceptance === undefined ? "unverified" : "evidence"}`,
+        );
         prs.set(number, {
           number,
           state: "open",
@@ -366,6 +373,7 @@ function fixture(count = 1, dependent = false, skipScout = false) {
     prs,
     events,
     requests,
+    publications,
     scriptReview(number = 41, decision: "accepted" | "rejected" = "accepted") {
       fake.scriptAttempt({
         taskId: `issue-${number}`,
@@ -769,6 +777,33 @@ test("parallel PR merge refreshes the next patch, runs an independent exact-targ
   expect(f.events.indexOf("refresh-start:42")).toBeGreaterThan(
     f.events.indexOf("merge-end:41"),
   );
+  const refreshedPublication = f.publications
+    .filter((item) => item.task.id === "issue-42")
+    .at(-1);
+  const invalidatedPublication = f.publications
+    .filter((item) => item.task.id === "issue-42")
+    .at(-2);
+  expect(invalidatedPublication).toMatchObject({
+    task: { baseCommit: initialBase },
+    publication: { commitSha: sha("b", 42) },
+    reconcileOnly: true,
+  });
+  expect(invalidatedPublication?.acceptance).toBeUndefined();
+  expect(f.events.lastIndexOf("publish:42:unverified")).toBeLessThan(
+    f.events.indexOf("refresh-start:42"),
+  );
+  expect(refreshedPublication).toMatchObject({
+    task: { baseCommit: sha("c", 41) },
+    publication: { commitSha: sha("d", 42) },
+    acceptance: {
+      binding: {
+        currentHeadSha: sha("d", 42),
+        currentBaseSha: sha("c", 41),
+        reviewedHeadSha: sha("d", 42),
+        reviewedBaseSha: sha("c", 41),
+      },
+    },
+  });
   const roles = f.roleCalls();
   await tick(f);
   expect((await f.record(42)).failure).toContain("must pass");

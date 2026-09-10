@@ -5,6 +5,7 @@ import {
   initialExecution,
   renderExecution,
 } from "../../src/github/execution-store";
+import type { TaskPublisher } from "../../src/github/pr-publisher";
 import {
   jsonHash,
   remoteTaskEnvelope,
@@ -463,6 +464,7 @@ function runner(
   harness?: AgentHarness,
   hooks?: TaskHookRunner,
   now?: () => string,
+  publisher?: TaskPublisher,
 ) {
   return new GitHubTaskRunner({
     store: remote.store(),
@@ -479,7 +481,7 @@ function runner(
       [{ id: model, supportedReasoningEfforts: ["medium", "high", "xhigh"] }],
       { luna: model, terra: model, sol: model },
     ),
-    publisher: {
+    publisher: publisher ?? {
       baseBranch: "main",
       async publish() {
         throw Error("Unexpected publication");
@@ -731,6 +733,18 @@ test("confirmed refresh recovery selects only the new exact-target Review and ne
       ],
     });
     const requests: HarnessStepRequest[] = [];
+    const publications: Parameters<TaskPublisher["publish"]>[0][] = [];
+    const publisher: TaskPublisher = {
+      baseBranch: "main",
+      async publish(input) {
+        publications.push(structuredClone(input));
+        return {
+          number: 7,
+          url: "https://github.com/acme/test/pull/7",
+          state: "OPEN",
+        };
+      },
+    };
     const run = runner(
       remote,
       {
@@ -746,6 +760,8 @@ test("confirmed refresh recovery selects only the new exact-target Review and ne
         },
         async stop() {},
       },
+      undefined,
+      publisher,
     );
     expect(await run.runOnce(new AbortController().signal)).toBe(false);
     const record = (await remote.store().get(41)).execution!;
@@ -761,6 +777,13 @@ test("confirmed refresh recovery selects only the new exact-target Review and ne
       headSha: head,
       baseSha: targetBase,
       reviewAttemptId: review.descriptor.attemptId,
+    });
+    expect(publications.at(-1)).toMatchObject({
+      publication: { commitSha: head },
+      reconcileOnly: true,
+      acceptance: {
+        binding: { currentHeadSha: head, currentBaseSha: targetBase },
+      },
     });
     expect(requests[0]).toMatchObject({
       mode: recovering ? "reconcile" : "dispatch",
@@ -778,7 +801,9 @@ test("confirmed refresh recovery selects only the new exact-target Review and ne
     remote.issue.comments.find(
       (comment) => comment.author?.login === "daemon",
     )!.body = renderExecution(record);
-    await runner(remote).runOnce(new AbortController().signal);
+    await runner(remote, undefined, undefined, undefined, publisher).runOnce(
+      new AbortController().signal,
+    );
     expect((await remote.store().get(41)).execution!.attempts).toEqual(
       record.attempts,
     );

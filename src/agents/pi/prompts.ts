@@ -98,6 +98,7 @@ export function reviewPrompt(
     JSON.stringify(ReviewOutputJsonSchema),
     "Output the JSON object without markdown fences or any surrounding prose.",
     'Do not infer acceptance from prose. Use decision "accepted" only when the ticket is satisfied.',
+    "For every original acceptance criterion, include one acceptanceResults entry using its zero-based array index, an item status, and specific non-empty evidence. Keep duplicate criterion text as separate indexed entries. Never rewrite the criterion text; the output only records indexes and evidence.",
     "",
     "Validated ticket:",
     JSON.stringify(validated.ticket, null, 2),

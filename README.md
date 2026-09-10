@@ -120,6 +120,9 @@ The board is read-only. Press `Enter` for details or `Q` to quit.
 Colored columns show progress, attention, and completed work; the layout adapts
 to your terminal width. Redirected output stays plain.
 Details include elapsed time, attempt time, merge waiting, recent activity and incomplete usage.
+Use `task acceptance <issue>` to read the original acceptance criteria and any
+per-item automated Review evidence. It is read-only; human acceptance remains
+separate.
 Watch the daemon terminal for individual live actions. GitHub saves summaries at phase boundaries,
 with at most one extra activity update per 30 seconds.
 Use `task list`, `scheduler inspect`, `tokens`, or `help` for more information.

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPiHarness } from "../../src/agents/pi/harness";
 import { renderExecution } from "../../src/github/execution-store";
+import { githubTaskSnapshot } from "../../src/github/execution-view";
 import { BunGitHubCommandRunner } from "../../src/github/pr-publisher";
 import {
   jsonHash,
@@ -41,7 +42,19 @@ test("Fake Harness completes on a non-default target and restart retries only de
       risks: [],
       limitations: [],
     },
-    { kind: "review", decision: "accepted", findings: [], remainingGaps: [] },
+    {
+      kind: "review",
+      decision: "accepted",
+      findings: [],
+      remainingGaps: [],
+      acceptanceResults: [
+        {
+          criterionIndex: 0,
+          status: "passed",
+          evidence: "Fake validation confirmed answer() returns 42",
+        },
+      ],
+    },
   ];
   const fake = createFakeHarness({
     attempts: outputs.map((output) => ({
@@ -186,6 +199,17 @@ test("Fake Harness completes on a non-default target and restart retries only de
     });
   const signal = new AbortController().signal;
   expect(await makeRunner().runOnce(signal)).toBe(true);
+  expect(
+    githubTaskSnapshot([await remote.store().get(41)]).inspection.tasks[0]
+      ?.acceptanceChecklist,
+  ).toEqual([
+    {
+      criterionIndex: 0,
+      criterion: "answer is 42",
+      status: "passed",
+      evidence: "Fake validation confirmed answer() returns 42",
+    },
+  ]);
   fake.assertComplete();
   expect(hooks).toBe(1);
   merged = true;

@@ -5,6 +5,7 @@ import {
   ReasoningEffortSchema,
   RetryIndexSchema,
 } from "../harness/contracts";
+import { AcceptanceChecklistItemSchema } from "./acceptance-checklist";
 import {
   ContextRefSchema,
   ModelProfileSchema,
@@ -82,6 +83,7 @@ const InspectionTaskSchema = z
     id: NonEmpty,
     issueUrl: z.string().url().optional(),
     pullRequestUrl: z.string().url().optional(),
+    acceptanceChecklist: z.array(AcceptanceChecklistItemSchema),
     failure: NonEmpty.optional(),
     status: TaskStatusSchema,
     usageIncomplete: z.boolean().optional(),
