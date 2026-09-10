@@ -1,4 +1,7 @@
+import { homedir } from "node:os";
 import type { Command } from "commander";
+import { activeAgileCycle } from "../../domain/agile-cycle";
+import { loadRocSettingsIfPresent } from "../../settings";
 import {
   commandProjectRoot,
   currentCycle,
@@ -9,6 +12,7 @@ import { resolveProjectDisplaySlug } from "../project-root";
 import { buildTaskBoardSnapshot } from "../task-board-model";
 import { renderTaskBoard } from "../task-board-renderer";
 import { runTaskBoardSession } from "../task-board-session";
+import { renderWelcome } from "../tui-renderer";
 import type { CliCommandContext } from "../types";
 
 /** Displays GitHub checkpoints without creating a local task database. */
@@ -76,15 +80,69 @@ export async function executeTaskBoard(
   }
 }
 
-/** Registers the read-only board alias. */
+/** Opens Welcome immediately; configuration and remote failures remain recoverable status. */
+export async function executeTui(context: CliCommandContext): Promise<number> {
+  const { input, output } = context.io;
+  if (!input?.isTTY || !output?.isTTY) {
+    context.io.out(renderWelcome(output?.columns ?? 80));
+    return 0;
+  }
+  let projectSlug: string | undefined;
+  try {
+    await runTaskBoardSession({
+      input,
+      output,
+      /** Returns the project label resolved during checkpoint refresh. */
+      get projectSlug() {
+        return projectSlug;
+      },
+      initialTab: "welcome",
+      refreshIntervalMs: 30000,
+      /** Loads settings and remote checkpoints while leaving setup failures recoverable. */
+      async read() {
+        const settings = await loadRocSettingsIfPresent(
+          context.runtime.homeRoot ?? homedir(),
+        );
+        if (!settings)
+          throw new Error(
+            "Roc settings not configured. Run roc-it onboard, then press R. GitHub connection not checked.",
+          );
+        const repoPath = await commandProjectRoot(context, {
+          allowCurrentDirectory: true,
+        });
+        projectSlug = await resolveProjectDisplaySlug(repoPath);
+        if (!context.runtime.readTasks)
+          throw new Error("GitHub task reads are unavailable");
+        const snapshot = await context.runtime.readTasks(repoPath);
+        const cycle = activeAgileCycle(
+          settings.cycle,
+          context.runtime.now?.() ?? new Date(),
+        );
+        return buildTaskBoardSnapshot({
+          tasks: snapshot.tasks,
+          inspection: snapshot.inspection,
+          currentCycleId: cycle.id,
+          remoteCheckpoints: true,
+          usageIncomplete: snapshot.usageIncomplete,
+        });
+      },
+    });
+    return 0;
+  } catch (error) {
+    context.io.err(errorMessage(error));
+    return 1;
+  }
+}
+
+/** Registers the read-only Welcome entry. */
 export function registerTuiCommand(
   program: Command,
   context: CliCommandContext,
 ): void {
   program
     .command("tui")
-    .description("Open the GitHub task board")
+    .description("Open Welcome and the read-only Tasks monitor")
     .action(async () => {
-      context.exitCode = await executeTaskBoard(context);
+      context.exitCode = await executeTui(context);
     });
 }

@@ -27,6 +27,7 @@ test("empty arguments, help, and --help describe the public command tree", async
   expect(help).toContain("task");
   expect(help).toContain("tokens");
   expect(help).toContain("tui");
+  expect(help).toContain("Open Welcome and the read-only Tasks monitor");
   expect(help).toContain("scheduler");
   expect(help).not.toContain("--db");
   expect(help).not.toContain("--repo");
