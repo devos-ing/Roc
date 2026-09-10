@@ -150,6 +150,19 @@ Details include elapsed time, attempt time, merge waiting, recent activity and i
 Use `task acceptance <issue>` to read the original acceptance criteria and any
 per-item automated Review evidence. It is read-only; human acceptance remains
 separate.
+When a task ends rejected, failed or retired, every task that depends on it
+would wait forever. Point those dependents at a replacement task in the same
+plan using `task supersede`:
+
+```bash
+bun "$ROC_CLI_ENTRY" task supersede 41 44
+```
+
+The command rewrites each dependent's dependency list onto the replacement
+Issue, re-establishes the plan's trusted approvals and leaves a status comment
+explaining the change. Run it signed in as a trusted publisher. It refuses
+cross-plan supersede, terminal replacements and rewrites that would introduce a
+dependency cycle; recovery stays an explicit operator action.
 Watch the daemon terminal for individual live actions. GitHub saves summaries at phase boundaries,
 with at most one extra activity update per 30 seconds.
 Use `task list`, `scheduler inspect`, `tokens`, or `help` for more information.

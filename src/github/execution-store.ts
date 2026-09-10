@@ -4,7 +4,7 @@ import {
   StoredTaskSchema,
   TaskStatusSchema,
 } from "../domain/schemas";
-import { assertTransition } from "../domain/transitions";
+import { assertTransition, isTerminal } from "../domain/transitions";
 import {
   HarnessActivitySchema,
   HarnessAttemptSchema,
@@ -20,6 +20,9 @@ import {
   parseRemoteTaskEnvelope,
   type RemoteTaskEnvelope,
   remotePlanId,
+  remoteTaskEnvelope,
+  renderRemoteTaskApproval,
+  renderRemoteTaskBody,
 } from "./remote-tasks";
 
 const Sha = z.string().regex(/^[0-9a-f]{40}$/);
@@ -139,8 +142,20 @@ export type NativeTask = {
 };
 export type IssueAccess = Pick<
   GitHubRemoteIssueReader,
-  "read" | "get" | "writeComment" | "setStatusLabel" | "closeCompleted"
+  | "read"
+  | "get"
+  | "writeComment"
+  | "editBody"
+  | "setStatusLabel"
+  | "closeCompleted"
 >;
+
+/** Reports one supersede: rescued dependents and every re-published plan member. */
+export type SupersedeResult = {
+  planId: string;
+  dependentIssues: number[];
+  rewrittenIssues: number[];
+};
 const marker = "<!-- roc:execution\n";
 
 /** Creates the first remote checkpoint before any role begins. */
@@ -433,6 +448,133 @@ export class GitHubExecutionStore {
         "Issue closure authority changed or done evidence is missing",
       );
     await this.api.closeCompleted(this.repository, task.issue.number);
+  }
+
+  /** Repoints every same-plan dependent of one task onto a replacement task after validating the whole rewrite. */
+  async supersede(
+    oldNumber: number,
+    newNumber: number,
+  ): Promise<SupersedeResult> {
+    if (oldNumber === newNumber)
+      throw Error("The replacement task must differ from the superseded task");
+    const { tasks } = await this.list();
+    const oldTask = tasks.find((item) => item.issue.number === oldNumber);
+    const newTask = tasks.find((item) => item.issue.number === newNumber);
+    if (!oldTask)
+      throw Error(`Issue #${oldNumber} is not a readable Roc task Issue`);
+    if (!newTask)
+      throw Error(`Issue #${newNumber} is not a readable Roc task Issue`);
+    if (oldTask.envelope.planId !== newTask.envelope.planId)
+      throw Error(
+        `Cannot supersede across plans: Issue #${oldNumber} and Issue #${newNumber} belong to different plans`,
+      );
+    if (isTerminal(newTask.task.status))
+      throw Error(
+        `Replacement Issue #${newNumber} is already terminal (${newTask.task.status}); supersede with a live replacement task`,
+      );
+    const plan = tasks.filter(
+      (item) => item.envelope.planId === oldTask.envelope.planId,
+    );
+    const cycleId = oldTask.envelope.cycleId;
+    const goal = oldTask.envelope.goal;
+    if (
+      remotePlanId({
+        cycleId,
+        goal,
+        tasks: plan.map((item) => item.envelope.task),
+      }) !== oldTask.envelope.planId
+    )
+      throw Error(
+        `The plan of Issue #${oldNumber} is incomplete, changed or cyclic; reconcile it before superseding`,
+      );
+    const oldId = oldTask.envelope.task.id;
+    const newId = newTask.envelope.task.id;
+    const rewrittenTasks = plan.map((item) => {
+      const task = item.envelope.task;
+      if (!task.spec.dependencies.includes(oldId)) return task;
+      return {
+        ...task,
+        spec: {
+          ...task.spec,
+          dependencies: task.spec.dependencies.map((dependency) =>
+            dependency === oldId ? newId : dependency,
+          ),
+        },
+      };
+    });
+    const manifest = { cycleId, goal, tasks: rewrittenTasks };
+    const byId = new Map(manifest.tasks.map((task) => [task.id, task]));
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    /** Verifies that the rewritten dependencies exist and stay acyclic. */
+    function visit(id: string): void {
+      if (visited.has(id)) return;
+      const task = byId.get(id);
+      if (!task || visiting.has(id))
+        throw Error(
+          `Supersede refused: replacing ${oldId} with ${newId} would leave the dependency graph cyclic or incomplete`,
+        );
+      visiting.add(id);
+      for (const dependency of task.spec.dependencies) visit(dependency);
+      visiting.delete(id);
+      visited.add(id);
+    }
+    for (const task of manifest.tasks) visit(task.id);
+    const planId = remotePlanId(manifest);
+    const dependencyIssues = new Map(
+      plan.map((item) => [item.envelope.task.id, item.issue.number]),
+    );
+    const envelopes = new Map(
+      manifest.tasks.map((task) => [
+        task.id,
+        remoteTaskEnvelope(manifest, task.id),
+      ]),
+    );
+    const dependentIssues: number[] = [];
+    const rewrittenIssues: number[] = [];
+    for (const member of plan) {
+      const envelope = envelopes.get(member.envelope.task.id);
+      if (!envelope) throw Error("Supersede envelope resolution failed");
+      const isDependent =
+        member.envelope.task.spec.dependencies.includes(oldId);
+      const changed = jsonHash(member.envelope) !== jsonHash(envelope);
+      if (isDependent) dependentIssues.push(member.issue.number);
+      if (!changed && member.approved) continue;
+      try {
+        if (changed)
+          await this.api.editBody(
+            this.repository,
+            member.issue.number,
+            renderRemoteTaskBody(envelope, dependencyIssues),
+          );
+        await this.api.writeComment(
+          this.repository,
+          member.issue.number,
+          renderRemoteTaskApproval(envelope),
+        );
+      } catch {
+        // A failed response can follow a successful remote write; confirm before failing.
+      }
+      const fresh = await this.get(member.issue.number);
+      if (jsonHash(fresh.envelope) !== jsonHash(envelope) || !fresh.approved)
+        throw new AgileError({
+          code: "GITHUB_SUPERSEDE_UNCONFIRMED",
+          category: "infra",
+          component: "github-state",
+          retryable: true,
+          message: `Issue #${member.issue.number}: the supersede write could not be confirmed; reconcile the remote plan before retrying`,
+        });
+      rewrittenIssues.push(member.issue.number);
+      if (isDependent)
+        await this.api
+          .writeComment(
+            this.repository,
+            member.issue.number,
+            `Supersede: dependency ${oldId} (Issue #${oldNumber}) was replaced by ${newId} (Issue #${newNumber}); plan approvals were re-established.`,
+          )
+          .catch(() => undefined);
+    }
+    return { planId, dependentIssues, rewrittenIssues };
   }
 
   /** Repairs the readable status label from the confirmed checkpoint without replaying work. */

@@ -171,6 +171,36 @@ export function registerTaskCommands(
       }
     });
   task
+    .command("supersede <oldIssue> <newIssue>")
+    .description("Point dependents of a dead task at a replacement task")
+    .action(async (oldValue: string, newValue: string) => {
+      try {
+        const oldIssue = issueNumber(oldValue);
+        const newIssue = issueNumber(newValue);
+        const root = await commandProjectRoot(context);
+        const { store, login } = await connectGitHub(root);
+        if (!store.publishers.has(login))
+          throw Error("Current GitHub login is not a trusted publisher");
+        const result = await store.supersede(oldIssue, newIssue);
+        if (!result.dependentIssues.length && !result.rewrittenIssues.length) {
+          context.io.out(
+            `No task depends on Issue #${oldIssue}; nothing was changed`,
+          );
+          return;
+        }
+        context.io.out(
+          `Superseded Issue #${oldIssue} with Issue #${newIssue} (plan ${result.planId.slice(0, 13)})`,
+        );
+        for (const number of result.dependentIssues)
+          context.io.out(
+            `Rewrote dependent Issue #${number} onto Issue #${newIssue}`,
+          );
+      } catch (error) {
+        context.io.err(errorMessage(error));
+        context.exitCode = 1;
+      }
+    });
+  task
     .command("retire <issue>")
     .description("Close a GitHub task without treating it as completed work")
     .requiredOption("--reason <text>", "Why the task is no longer needed")
