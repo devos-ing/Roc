@@ -239,6 +239,16 @@ ownership lock until its processes and uncertain remote writes are reconciled.
 A timed-out repository lookup during startup gets one read-only retry before
 any task starts; a second failure reports `GITHUB_REPOSITORY_UNAVAILABLE`.
 
+When GitHub reports a rate limit, the daemon pauses GitHub requests and retries
+reads after `Retry-After` or the quota reset time. Workers share this pause. If
+GitHub supplies neither deadline, retries start after one minute and back off
+to at most fifteen minutes between attempts. Ctrl-C interrupts the wait.
+See [GitHub's rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
+
+Permission failures still report an error. Mutating commands are not blindly
+replayed: checkpoint and PR writes keep their existing readback checks, and
+unconfirmed writes or child cleanup can still retain the ownership lock.
+
 `task board` details show elapsed time, time in agent attempts, merge waiting and
 partial token usage. `scheduler inspect` includes the phase-duration breakdown.
 Recent actions are GitHub checkpoint summaries, refreshed at phase boundaries

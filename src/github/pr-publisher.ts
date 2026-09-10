@@ -63,12 +63,53 @@ export type GitHubPreflight = { assertReady(): Promise<void> };
 
 /** Runs a local gh or git subprocess with argv-only input and bounded diagnostics. */
 export type GitHubCommandRunner = {
-  run(input: { command: string[]; cwd: string }): Promise<{
-    exitCode: number;
-    stdout: string;
-    stderr: string;
-  }>;
+  run(input: { command: string[]; cwd: string }): Promise<GitHubCommandResult>;
 };
+
+export type GitHubCommandResult = {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  httpStatus?: number;
+  rateLimit?: {
+    remaining?: number;
+    resetAt?: number;
+    retryAfterMs?: number;
+  };
+};
+
+/** Removes gh API response headers, including paginated headers, while preserving the JSON body. */
+function githubApiResponse(
+  stdout: string,
+): Pick<GitHubCommandResult, "stdout" | "httpStatus" | "rateLimit"> {
+  let httpStatus: number | undefined;
+  let rateLimit: GitHubCommandResult["rateLimit"];
+  const body = stdout.replace(
+    /(^|[\n[,])HTTP\/[\d.]+ (\d{3})[A-Za-z \t-]*\r?\n(?:[\w-]+:[^\r\n]*\r?\n)*\r?\n/gu,
+    (headers: string, prefix: string, status: string) => {
+      httpStatus = Number(status);
+      const remaining = headers.match(
+        /^x-ratelimit-remaining:\s*(\d+)/imu,
+      )?.[1];
+      const reset = headers.match(/^x-ratelimit-reset:\s*(\d+)/imu)?.[1];
+      const retry = headers.match(/^retry-after:\s*([^\r\n]+)/imu)?.[1];
+      rateLimit = {
+        remaining: remaining === undefined ? undefined : Number(remaining),
+        resetAt: reset === undefined ? undefined : Number(reset) * 1_000,
+        retryAfterMs:
+          retry === undefined
+            ? undefined
+            : /^\d+$/u.test(retry)
+              ? Number(retry) * 1_000
+              : Date.parse(retry) - Date.now(),
+      };
+      return prefix;
+    },
+  );
+  return httpStatus === undefined
+    ? { stdout }
+    : { stdout: body, httpStatus, rateLimit };
+}
 
 /** Signals an unavailable GitHub prerequisite or unrecoverable publication result. */
 export class GitHubPublicationError extends Error {
@@ -88,9 +129,16 @@ export class BunGitHubCommandRunner implements GitHubCommandRunner {
   async run(input: {
     command: string[];
     cwd: string;
-  }): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  }): Promise<GitHubCommandResult> {
+    const api = input.command[0] === "gh" && input.command[1] === "api";
+    const command =
+      api &&
+      !input.command.includes("--include") &&
+      !input.command.includes("-i")
+        ? [...input.command, "--include"]
+        : input.command;
     const process = Bun.spawn({
-      cmd: input.command,
+      cmd: command,
       cwd: input.cwd,
       env: gitPathResolutionEnvironment(),
       stdin: "ignore",
@@ -110,7 +158,7 @@ export class BunGitHubCommandRunner implements GitHubCommandRunner {
       ]);
       return {
         exitCode: timedOut ? 124 : exitCode,
-        stdout,
+        ...(api ? githubApiResponse(stdout) : { stdout }),
         stderr: timedOut
           ? `${stderr}${stderr === "" ? "" : "\n"}command timed out`
           : stderr,
