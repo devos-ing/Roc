@@ -821,6 +821,45 @@ test("parallel PR merge refreshes the next patch, runs an independent exact-targ
   f.fake.assertComplete();
 });
 
+test("withdrawn authority during pre-refresh checklist invalidation prevents branch mutation", async () => {
+  const f = fixture(2);
+  await tick(f, false);
+  await tick(f, false);
+  const task = await f.store.get(42);
+  const get = f.store.get.bind(f.store);
+  let reads = 0;
+  let withdrawn = false;
+  let withdrawalRead = 0;
+  f.store.get = async (number) => {
+    const task = await get(number);
+    if (number !== 42) return task;
+    reads++;
+    if (reads !== 4) return task;
+    withdrawn = true;
+    withdrawalRead = reads;
+    return { ...task, approved: false };
+  };
+  const publications = f.publications.length;
+  const runner = new GitHubTaskRunner(f.input);
+  const refreshBase = Reflect.get(runner, "refreshBase");
+  if (typeof refreshBase !== "function") throw Error("Missing refreshBase");
+  await refreshBase.call(
+    runner,
+    task,
+    sha("c", 41),
+    new AbortController().signal,
+  );
+  expect(withdrawn).toBe(true);
+  expect(withdrawalRead).toBe(4);
+  const record = await f.record(42);
+  expect(f.events).not.toContain("refresh-start:42");
+  expect(f.publications).toHaveLength(publications);
+  expect(record.publication?.commitSha).toBe(sha("b", 42));
+  expect(record.refreshes?.[0]?.result).toBeUndefined();
+  expect(record.attempts).toHaveLength(3);
+  expect(f.prs.get(42)?.merged).toBe(false);
+});
+
 test("approved Scout omission retains exact-head Review, re-review after refresh and original Implement history", async () => {
   const f = fixture(1, false, true);
   await tick(f, false);

@@ -1049,7 +1049,8 @@ export class GitHubTaskRunner {
       jsonHash(authority.execution) !== jsonHash(record)
     )
       throw Error("Issue authority changed before base refresh");
-    await this.invalidateChecklistPublication(task, record, signal);
+    if (!(await this.invalidateChecklistPublication(task, record, signal)))
+      return;
     const headSha = await this.input.branches.refresh(task.task.id, {
       ...refresh,
       baseBranch: record.baseBranch,
@@ -1093,7 +1094,7 @@ export class GitHubTaskRunner {
     if (!(await this.runRole(task, record, "review", signal))) return;
     if (!this.hasMergeReview(record))
       throw Error("Fresh Review evidence is missing or mismatched");
-    await this.refreshChecklistPublication(task, record, signal);
+    if (!(await this.refreshChecklistPublication(task, record, signal))) return;
     record.phase = "awaiting_merge";
     delete record.failure;
     await this.checkpoint(task, record, signal);
@@ -1193,20 +1194,20 @@ export class GitHubTaskRunner {
     task: NativeTask,
     record: ExecutionRecord,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const acceptance = this.publicationAcceptance(record);
     if (acceptance === undefined || record.publication === undefined)
       throw Error("Fresh Review publication evidence is missing");
-    await this.reconcileChecklistPublication(task, record, signal, acceptance);
+    return this.reconcileChecklistPublication(task, record, signal, acceptance);
   }
 
-  /** Replaces stale checked rows with unverified rows after a refreshed head is lease-pushed and before fresh Review begins. */
+  /** Replaces stale checked rows with unverified rows before the refreshed head is lease-pushed. */
   private async invalidateChecklistPublication(
     task: NativeTask,
     record: ExecutionRecord,
     signal: AbortSignal,
-  ): Promise<void> {
-    await this.reconcileChecklistPublication(task, record, signal, undefined);
+  ): Promise<boolean> {
+    return this.reconcileChecklistPublication(task, record, signal, undefined);
   }
 
   /** Updates only the existing PR body after verifying its current remote head without pushing the task branch. */
@@ -1215,7 +1216,7 @@ export class GitHubTaskRunner {
     record: ExecutionRecord,
     signal: AbortSignal,
     acceptance: ReturnType<typeof this.publicationAcceptance> | undefined,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const implementation = record.attempts.findLast(
       (attempt) =>
         attempt.status === "succeeded" && attempt.output?.kind === "implement",
@@ -1230,7 +1231,7 @@ export class GitHubTaskRunner {
       authority.blockedReason ||
       authority.issue.state !== "OPEN"
     )
-      return;
+      return false;
     const pr = await this.input.publisher.publish({
       task: {
         ...task.task,
@@ -1251,6 +1252,7 @@ export class GitHubTaskRunner {
     signal.throwIfAborted();
     publication.number = pr.number;
     publication.url = pr.url;
+    return true;
   }
 
   /** Reads only the PR fields needed for dependency and completion verification. */
