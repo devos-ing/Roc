@@ -33,11 +33,7 @@ export function registerSchedulerCommands(
       "--auto-merge",
       "Squash merge reviewed PR heads after strict GitHub protection, checks and reviews pass",
     )
-    .option(
-      "--concurrency <count>",
-      "Concurrent independent Issues (1 or 2)",
-      "2",
-    )
+    .option("--concurrency <count>", "Concurrent independent Issues (1-8)", "2")
     .action(
       async (options: {
         baseBranch?: string;
@@ -47,8 +43,8 @@ export function registerSchedulerCommands(
         autoMerge?: boolean;
         concurrency: string;
       }) => {
-        if (options.concurrency !== "1" && options.concurrency !== "2") {
-          context.io.err("--concurrency must be 1 or 2");
+        if (!/^[1-8]$/.test(options.concurrency)) {
+          context.io.err("--concurrency must be an integer from 1 through 8");
           context.exitCode = 2;
           return;
         }
@@ -79,7 +75,7 @@ export function registerSchedulerCommands(
             baseBranch: options.baseBranch,
             once: options.once,
             autoMerge: options.autoMerge,
-            concurrency: options.concurrency === "1" ? 1 : 2,
+            concurrency: Number(options.concurrency),
           });
           context.io.out("Result: Stopped");
         } catch (error) {

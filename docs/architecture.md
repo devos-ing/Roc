@@ -1,7 +1,7 @@
 # Architecture
 
 GitHub Issues own Roc's task specifications, approvals and execution checkpoints.
-`GitHubTaskPool` admits up to two independent Issues. Each `GitHubTaskRunner`
+`GitHubTaskPool` admits two independent Issues by default, configurable up to eight. Each `GitHubTaskRunner`
 executes Scout, Implement and independent
 Review through `AgentHarness`. Pi is the only production backend; the Fake
 Harness scripts deterministic tests. Roc does not invoke Codex CLI or Claude
@@ -61,7 +61,8 @@ outage stops the invocation; it cannot advance roles offline.
 ## Parallel admission
 
 One pool owns an Issue-keyed map of live workers. The default capacity is two;
-`--concurrency 1` serializes work and `--once` admits one task. Admission reserves
+`--concurrency 1` serializes work, integer values through `8` increase the limit,
+and `--once` admits one task. Admission reserves
 the Issue before starting its worker and captures existing worker IDs before
 each remote read. Those IDs stay excluded for the entire snapshot, even if
 their worker finishes while the read is pending. Completion wakes admission to

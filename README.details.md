@@ -9,13 +9,13 @@ The daemon saves attempts, model choices, usage, role results and PR receipts
 in one comment per Issue owned by its GitHub account. Labels show status; they
 do not lock tasks or grant execution permission.
 
-[Open the interactive architecture map](output/archify/roc-current/roc-architecture.html), authored in Traditional Chinese with English viewer controls. Download the HTML and open it locally; GitHub displays its source.
+[Open the interactive architecture map](output/archify/roc-current/roc-architecture.html), authored in English with source links for the current architecture. Download the HTML and open it locally; GitHub displays its source.
 
-![Roc architecture map, Traditional Chinese](docs/assets/roc-architecture.png)
+![Roc architecture map: GitHub task state, parallel worktrees, and verified merges](docs/assets/roc-architecture.png)
 
 Planning and execution can share one machine. The roles in the diagram do not require two Macs.
 
-The daemon runs up to two independent Issues. Each task has its own retained worktree at
+The daemon runs two independent Issues by default, configurable up to eight. Each task has its own retained worktree at
 `<project>.agile-worktrees/issue-<number>` and branch `agile/issue-<number>`.
 No task database is created. Local files hold configuration, worktrees, locks,
 diagnostic logs and Pi sessions. Guarded automatic PR merge is opt-in, with at
@@ -189,7 +189,8 @@ single-run execution for the successful tasks.
 
 ### Parallel admission
 
-The default is `--concurrency 2`; use `--concurrency 1` to serialize execution.
+The default is `--concurrency 2`; choose an integer from `1` through `8`.
+Use `--concurrency 1` to serialize execution.
 When one task finishes, its slot can start another without waiting for a slower
 task. `--once` still processes only one task. The board shows all running Issues,
 and terminal events include their task IDs.
@@ -452,7 +453,7 @@ task board [--all] [--history]             Open the read-only board
 tui                                      Open the same board
 task trust-hooks ISSUE --phase PHASE      Approve an exact hook configuration
 task retire ISSUE --reason TEXT           Close an Issue without completing it
-scheduler run [--base-branch BRANCH] [--concurrency 1|2] [--once] [--auto-merge]
+scheduler run [--base-branch BRANCH] [--concurrency 1-8] [--once] [--auto-merge]
 scheduler inspect                        Read GitHub execution checkpoints
 tokens [--no-color]                       Show confirmed token usage
 ```

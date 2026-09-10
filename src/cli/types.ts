@@ -43,7 +43,8 @@ export type RealSchedulerRunInput = {
   /** Selects the sole supported GitHub task source. */
   source?: "github";
   once?: boolean;
-  concurrency?: 1 | 2;
+  /** Limits independent tasks to an integer from one through eight; defaults to two. */
+  concurrency?: number;
   /** Opts into strict-policy squash merge of the exact independently reviewed PR head. */
   autoMerge?: boolean;
 };

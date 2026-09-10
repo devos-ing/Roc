@@ -24,7 +24,7 @@ flowchart LR
     merge --> done["核對合併 → done → 釋放依賴"]
 ```
 
-[互動架構圖](output/archify/roc-current/roc-architecture.html) · [每項任務的流程](README.details.zh-HK.md#每項任務的流程)
+[互動架構圖（英文）](output/archify/roc-current/roc-architecture.html) · [每項任務的流程](README.details.zh-HK.md#每項任務的流程)
 
 互動圖請下載 HTML 後在瀏覽器開啟；GitHub 頁面顯示原始碼。
 

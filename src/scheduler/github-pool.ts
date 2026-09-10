@@ -52,15 +52,16 @@ export class GitHubTaskPool {
   /** Shares provider and Git boundaries while creating hook and cancellation ownership per task. */
   constructor(
     private readonly input: Omit<GitHubRunnerInput, "hooks"> & {
-      concurrency?: 1 | 2;
+      concurrency?: number;
     },
   ) {
     if (
       input.concurrency !== undefined &&
-      input.concurrency !== 1 &&
-      input.concurrency !== 2
+      (!Number.isInteger(input.concurrency) ||
+        input.concurrency < 1 ||
+        input.concurrency > 8)
     )
-      throw Error("Concurrency must be 1 or 2");
+      throw Error("Concurrency must be an integer from 1 through 8");
     this.selector = new GitHubTaskRunner(input);
   }
 

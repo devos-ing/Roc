@@ -110,7 +110,7 @@ function scripts(ids: string[]) {
 }
 
 /** Connects task gates to the real pool and runner using deterministic Fake Harness deliveries. */
-function fixture(scopes: string[][], concurrency: 1 | 2 = 2) {
+function fixture(scopes: string[][], concurrency = 2) {
   const remote = memoryPlan(scopes);
   const ids = scopes.map((_, index) => `issue-${41 + index}`);
   const fake = createFakeHarness(scripts(ids));
@@ -204,6 +204,32 @@ function fixture(scopes: string[][], concurrency: 1 | 2 = 2) {
     },
   };
 }
+
+test("eight task slots stay bounded and refill while unrelated Issues remain blocked", async () => {
+  const f = fixture(
+    Array.from({ length: 9 }, (_, index) => [`file-${index}.ts`]),
+    8,
+  );
+  const stop = new AbortController();
+  const run = f.pool.run(stop.signal).catch((error) => {
+    if (!stop.signal.aborted) throw error;
+  });
+  try {
+    await Promise.all(f.entered.slice(0, 8).map((gate) => gate.promise));
+    expect(f.started).toHaveLength(8);
+    expect(f.started).not.toContain("issue-49");
+    f.release[7]?.release();
+    await f.entered[8]?.promise;
+    expect(f.started).toHaveLength(9);
+    expect((await f.store.get(41)).execution?.phase).toBe("scouting");
+    expect((await f.store.get(48)).execution?.phase).toBe("awaiting_merge");
+  } finally {
+    stop.abort();
+    for (const gate of f.release) gate.release();
+    await f.pool.cancel();
+    await run;
+  }
+});
 
 test("a worker that finishes during a remote read is excluded from that stale admission snapshot", async () => {
   const f = fixture([["a.ts"], ["b.ts"]]);

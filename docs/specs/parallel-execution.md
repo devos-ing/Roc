@@ -5,8 +5,9 @@ M1's GitHub checkpoints, exact approvals, merge dependencies and retained
 ownership remain authoritative. Superset and automatic PR merge are outside M2.
 
 1. One daemon admits at most two Issues by default. `--concurrency 1` runs
-   sequentially; values other than 1 or 2 are rejected. `--once` continues to
-   process one eligible task and return.
+   sequentially; integer values through 8 select a higher limit. Values outside
+   1 through 8 and non-integers are rejected. `--once` continues to process one
+   eligible task and return.
 2. Reserve an Issue before starting its worker. Repeated polling cannot launch
    the same Issue twice. Refill a free slot after completion without waiting for
    an unrelated slow task. Each task keeps its worktree, attempt IDs, Pi sessions,

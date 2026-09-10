@@ -7,30 +7,48 @@
 # Roc
 
 Turn approved GitHub Issues into independently reviewed pull requests.
-One Roc daemon runs up to two tasks in separate worktrees. Merge manually,
+One Roc daemon runs two tasks in separate worktrees by default. Merge manually,
 or enable automatic merge after CI and branch-protection checks pass.
 
 ## How it works
 
 ```mermaid
-flowchart LR
-    plan["Chat, plan and approve"] --> issues["GitHub Issues"]
-    issues --> daemon["One Roc daemon"]
-    daemon --> a["Task A: worktree + Pi"]
-    daemon --> b["Task B: worktree + Pi"]
-    a --> pr["Independent Review → PR + CI"]
+flowchart TD
+    plan["Approve a plan and acceptance criteria"] --> issues["GitHub Issues: specifications and checkpoints"]
+    issues --> pool["One Roc daemon · 2 tasks by default · configurable 1–8"]
+    pool --> a["Task A · own Git worktree<br/>Scout → Implement → independent Review"]
+    pool --> b["Task B · own Git worktree<br/>Scout → Implement → independent Review"]
+    a --> pr["Reviewed PR + CI<br/>awaiting_merge"]
     b --> pr
-    pr --> merge["Manual or guarded automatic merge"]
-    merge --> done["Verify merge → done → release dependencies"]
+    pr --> manual["Manual merge · default"]
+    pr --> automatic["--auto-merge<br/>Exact reviewed head + CI + branch protections"]
+    manual --> done["Roc verifies the merge → done<br/>Dependent tasks can start"]
+    automatic --> done
 ```
 
-[Interactive architecture map](output/archify/roc-current/roc-architecture.html), authored in Traditional Chinese with English viewer controls. Download the HTML and open it locally; GitHub displays its source.
+[Interactive architecture map](output/archify/roc-current/roc-architecture.html) · [Full-size diagram](docs/assets/roc-architecture.png) · [Source-level architecture](docs/architecture.md).
+The map is in English and links each component to the code at the documented revision.
+Download the HTML and open it locally; GitHub displays its source.
 See the [per-task workflow](README.details.md#per-task-workflow) for review and recovery paths.
 
 - **GitHub holds task state.** Issues retain specifications, approvals, checkpoints and usage. PRs provide commit and merge evidence. There is no local SQLite task queue.
 - **Roc coordinates; Pi executes.** The default flow is Scout → Implement → independent Review, with a separate Pi session per role. Explicitly approved low-risk tasks can omit Scout with `skipScout: true`.
-- **Parallel work has boundaries.** Only disjoint scopes overlap. Ambiguous or overlapping scopes and tasks with hooks run alone. Run one daemon per repository.
+- **Parallel work has boundaries.** Two tasks run by default; `--concurrency 1` through `8` sets the limit. Only disjoint scopes overlap. Ambiguous or overlapping scopes and tasks with hooks run alone. Run one daemon per repository.
 - **An open PR is not done.** It stays `awaiting_merge` until Roc verifies the merge. An advanced base permits at most two clean rebases, each followed by fresh Review and CI.
+
+### Read the task state
+
+| State | Meaning | What to do |
+| --- | --- | --- |
+| `ready` | Approved work waiting for a slot, compatible scopes, or dependencies. | Keep the daemon running; check blockers in task details. |
+| `scouting`, `implementing`, `reviewing` | Pi is working in the task's own worktree. | Watch `task board` and the daemon's task-tagged activity. |
+| `awaiting_merge` | Review accepted the PR; its merge is not yet verified. | Merge it manually, or let `--auto-merge` wait for its required checks and approvals. |
+| `done` | Roc verified the PR's merge into the target branch. | Dependent tasks may now start. |
+| `needs_replan` | The recorded work needs a decision or repair before continuing. | Inspect the reason and follow the recovery guide; restarting alone does not resolve it. |
+
+One operator runs the daemon. Teammates create and approve Issues, inspect
+acceptance evidence, and review PRs in GitHub. The board reads shared checkpoints;
+it does not launch another worker or grant approval.
 
 New Codex setups select GPT-6 Astra; existing model settings are preserved.
 New Scout/Review attempts use `high` reasoning; Implement uses `medium`.
@@ -90,13 +108,22 @@ terminal environment, give it the absolute Roc entrypoint path.
 Install `grilling` and `unslop` in your planning assistant if missing; see
 [planning skills](README.details.md#planning-skills).
 
+If you already have an approved backlog JSON file, publish it directly:
+
+```bash
+bun "$ROC_CLI_ENTRY" task publish-github ./backlog.json
+```
+
+Task creation uses GitHub Issues. The old `task import` command and local SQLite
+queue are no longer part of this workflow.
+
 ### 3. Start the daemon
 
 In the same project and terminal, replace `main` with your target branch:
 
 ```bash
 bun "$ROC_CLI_ENTRY" task list
-bun "$ROC_CLI_ENTRY" scheduler run --base-branch main
+bun "$ROC_CLI_ENTRY" scheduler run --base-branch main --concurrency 2
 ```
 
 Leave the terminal open. Press `Ctrl-C` to stop. Restarting rereads saved
@@ -106,7 +133,7 @@ For unattended work, use OS/container isolation because Pi has no built-in sandb
 
 After configuring required CI, strict up-to-date checks and protection for administrators,
 add `--auto-merge` to enable automatic merging. See [merge setup](README.details.md#optional-automatic-pr-merge).
-Use `--concurrency 1` for sequential execution; `--once` processes one task.
+Use `--concurrency 1` through `8` to choose the task limit; `--once` processes one task.
 
 ### 4. Follow progress
 

@@ -66,7 +66,7 @@ test("public task reads use GitHub, preserve legacy files, and scheduler rejects
     ).toBe(2);
     expect(runs).toHaveLength(1);
     expect(
-      await runCli(["scheduler", "run", "--concurrency", "3"], io, runtime),
+      await runCli(["scheduler", "run", "--concurrency", "9"], io, runtime),
     ).toBe(2);
     expect(runs).toHaveLength(1);
     expect(
@@ -83,6 +83,29 @@ test("public task reads use GitHub, preserve legacy files, and scheduler rejects
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("GitHub scheduler accepts bounded concurrency from one through eight", async () => {
+  for (const value of ["1", "3", "8", "0", "9", "1.5", "NaN"]) {
+    const runs: SchedulerRunInput[] = [];
+    const valid = ["1", "3", "8"].includes(value);
+    const code = await runCli(
+      ["scheduler", "run", "--concurrency", value],
+      {
+        out: () => {},
+        err: () => {},
+      },
+      {
+        projectRoot: "/fixture",
+        async runScheduler(input) {
+          runs.push(input);
+        },
+      },
+    );
+    expect(code).toBe(valid ? 0 : 2);
+    expect(runs).toHaveLength(valid ? 1 : 0);
+    if (valid) expect(runs[0]?.concurrency).toBe(Number(value));
   }
 });
 

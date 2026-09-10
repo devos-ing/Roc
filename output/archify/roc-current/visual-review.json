@@ -1,0 +1,17 @@
+{
+  "diagram_type": "architecture",
+  "output": "roc-architecture.html",
+  "specification_sha256": "35ebe012bcd28fbe80002ad6a0124954ca666b70d76a9d4e40a5d31112a09074",
+  "artifact_sha256": "e281ea57d3647cbb89ce076549c8a803a81e9a610d521edef7f7fb522b8f7014",
+  "validation": "9/9 showcase, 0 errors, 0 warnings",
+  "visual_review": "passed",
+  "correction_rounds": 0,
+  "layout_repair_rounds": 2,
+  "reviewed_captures": [
+    "roc-architecture.visual-check.1440x900.light.png",
+    "roc-architecture.visual-check.1440x900.dark.png",
+    "roc-architecture.visual-check.2048x1320.light.png",
+    "roc-architecture.visual-check.2048x1320.dark.png"
+  ],
+  "notes": "Inspected routes, label clearance, node/card fit, both themes, and desktop balance. All four viewport containment checks passed."
+}

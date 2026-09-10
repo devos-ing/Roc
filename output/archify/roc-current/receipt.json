@@ -3,15 +3,15 @@
   "ok": true,
   "command": "deliver",
   "type": "architecture",
-  "input": "roc-architecture.json",
-  "output": "roc-architecture.html",
+  "input": "/Users/roy/Documents/ChatGPT/agile-agents/output/archify/roc-current/roc-architecture.json",
+  "output": "/Users/roy/Documents/ChatGPT/agile-agents/output/archify/roc-current/roc-architecture.html",
   "specification": {
-    "sha256": "7818a1d9fc8c66a4ef06a732899664220f0229546c90e85cc0d12ac107ec628a",
-    "bytes": 4642
+    "sha256": "35ebe012bcd28fbe80002ad6a0124954ca666b70d76a9d4e40a5d31112a09074",
+    "bytes": 5806
   },
   "artifact": {
-    "sha256": "16142b12b126314b2378d71aac5f86f7157704adceec004308c931256acf502a",
-    "bytes": 712780
+    "sha256": "e281ea57d3647cbb89ce076549c8a803a81e9a610d521edef7f7fb522b8f7014",
+    "bytes": 711978
   },
   "validation": {
     "checksPassed": 9,
@@ -24,35 +24,7 @@
   "evidence": {
     "verified": true,
     "repository": "https://github.com/devos-ing/Roc",
-    "revision": "9f9cae0e8796a15e80903469f3e799c075d59773",
-    "references": 8
-  },
-  "visual_review": "passed",
-  "visual_viewports": [
-    {
-      "width": 1440,
-      "height": 900,
-      "overflowX": false,
-      "overflowY": false
-    },
-    {
-      "width": 1600,
-      "height": 1000,
-      "overflowX": false,
-      "overflowY": false
-    },
-    {
-      "width": 1920,
-      "height": 1080,
-      "overflowX": false,
-      "overflowY": false
-    },
-    {
-      "width": 2048,
-      "height": 1320,
-      "overflowX": false,
-      "overflowY": false
-    }
-  ],
-  "correction_rounds": 2
+    "revision": "bd0587ab64a6c4824696101175aa071f03b5cf21",
+    "references": 14
+  }
 }
