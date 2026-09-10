@@ -7,7 +7,7 @@
 GitHub Issues 保存規格、批准和執行紀錄。Daemon 在自己帳戶擁有的一則 Issue comment
 中保存 attempt、模型、用量、角色結果及 PR 資料。Labels 只顯示狀態，不能代替批准或鎖。
 
-[開啟互動架構圖](output/archify/roc-current/roc-architecture.html)。圖中文字為繁體中文，固定操作介面為英文。下載 HTML 後在瀏覽器開啟；GitHub 頁面顯示原始碼。
+[開啟互動架構圖](output/archify/roc-current/roc-architecture.html)。最新架構圖與操作介面均為英文，節點附有對應版本的原始碼連結。下載 HTML 後在瀏覽器開啟；GitHub 頁面顯示原始碼。
 
 ![Roc 最新架構](docs/assets/roc-architecture.png)
 

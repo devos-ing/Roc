@@ -9,9 +9,9 @@ The daemon saves attempts, model choices, usage, role results and PR receipts
 in one comment per Issue owned by its GitHub account. Labels show status; they
 do not lock tasks or grant execution permission.
 
-[Open the interactive architecture map](output/archify/roc-current/roc-architecture.html), authored in Traditional Chinese with English viewer controls. Download the HTML and open it locally; GitHub displays its source.
+[Open the interactive architecture map](output/archify/roc-current/roc-architecture.html), authored in English with source links for the current architecture. Download the HTML and open it locally; GitHub displays its source.
 
-![Roc architecture map, Traditional Chinese](docs/assets/roc-architecture.png)
+![Roc architecture map: GitHub task state, parallel worktrees, and verified merges](docs/assets/roc-architecture.png)
 
 Planning and execution can share one machine. The roles in the diagram do not require two Macs.
 

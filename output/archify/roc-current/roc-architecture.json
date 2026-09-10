@@ -2,49 +2,50 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "Roc｜從批准的 Issue 到合併的 PR",
+    "title": "Roc: approved Issues to merged code",
+    "locale": "en",
     "quality_profile": "showcase",
     "repository": {
       "url": "https://github.com/devos-ing/Roc",
-      "revision": "9f9cae0e8796a15e80903469f3e799c075d59773"
+      "revision": "bd0587ab64a6c4824696101175aa071f03b5cf21"
     },
     "viewBox": [
       1380,
-      565
+      810
     ]
   },
   "components": [
     {
-      "id": "planning",
+      "id": "team-plan",
       "type": "external",
-      "label": "聊天與批准",
-      "sublabel": "人決定需求與驗收條件",
+      "label": "Plan and approve",
+      "sublabel": "Requirements + acceptance",
       "pos": [
         40,
-        75
+        260
       ],
       "size": [
-        240,
-        92
+        220,
+        100
       ],
       "sources": [
         {
-          "path": "src/github/remote-tasks.ts"
+          "path": "skills/roc-create-tasks/SKILL.md"
         }
       ]
     },
     {
-      "id": "issues",
+      "id": "github-authority",
       "type": "cloud",
       "label": "GitHub Issues",
-      "sublabel": "規格、批准、checkpoint",
+      "sublabel": "Specs, approvals, checkpoints",
       "pos": [
-        400,
-        75
+        310,
+        260
       ],
       "size": [
-        240,
-        92
+        220,
+        100
       ],
       "sources": [
         {
@@ -53,74 +54,124 @@
       ]
     },
     {
-      "id": "daemon",
+      "id": "native-task-pool",
       "type": "backend",
-      "label": "唯一 Roc daemon",
-      "sublabel": "核對批准、依賴與 scope",
+      "label": "Roc task pool",
+      "sublabel": "2 by default \u00b7 limit 1\u20138",
       "pos": [
-        760,
-        75
+        580,
+        260
       ],
       "size": [
-        240,
-        92
+        220,
+        100
       ],
       "sources": [
         {
           "path": "src/scheduler/github-pool.ts"
+        },
+        {
+          "path": "src/scheduler/parallel-admission.ts"
         }
       ]
     },
     {
-      "id": "workers",
+      "id": "worker-alpha",
       "type": "backend",
-      "label": "平行任務 A / B",
-      "sublabel": "各自 worktree 與 Pi sessions",
+      "label": "Task A",
+      "sublabel": "Own worktree + Pi sessions",
       "pos": [
-        1120,
-        75
+        850,
+        80
       ],
       "size": [
-        240,
-        92
+        220,
+        100
       ],
       "sources": [
         {
           "path": "src/workspace/task-branch.ts"
+        },
+        {
+          "path": "src/scheduler/github-runner.ts"
         }
       ]
     },
     {
-      "id": "board",
-      "type": "frontend",
-      "label": "進度與用量",
-      "sublabel": "task board / scheduler inspect",
+      "id": "worker-beta",
+      "type": "backend",
+      "label": "Task B",
+      "sublabel": "Own worktree + Pi sessions",
       "pos": [
-        40,
-        395
+        850,
+        440
       ],
       "size": [
-        240,
-        92
+        220,
+        100
       ],
       "sources": [
         {
-          "path": "src/github/execution-view.ts"
+          "path": "src/workspace/task-branch.ts"
+        },
+        {
+          "path": "src/agents/pi/harness.ts"
         }
       ]
     },
     {
-      "id": "done",
+      "id": "reviewed-pull-request",
       "type": "cloud",
-      "label": "確認完成 · done",
-      "sublabel": "讀回合併並核對 ancestry",
+      "label": "Reviewed PR + CI",
+      "sublabel": "awaiting_merge",
       "pos": [
-        400,
-        395
+        1120,
+        260
       ],
       "size": [
-        240,
-        92
+        220,
+        100
+      ],
+      "sources": [
+        {
+          "path": "src/github/pr-publisher.ts"
+        }
+      ]
+    },
+    {
+      "id": "serialized-merge",
+      "type": "security",
+      "label": "Merge verification",
+      "sublabel": "Manual or --auto-merge",
+      "pos": [
+        1120,
+        660
+      ],
+      "size": [
+        220,
+        100
+      ],
+      "sources": [
+        {
+          "path": "src/github/pr-merger.ts"
+        },
+        {
+          "path": "src/scheduler/github-runner.ts"
+        }
+      ]
+    },
+    {
+      "id": "confirmed-done",
+      "type": "cloud",
+      "label": "Merged and verified",
+      "sublabel": "done \u00b7 release dependencies",
+      "pos": [
+        850,
+        660
+      ],
+      "size": [
+        220,
+        100
       ],
       "sources": [
         {
@@ -129,116 +180,109 @@
       ]
     },
     {
-      "id": "gate",
-      "type": "security",
-      "label": "合併協調器",
-      "sublabel": "精確 Review、CI 與保護規則",
+      "id": "team-progress",
+      "type": "frontend",
+      "label": "Board and usage",
+      "sublabel": "task board \u00b7 inspect \u00b7 tokens",
       "pos": [
-        760,
-        395
+        310,
+        660
       ],
       "size": [
-        240,
-        92
+        220,
+        100
       ],
       "sources": [
         {
-          "path": "src/github/pr-merger.ts"
-        }
-      ]
-    },
-    {
-      "id": "pr",
-      "type": "cloud",
-      "label": "GitHub PR + CI",
-      "sublabel": "獨立 Review 通過後發佈",
-      "pos": [
-        1120,
-        395
-      ],
-      "size": [
-        240,
-        92
-      ],
-      "sources": [
+          "path": "src/github/execution-view.ts"
+        },
         {
-          "path": "src/github/pr-publisher.ts"
+          "path": "src/cli/task-board-model.ts"
         }
       ]
     }
   ],
   "connections": [
     {
-      "id": "publish",
-      "from": "planning",
-      "to": "issues",
-      "label": "發佈批准規格"
+      "id": "approve-specification",
+      "from": "team-plan",
+      "to": "github-authority"
     },
     {
-      "id": "authority",
-      "from": "daemon",
-      "to": "issues",
-      "label": "讀取 / 寫回"
+      "id": "read-approved-work",
+      "from": "github-authority",
+      "to": "native-task-pool"
     },
     {
-      "id": "admit",
-      "from": "daemon",
-      "to": "workers",
-      "label": "最多 2 項"
+      "id": "admit-task-alpha",
+      "from": "native-task-pool",
+      "to": "worker-alpha"
     },
     {
-      "id": "inspect",
-      "from": "issues",
-      "to": "board",
-      "label": "讀取紀錄",
-      "variant": "dashed"
+      "id": "admit-task-beta",
+      "from": "native-task-pool",
+      "to": "worker-beta"
     },
     {
-      "id": "publish-pr",
-      "from": "workers",
-      "to": "pr",
-      "label": "可信 commit",
+      "id": "publish-alpha",
+      "from": "worker-alpha",
+      "to": "reviewed-pull-request"
+    },
+    {
+      "id": "publish-beta",
+      "from": "worker-beta",
+      "to": "reviewed-pull-request"
+    },
+    {
+      "id": "inspect-checkpoints",
+      "from": "github-authority",
+      "to": "team-progress",
+      "label": "Read checkpoints",
+      "variant": "dashed",
       "labelAt": [
-        1240,
-        280
+        420,
+        510
       ]
     },
     {
-      "id": "reconcile",
-      "from": "pr",
-      "to": "gate",
-      "label": "核對目前 head"
+      "id": "check-merge-policy",
+      "from": "reviewed-pull-request",
+      "to": "serialized-merge",
+      "label": "Exact head + checks",
+      "labelAt": [
+        1230,
+        510
+      ]
     },
     {
-      "id": "confirm",
-      "from": "gate",
-      "to": "done",
-      "label": "確認合併"
+      "id": "confirm-merge-result",
+      "from": "serialized-merge",
+      "to": "confirmed-done"
     }
   ],
   "cards": [
     {
       "dot": "cyan",
-      "title": "每項任務",
+      "title": "Inside each task",
       "items": [
-        "Scout → Implement → 獨立 Review。",
-        "明確批准的低風險任務可省略 Scout。"
+        "Scout \u2192 Implement \u2192 independent Review.",
+        "Each role has its own Pi session; approved low-risk tasks may skip Scout."
       ]
     },
     {
       "dot": "emerald",
-      "title": "合併與恢復",
+      "title": "Parallel, with boundaries",
       "items": [
-        "預設手動；--auto-merge 啟用自動合併。",
-        "基底前進時，最多 2 次 rebase 與新 Review。"
+        "Only disjoint literal file scopes overlap.",
+        "Shared scopes and hooks run alone. One daemon owns the repository."
       ]
     },
     {
       "dot": "amber",
-      "title": "目前範圍",
+      "title": "A PR is not Done",
       "items": [
-        "GitHub 是任務依據；本機沒有 SQLite 任務佇列。",
-        "雙機驗收延後；Superset 不在本階段。"
+        "Manual merge is the default; automatic merge is guarded and serialized.",
+        "A changed base allows at most two clean rebase + Review cycles."
       ]
     }
   ]
