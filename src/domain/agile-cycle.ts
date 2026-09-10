@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentRoleSchema, ReasoningEffortSchema } from "../harness/contracts";
 import { ModelProfileSchema } from "./schemas";
 import { SkillSettingsSchema } from "./skill-allowlist";
 
@@ -45,6 +46,7 @@ export const RocSettingsSchema = z
     models: z
       .partialRecord(ModelProfileSchema, z.string().regex(/^[^\s/]+\/[^\s]+$/u))
       .optional(),
+    efforts: z.partialRecord(AgentRoleSchema, ReasoningEffortSchema).optional(),
   })
   .strict();
 

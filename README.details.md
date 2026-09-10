@@ -315,6 +315,25 @@ The role routing applies `high` to Scout/Review and `medium` to Implement:
 }
 ```
 
+An optional `efforts` object overrides the per-role reasoning defaults —
+Scout `high`, Implement `medium`, Review `high` — with `medium`, `high`, or
+`xhigh`:
+
+```json
+"efforts": {
+  "implement": "xhigh",
+  "scout": "medium"
+}
+```
+
+Omitted roles keep the defaults, and existing attempts keep their recorded
+effort on restart. A configured effort the routed models do not support
+falls back to the role default with a diagnostic instead of failing the run;
+when only a stronger fallback model supports it, routing advances along the
+normal profile chain (for example Implement moves from Terra to Sol for
+`xhigh`). Raise effort for hard implementation work and lower it for cheap
+scouting when your provider and workload justify it.
+
 For advanced Claude or GLM setup, configure the bundled Pi CLI under the daemon
 account with `bun x --no-install pi`. Use its `/login` and `/model` commands where
 supported and save the default. Provider keys must be in the daemon environment.
