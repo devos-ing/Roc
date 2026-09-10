@@ -7,6 +7,7 @@ import type {
 import {
   renderTaskBoard,
   taskBoardHitTest,
+  taskBoardSelectionRows,
 } from "../../src/cli/task-board-renderer";
 
 const tokens = {
@@ -117,6 +118,36 @@ const snapshot: TaskBoardSnapshot = {
     done: [done, doneTwo],
   },
 };
+
+test.each([40, 80, 120])(
+  "selection bounds match variable-height cards and mouse cells at %i columns",
+  (width) => {
+    const options = {
+      width,
+      color: false,
+      detailMode: "none" as const,
+      doneExpanded: true,
+    };
+    for (const item of snapshot.tasks) {
+      const selected = { ...options, selectedTaskId: item.id };
+      const lines = renderTaskBoard(snapshot, selected).split("\n");
+      const start = lines.findIndex((line) => line.includes("▌"));
+      const x = displayWidth(lines[start]?.split("▌")[0] ?? "") + 1;
+      const height = 2 + Number(item.blockingDependencyIds.length > 0);
+      expect(taskBoardSelectionRows(snapshot, selected)).toEqual({
+        start,
+        end: start + height,
+      });
+      for (let row = start; row < start + height; row++)
+        expect(taskBoardHitTest(snapshot, { x, y: row + 1 }, selected)).toEqual(
+          { kind: "task", taskId: item.id },
+        );
+      expect(
+        taskBoardHitTest(snapshot, { x, y: start + height + 1 }, selected),
+      ).not.toEqual({ kind: "task", taskId: item.id });
+    }
+  },
+);
 
 test("details show elapsed, attempt and merge waiting time with partial usage", () => {
   const item = task({
