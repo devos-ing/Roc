@@ -119,6 +119,34 @@ export class GitHubRemoteIssueReader {
     };
   }
 
+  /** Closes an open Issue as completed, reconciling uncertain writes without changing closed reasons. */
+  async closeCompleted(repository: string, number: number): Promise<void> {
+    if ((await this.get(repository, number)).state === "CLOSED") return;
+    try {
+      await this.mustRun([
+        "gh",
+        "issue",
+        "close",
+        String(number),
+        "--repo",
+        repository,
+        "--reason",
+        "completed",
+      ]);
+    } catch {
+      // The server may have applied a write whose response was lost.
+    }
+    if ((await this.get(repository, number)).state !== "CLOSED")
+      throw new AgileError({
+        code: "GITHUB_ISSUE_CLOSE_PENDING",
+        category: "infra",
+        component: "github-state",
+        retryable: true,
+        message:
+          "Issue closure is pending; check repository write access and retry polling",
+      });
+  }
+
   /** Writes one checkpoint without interpreting an uncertain response as success. */
   async writeComment(
     repository: string,
@@ -241,7 +269,8 @@ export class GitHubRemoteIssueReader {
     const write =
       command.includes("--method") ||
       command[1] === "label" ||
-      command[2] === "edit";
+      command[2] === "edit" ||
+      command[2] === "close";
     let status: string | undefined;
     let cause: unknown;
     try {

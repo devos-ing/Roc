@@ -41,10 +41,15 @@ M1–M4 已按修訂範圍完成。以下功能請使用這份 checkout 的 `src
 | 自動合併、更新基底與新的 Review | [M3 protected branch 驗收](docs/validation/m3-live-2026-09-09.md) |
 | 診斷、進度、耗時、用量及效率比較 | [M4 實測報告](docs/validation/m4-live-2026-09-09.md)，292 個本地測試通過 |
 
+另有[分角色 reasoning 實測](docs/validation/role-routing-live-2026-09-09.md)，透過 Pi 狀態讀回
+確認 Scout／Review 使用 `high`、Implement 使用 `medium`。加上診斷的第二輪完整合併兩個 PR；
+首輪一次 refresh 取消的原因仍未確認，保留在 [#79](https://github.com/devos-ing/Roc/issues/79)。
+
 同一組兩個小任務的成功執行，串行為 8分31秒／67,722 tokens，平行為
 6分47秒／67,615 tokens，平行省略 Scout 為 5分4秒／52,925 tokens。
 最後一組曾遇啟動超時，連同人工恢復實際為 12分38秒；後來才加入前置讀取重試。
 這是小樣本，不是普遍速度或成本保證。Cached input 已包含在 input tokens 內。
+當時所有角色都使用 `high`，數據不是目前 Scout／Review `high`、Implement `medium` 的測量。
 
 Claude/GLM 尚未做相同的真實流程驗收。[雙機驗收 #56](https://github.com/devos-ing/Roc/issues/56)
 已延後，不阻擋本階段交付；Superset 不在本階段。歷史 SQLite／stub 結果不當作目前流程的證據。
@@ -133,6 +138,23 @@ PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依�
 亦已通過：兩個任務平行執行，其中一個經 rebase、新的獨立 Review 和 CI 後自動合併。
 這次驗收在同一部 Mac 完成，實體雙機流程仍待驗證。
 
+### 關閉 Issue
+
+發佈的 PR 附有普通 Issue 連結，不使用自動關閉關鍵字。人手或自動合併後，Roc 核對
+已記錄的 PR head 及 merge commit 確實合併到設定的目標 branch，寫入並讀回確認
+`done` checkpoint，才把仍開啟的 Issue 以 completed 原因關閉。`--base-branch`
+指定非預設 branch 也適用。關閉前會重新核對精確 checkpoint、已批准規格、完整計劃
+及合併證據。
+
+關閉失敗會保留 `done`，後續輪詢或重啟會自動重試，不會重跑模型。通過 admission
+的 done 任務也會修復過時的狀態 label，即使 Issue 已關閉；label 寫入失敗不會阻止
+關閉 Issue。未通過 admission 的候選任務不會觸發 label 修復，也不會進行關閉所需的
+檢查或寫入。
+
+[實際關閉與重啟驗收](docs/validation/issue-closure-live-2026-09-09.md)
+已確認非預設 branch 的 GitHub Issue 關閉及不重跑模型的恢復流程。報告亦保留了
+兩次中斷紀錄，並註明成功任務使用單次執行模式。
+
 ### 平行執行
 
 預設為 `--concurrency 2`，`--concurrency 1` 可切回逐項執行。
@@ -149,6 +171,12 @@ Root、glob、文字描述、repository 外的路徑，以及帶 hooks 的任務
 個別任務失敗或取消，確認清理後只把該任務標為待處理，另一項可繼續。
 Pi 子程序退出獲確認後才會放行下一個角色或釋放名額。清理或 checkpoint 寫入結果
 不明時，停止新任務並保留鎖；`Ctrl-C` 會取消全部執行中任務。
+
+輪詢結果顯示授權失效時，Roc 會先直接讀取該 Issue 與已知的同計劃 Issues，重新驗證
+授權，再決定是否取消。列表暫時漏項不會取消仍獲批准的任務，正常輪詢也不會增加讀取。
+確認失敗時會以 `GITHUB_AUTHORITY_UNCONFIRMED` 安全停止，取消紀錄會包含具體原因。
+[輪詢回歸驗證](docs/validation/polling-authority-2026-09-09.md)涵蓋 worker、refresh 後的
+Review，以及真正撤回批准或關閉 Issue 的情況。
 
 ### 可選的 Scout 省略
 
@@ -181,7 +209,8 @@ Pi 設定及憑證位於 `~/.pi/agent/settings.json`、`~/.pi/agent/auth.json`�
 Onboarding 和 daemon 要使用同一個 OS 帳戶。
 
 `models.luna`、`models.terra`、`models.sol` 分別指定 Scout、Implement、Review
-的 Pi `provider/modelId`，未指定時用 Pi 預設。高風險任務使用 Sol、`xhigh`；
+的 Pi `provider/modelId`，未指定時用 Pi 預設。新 Scout／Review 使用 `high`，
+Implement 使用 `medium`，各風險等級及重試均相同。高風險任務保留 Sol profile；
 模型不支援時轉為 `needs_replan`。每個角色最多三次 attempt，重啟會保留已有 attempt
 的模型和 reasoning。三個角色都用 GPT-6 時，把以下欄位合併進現有 Roc 設定：
 

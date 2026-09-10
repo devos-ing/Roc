@@ -76,7 +76,12 @@ Each worker owns an AbortController, runner and hook runner. Pi's harness retain
 separate attempt/session state. Task-local exceptions and cancellation confirm
 cleanup then checkpoint attention, leaving siblings running. Closing an Issue,
 withdrawing approval or invalidating its plan requests cancellation at the next
-remote poll. Unknown remote writes or child cleanup remain daemon-wide failures.
+remote poll. Negative observations first trigger direct reads of the previously
+validated plan's Issue numbers and fresh authority checks. Those numbers are
+lookup metadata, never cached approval. Worker and coordinator cancellation share
+this confirmation, preserve specific stop reasons, and stop safely when the
+reads cannot be confirmed. Unknown remote writes or child cleanup remain
+daemon-wide failures.
 
 The pool keeps cancellation acknowledgements inside the slot lifetime. Pi saves
 terminal child-close promises and confirms them before returning terminal
@@ -317,7 +322,8 @@ resolved default must advertise `high` reasoning; otherwise startup fails with
 `PI_MODEL_UNSUPPORTED` rather than selecting a different model or provider.
 
 By default, low- and medium-risk tasks start Scout on Luna, Implement on Terra, and Review
-on Sol. High-risk roles use only Sol with `xhigh`; unsupported
+on Sol. High-risk roles use only Sol. New Scout and Review attempts use `high`,
+while Implement uses `medium` across risk levels and retries. Unsupported
 effort routes the task to `needs_replan`. The operator chooses which actual
 model each profile represents. Existing attempt descriptors remain authoritative
 during recovery; new attempts use the mappings loaded at scheduler startup.

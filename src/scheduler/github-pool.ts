@@ -14,6 +14,7 @@ type Worker = {
   done: Promise<void>;
   cancellation?: Promise<void>;
   cancelError?: AgileError;
+  stopReason?: string;
 };
 
 /** Waits for a task completion, a remote refresh deadline or daemon shutdown and removes its listeners. */
@@ -139,14 +140,15 @@ export class GitHubTaskPool {
     for (const message of diagnostics) this.input.diagnostic?.(message);
     for (const worker of this.workers.values()) {
       const fresh = tasks.find((task) => task.task.id === worker.task.task.id);
-      if (
-        !fresh?.approved ||
-        fresh.blockedReason ||
-        fresh.issue.state !== "OPEN"
-      )
-        this.requestStop(worker);
+      const reason = await this.input.store.confirmCancellation(
+        worker.task,
+        fresh,
+      );
+      signal.throwIfAborted();
+      if (reason && this.workers.get(worker.task.task.id) === worker)
+        this.requestStop(worker, reason);
     }
-    await this.selector.cancelUnapproved(tasks);
+    await this.selector.cancelUnapproved(tasks, signal);
     return tasks;
   }
 
@@ -168,7 +170,12 @@ export class GitHubTaskPool {
     } catch (error) {
       this.admissionStop.abort();
       try {
-        await this.selector.cancelCoordinated();
+        await this.selector.cancelCoordinated(
+          undefined,
+          error instanceof AgileError
+            ? `Scheduler stopped: ${error.code}`
+            : "Authority polling failed",
+        );
         await owned.catch(() => undefined);
       } catch (cleanup) {
         throw cleanup instanceof AgileError ? cleanup : this.cleanupFailure();
@@ -186,10 +193,15 @@ export class GitHubTaskPool {
     const workers = [...this.workers.values()].filter(
       (worker) => taskId === undefined || worker.task.task.id === taskId,
     );
-    for (const worker of workers) this.requestStop(worker);
+    const reason = this.failure
+      ? `Scheduler stopped: ${this.failure instanceof AgileError ? this.failure.code : "scheduler failure"}`
+      : taskId === undefined
+        ? "Daemon shutdown requested"
+        : "Task cancellation requested";
+    for (const worker of workers) this.requestStop(worker, reason);
     await Promise.all([
       ...workers.map((worker) => worker.done),
-      this.selector.cancelCoordinated(taskId).catch((error) => {
+      this.selector.cancelCoordinated(taskId, reason).catch((error) => {
         this.failure ??=
           error instanceof AgileError ? error : this.cleanupFailure();
         throw this.failure;
@@ -230,7 +242,12 @@ export class GitHubTaskPool {
   }
 
   /** Starts cancellation once and keeps its acknowledgement inside the worker's slot lifetime. */
-  private requestStop(worker: Worker): void {
+  private requestStop(worker: Worker, reason: string): void {
+    if (worker.stopReason === undefined)
+      this.input.diagnostic?.(
+        `Issue #${worker.task.issue.number}: cancelling task; ${reason}`,
+      );
+    worker.stopReason ??= reason;
     worker.stop.abort();
     worker.cancellation ??= worker.runner.cancel().catch(() => {
       worker.cancelError = this.cleanupFailure();
@@ -263,7 +280,7 @@ export class GitHubTaskPool {
       )
         throw error;
       const reason = worker.stop.signal.aborted
-        ? "Task cancelled; execution requires replan"
+        ? `Task cancelled: ${worker.stopReason ?? "Daemon shutdown requested"}; execution requires replan`
         : `${diagnostic.code}: ${diagnostic.message}`;
       if (await worker.runner.interrupt(worker.task, reason)) {
         this.input.diagnostic?.(

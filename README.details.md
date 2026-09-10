@@ -46,12 +46,18 @@ through `ROC_CLI_ENTRY` in each terminal for the behavior described here.
 | Automatic merge, base refresh and fresh Review | [M3 protected-branch acceptance](docs/validation/m3-live-2026-09-09.md) |
 | Diagnostics, progress, timing, usage and comparisons | [M4 measurements](docs/validation/m4-live-2026-09-09.md), with 292 local tests passing |
 
+A separate [mixed-effort live check](docs/validation/role-routing-live-2026-09-09.md)
+confirmed Astra `high` Scout/Review and `medium` Implement through Pi state readback.
+Its traced repeat merged both PRs; an unexplained first-run refresh cancellation
+remains open in [#79](https://github.com/devos-ing/Roc/issues/79).
+
 For one fixed pair of small tasks, successful runs took 8m31s / 67,722 tokens
 sequentially, 6m47s / 67,615 tokens in parallel, and 5m4s / 52,925 tokens in
 parallel with Scout omitted. The last mode also hit a startup timeout; including
 manual recovery, its observed trial took 12m38s. A preflight read retry was added
 afterward. This small sample is not a general speed or cost guarantee. Cached
-input is already included in input tokens.
+input is already included in input tokens. These runs used `high` for every role
+and predate the current Scout/Review `high`, Implement `medium` policy.
 
 Claude/GLM have not passed equivalent live acceptance. [Physical two-host acceptance #56](https://github.com/devos-ing/Roc/issues/56)
 is deferred and does not block this stage. Superset is outside this stage.
@@ -161,6 +167,26 @@ real-Git conflict/lease tests. [Live protected-branch acceptance](docs/validatio
 also passed for two parallel tasks, including one rebase, fresh independent
 Review and CI before automatic merge. That test used one Mac.
 
+### Issue closure
+
+Published PRs include a plain Issue link, not an automatic-closing keyword.
+After a manual or automatic merge, Roc verifies the recorded PR head and merge
+commit in the configured target branch, confirms the `done` checkpoint by
+reading it back, then closes the still-open Issue as completed. Non-default
+`--base-branch` targets work too. Closure rechecks the exact checkpoint,
+approved specification, complete plan and merge evidence.
+
+If closure fails, `done` stays intact and polling or restart retries closure
+without rerunning models. Admitted done tasks also repair stale status labels,
+even when the Issue is already closed; a failed label write does not block
+closure. Candidates rejected by admission trigger neither label repair nor
+closure checks or writes.
+
+[Live closure and restart validation](docs/validation/issue-closure-live-2026-09-09.md)
+confirmed real GitHub closure on a non-default branch, including recovery without
+model replay. The report also records two interrupted attempts and the use of
+single-run execution for the successful tasks.
+
 ### Parallel admission
 
 The default is `--concurrency 2`; use `--concurrency 1` to serialize execution.
@@ -181,6 +207,14 @@ or cancellation records attention without stopping its sibling. Pi child exit
 must be confirmed before a role completes or a worker releases its slot.
 Unconfirmed cleanup or checkpoint writes stop admission and retain the daemon
 lock. Global `Ctrl-C` cancels every active task.
+
+Before cancelling because of a negative poll result, Roc directly reads the
+Issue and its known plan members and revalidates their authority. A temporary
+list omission therefore does not cancel approved work. Normal polls add no
+extra reads. Failed confirmation stops safely with `GITHUB_AUTHORITY_UNCONFIRMED`;
+cancellation records include the specific reason.
+[Polling regression evidence](docs/validation/polling-authority-2026-09-09.md)
+covers workers, refreshed Review, and genuine withdrawal or closure.
 
 ### Optional Scout omission
 
@@ -227,12 +261,15 @@ Use the same OS account for onboarding and the daemon.
 Optional `models.luna`, `models.terra` and `models.sol` map Scout, Implement and
 Review profiles to exact Pi `provider/modelId` values. Omitted profiles use the
 Pi default. Configured models must exist in the catalog and support `high`.
-High-risk tasks use Sol with `xhigh`; unsupported routes become `needs_replan`.
+New Scout and Review attempts use `high`; Implement uses `medium` across risk
+levels and retries. High-risk tasks retain the Sol profile; unsupported efforts
+become `needs_replan`.
 Each role gets at most three attempts. A first retry normally keeps its profile;
 model unavailability or the final retry can advance the profile. Existing
 attempts keep their recorded model and effort on restart.
 
-For the same model across all roles, merge this field into existing Roc settings:
+For GPT-6 Astra across all roles, merge this field into existing Roc settings.
+The role routing applies `high` to Scout/Review and `medium` to Implement:
 
 ```json
 "models": {

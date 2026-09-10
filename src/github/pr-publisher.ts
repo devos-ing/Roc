@@ -205,6 +205,9 @@ function pullRequestBody(input: PublishTaskInput): string {
   const lines = [
     "## Task",
     input.task.title,
+    ...(/^issue-[1-9]\d*$(?![\s\S])/.test(input.task.id)
+      ? [`Related issue: #${input.task.id.slice(6)}`]
+      : []),
     "",
     "## Validation",
     ...input.implementation.validation.map((item) => `- ${item}`),

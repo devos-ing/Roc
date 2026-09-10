@@ -33,7 +33,8 @@ flowchart LR
 - **並行有範圍限制。** Scope 不重疊的任務才可並行；不明、重疊或帶 hooks 的任務單獨執行。每個 repository 只跑一個 daemon。
 - **建立 PR 不等於完成。** PR 開啟時是 `awaiting_merge`，核對合併後才是 `done`。基底前進時最多兩次乾淨 rebase，每次都要新的 Review 與 CI。
 
-新 Codex 設定使用 GPT-6 Astra；已有的模型設定會保留。Roc 使用 Pi 的工具與 agent loop，
+新 Codex 設定使用 GPT-6 Astra；已有的模型設定會保留。新 Scout／Review 使用 `high`，
+Implement 使用 `medium`。Roc 使用 Pi 的工具與 agent loop，
 不會啟動 Codex CLI 或 Claude Code。
 
 Pi 預設啟用自動 context 壓縮，接近 session 的 context 上限時會摘要較舊內容。

@@ -54,6 +54,166 @@ const branches: TaskBranchManager = {
   },
 };
 
+test("done-open repair rejects absent or mismatched authority and merge evidence without checkpoint changes", async () => {
+  for (const fault of [
+    "none",
+    "label-only",
+    "number",
+    "mergeCommit",
+    "pr-number",
+    "head",
+    "branch",
+    "target",
+    "merge",
+    "ancestry",
+    "approval",
+    "spec",
+  ]) {
+    const remote = memoryGitHub();
+    if (fault !== "label-only")
+      await seed(remote, (record) => {
+        record.phase = "done";
+        record.publication = {
+          number: 7,
+          branch: "agile/issue-41",
+          commitSha: base,
+          mergeCommit: base,
+        };
+        if (fault === "number") delete record.publication.number;
+        if (fault === "mergeCommit") delete record.publication.mergeCommit;
+      });
+    else remote.issue.labels = [{ name: "roc:task" }, { name: "roc:done" }];
+    if (fault === "approval") remote.issue.comments.shift();
+    if (fault === "spec")
+      remote.issue.body = remote.issue.body.replaceAll(
+        "Wrong answer",
+        "Changed answer",
+      );
+    const before = structuredClone(remote.issue.comments);
+    const diagnostics: string[] = [];
+    const taskRunner = new GitHubTaskRunner({
+      store: remote.store(),
+      branches,
+      harness: {
+        async step() {
+          throw Error("No replay");
+        },
+        async cancel() {},
+      },
+      advisor: createModelAdvisor([]),
+      publisher: {
+        baseBranch: "main",
+        async publish() {
+          throw Error("No publication");
+        },
+      },
+      command: {
+        async run({ command }) {
+          return {
+            exitCode:
+              fault === "ancestry" && command[1] === "merge-base" ? 1 : 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              number: fault === "pr-number" ? 9 : 7,
+              state: "MERGED",
+              baseRefName: fault === "target" ? "other" : "main",
+              headRefName: fault === "branch" ? "other" : "agile/issue-41",
+              headRefOid: fault === "head" ? "b".repeat(40) : base,
+              mergeCommit: { oid: fault === "merge" ? "b".repeat(40) : base },
+            }),
+          };
+        },
+      },
+      cwd: "/fixture",
+      baseBranch: "main",
+      diagnostic: (message) => diagnostics.push(message),
+    });
+    expect(await taskRunner.runOnce(new AbortController().signal)).toBe(false);
+    expect(remote.issue.comments).toEqual(before);
+    expect(remote.issue.state).toBe(fault === "none" ? "CLOSED" : "OPEN");
+    if (!["none", "label-only"].includes(fault))
+      expect(diagnostics.join()).toContain("closure pending");
+  }
+});
+
+test.each([
+  { state: "CLOSED" as const, admitted: true },
+  { state: "OPEN" as const, admitted: false },
+])(
+  "done label recovery respects admission: %j",
+  async ({ state, admitted }) => {
+    const remote = memoryGitHub();
+    await seed(remote, (record) => {
+      record.phase = "done";
+      record.publication = {
+        number: 7,
+        branch: "agile/issue-41",
+        commitSha: base,
+        mergeCommit: base,
+      };
+    });
+    remote.issue.state = state;
+    remote.issue.labels = [
+      { name: "roc:task" },
+      { name: "roc:awaiting-merge" },
+    ];
+    const before = structuredClone(remote.issue.comments);
+    const labels: string[] = [];
+    const store = remote.store();
+    const syncLabels = store.syncLabels.bind(store);
+    let synchronizations = 0;
+    store.syncLabels = async (task) => {
+      synchronizations++;
+      await syncLabels(task);
+    };
+    remote.api.setStatusLabel = async (...args: unknown[]) => {
+      const label = String(args[2]);
+      labels.push(label);
+      remote.issue.labels = [{ name: "roc:task" }, { name: label }];
+    };
+    const commands: string[][] = [];
+    const run = new GitHubTaskRunner({
+      store,
+      branches,
+      harness: {
+        async step() {
+          throw Error("No model replay");
+        },
+        async cancel() {},
+      },
+      advisor: createModelAdvisor([]),
+      publisher: {
+        baseBranch: "main",
+        async publish() {
+          throw Error("No publication");
+        },
+      },
+      command: {
+        async run({ command }) {
+          commands.push(command);
+          throw Error("No PR or merge checks");
+        },
+      },
+      cwd: "/fixture",
+      baseBranch: "main",
+    });
+    const { tasks } = await store.list();
+    expect(
+      await run.claimNext(tasks, new AbortController().signal, () => admitted),
+    ).toBeUndefined();
+    expect(synchronizations).toBe(admitted ? 1 : 0);
+    expect(labels).toEqual(admitted ? ["roc:done"] : []);
+    expect(remote.issue.labels).toContainEqual({
+      name: admitted ? "roc:done" : "roc:awaiting-merge",
+    });
+    expect(commands).toEqual([]);
+    expect(remote.closures).toEqual([]);
+    expect(remote.issue.state).toBe(state);
+    expect(remote.issue.comments).toEqual(before);
+    expect((await store.get(41)).execution).toEqual(tasks[0]?.execution);
+  },
+);
+
 test("shutdown after a confirmed publication does not rewrite completed work as cancelled", async () => {
   const remote = memoryGitHub();
   await seed(remote, (record) => {
@@ -72,6 +232,95 @@ test("shutdown after a confirmed publication does not rewrite completed work as 
     ),
   ).toBe(false);
   expect((await remote.store().get(41)).execution).toEqual(before.execution);
+});
+
+test("a persisted Implement attempt keeps high when new implementation routes use medium", async () => {
+  const remote = memoryGitHub();
+  await seed(remote, (record) => {
+    record.phase = "implementing";
+    record.attempts = [
+      {
+        descriptor: {
+          attemptId: "old-scout",
+          taskId: "issue-41",
+          role: "scout",
+          retryIndex: 0,
+          modelProfile: "luna",
+          model,
+          effort: "high",
+        },
+        status: "succeeded",
+        startedAt: time,
+        endedAt: time,
+        sequence: 1,
+        events: {},
+        usage: { ...zeroUsage },
+        usageKnown: true,
+        output: {
+          kind: "scout",
+          summary: "Inspect answer",
+          files: ["answer.ts"],
+          tests: ["bun test"],
+          risks: [],
+        },
+      },
+      {
+        descriptor: {
+          attemptId: "old-implement",
+          taskId: "issue-41",
+          role: "implement",
+          retryIndex: 0,
+          modelProfile: "terra",
+          model,
+          effort: "high",
+        },
+        status: "running",
+        startedAt: time,
+        sequence: 0,
+        events: {},
+        usage: { ...zeroUsage },
+        usageKnown: false,
+      },
+    ];
+  });
+  const fake = createFakeHarness({
+    attempts: [
+      {
+        taskId: "issue-41",
+        role: "implement",
+        retryIndex: 0,
+        expect: { model, effort: "high" },
+        deliveries: [
+          {
+            nextCursor: "1",
+            event: {
+              type: "attempt.blocked_policy",
+              eventId: "stop",
+              attemptId: "old-implement",
+              sequence: 1,
+              occurredAt: time,
+              code: "interaction_cancelled",
+              message: "Needs input",
+            },
+          },
+        ],
+      },
+    ],
+  });
+  const requests: HarnessStepRequest[] = [];
+  await runner(remote, {
+    async step(request) {
+      requests.push(request);
+      return fake.harness.step(request);
+    },
+    async cancel() {},
+  }).runOnce(new AbortController().signal);
+  expect(requests[0]).toMatchObject({
+    mode: "reconcile",
+    attempt: { attemptId: "old-implement", effort: "high" },
+  });
+  expect((await remote.store().get(41)).execution?.attempts).toHaveLength(2);
+  fake.assertComplete();
 });
 
 test("dependencies wait for the recorded PR head to merge into the target before pinning a fetched base", async () => {
@@ -227,7 +476,7 @@ function runner(
       async cancel() {},
     },
     advisor: createModelAdvisor(
-      [{ id: model, supportedReasoningEfforts: ["high", "xhigh"] }],
+      [{ id: model, supportedReasoningEfforts: ["medium", "high", "xhigh"] }],
       { luna: model, terra: model, sol: model },
     ),
     publisher: {

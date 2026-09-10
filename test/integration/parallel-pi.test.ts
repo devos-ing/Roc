@@ -112,7 +112,7 @@ test("two Pi role flows overlap in real worktrees and keep commits, model settin
       advisor: createModelAdvisor(
         ["luna", "terra", "sol"].map((profile) => ({
           id: `test/${profile}`,
-          supportedReasoningEfforts: ["high", "xhigh"],
+          supportedReasoningEfforts: ["medium", "high", "xhigh"],
         })),
         { luna: "test/luna", terra: "test/terra", sol: "test/sol" },
       ),
@@ -190,7 +190,7 @@ test("two Pi role flows overlap in real worktrees and keep commits, model settin
         ]),
       ).toEqual([
         ["test/luna", "high"],
-        ["test/terra", "high"],
+        ["test/terra", "medium"],
         ["test/sol", "high"],
       ]);
     }
