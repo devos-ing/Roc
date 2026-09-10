@@ -892,10 +892,53 @@ test("cycle current explains how to create missing settings", async () => {
       ),
     ).toBe(1);
     expect(errors).toEqual([
-      "Run npx roc-it@latest onboard to configure an Agile cycle",
+      `Roc settings at ${rocSettingsPath(homeRoot)}: Settings file is missing. Run npx roc-it@latest onboard to configure an Agile cycle`,
     ]);
   } finally {
     await rm(homeRoot, { recursive: true, force: true });
+  }
+});
+
+test("onboarding preserves invalid settings and requests manual repair before model setup", async () => {
+  const root = await mkdtemp(join(tmpdir(), "roc-onboard-invalid-"));
+  const home = await mkdtemp(join(tmpdir(), "roc-onboard-invalid-home-"));
+  let modelCalls = 0;
+  try {
+    const path = await saveRocSettings({ cycle: { type: "weekly" } }, home);
+    for (const source of [
+      '{"cycle":{"type":"weekly"},"type":"SECRET_VALUE"}\n',
+      '{"cycle":{"type":"SECRET_VALUE",',
+    ]) {
+      const before = Buffer.from(source);
+      await writeFile(path, before);
+      const { io, output, errors } = interactiveIo(["2"]);
+      expect(
+        await runCli(
+          ["onboard"],
+          io,
+          onboardingRuntime({
+            projectRoot: root,
+            homeRoot: home,
+            configureModel: async () => {
+              modelCalls++;
+              return "provider/model";
+            },
+          }),
+        ),
+      ).toBe(1);
+      expect(modelCalls).toBe(0);
+      expect(await readFile(path)).toEqual(before);
+      expect(errors.join("\n")).toContain(rocSettingsPath(home));
+      expect(errors.join("\n")).toContain("Back up this file");
+      expect(errors.join("\n")).toContain(
+        "onboarding reads the same file and cannot repair it",
+      );
+      expect(errors.join("\n")).not.toContain("SECRET_VALUE");
+      expect(output.join("\n")).not.toContain("Result: Complete");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });
 
