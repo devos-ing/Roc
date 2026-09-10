@@ -601,7 +601,11 @@ function renderDetails(
               ? item.evidence
                   .split("\n")
                   .flatMap((line) => wrap(`Evidence: ${line}`, width, "  "))
-              : ["  Evidence: No item-level evidence recorded."]),
+              : wrap(
+                  "Evidence: No item-level evidence recorded.",
+                  width,
+                  "  ",
+                )),
           ]),
         ];
   const retirement =
@@ -809,43 +813,17 @@ export function renderTaskBoard(
   );
 }
 
-/** Maps a one-based terminal mouse position to a board card or Done header control. */
-export function taskBoardHitTest(
+/** Shares rendered card and Done-header bounds between mouse input and keyboard scrolling. */
+function taskBoardRegions(
   snapshot: TaskBoardSnapshot,
-  point: { x: number; y: number },
-  options: TaskBoardRenderOptions = {},
-): TaskBoardHit | undefined {
+  options: TaskBoardRenderOptions,
+) {
   const width = Math.max(1, Math.floor(options.width ?? 100));
   const columns = boardColumns(snapshot);
   const doneExpanded =
     options.doneExpanded === true ||
     options.expandedDone === true ||
     snapshot.history === true;
-  if (options.detailMode === "full") return undefined;
-
-  if (width < narrowWidth) {
-    let row = 3;
-    for (const column of columns) {
-      if (point.y === row && column.name === "Done") return { kind: "done" };
-      row += 1;
-      if (column.name === "Done" && !doneExpanded) {
-        row += 1;
-        continue;
-      }
-      if (column.tasks.length === 0) {
-        row += 1;
-        continue;
-      }
-      for (const [index, task] of column.tasks.entries()) {
-        const height = cardHeight(task, snapshot);
-        if (point.y >= row && point.y < row + height)
-          return { kind: "task", taskId: task.id };
-        row += height + (index < column.tasks.length - 1 ? 1 : 0);
-      }
-    }
-    return undefined;
-  }
-
   const detail = taskById(
     columns,
     options.detailTaskId ??
@@ -856,25 +834,78 @@ export function taskBoardHitTest(
   const detailWidth = detail === undefined ? 0 : Math.floor(width * 0.3);
   const boardWidth = detail === undefined ? width : width - detailWidth - 3;
   const cellWidth = Math.max(1, Math.floor((boardWidth - 9) / 4));
-  const columnIndex = Math.floor((point.x - 1) / (cellWidth + 3));
-  const column = columns[columnIndex];
-  const columnStart = columnIndex * (cellWidth + 3) + 1;
-  if (
-    column === undefined ||
-    point.x < columnStart ||
-    point.x >= columnStart + cellWidth ||
-    point.y < 3
-  )
-    return undefined;
-  if (point.y === 3 && column.name === "Done") return { kind: "done" };
-  if (point.y <= 4 || (column.name === "Done" && !doneExpanded))
-    return undefined;
-  let row = 5;
-  for (const [index, task] of column.tasks.entries()) {
-    const height = cardHeight(task, snapshot);
-    if (point.y >= row && point.y < row + height)
-      return { kind: "task", taskId: task.id };
-    row += height + (index < column.tasks.length - 1 ? 1 : 0);
+  const narrow = width < narrowWidth;
+  const regions: {
+    hit: TaskBoardHit;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }[] = [];
+  if (options.detailMode === "full" || (narrow && detail !== undefined))
+    return regions;
+
+  let row = 3;
+  for (const [columnIndex, column] of columns.entries()) {
+    if (!narrow) row = 3;
+    const x = narrow ? 1 : columnIndex * (cellWidth + 3) + 1;
+    const regionWidth = narrow ? width : cellWidth;
+    if (column.name === "Done")
+      regions.push({
+        hit: { kind: "done" },
+        x,
+        y: row,
+        width: regionWidth,
+        height: 1,
+      });
+    row += narrow ? 1 : 2;
+    if (
+      (column.name === "Done" && !doneExpanded) ||
+      column.tasks.length === 0
+    ) {
+      row += 1;
+      continue;
+    }
+    for (const [index, task] of column.tasks.entries()) {
+      const height = cardHeight(task, snapshot);
+      regions.push({
+        hit: { kind: "task", taskId: task.id },
+        x,
+        y: row,
+        width: regionWidth,
+        height,
+      });
+      row += height + (index < column.tasks.length - 1 ? 1 : 0);
+    }
   }
-  return undefined;
+  return regions;
+}
+
+/** Returns the selected card's zero-based row range with an exclusive end. */
+export function taskBoardSelectionRows(
+  snapshot: TaskBoardSnapshot,
+  options: TaskBoardRenderOptions,
+): { start: number; end: number } | undefined {
+  const selectedId = options.selectedTaskId ?? options.selectedId;
+  const region = taskBoardRegions(snapshot, options).find(
+    ({ hit }) => hit.kind === "task" && hit.taskId === selectedId,
+  );
+  return region === undefined
+    ? undefined
+    : { start: region.y - 1, end: region.y - 1 + region.height };
+}
+
+/** Maps a one-based terminal mouse position to a board card or Done header control. */
+export function taskBoardHitTest(
+  snapshot: TaskBoardSnapshot,
+  point: { x: number; y: number },
+  options: TaskBoardRenderOptions = {},
+): TaskBoardHit | undefined {
+  return taskBoardRegions(snapshot, options).find(
+    (region) =>
+      point.x >= region.x &&
+      point.x < region.x + region.width &&
+      point.y >= region.y &&
+      point.y < region.y + region.height,
+  )?.hit;
 }

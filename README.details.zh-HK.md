@@ -282,6 +282,12 @@ flowchart TD
 
 ## 進度、恢復及 hooks
 
+`tui` 預設開啟 Welcome，即使尚未設定 Roc 或登入 GitHub，仍會顯示待設定／連線狀態。
+`task board` 直接開啟 Tasks；兩者只供監看，不會啟動 scheduler 或更改任務。
+按 Tab、1／2 或點擊頂部分頁切換，R 刷新。刷新失敗會保留上次資料並標示過期。
+切換分頁或縮放視窗會保留選中任務及詳情；窄視窗採用直向布局，
+PgUp／PgDn 可捲動長頁及詳情而保留頂部分頁。非 TTY 的 `task board` 仍輸出純文字快照。
+
 `task board` 每 30 秒讀取 GitHub checkpoints，顯示狀態、attempt、模型、用量及 PR。
 按 Enter 查看詳情，Q 離開；`--all` 包含其他週期，`--history` 包含已退役 Issue。
 即時工具動作在 daemon terminal 顯示，看板不會串流每個工具事件。
