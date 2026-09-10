@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import {
-  appendFile,
   chmod,
   mkdtemp,
   readFile,
@@ -10,10 +9,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  createParallelTaskBranchManager,
-  createTaskBranchManager,
-} from "../../src/workspace/task-branch";
+import { createTaskBranchManager } from "../../src/workspace/task-branch";
 import { git } from "../helpers/git";
 
 async function createRepository(): Promise<string> {
@@ -29,86 +25,203 @@ async function createRepository(): Promise<string> {
 
 async function removeRepository(root: string): Promise<void> {
   await rm(root, { recursive: true, force: true });
-  await rm(`${root}.agile-checkout`, { recursive: true, force: true });
-  await rm(`${root}.agile-checkouts`, { recursive: true, force: true });
+  await rm(`${root}.agile-worktrees`, { recursive: true, force: true });
 }
 
-test("parallel tasks preserve separate dirty trees, review commits, and source-commit recovery", async () => {
+/** Publishes a trusted task patch to a bare origin and advances its target independently. */
+async function refreshFixture(conflict = false) {
   const root = await createRepository();
+  const origin = await mkdtemp(join(tmpdir(), "agile-refresh-origin-"));
+  await git(["init", "--bare"], origin);
+  await git(["branch", "-M", "main"], root);
+  await git(["remote", "add", "origin", origin], root);
+  await git(["push", "origin", "main"], root);
+  const expectedBase = await git(["rev-parse", "HEAD"], root);
+  const manager = await createTaskBranchManager(root, expectedBase);
+  const workspace = await manager.prepare("T1", expectedBase);
+  await writeFile(join(workspace.path, "README.md"), "trusted patch\n");
+  const expectedHead = await manager.commitChanges("T1", expectedBase);
+  await git(["push", "origin", workspace.branch], workspace.path);
+  await writeFile(
+    join(root, conflict ? "README.md" : "target.txt"),
+    "other task\n",
+  );
+  await git(["add", "-A"], root);
+  await git(["commit", "-m", "advance target"], root);
+  await git(["push", "origin", "main"], root);
+  const targetBase = await git(["rev-parse", "HEAD"], root);
+  return {
+    root,
+    origin,
+    manager,
+    workspace,
+    input: { expectedHead, expectedBase, targetBase, baseBranch: "main" },
+    async cleanup() {
+      await removeRepository(root);
+      await rm(origin, { recursive: true, force: true });
+    },
+  };
+}
+
+test("clean base refresh preserves the patch, lease-pushes the task ref and advances only the confirmed cached base", async () => {
+  const f = await refreshFixture();
   try {
-    const manager = await createParallelTaskBranchManager(root, "HEAD");
-    const [a, b] = await Promise.all([
-      manager.prepare("A"),
-      manager.prepare("a"),
-    ]);
-    expect(a.path).not.toBe(b.path);
-    await Promise.all([
-      writeFile(join(a.path, "README.md"), "task A\n"),
-      writeFile(join(b.path, "README.md"), "task B\n"),
-    ]);
-    const commit = await manager.commitChanges("A");
-    await manager.assertReviewReady("A", commit);
-    expect(await readFile(join(b.path, "README.md"), "utf8")).toBe("task B\n");
-    expect(await manager.status("a")).toContain("README.md");
-    const lowercaseCommit = await manager.commitChanges("a");
-    await manager.assertReviewReady("a", lowercaseCommit);
-    await manager.assertReviewReady("A", commit);
-    expect(await readFile(join(root, "README.md"), "utf8")).toBe("seed\n");
-    const restarted = await createParallelTaskBranchManager(root, "HEAD");
-    const restored = await restarted.prepare("C");
-    await restarted.restoreChanges("C", commit);
-    expect(await readFile(join(restored.path, "README.md"), "utf8")).toBe(
-      "task A\n",
+    const patch = await git(
+      ["diff", f.input.expectedBase, f.input.expectedHead],
+      f.root,
     );
-    await restarted.assertReviewReady("A", commit);
+    const head = await f.manager.refresh("T1", f.input);
+    expect(head).not.toBe(f.input.expectedHead);
+    expect(await git(["diff", f.input.targetBase, head], f.root)).toBe(patch);
+    expect(await git(["rev-parse", "agile/T1"], f.origin)).toBe(head);
+    expect(await git(["rev-parse", "main"], f.origin)).toBe(f.input.targetBase);
+    expect(await git(["rev-parse", "HEAD"], f.root)).toBe(f.input.targetBase);
+    expect(await git(["status", "--porcelain"], f.workspace.path)).toBe("");
+    await f.manager.assertReviewReady("T1", head, f.input.targetBase);
+    await expect(f.manager.prepare("T1", f.input.expectedBase)).rejects.toThrow(
+      "base changed",
+    );
+    expect((await f.manager.prepare("T1", f.input.targetBase)).baseCommit).toBe(
+      f.input.targetBase,
+    );
+    expect(
+      await git(
+        ["rev-parse", `refs/agile-refresh/T1/${f.input.expectedHead}`],
+        f.root,
+      ),
+    ).toBe(f.input.expectedHead);
+
+    await writeFile(join(f.root, "second-target.txt"), "another merge\n");
+    await git(["add", "-A"], f.root);
+    await git(["commit", "-m", "second target advance"], f.root);
+    await git(["push", "origin", "main"], f.root);
+    const nextBase = await git(["rev-parse", "HEAD"], f.root);
+    const next = await f.manager.refresh("T1", {
+      expectedHead: head,
+      expectedBase: f.input.targetBase,
+      targetBase: nextBase,
+      baseBranch: "main",
+    });
+    expect(await git(["diff", nextBase, next], f.root)).toBe(patch);
+    await f.manager.assertReviewReady("T1", next, nextBase);
+    const restarted = await createTaskBranchManager(f.root, nextBase);
+    await restarted.assertReviewReady("T1", next, nextBase);
   } finally {
-    await removeRepository(root);
+    await f.cleanup();
   }
 });
 
-test("legacy task work requires sequential recovery and remains intact", async () => {
-  const root = await createRepository();
+test("conflicting base refresh aborts without losing the original trusted patch or changing origin", async () => {
+  const f = await refreshFixture(true);
   try {
-    const legacy = await createTaskBranchManager(root, "HEAD");
-    const workspace = await legacy.prepare("T1");
-    await writeFile(
-      join(workspace.path, "README.md"),
-      "unfinished legacy work\n",
+    await expect(f.manager.refresh("T1", f.input)).rejects.toThrow(
+      "conflicted",
     );
-    const parallel = await createParallelTaskBranchManager(root, "HEAD");
-    await expect(parallel.prepare("T1")).rejects.toThrow("--concurrency 1");
-    const recovery = await createParallelTaskBranchManager(root, "HEAD", true);
-    expect((await recovery.prepare("T1")).path).toBe(workspace.path);
-    expect(await readFile(join(workspace.path, "README.md"), "utf8")).toBe(
-      "unfinished legacy work\n",
+    expect(await git(["rev-parse", "HEAD"], f.workspace.path)).toBe(
+      f.input.expectedHead,
+    );
+    expect(await git(["rev-parse", "agile/T1"], f.origin)).toBe(
+      f.input.expectedHead,
+    );
+    expect(await readFile(join(f.workspace.path, "README.md"), "utf8")).toBe(
+      "trusted patch\n",
+    );
+    expect(await git(["status", "--porcelain"], f.workspace.path)).toBe("");
+    await f.manager.assertReviewReady(
+      "T1",
+      f.input.expectedHead,
+      f.input.expectedBase,
     );
   } finally {
-    await removeRepository(root);
+    await f.cleanup();
   }
 });
 
-test("a replacement task restores an unpublished legacy commit from the old checkout", async () => {
-  const root = await createRepository();
+test("dirty files, unexpected history, external heads and interrupted Git operations refuse refresh without discarding work", async () => {
+  for (const change of [
+    "dirty",
+    "history",
+    "external",
+    "interrupted",
+  ] as const) {
+    const f = await refreshFixture();
+    try {
+      if (change === "dirty")
+        await writeFile(
+          join(f.workspace.path, "untracked.txt"),
+          "someone else's work\n",
+        );
+      if (change === "history") {
+        await writeFile(
+          join(f.workspace.path, "extra.txt"),
+          "external history\n",
+        );
+        await git(["add", "-A"], f.workspace.path);
+        await git(["commit", "-m", "external edit"], f.workspace.path);
+      }
+      if (change === "external")
+        await git(
+          ["update-ref", "refs/heads/agile/T1", f.input.targetBase],
+          f.origin,
+        );
+      if (change === "interrupted") {
+        const path = await git(
+          [
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "CHERRY_PICK_HEAD",
+          ],
+          f.workspace.path,
+        );
+        await writeFile(path, `${f.input.expectedHead}\n`);
+      }
+      const before = await git(["rev-parse", "HEAD"], f.workspace.path);
+      const status = await git(["status", "--porcelain"], f.workspace.path);
+      const remote = await git(["rev-parse", "agile/T1"], f.origin);
+      await expect(f.manager.refresh("T1", f.input)).rejects.toThrow();
+      expect(await git(["rev-parse", "HEAD"], f.workspace.path)).toBe(before);
+      expect(await git(["status", "--porcelain"], f.workspace.path)).toBe(
+        status,
+      );
+      expect(await git(["rev-parse", "agile/T1"], f.origin)).toBe(remote);
+      if (change === "dirty")
+        expect(
+          await readFile(join(f.workspace.path, "untracked.txt"), "utf8"),
+        ).toBe("someone else's work\n");
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+test("an exact old-head lease refuses an external push racing after preflight and retains both versions", async () => {
+  const f = await refreshFixture();
   try {
-    const legacy = await createTaskBranchManager(root, "HEAD");
-    const previous = await legacy.prepare("previous");
+    const script = join(f.origin, "racing-receive-pack");
     await writeFile(
-      join(previous.path, "README.md"),
-      "legacy implementation\n",
+      script,
+      `#!/bin/sh\nunset GIT_CONFIG_PARAMETERS\ngit --git-dir='${f.origin}' update-ref refs/heads/agile/T1 ${f.input.targetBase}\nexec git-receive-pack "$@"\n`,
     );
-    const commit = await legacy.commitChanges("previous");
-    await expect(
-      git(["cat-file", "-e", `${commit}^{commit}`], root),
-    ).rejects.toThrow();
-    const parallel = await createParallelTaskBranchManager(root, "HEAD");
-    const replacement = await parallel.prepare("replacement");
-    await parallel.restoreChanges("replacement", commit);
-    expect(await readFile(join(replacement.path, "README.md"), "utf8")).toBe(
-      "legacy implementation\n",
+    await chmod(script, 0o700);
+    await git(["config", "remote.origin.receivepack", script], f.root);
+    await expect(f.manager.refresh("T1", f.input)).rejects.toThrow();
+    expect(await git(["rev-parse", "agile/T1"], f.origin)).toBe(
+      f.input.targetBase,
     );
-    expect(await readFile(join(root, "README.md"), "utf8")).toBe("seed\n");
+    const retained = await git(["rev-parse", "HEAD"], f.workspace.path);
+    expect(retained).not.toBe(f.input.expectedHead);
+    expect(await git(["diff", f.input.targetBase, retained], f.root)).toBe(
+      await git(["diff", f.input.expectedBase, f.input.expectedHead], f.root),
+    );
+    expect(
+      await git(
+        ["rev-parse", `refs/agile-refresh/T1/${f.input.expectedHead}`],
+        f.root,
+      ),
+    ).toBe(f.input.expectedHead);
   } finally {
-    await removeRepository(root);
+    await f.cleanup();
   }
 });
 
@@ -129,160 +242,6 @@ test("project ignores Codex sandbox and test artifacts before task commits", asy
   expect(
     (await git(["check-ignore", ...artifacts], process.cwd())).split("\n"),
   ).toEqual(artifacts);
-});
-
-test("preserves a GitHub source origin in new and legacy scheduler checkouts", async () => {
-  const sourceOrigin = "https://github.com/agile-agents/roc.git";
-  const root = await createRepository();
-  try {
-    await git(["remote", "add", "origin", sourceOrigin], root);
-    const manager = await createTaskBranchManager(root, "HEAD");
-    const newCheckout = (await manager.prepare("T1")).path;
-    expect(
-      await git(["config", "--get", "remote.origin.url"], newCheckout),
-    ).toBe(sourceOrigin);
-
-    await rm(`${root}.agile-checkout`, { recursive: true, force: true });
-    const legacyCheckout = `${root}.agile-checkout`;
-    await git(["clone", root, legacyCheckout], root);
-    await appendFile(
-      join(legacyCheckout, ".git", "config"),
-      `\n[url "file://${root}"]\n\tinsteadOf = ${sourceOrigin}\n`,
-    );
-    const legacy = await createTaskBranchManager(root, "HEAD");
-    const legacyCheckoutPath = (await legacy.prepare("T1")).path;
-    expect(
-      await git(["config", "--get", "remote.origin.url"], legacyCheckoutPath),
-    ).toBe(sourceOrigin);
-    await expect(
-      (await createTaskBranchManager(root, "HEAD")).prepare("T1"),
-    ).resolves.toMatchObject({ path: legacyCheckoutPath });
-  } finally {
-    await removeRepository(root);
-  }
-}, 30_000);
-
-test("recognizes a no-user SCP SSH alias when restarting a scheduler checkout", async () => {
-  const sourceOrigin = "github-work:agile-agents/roc.git";
-  const root = await createRepository();
-  const sshCommand = join(root, "ssh");
-  const priorPath = process.env.PATH;
-  try {
-    await git(["remote", "add", "origin", sourceOrigin], root);
-    const manager = await createTaskBranchManager(root, "HEAD");
-    const checkout = (await manager.prepare("T1")).path;
-    await writeFile(sshCommand, `#!/bin/sh\nexec git-upload-pack "${root}"\n`);
-    await chmod(sshCommand, 0o755);
-    process.env.PATH = `${root}:${priorPath ?? "/usr/bin:/bin"}`;
-
-    const restarted = await createTaskBranchManager(root, "HEAD");
-    expect((await restarted.prepare("T1")).path).toBe(checkout);
-  } finally {
-    if (priorPath === undefined) delete process.env.PATH;
-    else process.env.PATH = priorPath;
-    await removeRepository(root);
-  }
-});
-
-test("uses global Git configuration when fetching a legacy scheduler checkout", async () => {
-  const sourceOrigin = "https://127.0.0.1:1/agile-agents/roc.git";
-  const root = await createRepository();
-  const globalConfig = join(root, "gitconfig");
-  const priorGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
-  try {
-    await git(["remote", "add", "origin", sourceOrigin], root);
-    const checkout = `${root}.agile-checkout`;
-    await git(["clone", root, checkout], root);
-    await writeFile(
-      globalConfig,
-      `[url "file://${root}"]\n\tinsteadOf = ${sourceOrigin}\n`,
-    );
-    process.env.GIT_CONFIG_GLOBAL = globalConfig;
-
-    const restarted = await createTaskBranchManager(root, "HEAD");
-    expect((await restarted.prepare("T1")).path).toBe(checkout);
-    await expect(
-      (await createTaskBranchManager(root, "HEAD")).prepare("T1"),
-    ).resolves.toMatchObject({ path: checkout });
-  } finally {
-    if (priorGlobalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
-    else process.env.GIT_CONFIG_GLOBAL = priorGlobalConfig;
-    await removeRepository(root);
-  }
-});
-
-test("switches retained task branches in a scheduler-owned checkout", async () => {
-  const root = await createRepository();
-  try {
-    const sourceBranch = await git(["branch", "--show-current"], root);
-    const sourceHead = await git(["rev-parse", "HEAD"], root);
-    const manager = await createTaskBranchManager(root, "HEAD");
-
-    const first = await manager.prepare("T1");
-    expect(first.path).toBe(`${root}.agile-checkout`);
-    expect(first.branch).toBe("agile/T1");
-    await writeFile(join(first.path, "answer.txt"), "42\n");
-    const firstCommit = await manager.commitChanges("T1", first.baseCommit);
-
-    const second = await manager.prepare("T2");
-    expect(second.path).toBe(first.path);
-    expect(await Bun.file(join(second.path, "answer.txt")).exists()).toBe(
-      false,
-    );
-    expect(await git(["branch", "--show-current"], second.path)).toBe(
-      "agile/T2",
-    );
-
-    const restarted = await createTaskBranchManager(root, "HEAD");
-    const reopened = await restarted.prepare("T1", first.baseCommit);
-    expect(await readFile(join(reopened.path, "answer.txt"), "utf8")).toBe(
-      "42\n",
-    );
-    await expect(
-      restarted.assertCommit("T1", firstCommit, first.baseCommit),
-    ).resolves.toBeUndefined();
-
-    expect(await git(["branch", "--show-current"], root)).toBe(sourceBranch);
-    expect(await git(["rev-parse", "HEAD"], root)).toBe(sourceHead);
-    expect(await git(["status", "--porcelain"], root)).toBe("");
-    expect(await Bun.file(join(root, "answer.txt")).exists()).toBe(false);
-    await expect(manager.prepare("../escape")).rejects.toThrow(
-      "Unsafe task path component",
-    );
-  } finally {
-    await removeRepository(root);
-  }
-});
-
-test("checkpoints interrupted work and folds it into one final task commit", async () => {
-  const root = await createRepository();
-  try {
-    const manager = await createTaskBranchManager(root, "HEAD");
-    const first = await manager.prepare("T1");
-    await writeFile(join(first.path, "partial.txt"), "partial\n");
-
-    await manager.prepare("T2");
-    expect(
-      await git(["show", "-s", "--format=%s", "agile/T1"], first.path),
-    ).toBe("agile(T1): WIP checkpoint");
-
-    await manager.prepare("T1", first.baseCommit);
-    await writeFile(join(first.path, "final.txt"), "done\n");
-    const commit = await manager.commitChanges("T1", first.baseCommit);
-
-    expect(
-      await git(
-        ["rev-list", "--count", `${first.baseCommit}..agile/T1`],
-        first.path,
-      ),
-    ).toBe("1");
-    expect(await git(["show", "-s", "--format=%s", commit], first.path)).toBe(
-      "agile(T1): implement ticket",
-    );
-    expect(await manager.commitChanges("T1", first.baseCommit)).toBe(commit);
-  } finally {
-    await removeRepository(root);
-  }
 });
 
 test("restores an approved source commit as uncommitted task changes", async () => {
@@ -457,7 +416,9 @@ test("requires Review to inspect the exact clean implementation commit", async (
       await git(["rev-parse", "--verify", "refs/agile-review/T1"], root),
     ).toBe(commit);
     expect(await git(["cat-file", "-e", `${commit}^{commit}`], root)).toBe("");
-    expect(await git(["branch", "--list", "agile/T1"], root)).toBe("");
+    expect(await git(["branch", "--list", "agile/T1"], root)).toContain(
+      "agile/T1",
+    );
     expect(await git(["branch", "--show-current"], root)).toBe(sourceBranch);
     expect(await git(["rev-parse", "HEAD"], root)).toBe(sourceHead);
     expect(await git(["status", "--porcelain"], root)).toBe(sourceStatus);
@@ -485,9 +446,7 @@ test("rejects reuse of a task branch with a different base identity", async () =
     await expect(nextManager.prepare("T1", first.baseCommit)).resolves.toEqual(
       first,
     );
-    await expect(nextManager.prepare("T1")).rejects.toThrow(
-      /does not descend from its base commit/i,
-    );
+    await expect(nextManager.prepare("T1")).rejects.toThrow(/base changed/i);
   } finally {
     await removeRepository(root);
   }

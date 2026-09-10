@@ -13,6 +13,7 @@ export class RecordedPiClient implements PiClientApi {
     [];
   readonly sent: Record<string, unknown>[] = [];
   closeCount = 0;
+  private thinkingLevel = "high";
   private readonly events: PiEvent[];
   private sessionCounter = 0;
 
@@ -43,11 +44,17 @@ export class RecordedPiClient implements PiClientApi {
         model:
           this.stateOverrides.model ??
           ({ id: "claude-sonnet-4-6", provider: "anthropic" } as const),
-        thinkingLevel: this.stateOverrides.thinkingLevel ?? "high",
+        thinkingLevel: this.stateOverrides.thinkingLevel ?? this.thinkingLevel,
         isStreaming: false,
       };
     }
-    if (command === "set_thinking_level" || command === "abort") {
+    if (command === "set_thinking_level") {
+      if (typeof params?.level !== "string")
+        throw Error("Missing thinking level");
+      this.thinkingLevel = params.level;
+      return undefined;
+    }
+    if (command === "abort") {
       return undefined;
     }
     if (command === "prompt") {
@@ -202,13 +209,16 @@ export function memoryBranches(
   overrides: Partial<TaskBranchManager> = {},
 ): TaskBranchManager {
   return {
-    async prepare(taskId) {
+    async prepare(taskId, baseCommit = "a".repeat(40)) {
       return {
         taskId,
         path: `/tmp/agile-pi-${taskId}`,
         branch: `agile/${taskId}`,
-        baseCommit: "a".repeat(40),
+        baseCommit,
       };
+    },
+    async refresh() {
+      throw Error("Unexpected base refresh");
     },
     async restoreChanges() {},
     async commitChanges() {

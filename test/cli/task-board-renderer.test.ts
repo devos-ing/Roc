@@ -46,6 +46,7 @@ function task(
     blockingDependencyIds: [],
     isActive: false,
     spec,
+    acceptanceChecklist: [],
     attempts: [],
     modelDecisions: [],
     roles: [],
@@ -99,7 +100,7 @@ const doneTwo = task({
 });
 const snapshot: TaskBoardSnapshot = {
   currentCycleId: "2026-W35",
-  scheduler: { activeTaskId: "active", activeAttemptId: "attempt-active" },
+  scheduler: { active: [{ taskId: "active", attemptId: "attempt-active" }] },
   active: {
     taskId: "active",
     attemptId: "attempt-active",
@@ -116,6 +117,67 @@ const snapshot: TaskBoardSnapshot = {
     done: [done, doneTwo],
   },
 };
+
+test("details show elapsed, attempt and merge waiting time with partial usage", () => {
+  const item = task({
+    id: "timed",
+    rawStatus: "awaiting_merge",
+    column: "inProgress",
+    usageIncomplete: true,
+    timing: {
+      startedAt: "2026-09-09T00:00:00Z",
+      elapsedMs: 90_000,
+      phaseElapsedMs: 30_000,
+      attemptMs: 50_000,
+      waitingMs: 30_000,
+      phaseDurationsMs: { awaiting_merge: 30_000 },
+    },
+  });
+  const board = {
+    ...snapshot,
+    tasks: [item],
+    columns: { ready: [], inProgress: [item], attention: [], done: [] },
+  };
+  const output = renderTaskBoard(board, {
+    width: 80,
+    color: false,
+    detailMode: "full",
+    detailTaskId: "timed",
+  });
+  expect(output).toContain("Elapsed: 1m 30s");
+  expect(output).toContain("Attempt time: 50s");
+  expect(output).toContain("Merge wait: 30s");
+  expect(output).toContain("20/100 · partial usage");
+});
+
+test("details retain original acceptance text with safe item evidence", () => {
+  const item = task({
+    id: "accepted",
+    acceptanceChecklist: [
+      {
+        criterionIndex: 0,
+        criterion: spec.acceptanceCriteria[0]!,
+        status: "passed",
+        evidence: "bun test\npassed",
+      },
+    ],
+  });
+  const board = {
+    ...snapshot,
+    tasks: [item],
+    columns: { ready: [item], inProgress: [], attention: [], done: [] },
+  };
+  const output = renderTaskBoard(board, {
+    width: 80,
+    color: false,
+    detailMode: "full",
+    detailTaskId: "accepted",
+  });
+  expect(output).toContain("Acceptance checklist");
+  expect(output).toContain("[x] A deliberately long acceptance criterion");
+  expect(output).toContain("Evidence: bun test");
+  expect(output).toContain("Evidence: passed");
+});
 
 test("keeps ordinary nonactive detail state uncolored", () => {
   const output = renderTaskBoard(snapshot, {

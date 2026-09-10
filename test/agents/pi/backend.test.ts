@@ -51,6 +51,49 @@ const probeDefaultModel = {
   thinkingLevelMap: { medium: 1, high: 2, xhigh: 3 },
 };
 
+test("partial mappings retain the default and invalid configured models close the probe", async () => {
+  const probe = new ScriptedProbeClient(probeModels, probeDefaultModel);
+  const runtime = await buildPiBackendFactory({
+    allowUnsandboxed: true,
+    models: { luna: "bigmodel/glm-5.3" },
+    startProbeClient: async () => probe,
+  })({ branches: memoryBranches() });
+  expect(runtime.modelMapping).toEqual({
+    luna: "bigmodel/glm-5.3",
+    terra: "anthropic/claude-sonnet-4-6",
+    sol: "anthropic/claude-sonnet-4-6",
+  });
+  await runtime.close();
+  for (const model of ["missing/secret-value", "provider/no-reasoning"]) {
+    const failingProbe = new ScriptedProbeClient(
+      [
+        ...probeModels,
+        { id: "no-reasoning", provider: "provider", reasoning: false },
+      ],
+      probeDefaultModel,
+    );
+    let attempts = 0;
+    await expect(
+      buildPiBackendFactory({
+        allowUnsandboxed: true,
+        models: { luna: model },
+        startProbeClient: async () => failingProbe,
+        startAttemptClient: async () => {
+          attempts++;
+          return new RecordedPiClient();
+        },
+      })({ branches: memoryBranches() }),
+    ).rejects.toMatchObject({
+      code: "PI_MODEL_MAPPING_INVALID",
+      retryable: false,
+      message:
+        "The configured luna model must exist in the Pi catalog and support high reasoning",
+    });
+    expect(attempts).toBe(0);
+    expect(failingProbe.closeCount).toBe(1);
+  }
+});
+
 for (const earlierFailure of [false, true]) {
   test(`shutdown preserves ${earlierFailure ? "earlier" : "current"} client close failure after attempting all clients and probe`, async () => {
     const previous = process.env.ROC_ALLOW_UNSANDBOXED;

@@ -369,7 +369,7 @@ async function createFixture(): Promise<AdapterConformanceFixture> {
     sourceRoot: root,
     workspace,
     async dispose() {
-      await rm(`${root}.agile-checkout`, { recursive: true, force: true });
+      await rm(`${root}.agile-worktrees`, { recursive: true, force: true });
       await rm(root, { recursive: true, force: true });
     },
   };

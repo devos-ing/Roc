@@ -1,5 +1,4 @@
-import { Database } from "bun:sqlite";
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import {
   lstat,
   mkdir,
@@ -12,27 +11,23 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { normalizeProjectSlug } from "../../src/cli/project-root";
 import { runCli } from "../../src/cli/run";
 import type { CliRuntime } from "../../src/cli/types";
-import { taskHookConfigHash } from "../../src/scheduler/task-hooks";
 import {
   loadRocSettings,
   rocSettingsPath,
   saveRocSettings,
 } from "../../src/settings";
 import type { DefaultSkillCandidate } from "../../src/skills/policy";
-import { openDatabase } from "../../src/store/database";
-import { OrchestrationRepository } from "../../src/store/orchestration-repository";
-import { PlanningRepository } from "../../src/store/planning-repository";
 
-const ansiSgrPattern = "\\u001B\\[[0-9;]*m";
 const onboardingNextSteps = [
   "Next:",
   "  Install unslop from pstack if needed:",
   "    npx skills add backnotprop/pstack --skill unslop --global --agent pi",
   "  Then choose it:",
   "    npx roc-it@latest onboard",
+  "  Connect GitHub if needed:",
+  "    gh auth login",
   "  Install the grilling skill if needed:",
   "    npx skills add mattpocock/skills --skill grilling --global --agent pi",
   "  Ask your coding assistant to create a backlog:",
@@ -136,7 +131,7 @@ test("onboard installs complete project skill packages without overwriting chang
         lstat(join(root, directory, "skills", "pr-review-to-closure")),
       ).rejects.toMatchObject({ code: "ENOENT" });
     }
-    expect(await lstat(dbPath)).toMatchObject({ isFile: expect.any(Function) });
+    await expect(lstat(dbPath)).rejects.toMatchObject({ code: "ENOENT" });
 
     expect(
       await runCli(
@@ -169,7 +164,6 @@ test("onboard installs complete project skill packages without overwriting chang
 test("project onboarding reports completed steps, configuration, and next commands", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const { io, output, errors } = interactiveIo(["2"]);
 
   try {
@@ -187,7 +181,7 @@ test("project onboarding reports completed steps, configuration, and next comman
     const transcript = output.join("\n");
     expect(transcript).toContain("Welcome to Roc");
     expect(transcript).toContain(`Scope: Project (${root})`);
-    expect(transcript).toContain(`1. Database: Ready (${dbPath})`);
+    expect(transcript).toContain("1. Task source: GitHub Issues");
     expect(transcript).toContain("2. Skills:");
     expect(transcript).toContain("Installed:");
     expect(transcript).toContain("3. Agent skills: 0 allowed");
@@ -220,9 +214,7 @@ test("global onboarding installs skills without creating a project database", as
       ),
     ).toBe(0);
     expect(output.join("\n")).toContain(`Scope: Global user account (${home})`);
-    expect(output.join("\n")).toContain(
-      "1. Database: Not created (global scope)",
-    );
+    expect(output.join("\n")).toContain("1. Task source: GitHub Issues");
     expect(output.join("\n")).not.toContain("Project database");
     for (const line of onboardingNextSteps.split("\n"))
       expect(output.join("\n")).toContain(line.trim());
@@ -556,7 +548,6 @@ test("onboard rejects an invalid Custom duration without writing settings", asyn
 test("onboarding reports only durable work when cycle validation rejects a new allowlist", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const homeRoot = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
-  const dbPath = join(projectRoot, ".agile", "runtime", "agile.db");
   await mkdir(join(homeRoot, ".agents"), { recursive: true });
   await writeFile(
     join(homeRoot, ".agents", ".skill-lock.json"),
@@ -582,7 +573,7 @@ test("onboarding reports only durable work when cycle validation rejects a new a
   const io = {
     out: (text: string) => {
       output.push(text);
-      if (text.startsWith("1. Database:")) interactions.push("database");
+      if (text.startsWith("1. Task source:")) interactions.push("task source");
       if (text.startsWith("2. Skills:")) interactions.push("packaged skills");
     },
     err: (text: string) => errors.push(text),
@@ -625,7 +616,7 @@ test("onboarding reports only durable work when cycle validation rejects a new a
       ),
     ).toBe(1);
     expect(interactions).toEqual([
-      "database",
+      "task source",
       "packaged skills",
       "checklist",
       "cycle",
@@ -633,7 +624,7 @@ test("onboarding reports only durable work when cycle validation rejects a new a
     ]);
     expect(await readFile(rocSettingsPath(homeRoot))).toEqual(before);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain(`1. Database: Ready (${dbPath})`);
+    expect(errors[0]).toContain("1. Task source: GitHub Issues");
     expect(errors[0]).toContain("2. Skills:");
     expect(errors[0]).not.toContain("3. Agent skills:");
     expect(errors[0]).not.toContain("4. Selected cycle:");
@@ -791,7 +782,6 @@ test("onboarding retry prints a copyable canonical command", async () => {
 test("onboarding stops truthfully after prior work when a later step fails", async () => {
   const root = await mkdtemp(join(tmpdir(), "agile-cli-project-"));
   const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
   const { io, output, errors } = interactiveIo(["3", "0"]);
 
   try {
@@ -806,629 +796,17 @@ test("onboarding stops truthfully after prior work when a later step fails", asy
       ),
     ).toBe(1);
     const completed = output.join("\n");
-    expect(completed).toContain(`1. Database: Ready (${dbPath})`);
+    expect(completed).toContain("1. Task source: GitHub Issues");
     expect(completed).toContain("2. Skills:");
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("Onboarding stopped");
     expect(errors[0]).toContain("Completed work:");
-    expect(errors[0]).toContain("1. Database: Ready");
+    expect(errors[0]).toContain("1. Task source: GitHub Issues");
     expect(errors[0]).toContain("2. Skills:");
     expect(errors[0]).toContain("Failed:");
     expect(errors[0]).toContain("Retry:");
     expect(errors[0]).not.toContain("Result: Complete");
     expect(errors[0]).not.toContain("Next:");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-    await rm(home, { recursive: true, force: true });
-  }
-});
-
-test("task import creates ready tasks, replays them, and rejects invalid input", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
-  const manifestPath = join(root, "backlog.json");
-  const malformedPath = join(root, "malformed.json");
-  const firstTask = {
-    id: "cli-import-01",
-    title: "First imported task\n\t\u001B\\",
-    priority: 0,
-    spec: {
-      problem: "No importer",
-      desiredOutcome: "Imported work is ready",
-      scope: ["import a backlog"],
-      nonGoals: [],
-      acceptanceCriteria: ["tasks are ready"],
-      validation: ["bun test"],
-      dependencies: [],
-      risk: "medium",
-      contextCandidates: [],
-      tokenCeiling: 10_000,
-    },
-  };
-  const secondTask = {
-    id: "cli-import-02",
-    title: "Second imported task",
-    priority: 1,
-    spec: { ...firstTask.spec, dependencies: ["cli-import-01"] },
-  };
-  const manifest = {
-    cycleId: "2026-W35",
-    goal: "Import tasks from the CLI",
-    tasks: [firstTask, secondTask],
-  };
-  const output: string[] = [];
-  const errors: string[] = [];
-  const io = {
-    out: (text: string) => output.push(text),
-    err: (text: string) => errors.push(text),
-  };
-  const runtime = { runScheduler: async () => {}, projectRoot: root };
-
-  try {
-    await writeFile(manifestPath, JSON.stringify(manifest));
-    await writeFile(malformedPath, "not JSON");
-    expect(await runCli(["task", "import", manifestPath], io, runtime)).toBe(0);
-    const importResult = output.at(-1);
-    expect(importResult).toContain("Created: 2");
-    expect(importResult).toContain("Already present: 0");
-    expect(importResult).toContain("Total: 2");
-    expect(importResult).toContain("╭─Next:");
-    const nextCommand = importResult
-      ?.split("\n")
-      .find((line) => line.includes("npx roc-it@latest task list"))
-      ?.replace(/^│\s*|\s*│$/g, "");
-    expect(nextCommand).toBeDefined();
-    if (nextCommand === undefined) throw new Error("Expected a next command");
-    const shell = Bun.spawn(
-      ["/bin/sh", "-fc", `npx() { printf '%s\\n' "$@"; }\n${nextCommand}`],
-      { stdout: "pipe" },
-    );
-    expect(await shell.exited).toBe(0);
-    expect(
-      (await new Response(shell.stdout).text()).trimEnd().split("\n"),
-    ).toEqual(["roc-it@latest", "task", "list"]);
-    const db = openDatabase(dbPath);
-    try {
-      expect(new PlanningRepository(db).listTasks()).toMatchObject([
-        { id: "cli-import-01", status: "ready" },
-        { id: "cli-import-02", status: "ready" },
-      ]);
-    } finally {
-      db.close();
-    }
-    expect(await runCli(["task", "list"], io, runtime)).toBe(0);
-    const listed = output.at(-1) ?? "";
-    const displaySlug = normalizeProjectSlug(root.split("/").at(-1) ?? "");
-    const firstDisplayId = JSON.stringify(`#${displaySlug}-1`);
-    const secondDisplayId = JSON.stringify(`#${displaySlug}-2`);
-    expect(listed.split("\n")).toEqual([
-      expect.stringMatching(/^ID +STATUS {2}TITLE$/),
-      `${firstDisplayId}  ready   ${JSON.stringify(firstTask.title)}`,
-      `${secondDisplayId}  ready   ${JSON.stringify(secondTask.title)}`,
-    ]);
-    expect(listed.split("\n")).toHaveLength(3);
-    expect(listed).not.toContain("\u001B");
-    expect(await runCli(["task", "import", manifestPath], io, runtime)).toBe(0);
-    expect(output.at(-1)).toContain("Created: 0");
-    expect(output.at(-1)).toContain("Already present: 2");
-    expect(output.at(-1)).toContain("Total: 2");
-    expect(await runCli(["task", "import", malformedPath], io, runtime)).toBe(
-      1,
-    );
-
-    await writeFile(
-      manifestPath,
-      JSON.stringify({
-        ...manifest,
-        tasks: [{ ...firstTask, title: "Conflicting title" }],
-      }),
-    );
-    expect(await runCli(["task", "import", manifestPath], io, runtime)).toBe(1);
-    const replayDb = openDatabase(dbPath);
-    try {
-      expect(new PlanningRepository(replayDb).listTasks()).toHaveLength(2);
-    } finally {
-      replayDb.close();
-    }
-    expect(await runCli(["task", "import"], io)).toBe(2);
-    expect(await runCli(["task", "import", manifestPath, "extra"], io)).toBe(2);
-    expect(await runCli(["task", "import", manifestPath, "--global"], io)).toBe(
-      2,
-    );
-    const usageErrors = errors.join("\n");
-    expect(usageErrors).toContain("missing required argument 'file'");
-    expect(usageErrors).toContain("too many arguments");
-    expect(usageErrors).toContain("unknown option '--global'");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("task list reuses create-backlog guidance when empty", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const output: string[] = [];
-  try {
-    expect(
-      await runCli(
-        ["task", "list"],
-        {
-          out: (text) => output.push(text),
-          err: () => {},
-        },
-        { runScheduler: async () => {}, projectRoot: root },
-      ),
-    ).toBe(0);
-    const empty = output.at(0) ?? "";
-    expect(empty).toContain("No tasks.");
-    expect(empty).toContain("╭─Next:");
-    expect(empty).toContain("Use roc-create-tasks: <requirement>");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("task list and board share display IDs while preserving plain output and canonical storage", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-display-"));
-  const home = await mkdtemp(join(tmpdir(), "agile-cli-display-home-"));
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
-  const plainOutput: string[] = [];
-  const coloredOutput: string[] = [];
-  const boardOutput: string[] = [];
-  const slug = normalizeProjectSlug(root.split("/").at(-1) ?? "");
-  const taskSpec = {
-    problem: "Display task labels",
-    desiredOutcome: "One label on each surface",
-    scope: ["task display"],
-    nonGoals: [],
-    acceptanceCriteria: ["display IDs agree"],
-    validation: ["bun test"],
-    dependencies: [],
-    risk: "low" as const,
-    contextCandidates: [],
-    tokenCeiling: 1_000,
-  };
-  const runtime = {
-    runScheduler: async () => {},
-    projectRoot: root,
-    homeRoot: home,
-    now: () => new Date(2026, 7, 30),
-  };
-
-  try {
-    await saveRocSettings({ cycle: { type: "daily" } }, home);
-    const db = openDatabase(dbPath);
-    const planning = new PlanningRepository(db);
-    planning.createCycle({
-      id: "2026-08-30",
-      goal: "Display task labels",
-      nonGoals: [],
-      tokenBudget: 1_000,
-      ticketIds: [],
-    });
-    for (const [id, priority, title] of [
-      ["work-0008", 0, 'active "title"'],
-      ["issue-0007", 1, "ready title"],
-    ] as const) {
-      planning.createTask({
-        id,
-        cycleId: "2026-08-30",
-        title,
-        spec: taskSpec,
-        priority,
-        approvalRequired: false,
-        approved: true,
-      });
-      planning.transitionTask(id, "ready", `${id}:ready`);
-    }
-    expect(new OrchestrationRepository(db).claimNext()).toEqual({
-      taskId: "work-0008",
-    });
-    db.close();
-
-    expect(
-      await runCli(
-        ["task", "list"],
-        { out: (text) => plainOutput.push(text), err: () => {} },
-        runtime,
-      ),
-    ).toBe(0);
-    expect(plainOutput.at(-1)).toContain(`"#${slug}-8"`);
-    expect(plainOutput.at(-1)).toContain(`"#${slug}-7"`);
-    expect(plainOutput.at(-1)).toContain('"active \\"title\\""');
-    expect(plainOutput.at(-1)).not.toContain("\u001B");
-
-    expect(
-      await runCli(
-        ["task", "list"],
-        {
-          out: (text) => coloredOutput.push(text),
-          err: () => {},
-          output: { isTTY: true } as NodeJS.WriteStream,
-        },
-        runtime,
-      ),
-    ).toBe(0);
-    expect(stripVTControlCharacters(coloredOutput.at(-1) ?? "")).toBe(
-      plainOutput.at(-1) ?? "",
-    );
-    expect(coloredOutput.at(-1)).toContain("\u001B[36mclaimed\u001B[0m");
-
-    expect(
-      await runCli(
-        ["task", "board"],
-        { out: (text) => boardOutput.push(text), err: () => {} },
-        runtime,
-      ),
-    ).toBe(0);
-    expect(boardOutput.at(-1)).toContain(`#${slug}-8`);
-    expect(boardOutput.at(-1)).toContain(`#${slug}-7`);
-    expect(boardOutput.at(-1)).not.toContain("\u001B");
-
-    const verificationDb = openDatabase(dbPath);
-    try {
-      expect(
-        verificationDb
-          .query<{ id: string }, []>("SELECT id FROM tasks ORDER BY id")
-          .all(),
-      ).toEqual([{ id: "issue-0007" }, { id: "work-0008" }]);
-    } finally {
-      verificationDb.close();
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-    await rm(home, { recursive: true, force: true });
-  }
-});
-
-test("task retirement flows from the CLI through persistence, history views, board, and ready-only claiming", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-retire-"));
-  const home = await mkdtemp(join(tmpdir(), "agile-cli-retire-home-"));
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
-  const output: string[] = [];
-  const errors: string[] = [];
-  const taskSpec = {
-    problem: "Retire obsolete work",
-    desiredOutcome: "Keep its history",
-    scope: ["task retirement"],
-    nonGoals: [],
-    acceptanceCriteria: ["retirement is preserved"],
-    validation: ["bun test"],
-    dependencies: [],
-    risk: "low" as const,
-    contextCandidates: [],
-    tokenCeiling: 1_000,
-  };
-
-  try {
-    await saveRocSettings({ cycle: { type: "daily" } }, home);
-    const db = openDatabase(dbPath);
-    const planning = new PlanningRepository(db);
-    planning.createCycle({
-      id: "2026-08-30",
-      goal: "Retire obsolete work",
-      nonGoals: [],
-      tokenBudget: 2_000,
-      ticketIds: [],
-    });
-    for (const [id, priority] of [
-      ["obsolete", 0],
-      ["replacement", 1],
-    ] as const) {
-      planning.createTask({
-        id,
-        cycleId: "2026-08-30",
-        title: id,
-        spec: taskSpec,
-        priority,
-        approvalRequired: false,
-        approved: true,
-      });
-      planning.transitionTask(id, "ready", `test:${id}:ready`);
-    }
-    db.close();
-    const runtime = {
-      runScheduler: async () => {},
-      projectRoot: root,
-      homeRoot: home,
-      now: () => new Date(2026, 7, 30),
-    };
-    const io = {
-      out: (text: string) => output.push(text),
-      err: (text: string) => errors.push(text),
-    };
-
-    expect(
-      await runCli(
-        [
-          "task",
-          "retire",
-          "obsolete",
-          "--reason",
-          "replaced implementation",
-          "--replacement",
-          "replacement",
-        ],
-        io,
-        runtime,
-      ),
-    ).toBe(0);
-    expect(output.at(-1)).toBe('Superseded "obsolete" by "replacement".');
-    expect(await runCli(["task", "list"], io, runtime)).toBe(0);
-    expect(output.at(-1)).toBe(
-      [
-        "ID             STATUS  TITLE",
-        '"replacement"  ready   "replacement"',
-      ].join("\n"),
-    );
-    expect(await runCli(["task", "list", "--history"], io, runtime)).toBe(0);
-    expect((output.at(-1) ?? "").split("\n")).toEqual([
-      "ID             STATUS   TITLE",
-      '"obsolete"     retired  "obsolete"',
-      expect.stringMatching(
-        /^ {2}Superseded by "replacement": "replaced implementation" at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
-      ),
-      '"replacement"  ready    "replacement"',
-    ]);
-    expect(await runCli(["task", "board"], io, runtime)).toBe(0);
-    expect(output.at(-1)).not.toContain("obsolete");
-    expect(await runCli(["task", "board", "--history"], io, runtime)).toBe(0);
-    expect(output.at(-1)).toContain("retired");
-    expect(output.at(-1)).toContain("replaced implementation");
-
-    const retiredDb = openDatabase(dbPath);
-    try {
-      expect(new OrchestrationRepository(retiredDb).claimNext()).toEqual({
-        taskId: "replacement",
-      });
-    } finally {
-      retiredDb.close();
-    }
-    expect(errors).toEqual([]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-    await rm(home, { recursive: true, force: true });
-  }
-});
-
-test("task board prints an unchanged, plain current-cycle snapshot and supports --all", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-board-"));
-  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
-  const output: string[] = [];
-  const errors: string[] = [];
-  const taskSpec = {
-    problem: "See the board",
-    desiredOutcome: "A plain task snapshot",
-    scope: ["task board"],
-    nonGoals: [],
-    acceptanceCriteria: ["task appears"],
-    validation: ["bun test"],
-    dependencies: [],
-    risk: "low" as const,
-    contextCandidates: [],
-    tokenCeiling: 1_000,
-  };
-
-  try {
-    await saveRocSettings({ cycle: { type: "daily" } }, home);
-    const db = openDatabase(dbPath);
-    const planning = new PlanningRepository(db);
-    planning.createCycle({
-      id: "2026-08-30",
-      goal: "Current board",
-      nonGoals: [],
-      tokenBudget: 1_000,
-      ticketIds: [],
-    });
-    planning.createCycle({
-      id: "other-cycle",
-      goal: "Other board",
-      nonGoals: [],
-      tokenBudget: 1_000,
-      ticketIds: [],
-    });
-    for (const [id, cycleId] of [
-      ["current-task", "2026-08-30"],
-      ["other-task", "other-cycle"],
-    ] as const)
-      planning.createTask({
-        id,
-        cycleId,
-        title: id === "current-task" ? "\u001B[31mcurrent task\u001B[0m" : id,
-        spec: taskSpec,
-        priority: 0,
-        approvalRequired: false,
-        approved: false,
-      });
-    const before = ["tasks", "attempts", "events", "scheduler_lease"].map(
-      (table) => db.query(`SELECT * FROM ${table} ORDER BY 1`).all(),
-    );
-    db.close();
-
-    const close = spyOn(Database.prototype, "close");
-    try {
-      expect(
-        await runCli(
-          ["task", "board"],
-          {
-            out: (text) => output.push(text),
-            err: (text) => errors.push(text),
-          },
-          {
-            runScheduler: async () => {},
-            projectRoot: root,
-            homeRoot: home,
-            now: () => new Date(2026, 7, 30),
-          },
-        ),
-      ).toBe(0);
-      expect(close).toHaveBeenCalledTimes(1);
-    } finally {
-      close.mockRestore();
-    }
-    expect(errors).toEqual([]);
-    expect(output).toHaveLength(1);
-    expect(output[0]).toContain("current-task");
-    expect(output[0]).toContain("current task");
-    expect(output[0]).not.toContain("other-task");
-    expect(output[0]).not.toMatch(new RegExp(ansiSgrPattern));
-
-    expect(
-      await runCli(
-        ["task", "board", "--all"],
-        { out: (text) => output.push(text), err: (text) => errors.push(text) },
-        {
-          runScheduler: async () => {},
-          projectRoot: root,
-          homeRoot: home,
-          now: () => new Date(2026, 7, 30),
-        },
-      ),
-    ).toBe(0);
-    expect(output.at(-1)).toContain("other-task");
-
-    const afterDb = openDatabase(dbPath);
-    try {
-      expect(
-        ["tasks", "attempts", "events", "scheduler_lease"].map((table) =>
-          afterDb.query(`SELECT * FROM ${table} ORDER BY 1`).all(),
-        ),
-      ).toEqual(before);
-    } finally {
-      afterDb.close();
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-    await rm(home, { recursive: true, force: true });
-  }
-});
-
-test("task board shows backlog guidance for an empty project", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-board-"));
-  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
-  const output: string[] = [];
-
-  try {
-    await saveRocSettings({ cycle: { type: "daily" } }, home);
-    expect(
-      await runCli(
-        ["task", "board"],
-        { out: (text) => output.push(text), err: () => {} },
-        {
-          runScheduler: async () => {},
-          projectRoot: root,
-          homeRoot: home,
-          now: () => new Date(2026, 7, 30),
-        },
-      ),
-    ).toBe(0);
-    expect(output.at(0)).toContain("No tasks.");
-    expect(output.at(0)).toContain("Use roc-create-tasks: <requirement>");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-    await rm(home, { recursive: true, force: true });
-  }
-});
-
-test("task import validates before creating a database, explains weekId, and keeps --global onboard-only", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const manifestPath = join(root, "invalid-backlog.json");
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
-  const errors: string[] = [];
-  const io = { out: () => {}, err: (text: string) => errors.push(text) };
-  const runtime = { runScheduler: async () => {}, projectRoot: root };
-
-  try {
-    await writeFile(
-      manifestPath,
-      JSON.stringify({ cycleId: "2026-W35", goal: "Invalid", tasks: [] }),
-    );
-    expect(await runCli(["task", "import", manifestPath], io, runtime)).toBe(1);
-    await expect(lstat(dbPath)).rejects.toThrow();
-
-    await writeFile(
-      manifestPath,
-      JSON.stringify({
-        weekId: "2026-W35",
-        cycleId: "2026-W35",
-        goal: "Legacy",
-        tasks: [{}],
-      }),
-    );
-    expect(await runCli(["task", "import", manifestPath], io, runtime)).toBe(1);
-    expect(errors.at(-1)).toBe("Manifest uses weekId; replace it with cycleId");
-    await expect(lstat(dbPath)).rejects.toThrow();
-
-    expect(await runCli(["tokens", "--global"], io)).toBe(2);
-    expect(errors.join("\n")).toContain("unknown option '--global'");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("operational database failures report an error, return 1, and close the database", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
-  const future = openDatabase(dbPath);
-  future.exec("PRAGMA user_version = 9");
-  future.close();
-  const output: string[] = [];
-  const errors: string[] = [];
-  const close = spyOn(Database.prototype, "close");
-
-  try {
-    expect(
-      await runCli(
-        ["task", "list"],
-        {
-          out: (text) => output.push(text),
-          err: (text) => errors.push(text),
-        },
-        { runScheduler: async () => {}, projectRoot: root },
-      ),
-    ).toBe(1);
-    expect(output).toEqual([]);
-    expect(errors).toEqual([
-      "Database version 9 is newer than supported version 8",
-    ]);
-    expect(close).toHaveBeenCalledTimes(1);
-  } finally {
-    close.mockRestore();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("task board reports database failures without emitting a snapshot", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-board-"));
-  const home = await mkdtemp(join(tmpdir(), "agile-cli-home-"));
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
-  const output: string[] = [];
-  const errors: string[] = [];
-
-  try {
-    await saveRocSettings({ cycle: { type: "daily" } }, home);
-    const future = openDatabase(dbPath);
-    future.exec("PRAGMA user_version = 9");
-    future.close();
-    expect(
-      await runCli(
-        ["task", "board"],
-        {
-          out: (text) => output.push(text),
-          err: (text) => errors.push(text),
-        },
-        {
-          runScheduler: async () => {},
-          projectRoot: root,
-          homeRoot: home,
-          now: () => new Date(2026, 7, 30),
-        },
-      ),
-    ).toBe(1);
-    expect(output).toEqual([]);
-    expect(errors).toEqual([
-      "TASK_BOARD_FAILED: Database version 9 is newer than supported version 8",
-    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
@@ -1514,269 +892,53 @@ test("cycle current explains how to create missing settings", async () => {
       ),
     ).toBe(1);
     expect(errors).toEqual([
-      "Run npx roc-it@latest onboard to configure an Agile cycle",
+      `Roc settings at ${rocSettingsPath(homeRoot)}: Settings file is missing. Run npx roc-it@latest onboard to configure an Agile cycle`,
     ]);
   } finally {
     await rm(homeRoot, { recursive: true, force: true });
   }
 });
 
-test("tokens prints the current-cycle report", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
-  const cycleId = "2026-08-28-P14D";
-  await saveRocSettings(
-    { cycle: { type: "custom", days: 14, anchorDate: "2026-08-28" } },
-    root,
-  );
-  const db = openDatabase(dbPath);
-  new PlanningRepository(db).createCycle({
-    id: cycleId,
-    goal: "See token usage",
-    nonGoals: [],
-    tokenBudget: 100_000,
-    ticketIds: [],
-  });
-  db.query(`
-    INSERT INTO usage(
-      id, cycle_id, category,
-      input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens
-    ) VALUES('cli-usage', ?, 'implement', 100, 80, 50, 30)
-  `).run(cycleId);
-  db.close();
-  const output: string[] = [];
-
+test("onboarding preserves invalid settings and requests manual repair before model setup", async () => {
+  const root = await mkdtemp(join(tmpdir(), "roc-onboard-invalid-"));
+  const home = await mkdtemp(join(tmpdir(), "roc-onboard-invalid-home-"));
+  let modelCalls = 0;
   try {
-    expect(
-      await runCli(
-        ["tokens"],
-        {
-          out: (text) => output.push(text),
-          err: (text) => output.push(text),
-        },
-        {
-          runScheduler: async () => {},
-          projectRoot: root,
-          homeRoot: root,
-          now: () => new Date(2026, 7, 28, 12),
-        },
-      ),
-    ).toBe(0);
-    expect(output).toHaveLength(1);
-    const chart = output.at(0) ?? "";
-    expect(chart).toContain("Token usage · 2026-08-28-P14D");
-    expect(chart).toContain("\u001B[32m");
-    expect(chart.replace(new RegExp(ansiSgrPattern, "g"), "")).toContain(
-      "Implement  150 tokens  100%  █",
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("tokens supports explicit plain output", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
-  const cycleId = "2026-08-28-P14D";
-  await saveRocSettings(
-    { cycle: { type: "custom", days: 14, anchorDate: "2026-08-28" } },
-    root,
-  );
-  const db = openDatabase(dbPath);
-  new PlanningRepository(db).createCycle({
-    id: cycleId,
-    goal: "See token usage",
-    nonGoals: [],
-    tokenBudget: 100_000,
-    ticketIds: [],
-  });
-  db.query(`
-    INSERT INTO usage(
-      id, cycle_id, category,
-      input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens
-    ) VALUES('cli-plain-usage', ?, 'implement', 100, 80, 50, 30)
-  `).run(cycleId);
-  db.close();
-  const output: string[] = [];
-
-  try {
-    expect(
-      await runCli(
-        ["tokens", "--no-color"],
-        {
-          out: (text) => output.push(text),
-          err: (text) => output.push(text),
-        },
-        {
-          runScheduler: async () => {},
-          projectRoot: root,
-          homeRoot: root,
-          now: () => new Date(2026, 7, 28, 12),
-        },
-      ),
-    ).toBe(0);
-    expect(output).toHaveLength(1);
-    const chart = output.at(0) ?? "";
-    expect(chart).not.toContain("\u001B[");
-    expect(chart).toContain("Implement  150 tokens  100%  █");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("tokens reports a missing current cycle as an empty state", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const output: string[] = [];
-
-  try {
-    await saveRocSettings(
-      { cycle: { type: "custom", days: 14, anchorDate: "2026-08-28" } },
-      root,
-    );
-    expect(
-      await runCli(
-        ["tokens"],
-        {
-          out: (text) => output.push(text),
-          err: (text) => output.push(text),
-        },
-        {
-          runScheduler: async () => {},
-          projectRoot: root,
-          homeRoot: root,
-          now: () => new Date(2026, 7, 28, 12),
-        },
-      ),
-    ).toBe(0);
-    expect(output).toEqual([
-      "No token usage recorded for cycle: 2026-08-28-P14D",
-    ]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("tokens rejects scheduler-only options and reports read failures through the runtime", async () => {
-  const output: string[] = [];
-  const logged: string[] = [];
-  const runtime = {
-    runScheduler: async () => {},
-    logError: async (error: { code: string }) => {
-      logged.push(error.code);
-    },
-  };
-
-  expect(
-    await runCli(
-      ["tokens", "--backend", "fake"],
-      {
-        out: (text) => output.push(text),
-        err: (text) => output.push(text),
-      },
-      runtime,
-    ),
-  ).toBe(2);
-
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
-  await saveRocSettings({ cycle: { type: "weekly" } }, root);
-  const future = openDatabase(dbPath);
-  future.exec("PRAGMA user_version = 9");
-  future.close();
-  try {
-    expect(
-      await runCli(
-        ["tokens"],
-        {
-          out: (text) => output.push(text),
-          err: (text) => output.push(text),
-        },
-        {
-          ...runtime,
-          projectRoot: root,
-          homeRoot: root,
-          now: () => new Date(2026, 7, 28, 12),
-        },
-      ),
-    ).toBe(1);
-    expect(logged).toEqual(["TOKEN_USAGE_READ_FAILED"]);
-    expect(output.at(-1)).toBe(
-      "TOKEN_USAGE_READ_FAILED: Could not read token usage",
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("task hook trust records only the current task-scoped configuration hash", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agile-cli-"));
-  const dbPath = join(root, ".agile", "runtime", "agile.db");
-  const hook = {
-    command: "codegraph",
-    args: ["init", "-i"],
-    timeoutSeconds: 120,
-  };
-  const db = openDatabase(dbPath);
-  const planning = new PlanningRepository(db);
-  planning.createCycle({
-    id: "2026-W35",
-    goal: "Trust a task hook",
-    nonGoals: [],
-    tokenBudget: 10_000,
-    ticketIds: ["H1"],
-  });
-  planning.createTask({
-    id: "H1",
-    cycleId: "2026-W35",
-    title: "Trusted hook",
-    spec: {
-      problem: "A hook needs explicit approval",
-      desiredOutcome: "Persist task-scoped trust",
-      scope: ["hooks"],
-      nonGoals: [],
-      acceptanceCriteria: ["trust remains task scoped"],
-      validation: ["bun test"],
-      dependencies: [],
-      risk: "low",
-      contextCandidates: [],
-      tokenCeiling: 1_000,
-      prehook: hook,
-    },
-    priority: 0,
-    approvalRequired: false,
-    approved: true,
-  });
-  db.close();
-  const output: string[] = [];
-
-  try {
-    expect(
-      await runCli(
-        ["task", "hook", "trust", "H1", "prehook"],
-        {
-          out: (text) => output.push(text),
-          err: (text) => output.push(text),
-        },
-        { runScheduler: async () => {}, projectRoot: root },
-      ),
-    ).toBe(0);
-    expect(output).toEqual([
-      `Trusted prehook for H1: ${taskHookConfigHash(hook)}`,
-    ]);
-    const reopened = openDatabase(dbPath);
-    try {
+    const path = await saveRocSettings({ cycle: { type: "weekly" } }, home);
+    for (const source of [
+      '{"cycle":{"type":"weekly"},"type":"SECRET_VALUE"}\n',
+      '{"cycle":{"type":"SECRET_VALUE",',
+    ]) {
+      const before = Buffer.from(source);
+      await writeFile(path, before);
+      const { io, output, errors } = interactiveIo(["2"]);
       expect(
-        new OrchestrationRepository(reopened).getTaskHook("H1", "prehook"),
-      ).toMatchObject({
-        configHash: taskHookConfigHash(hook),
-        trustedHash: taskHookConfigHash(hook),
-        status: "pending",
-      });
-    } finally {
-      reopened.close();
+        await runCli(
+          ["onboard"],
+          io,
+          onboardingRuntime({
+            projectRoot: root,
+            homeRoot: home,
+            configureModel: async () => {
+              modelCalls++;
+              return "provider/model";
+            },
+          }),
+        ),
+      ).toBe(1);
+      expect(modelCalls).toBe(0);
+      expect(await readFile(path)).toEqual(before);
+      expect(errors.join("\n")).toContain(rocSettingsPath(home));
+      expect(errors.join("\n")).toContain("Back up this file");
+      expect(errors.join("\n")).toContain(
+        "onboarding reads the same file and cannot repair it",
+      );
+      expect(errors.join("\n")).not.toContain("SECRET_VALUE");
+      expect(output.join("\n")).not.toContain("Result: Complete");
     }
   } finally {
     await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });
 

@@ -3,7 +3,7 @@ import { AgileError } from "../../runtime/errors";
 import { getAgentDir, ModelRuntime, SettingsManager } from "./sdk";
 
 const provider = "openai-codex";
-const defaultModel = "gpt-5.5";
+const defaultModel = "gpt-6-astra";
 
 type SetupServices = {
   models: Pick<
@@ -59,7 +59,7 @@ export async function configureCodex(
       settings,
       openBrowser: open,
     } = services ?? {
-      models: await ModelRuntime.create(),
+      models: await ModelRuntime.create({ allowModelNetwork: true }),
       settings: SettingsManager.create(cwd, getAgentDir(), {
         projectTrusted: false,
       }),

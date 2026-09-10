@@ -23,7 +23,7 @@ export type BackendRuntime = {
 
 /**
  * Starts a backend against the shared task branch manager. The common run
- * loop owns branch-manager creation, database setup, model advising,
+ * loop owns branch-manager creation, GitHub checkpoints, model advising,
  * daemon lifecycle, logging, and cleanup; a factory only starts its own
  * process and returns the runtime pieces the loop cannot know about.
  */

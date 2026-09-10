@@ -1,4 +1,4 @@
-import type { StoredTask, TaskStatus, TicketSpec } from "../domain/schemas";
+import type { AcceptanceChecklistItem } from "../domain/acceptance-checklist";
 import type {
   InspectionAttempt,
   InspectionCycle,
@@ -6,8 +6,10 @@ import type {
   InspectionRole,
   InspectionScheduler,
   InspectionSnapshot,
+  InspectionTask,
   TokenTotals,
-} from "../store/orchestration-repository";
+} from "../domain/inspection";
+import type { StoredTask, TaskStatus, TicketSpec } from "../domain/schemas";
 
 export type TaskBoardColumn = "ready" | "inProgress" | "attention" | "done";
 
@@ -21,6 +23,12 @@ export type TaskBoardActiveState = {
 
 export type TaskBoardTask = {
   id: string;
+  issueUrl?: string;
+  pullRequestUrl?: string;
+  acceptanceChecklist: AcceptanceChecklistItem[];
+  failure?: string;
+  timing?: InspectionTask["timing"];
+  usageIncomplete?: boolean;
   cycleId: string;
   title: string;
   rawStatus: TaskStatus;
@@ -41,6 +49,8 @@ export type TaskBoardTask = {
 };
 
 export type TaskBoardSnapshot = {
+  remoteCheckpoints?: boolean;
+  usageIncomplete?: boolean;
   currentCycleId: string;
   history?: boolean;
   scheduler: InspectionScheduler;
@@ -51,6 +61,8 @@ export type TaskBoardSnapshot = {
 };
 
 export type TaskBoardSnapshotInput = {
+  remoteCheckpoints?: boolean;
+  usageIncomplete?: boolean;
   tasks: StoredTask[];
   inspection: InspectionSnapshot;
   currentCycleId: string;
@@ -66,7 +78,8 @@ function boardColumn(status: TaskStatus): TaskBoardColumn {
     status === "scouting" ||
     status === "implementing" ||
     status === "reviewing" ||
-    status === "publishing"
+    status === "publishing" ||
+    status === "awaiting_merge"
   ) {
     return "inProgress";
   }
@@ -103,6 +116,9 @@ export function buildTaskBoardSnapshot(
     input.inspection.tasks.map((task) => [task.id, task]),
   );
   const statuses = new Map(input.tasks.map((task) => [task.id, task.status]));
+  const activeIds = new Set(
+    input.inspection.scheduler.active?.map((item) => item.taskId),
+  );
   const taskBoard = tasks.map((task) => {
     const inspected = inspectedTasks.get(task.id);
     if (inspected === undefined)
@@ -118,9 +134,15 @@ export function buildTaskBoardSnapshot(
       blockingDependencyIds: task.spec.dependencies.filter(
         (dependencyId) => statuses.get(dependencyId) !== "done",
       ),
-      isActive: boardColumn(task.status) === "inProgress",
+      isActive: activeIds.has(task.id),
       spec: task.spec,
       attempts: inspected.attempts,
+      issueUrl: inspected.issueUrl,
+      pullRequestUrl: inspected.pullRequestUrl,
+      acceptanceChecklist: inspected.acceptanceChecklist,
+      failure: inspected.failure,
+      timing: inspected.timing,
+      usageIncomplete: inspected.usageIncomplete,
       modelDecisions: inspected.modelDecisions,
       roles: inspected.roles,
       tokenTarget: inspected.tokenTarget,
@@ -132,7 +154,7 @@ export function buildTaskBoardSnapshot(
   });
   const activeTask = taskBoard.find((task) => task.isActive);
   const activeAttempt = activeTask?.attempts.find(
-    (attempt) => attempt.id === input.inspection.scheduler.activeAttemptId,
+    (attempt) => attempt.status === "running",
   );
   const active =
     activeTask === undefined
@@ -148,11 +170,7 @@ export function buildTaskBoardSnapshot(
                 retryCount: activeAttempt.retryIndex,
               }),
         };
-  const orderedTasks = taskBoard.sort(
-    (left, right) =>
-      Number(right.isActive) - Number(left.isActive) ||
-      compareTasks(left, right),
-  );
+  const orderedTasks = taskBoard.sort(compareTasks);
   if (activeTask !== undefined) {
     orderedTasks.splice(orderedTasks.indexOf(activeTask), 1);
     orderedTasks.unshift(activeTask);
@@ -167,6 +185,9 @@ export function buildTaskBoardSnapshot(
 
   return {
     currentCycleId: input.currentCycleId,
+    ...(input.remoteCheckpoints
+      ? { remoteCheckpoints: true, usageIncomplete: input.usageIncomplete }
+      : {}),
     ...(input.history === true ? { history: true } : {}),
     scheduler: input.inspection.scheduler,
     ...(active === undefined ? {} : { active }),

@@ -1,0 +1,245 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Roc｜從批准的 Issue 到合併的 PR",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/devos-ing/Roc",
+      "revision": "9f9cae0e8796a15e80903469f3e799c075d59773"
+    },
+    "viewBox": [
+      1380,
+      565
+    ]
+  },
+  "components": [
+    {
+      "id": "planning",
+      "type": "external",
+      "label": "聊天與批准",
+      "sublabel": "人決定需求與驗收條件",
+      "pos": [
+        40,
+        75
+      ],
+      "size": [
+        240,
+        92
+      ],
+      "sources": [
+        {
+          "path": "src/github/remote-tasks.ts"
+        }
+      ]
+    },
+    {
+      "id": "issues",
+      "type": "cloud",
+      "label": "GitHub Issues",
+      "sublabel": "規格、批准、checkpoint",
+      "pos": [
+        400,
+        75
+      ],
+      "size": [
+        240,
+        92
+      ],
+      "sources": [
+        {
+          "path": "src/github/execution-store.ts"
+        }
+      ]
+    },
+    {
+      "id": "daemon",
+      "type": "backend",
+      "label": "唯一 Roc daemon",
+      "sublabel": "核對批准、依賴與 scope",
+      "pos": [
+        760,
+        75
+      ],
+      "size": [
+        240,
+        92
+      ],
+      "sources": [
+        {
+          "path": "src/scheduler/github-pool.ts"
+        }
+      ]
+    },
+    {
+      "id": "workers",
+      "type": "backend",
+      "label": "平行任務 A / B",
+      "sublabel": "各自 worktree 與 Pi sessions",
+      "pos": [
+        1120,
+        75
+      ],
+      "size": [
+        240,
+        92
+      ],
+      "sources": [
+        {
+          "path": "src/workspace/task-branch.ts"
+        }
+      ]
+    },
+    {
+      "id": "board",
+      "type": "frontend",
+      "label": "進度與用量",
+      "sublabel": "task board / scheduler inspect",
+      "pos": [
+        40,
+        395
+      ],
+      "size": [
+        240,
+        92
+      ],
+      "sources": [
+        {
+          "path": "src/github/execution-view.ts"
+        }
+      ]
+    },
+    {
+      "id": "done",
+      "type": "cloud",
+      "label": "確認完成 · done",
+      "sublabel": "讀回合併並核對 ancestry",
+      "pos": [
+        400,
+        395
+      ],
+      "size": [
+        240,
+        92
+      ],
+      "sources": [
+        {
+          "path": "src/scheduler/github-runner.ts"
+        }
+      ]
+    },
+    {
+      "id": "gate",
+      "type": "security",
+      "label": "合併協調器",
+      "sublabel": "精確 Review、CI 與保護規則",
+      "pos": [
+        760,
+        395
+      ],
+      "size": [
+        240,
+        92
+      ],
+      "sources": [
+        {
+          "path": "src/github/pr-merger.ts"
+        }
+      ]
+    },
+    {
+      "id": "pr",
+      "type": "cloud",
+      "label": "GitHub PR + CI",
+      "sublabel": "獨立 Review 通過後發佈",
+      "pos": [
+        1120,
+        395
+      ],
+      "size": [
+        240,
+        92
+      ],
+      "sources": [
+        {
+          "path": "src/github/pr-publisher.ts"
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "publish",
+      "from": "planning",
+      "to": "issues",
+      "label": "發佈批准規格"
+    },
+    {
+      "id": "authority",
+      "from": "daemon",
+      "to": "issues",
+      "label": "讀取 / 寫回"
+    },
+    {
+      "id": "admit",
+      "from": "daemon",
+      "to": "workers",
+      "label": "最多 2 項"
+    },
+    {
+      "id": "inspect",
+      "from": "issues",
+      "to": "board",
+      "label": "讀取紀錄",
+      "variant": "dashed"
+    },
+    {
+      "id": "publish-pr",
+      "from": "workers",
+      "to": "pr",
+      "label": "可信 commit",
+      "labelAt": [
+        1240,
+        280
+      ]
+    },
+    {
+      "id": "reconcile",
+      "from": "pr",
+      "to": "gate",
+      "label": "核對目前 head"
+    },
+    {
+      "id": "confirm",
+      "from": "gate",
+      "to": "done",
+      "label": "確認合併"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "每項任務",
+      "items": [
+        "Scout → Implement → 獨立 Review。",
+        "明確批准的低風險任務可省略 Scout。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "合併與恢復",
+      "items": [
+        "預設手動；--auto-merge 啟用自動合併。",
+        "基底前進時，最多 2 次 rebase 與新 Review。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "目前範圍",
+      "items": [
+        "GitHub 是任務依據；本機沒有 SQLite 任務佇列。",
+        "雙機驗收延後；Superset 不在本階段。"
+      ]
+    }
+  ]
+}

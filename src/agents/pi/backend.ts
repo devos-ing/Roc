@@ -1,5 +1,5 @@
 import { AgileError } from "../../runtime/errors";
-import type { CatalogModel } from "../../scheduler/model-routing";
+import type { CatalogModel, ModelMapping } from "../../scheduler/model-routing";
 import { loadRocSettings } from "../../settings";
 import {
   buildDefaultSkillConfig,
@@ -87,6 +87,7 @@ export const startPiBackend: BackendFactory = async (context) => {
     startProbeClient: () => PiClient.start({ cwd: process.cwd() }),
     skillPaths,
     allowUnsandboxed,
+    models: settings.models,
   })(context);
 };
 
@@ -99,6 +100,7 @@ export function buildPiBackendFactory(input: {
   startProbeClient: () => Promise<PiClientApi>;
   skillPaths?: readonly string[];
   allowUnsandboxed?: boolean;
+  models?: ModelMapping;
   startAttemptClient?: (cwd: string) => Promise<PiClientApi>;
 }): BackendFactory {
   return async ({ branches }: { branches: TaskBranchManager }) => {
@@ -115,9 +117,7 @@ export function buildPiBackendFactory(input: {
         const state = PiGetStateDataSchema.parse(
           await probe.request("get_state"),
         );
-        // The probe's effective model is the one attributed attempt runs
-        // re-assert; an unresolvable default would run an unobservable
-        // server-side default instead.
+        // Unconfigured profiles use the probe's effective default model.
         defaultModel = validateDefaultModel(state.model);
         catalogModels = models;
       } catch (error) {
@@ -170,6 +170,32 @@ export function buildPiBackendFactory(input: {
         });
       }
 
+      const modelMapping: Record<"luna" | "terra" | "sol", string> = {
+        luna: defaultId,
+        terra: defaultId,
+        sol: defaultId,
+      };
+      for (const profile of ["luna", "terra", "sol"] as const) {
+        const configured = input.models?.[profile];
+        if (configured === undefined) continue;
+        if (
+          !catalog.some(
+            (model) =>
+              model.id === configured &&
+              model.supportedReasoningEfforts.includes("high"),
+          )
+        ) {
+          throw new AgileError({
+            code: "PI_MODEL_MAPPING_INVALID",
+            category: "startup",
+            retryable: false,
+            component: "pi-backend",
+            message: `The configured ${profile} model must exist in the Pi catalog and support high reasoning`,
+          });
+        }
+        modelMapping[profile] = configured;
+      }
+
       // The probe process is only a catalog oracle; role attempts spawn
       // their own children.
       const liveClients = new Set<PiClientApi>();
@@ -209,13 +235,7 @@ export function buildPiBackendFactory(input: {
       let closed: Promise<void> | undefined;
       return {
         catalog,
-        // Pi exposes one attributed default model, so every advisor profile
-        // routes to it explicitly instead of relying on profile-suffixed IDs.
-        modelMapping: {
-          luna: defaultId,
-          terra: defaultId,
-          sol: defaultId,
-        },
+        modelMapping,
         harness: createPiHarness({ branches, startClient: startAttemptClient }),
         close: () => {
           closed ??= (async () => {

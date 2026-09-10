@@ -233,6 +233,32 @@ export function createPiHarness(input: {
   const now = input.now ?? (() => new Date().toISOString());
   const activeAttempts = new Map<string, ActiveAttempt>();
   const terminalAttempts = new Set<string>();
+  const terminalCleanup = new Map<string, Promise<void>>();
+
+  /** Retains one child-close acknowledgement until delivery or cancellation confirms it. */
+  function closeAttempt(attemptId: string, client: PiClientApi): void {
+    if (terminalCleanup.has(attemptId)) return;
+    const closed = Promise.resolve().then(() => client.close());
+    terminalCleanup.set(attemptId, closed);
+    void closed.catch(() => undefined);
+  }
+
+  /** Blocks terminal delivery on child exit and retains failed cleanup evidence for shutdown. */
+  async function confirmCleanup(attemptId: string): Promise<void> {
+    try {
+      await terminalCleanup.get(attemptId);
+    } catch (error) {
+      throw normalizeError(error, {
+        code: "PI_PROCESS_EXIT_UNCONFIRMED",
+        category: "infra",
+        retryable: false,
+        component: "pi-harness",
+        message: "Pi role cleanup could not be confirmed",
+        attemptId,
+      });
+    }
+    terminalCleanup.delete(attemptId);
+  }
 
   /** Removes transient completion markers from a terminal cursor. */
   function withoutTerminalMarkers(cursor: PiBackendCursor): PiBackendCursor {
@@ -247,7 +273,7 @@ export function createPiHarness(input: {
     activeAttempts.delete(active.attemptId);
     terminalAttempts.add(active.attemptId);
     if (active.client !== undefined) {
-      void active.client.close().catch(() => undefined);
+      closeAttempt(active.attemptId, active.client);
     }
   }
 
@@ -641,7 +667,7 @@ export function createPiHarness(input: {
     } catch (error) {
       // A half-started attempt owns its child process; release it before
       // the failure is normalized into a terminal delivery.
-      void client.close().catch(() => undefined);
+      closeAttempt(request.attempt.attemptId, client);
       throw error;
     }
   }
@@ -1094,7 +1120,7 @@ export function createPiHarness(input: {
     );
   }
 
-  return {
+  const harness: AgentHarness = {
     /** Dispatches, advances, or reconciles one validated harness attempt. */
     async step(rawRequest): Promise<HarnessDelivery> {
       const request = HarnessStepRequestSchema.parse(rawRequest);
@@ -1157,7 +1183,7 @@ export function createPiHarness(input: {
 
     /** Aborts an active nonterminal Pi role process and reaps it. */
     async cancel(attemptId): Promise<void> {
-      if (terminalAttempts.has(attemptId)) return;
+      if (terminalAttempts.has(attemptId)) return confirmCleanup(attemptId);
       const active = activeAttempts.get(attemptId);
       if (!active) throw new Error(`Unknown active Pi attempt: ${attemptId}`);
       const client = active.client;
@@ -1179,6 +1205,18 @@ export function createPiHarness(input: {
       // Closing bounds the abort: the client ends stdin, waits briefly for
       // the child to exit on its own, then SIGKILLs it as the fallback.
       await client.close();
+    },
+  };
+  return {
+    /** Returns a role delivery only after any terminal child cleanup has been confirmed. */
+    async step(request) {
+      const delivered = await harness.step(request);
+      await confirmCleanup(request.attempt.attemptId);
+      return delivered;
+    },
+    /** Cancels only the requested attempt while retaining its terminal cleanup evidence. */
+    async cancel(attemptId) {
+      await harness.cancel(attemptId);
     },
   };
 }

@@ -7,7 +7,7 @@ import { ModelRuntime, SettingsManager } from "../../../src/agents/pi/sdk";
 
 type Services = NonNullable<Parameters<typeof configureCodex>[2]>;
 
-/** Uses the installed model catalog with isolated settings and deterministic provider responses. */
+/** Uses isolated settings and deterministic responses, adding Astra to the older bundled catalog fixture. */
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), "roc-model-setup-"));
   const catalog = await ModelRuntime.create({
@@ -81,7 +81,13 @@ async function setup() {
       getAuth: async () =>
         authenticated ? { auth: { apiKey: "fixture" } } : undefined,
       login,
-      getModel: (provider, id) => catalog.getModel(provider, id),
+      getModel: (provider, id) => {
+        const model = catalog.getModel(
+          provider,
+          id === "gpt-6-astra" ? "gpt-5.5" : id,
+        );
+        return model ? { ...model, id } : undefined;
+      },
       completeSimple: complete,
     },
   };
@@ -117,10 +123,10 @@ test("browser login verifies Codex before saving defaults and reuses credentials
   const f = await setup();
   try {
     expect(await configureCodex(f.io, f.root, f.services)).toBe(
-      "openai-codex/gpt-5.5",
+      "openai-codex/gpt-6-astra",
     );
     expect(f.settings.getDefaultProvider()).toBe("openai-codex");
-    expect(f.settings.getDefaultModel()).toBe("gpt-5.5");
+    expect(f.settings.getDefaultModel()).toBe("gpt-6-astra");
     expect(f.settings.getDefaultThinkingLevel()).toBe("high");
     expect(f.settings.getTheme()).toBe("dark");
     expect(f.browser).toHaveBeenCalledWith("https://example.com/login");
@@ -129,7 +135,7 @@ test("browser login verifies Codex before saving defaults and reuses credentials
       maxRetries: 0,
     });
     expect(await configureCodex(f.io, f.root, f.services)).toBe(
-      "openai-codex/gpt-5.5",
+      "openai-codex/gpt-6-astra",
     );
     expect(f.login).toHaveBeenCalledTimes(1);
     expect(f.complete).toHaveBeenCalledTimes(2);
@@ -150,6 +156,19 @@ test("failed model response preserves previous defaults and hides provider secre
     expect(f.settings.getDefaultProvider()).toBe("anthropic");
     expect(f.settings.getDefaultModel()).toBe("prior");
     expect(f.output.join("\n")).not.toContain("secret-access-token");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("onboarding preserves an explicitly saved Codex model", async () => {
+  const f = await setup();
+  try {
+    f.settings.setDefaultModelAndProvider("openai-codex", "gpt-5.5");
+    expect(await configureCodex(f.io, f.root, f.services)).toBe(
+      "openai-codex/gpt-5.5",
+    );
+    expect(f.complete.mock.calls[0]?.[0].id).toBe("gpt-5.5");
   } finally {
     await f.cleanup();
   }

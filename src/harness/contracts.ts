@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import { z } from "zod";
+import { AcceptanceResultSchema } from "../domain/acceptance-checklist";
 import {
   ContextRefSchema,
   ModelProfileSchema,
@@ -67,6 +68,7 @@ export const ReviewOutputSchema = z
     decision: z.enum(["accepted", "rejected"]),
     findings: z.array(NonEmpty),
     remainingGaps: z.array(NonEmpty),
+    acceptanceResults: z.array(AcceptanceResultSchema).optional(),
   })
   .strict();
 
@@ -123,24 +125,34 @@ export const HarnessAttemptSchema = z
   })
   .strict();
 
-export const HarnessRoleInputSchema = z.discriminatedUnion("role", [
-  z.object({ role: z.literal("scout"), ticket: StoredTaskSchema }).strict(),
-  z
-    .object({
-      role: z.literal("implement"),
-      ticket: StoredTaskSchema,
-      scout: ScoutOutputSchema,
-    })
-    .strict(),
-  z
-    .object({
-      role: z.literal("review"),
-      ticket: StoredTaskSchema,
-      scout: ScoutOutputSchema,
-      implementation: ImplementOutputSchema,
-    })
-    .strict(),
-]);
+export const HarnessRoleInputSchema = z
+  .discriminatedUnion("role", [
+    z.object({ role: z.literal("scout"), ticket: StoredTaskSchema }).strict(),
+    z
+      .object({
+        role: z.literal("implement"),
+        ticket: StoredTaskSchema,
+        scout: ScoutOutputSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        role: z.literal("review"),
+        ticket: StoredTaskSchema,
+        scout: ScoutOutputSchema.optional(),
+        implementation: ImplementOutputSchema,
+      })
+      .strict(),
+  ])
+  .superRefine((input, context) => {
+    if (input.role !== "scout" && !input.scout && !input.ticket.spec.skipScout)
+      context.addIssue({
+        code: "custom",
+        path: ["scout"],
+        message:
+          "Scout context is required unless the approved ticket explicitly omits Scout",
+      });
+  });
 
 export const HarnessStepRequestSchema = z
   .object({
@@ -228,6 +240,7 @@ export const FakeScenarioSchema = z
 export type HarnessEvent = z.infer<typeof HarnessEventSchema>;
 export type ScoutOutput = z.infer<typeof ScoutOutputSchema>;
 export type ImplementOutput = z.infer<typeof ImplementOutputSchema>;
+export type ReviewOutput = z.infer<typeof ReviewOutputSchema>;
 export type HarnessRoleInput = z.infer<typeof HarnessRoleInputSchema>;
 export type HarnessStepRequest = z.infer<typeof HarnessStepRequestSchema>;
 export type HarnessDelivery = z.infer<typeof HarnessDeliverySchema>;

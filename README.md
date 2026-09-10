@@ -6,34 +6,51 @@
 
 # Roc
 
-Turn a conversation into coding tasks. A local daemon implements them, opens
-pull requests, and updates task status. You review and merge the results.
+Turn approved GitHub Issues into independently reviewed pull requests.
+One Roc daemon runs two tasks in separate worktrees by default. Merge manually,
+or enable automatic merge after CI and branch-protection checks pass.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    A["Chat and clarify"] --> B["Approve tasks and specs"]
-    B --> C["Roc daemon"]
-    C --> D["Pi: Scout → Implement → Review"]
-    D --> E["Pull request and task status"]
+    plan["Chat, plan and approve"] --> issues["GitHub Issues"]
+    issues --> daemon["One Roc daemon"]
+    daemon --> a["Task A: worktree + Pi"]
+    daemon --> b["Task B: worktree + Pi"]
+    a --> pr["Independent Review → PR + CI"]
+    b --> pr
+    pr --> merge["Manual or guarded automatic merge"]
+    merge --> done["Verify merge → done → release dependencies"]
 ```
 
-**Pi is the execution core.** Onboarding connects your ChatGPT account and selects
-a Codex model. Claude and GLM are advanced provider options.
-Roc uses Pi's tools and agent loop; it does not launch Codex CLI or Claude Code.
-One daemon runs two independent tasks at a time by default. Each task keeps its
-own checkout and branch. Set `--concurrency 1` through `8` to change the limit.
-`done` means the PR is published; you still merge it yourself.
+[Interactive architecture map](output/archify/roc-current/roc-architecture.html), authored in Traditional Chinese with English viewer controls. Download the HTML and open it locally; GitHub displays its source.
+See the [per-task workflow](README.details.md#per-task-workflow) for review and recovery paths.
 
-**Development version:** use this checkout, as shown below. The Pi-only workflow
-is not yet published to npm. Automated checks do not establish live provider
-success; see [validation status](README.details.md#validation-status).
+- **GitHub holds task state.** Issues retain specifications, approvals, checkpoints and usage. PRs provide commit and merge evidence. There is no local SQLite task queue.
+- **Roc coordinates; Pi executes.** The default flow is Scout → Implement → independent Review, with a separate Pi session per role. Explicitly approved low-risk tasks can omit Scout with `skipScout: true`.
+- **Parallel work has boundaries.** Only disjoint scopes overlap. Ambiguous or overlapping scopes and tasks with hooks run alone. Run one daemon per repository.
+- **An open PR is not done.** It stays `awaiting_merge` until Roc verifies the merge. An advanced base permits at most two clean rebases, each followed by fresh Review and CI.
+
+New Codex setups select GPT-6 Astra; existing model settings are preserved.
+New Scout/Review attempts use `high` reasoning; Implement uses `medium`.
+Roc uses Pi's tools and agent loop. It does not launch Codex CLI or Claude Code.
+
+Pi automatically summarizes older context as a session approaches its context
+limit. Auto-compaction is enabled by default; Roc uses Pi's setting. See
+[context compaction](README.details.md#context-compaction) and
+[Pi's compaction documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md).
+
+**Current status:** M1–M4 are complete for the revised scope, with real GitHub/GPT-6
+sandbox acceptance. Physical two-host acceptance is deferred to [#56](https://github.com/devos-ing/Roc/issues/56);
+Superset is outside this stage. [Validation and measurements](README.details.md#validation-status)
+distinguish successful runs, failure recovery and unverified paths.
+The commands below use this development checkout; do not assume the npm release has the same features.
 
 ## Quick start
 
 You need Bun 1.3+, Node.js 22.19+, Git, GitHub CLI, and your project's build/test
-tools. Start with the local task queue on one machine.
+tools. Tasks live in GitHub Issues. Run one execution daemon for the repository.
 
 ### 1. Set up Roc
 
@@ -64,11 +81,11 @@ are automatic.
 Open the project in your usual coding assistant and ask:
 
 ```text
-Use roc-create-tasks to add team invitations. Use the local queue and the Roc entrypoint in ROC_CLI_ENTRY.
+Use roc-create-tasks to add team invitations. Publish approved tasks to this repository's GitHub Issues using the Roc entrypoint in ROC_CLI_ENTRY.
 ```
 
 The skill asks questions and proposes tasks with acceptance criteria. It saves
-them after you approve the complete plan. If the assistant cannot read your
+them to GitHub after you approve the complete plan. If the assistant cannot read your
 terminal environment, give it the absolute Roc entrypoint path.
 Install `grilling` and `unslop` in your planning assistant if missing; see
 [planning skills](README.details.md#planning-skills).
@@ -82,11 +99,14 @@ bun "$ROC_CLI_ENTRY" task list
 bun "$ROC_CLI_ENTRY" scheduler run --base-branch main
 ```
 
-Leave the terminal open. Press `Ctrl-C` to stop; repeat the command to recover
-saved work. Roc keeps parallel task branches in separate checkouts under
-`<project>.agile-checkouts/`. Use `--concurrency 1` to resume unfinished work in
-a legacy `<project>.agile-checkout`.
+Leave the terminal open. Press `Ctrl-C` to stop. Restarting rereads saved
+checkpoints; `needs_replan` or a retained lock requires [reconciliation](README.details.md#progress-and-recovery).
+Roc keeps each task in `<project>.agile-worktrees/issue-<number>`.
 For unattended work, use OS/container isolation because Pi has no built-in sandbox.
+
+After configuring required CI, strict up-to-date checks and protection for administrators,
+add `--auto-merge` to enable automatic merging. See [merge setup](README.details.md#optional-automatic-pr-merge).
+Use `--concurrency 1` through `8` to choose the task limit; `--once` processes one task.
 
 ### 4. Follow progress
 
@@ -99,13 +119,20 @@ bun "$ROC_CLI_ENTRY" task board
 The board is read-only. Press `Enter` for details or `Q` to quit.
 Colored columns show progress, attention, and completed work; the layout adapts
 to your terminal width. Redirected output stays plain.
-Use `task list`, `scheduler inspect`, or `help` for more information.
+Details include elapsed time, attempt time, merge waiting, recent activity and incomplete usage.
+Use `task acceptance <issue>` to read the original acceptance criteria and any
+per-item automated Review evidence. It is read-only; human acceptance remains
+separate.
+Watch the daemon terminal for individual live actions. GitHub saves summaries at phase boundaries,
+with at most one extra activity update per 30 seconds.
+Use `task list`, `scheduler inspect`, `tokens`, or `help` for more information.
 
 ## Go further
 
 The [detailed guide](README.details.md) covers the architecture diagram, provider
 setup, GitHub Issues as a shared task source, daemon deployment, and recovery.
-Start with two clones on the same machine; move the execution clone later.
+You can publish from a MacBook and run the sole daemon on a Mac mini.
+Physical two-host acceptance is deferred and remains unverified.
 
 Development and releases: [CONTRIBUTING.md](CONTRIBUTING.md).
 License: [Apache 2.0](LICENSE).

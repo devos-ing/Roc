@@ -1,8 +1,25 @@
 import { z } from "zod";
+import {
+  type AcceptanceChecklistBinding,
+  projectAcceptanceChecklist,
+} from "../domain/acceptance-checklist";
 import type { StoredTask } from "../domain/schemas";
-import type { ImplementOutput } from "../harness/contracts";
-import type { TaskPublicationRecord } from "../store/orchestration-repository";
+import type { ImplementOutput, ReviewOutput } from "../harness/contracts";
+import { AgileError } from "../runtime/errors";
+import { gitPathResolutionEnvironment } from "../workspace/git-environment";
 import type { TaskBranchManager } from "../workspace/task-branch";
+
+export type TaskPublicationRecord = {
+  taskId: string;
+  branch: string;
+  baseBranch: string;
+  commitSha: string;
+  status: "pending" | "published" | "failed";
+  pullRequestNumber?: number;
+  pullRequestUrl?: string;
+  pullRequestState?: "OPEN" | "MERGED";
+  failureMessage?: string;
+};
 
 const NonEmpty = z.string().trim().min(1);
 const PullRequestSchema = z
@@ -14,6 +31,10 @@ const PullRequestSchema = z
   .strict();
 const PullRequestSearchSchema = PullRequestSchema.extend({
   headRepositoryOwner: z.object({ login: NonEmpty }).nullable(),
+  headRefOid: z
+    .string()
+    .regex(/^[0-9a-f]{40}$/)
+    .optional(),
 }).strict();
 
 /** Describes the remote pull request that safely represents a published task branch. */
@@ -24,6 +45,11 @@ export type PublishTaskInput = {
   task: StoredTask;
   implementation: ImplementOutput;
   publication: TaskPublicationRecord;
+  reconcileOnly?: boolean;
+  acceptance?: {
+    review: ReviewOutput;
+    binding: AcceptanceChecklistBinding;
+  };
 };
 
 /** Publishes a prepared task branch to its configured GitHub base branch. */
@@ -66,6 +92,7 @@ export class BunGitHubCommandRunner implements GitHubCommandRunner {
     const process = Bun.spawn({
       cmd: input.command,
       cwd: input.cwd,
+      env: gitPathResolutionEnvironment(),
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -155,7 +182,7 @@ async function matchingPullRequest(
   branch: string,
   baseBranch: string,
   owner: string,
-): Promise<PullRequest | undefined> {
+): Promise<z.infer<typeof PullRequestSearchSchema> | undefined> {
   const output = await mustRun(
     runner,
     [
@@ -169,15 +196,14 @@ async function matchingPullRequest(
       "--state",
       "all",
       "--json",
-      "number,url,state,headRepositoryOwner",
+      "number,url,state,headRepositoryOwner,headRefOid",
     ],
     cwd,
   );
   const pullRequests = z
     .array(PullRequestSearchSchema)
     .parse(JSON.parse(output))
-    .filter((pullRequest) => pullRequest.headRepositoryOwner?.login === owner)
-    .map(({ headRepositoryOwner: _, ...pullRequest }) => pullRequest);
+    .filter((pullRequest) => pullRequest.headRepositoryOwner?.login === owner);
   if (pullRequests.length > 1) {
     throw new GitHubPublicationError(
       `Multiple pull requests exist for ${branch} into ${baseBranch}`,
@@ -186,11 +212,50 @@ async function matchingPullRequest(
   return pullRequests[0];
 }
 
-/** Renders the durable Implement output as the standard pull-request body. */
+/** Renders item evidence beneath the original criterion without changing its wording. */
+function checklistLines(input: PublishTaskInput): string[] {
+  const acceptance = input.acceptance;
+  const binding = acceptance && {
+    ...acceptance.binding,
+    currentHeadSha: input.publication.commitSha,
+    currentBaseSha: input.task.baseCommit ?? "",
+  };
+  const checklist = projectAcceptanceChecklist(
+    input.task.spec.acceptanceCriteria,
+    acceptance?.review.acceptanceResults,
+    binding,
+  );
+  return [
+    "## Acceptance checklist",
+    `Automated Review evidence for head \`${input.publication.commitSha}\`; human acceptance is separate.`,
+    ...checklist.flatMap((item) => [
+      `- [${item.status === "passed" ? "x" : " "}] ${item.criterion}`,
+      ...(item.status === "passed"
+        ? ["  Status: passed"]
+        : [
+            `  Status: ${item.status}`,
+            ...(item.status === "unverified" && item.evidence === undefined
+              ? ["  Evidence: No item-level evidence recorded."]
+              : []),
+          ]),
+      ...(item.evidence === undefined
+        ? []
+        : [
+            "  Evidence:",
+            ...item.evidence.split("\n").map((line) => `    ${line}`),
+          ]),
+    ]),
+  ];
+}
+
+/** Renders durable implementation and bound Review evidence as the pull-request body. */
 function pullRequestBody(input: PublishTaskInput): string {
   const lines = [
     "## Task",
     input.task.title,
+    ...(/^issue-[1-9]\d*$(?![\s\S])/.test(input.task.id)
+      ? [`Related issue: #${input.task.id.slice(6)}`]
+      : []),
     "",
     "## Validation",
     ...input.implementation.validation.map((item) => `- ${item}`),
@@ -204,6 +269,8 @@ function pullRequestBody(input: PublishTaskInput): string {
     ...(input.implementation.limitations.length === 0
       ? ["- None reported"]
       : input.implementation.limitations.map((item) => `- ${item}`)),
+    "",
+    ...checklistLines(input),
   ];
   return lines.join("\n");
 }
@@ -217,15 +284,25 @@ export class GitHubCliPreflight implements GitHubPreflight {
     private readonly runner: GitHubCommandRunner = new BunGitHubCommandRunner(),
   ) {}
 
-  /** Confirms the configured base, gh login, and current repository are available. */
+  /** Confirms base and GitHub access, retrying a timed-out repository read once before any task starts. */
   async assertReady(): Promise<void> {
     assertBaseBranch(this.baseBranch);
     await mustRun(this.runner, ["gh", "auth", "status"], this.repoPath);
-    await mustRun(
-      this.runner,
-      ["gh", "repo", "view", "--json", "nameWithOwner"],
-      this.repoPath,
-    );
+    const input = {
+      command: ["gh", "repo", "view", "--json", "nameWithOwner"],
+      cwd: this.repoPath,
+    };
+    let result = await this.runner.run(input);
+    if (result.exitCode === 124) result = await this.runner.run(input);
+    if (result.exitCode !== 0)
+      throw new AgileError({
+        code: "GITHUB_REPOSITORY_UNAVAILABLE",
+        category: "startup",
+        component: "github-preflight",
+        retryable: result.exitCode === 124,
+        message:
+          "GitHub repository lookup failed before task startup; check connection and repository access, then restart the daemon",
+      });
   }
 }
 
@@ -242,7 +319,20 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
   async publish(input: PublishTaskInput): Promise<PullRequest> {
     const baseBranch = input.publication.baseBranch;
     assertBaseBranch(baseBranch);
-    if (input.publication.commitSha !== input.implementation.commitSha) {
+    const acceptedReviewHead =
+      input.acceptance?.review.decision === "accepted" &&
+      input.acceptance.binding.currentHeadSha === input.publication.commitSha &&
+      input.acceptance.binding.currentBaseSha === input.task.baseCommit &&
+      input.acceptance.binding.currentSpecHash ===
+        input.acceptance.binding.reviewedSpecHash &&
+      input.acceptance.binding.reviewedHeadSha ===
+        input.publication.commitSha &&
+      input.acceptance.binding.reviewedBaseSha === input.task.baseCommit;
+    if (
+      input.publication.commitSha !== input.implementation.commitSha &&
+      !acceptedReviewHead &&
+      !input.reconcileOnly
+    ) {
       throw new GitHubPublicationError(
         `Publication state does not match the current task implementation: ${input.task.id}`,
       );
@@ -258,7 +348,7 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
     }
     await this.branches.assertReviewReady(
       input.task.id,
-      input.implementation.commitSha,
+      input.publication.commitSha,
       input.task.baseCommit,
     );
 
@@ -276,12 +366,19 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
         `Pull request #${existing.number} is closed without merge for ${workspace.branch}`,
       );
     }
-
-    await mustRun(
-      this.runner,
-      ["git", "push", "origin", workspace.branch],
-      workspace.path,
-    );
+    if (input.reconcileOnly) {
+      if (!existing || existing.headRefOid !== input.publication.commitSha) {
+        throw new GitHubPublicationError(
+          `Pull request head does not match the reviewed task head: ${input.task.id}`,
+        );
+      }
+    }
+    if (!input.reconcileOnly)
+      await mustRun(
+        this.runner,
+        ["git", "push", "origin", workspace.branch],
+        workspace.path,
+      );
     if (existing !== undefined) {
       await mustRun(
         this.runner,

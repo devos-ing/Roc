@@ -233,7 +233,12 @@ export class GitHubTaskPublisher {
     const resolved = new Map<string, GitHubIssue>();
 
     for (const envelope of envelopes) {
-      const matches = this.matches(issues, envelope);
+      let matches = this.matches(issues, envelope);
+      if (matches.length === 0) {
+        // A missing label-index entry does not prove the Issue was never created.
+        issues = await this.listIssues(repository, false);
+        matches = this.matches(issues, envelope);
+      }
       if (matches.length > 1) {
         throw new Error(
           `Conflicting remote task identity: ${envelope.planId}/${envelope.task.id}`,
@@ -258,7 +263,34 @@ export class GitHubTaskPublisher {
               REMOTE_TASK_LABEL,
             ]),
         );
-        issues = await this.listIssues(repository);
+        issues = await this.listIssues(repository, false);
+        // Even repository lists can lag label assignment. Read a returned Issue
+        // number directly, always against this repository, then validate its envelope.
+        const createdNumber = result.stdout
+          .trim()
+          .match(/\/issues\/([1-9][0-9]*)\/?$/u)?.[1];
+        if (createdNumber && Number.isSafeInteger(Number(createdNumber))) {
+          const created = GitHubIssueSchema.parse(
+            JSON.parse(
+              await this.mustRun([
+                "gh",
+                "issue",
+                "view",
+                createdNumber,
+                "--repo",
+                repository,
+                "--json",
+                "number,title,body,url,state",
+              ]),
+            ),
+          );
+          if (!issues.some((issue) => issue.number === created.number))
+            issues.push(created);
+          if (issues.length >= 1000)
+            throw new Error(
+              "Remote Issue identity reconciliation reached its 1000-Issue safety bound",
+            );
+        }
         const recovered = this.matches(issues, envelope);
         if (recovered.length !== 1) {
           const diagnostic = result.stderr.trim() || result.stdout.trim();
@@ -370,23 +402,43 @@ export class GitHubTaskPublisher {
   }
 
   /** Reads all managed Issues needed for deterministic identity reconciliation. */
-  private async listIssues(repository: string): Promise<GitHubIssue[]> {
+  private async listIssues(
+    repository: string,
+    managedOnly = true,
+  ): Promise<GitHubIssue[]> {
     const output = await this.mustRun([
       "gh",
-      "issue",
-      "list",
-      "--repo",
-      repository,
-      "--state",
-      "all",
-      "--label",
-      REMOTE_TASK_LABEL,
-      "--limit",
-      "1000",
-      "--json",
-      "number,title,body,url,state",
+      "api",
+      "--paginate",
+      "--slurp",
+      `repos/${repository}/issues?state=all${managedOnly ? `&labels=${encodeURIComponent(REMOTE_TASK_LABEL)}` : ""}&per_page=100`,
     ]);
-    const issues = z.array(GitHubIssueSchema).parse(JSON.parse(output));
+    // Repository REST lists include new writes before GitHub's issue search index does.
+    const issues = z
+      .array(
+        z.array(
+          z.object({
+            number: GitHubIssueSchema.shape.number,
+            title: NonEmpty,
+            body: z.string().nullable(),
+            html_url: NonEmpty,
+            state: z.enum(["open", "closed"]),
+            pull_request: z.unknown().optional(),
+          }),
+        ),
+      )
+      .parse(JSON.parse(output))
+      .flat()
+      .filter((issue) => issue.pull_request === undefined)
+      .map((issue) =>
+        GitHubIssueSchema.parse({
+          number: issue.number,
+          title: issue.title,
+          body: issue.body ?? "",
+          url: issue.html_url,
+          state: issue.state.toUpperCase(),
+        }),
+      );
     if (issues.length >= 1000) {
       throw new Error(
         "Remote Issue identity reconciliation reached its 1000-Issue safety bound",

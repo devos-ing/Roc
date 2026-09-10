@@ -2,224 +2,326 @@
 
 [快速開始](README.zh-HK.md) · [English detailed guide](README.details.md)
 
-## 架構：先在同一台電腦執行
+## 架構與執行方式
 
-A 負責聊天、grilling、批准與發佈；B 負責執行。先用同一台電腦上的兩個獨立
-clone，各自保留資料庫，只有 B 啟動 daemon。之後可把 B 搬到另一台機器。
+GitHub Issues 保存規格、批准和執行紀錄。Daemon 在自己帳戶擁有的一則 Issue comment
+中保存 attempt、模型、用量、角色結果及 PR 資料。Labels 只顯示狀態，不能代替批准或鎖。
 
-```mermaid
-flowchart LR
-    subgraph A["A：規劃 clone"]
-      chat["聊天／grilling"] --> approve["批准完整 ticket/spec"]
-      approve --> publish["task publish-github"]
-    end
-    publish --> github["GitHub Issues：規格、批准、狀態"]
-    subgraph B["B：執行 clone"]
-      daemon["Roc daemon：輪詢與驗證"] --> db[("SQLite")]
-      db --> roles["Scout → Implement → 獨立 Review"]
-      roles --> pi["Pi RPC：工具與 agent loop"]
-      pi --> models["一組 provider/model：Codex／Claude／GLM"]
-      pi --> checkout["獨立 task checkout"]
-      roles --> result["可信 commit → PR → 保存結果"]
-      result --> sync["可重試的狀態回寫"]
-    end
-    github --> daemon
-    sync --> github
-```
+[開啟互動架構圖](output/archify/roc-current/roc-architecture.html)。圖中文字為繁體中文，固定操作介面為英文。下載 HTML 後在瀏覽器開啟；GitHub 頁面顯示原始碼。
 
-Pi 是唯一公開執行 backend，直接呼叫 provider 的模型，不啟動 Codex CLI 或
-Claude Code CLI。同一個 daemon、資料庫及 checkout 會依序重用；每個角色
-使用獨立 Pi process/session。一個 daemon session 固定使用同一組 provider/model，
-不會按任務或角色自動換供應商。Roc 負責排程、批准、commit、PR 與任務狀態。
+![Roc 最新架構](docs/assets/roc-architecture.png)
+
+規劃與執行可在同一台機器；圖中的角色不代表必須部署兩部 Mac。
+
+目前最多同時執行兩項獨立任務。每個 Issue 使用
+`<project>.agile-worktrees/issue-<number>` 及 `agile/issue-<number>` branch。
+Roc 不再建立任務資料庫；設定、worktree、程序鎖、診斷 log 和 Pi session 留在本機。
+可選擇啟用有保護檢查的自動合併 PR，每項任務最多兩次乾淨的 base refresh／重新 Review；Superset 暫緩。
+
+### Context 壓縮
+
+Roc 使用 Pi 內建的自動 context 壓縮，除非在 Pi 使用者設定中停用，否則預設啟用。
+接近模型的 context 上限時，Pi 會摘要較舊訊息，保留近期內容供後續請求使用。
+
+Scout、Implement、Review 各自使用獨立的 Pi session，壓縮只處理該 session 的內容。
+GitHub Issues 保存任務規格及執行 checkpoint，本機 Pi session 檔案保留對話歷史。
+Roc 不另寫一套壓縮機制。
+
+觸發條件、保留內容及 `compaction` 設定，請參閱
+[Pi 官方文件](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)。
 
 ### 驗證狀態
 
-截至 2026-09-07：
+M1–M4 已按修訂範圍完成。以下功能請使用這份 checkout 的 `src/cli/main.ts`，
+並在各 terminal 設定 `ROC_CLI_ENTRY`。
 
-| 範圍 | 結果 |
+| 範圍 | 證據 |
 | --- | --- |
-| Pi RPC fixture 與排程測試 | 驗證角色流程、模型紀錄、拒絕、恢復及清理 |
-| 隨 Roc 安裝的 Pi 0.82.1 RPC 探測 | 不依賴全域 Pi，process 與 RPC 有回應 |
-| Roc Codex onboarding | 瀏覽器授權及真實模型回應通過，已保存 `openai-codex/gpt-5.6-terra`、`high` |
-| Pi 真實 Codex | Scout → Implement → 獨立 Review → 本機 `done` 通過；每個角色均為 `gpt-5.6-terra`、`high`，PR 發佈使用測試替身 |
-| Pi 真實 Claude、GLM | 尚未驗證 |
-| 改用 Pi 前的單機 GitHub 演練 | 發佈、拉取、重試及失敗回寫已驗證；完整通過流程未完成 |
-| 實體兩台機器 | 尚未驗證 |
+| GitHub 任務、worktree、平行與恢復 | [M1/M2 真實流程驗收](docs/validation/m1-m2-live-2026-09-09.md) |
+| 自動合併、更新基底與新的 Review | [M3 protected branch 驗收](docs/validation/m3-live-2026-09-09.md) |
+| 診斷、進度、耗時、用量及效率比較 | [M4 實測報告](docs/validation/m4-live-2026-09-09.md)，292 個本地測試通過 |
 
-2026-09-07 的 Codex 實測花費 80.42 秒，21 項斷言通過。
-紀錄輸入／輸出用量為 62,386 tokens，包含可能的快取輸入。
-獨立測試 checkout 的 implementation commit 為 `a572aeb5480966a9c4b317b8fa070e0645f70ac8`。
-模型呼叫及專案測試均為真實執行；只有 PR 發佈使用替身。
-真實 GitHub PR 發佈及遠端狀態回寫仍須另外驗證。
+另有[分角色 reasoning 實測](docs/validation/role-routing-live-2026-09-09.md)，透過 Pi 狀態讀回
+確認 Scout／Review 使用 `high`、Implement 使用 `medium`。加上診斷的第二輪完整合併兩個 PR；
+首輪一次 refresh 取消的原因仍未確認，保留在 [#79](https://github.com/devos-ing/Roc/issues/79)。
 
-舊 Codex CLI 探測不等於 Pi 驗收。原生 Codex/ZCode adapter 程式及專用測試已移除，
-公開 CLI 不再接受 `--backend codex` 或 `--backend zcode`。
-升級前先用舊版本完成進行中的原生 adapter 任務；原生 session cursor 不能在 Pi
-恢復。保留資料庫、checkout 與 task branches。
+同一組兩個小任務的成功執行，串行為 8分31秒／67,722 tokens，平行為
+6分47秒／67,615 tokens，平行省略 Scout 為 5分4秒／52,925 tokens。
+最後一組曾遇啟動超時，連同人工恢復實際為 12分38秒；後來才加入前置讀取重試。
+這是小樣本，不是普遍速度或成本保證。Cached input 已包含在 input tokens 內。
+當時所有角色都使用 `high`，數據不是目前 Scout／Review `high`、Implement `medium` 的測量。
 
-## Roc daemon 設定
+Claude/GLM 尚未做相同的真實流程驗收。[雙機驗收 #56](https://github.com/devos-ing/Roc/issues/56)
+已延後，不阻擋本階段交付；Superset 不在本階段。歷史 SQLite／stub 結果不當作目前流程的證據。
 
-這個版本尚未發佈到 npm。每個 terminal 都要把 `ROC_CLI_ENTRY` 設為這份 Roc
-原始碼的絕對 `src/cli/main.ts` 路徑，並先在 Roc 目錄執行 `bun install`。
-這個變數只是 shell 與規劃 skill 的指令慣例，不是 scheduler 設定。
+## 設定執行端
 
-A、B 使用同一個 GitHub repository 及目標 branch。在 A 以可信發佈者登入 `gh`，
-透過 `roc-create-tasks` 批准完整 manifest，選擇 GitHub Issues 目的地後發佈：
+先在一台機器、同一專案 clone 執行規劃和 daemon。若之後分成兩台機器，兩端 clone
+同一 GitHub repository，只在執行端啟動 daemon。實體雙機驗收仍屬後續工作。
+
+規劃端登入 `gh`，透過 `roc-create-tasks` 批准計劃後，skill 會執行：
 
 ```bash
 bun "$ROC_CLI_ENTRY" task publish-github .agile/backlog/approved.json
 ```
 
-每項任務建立或對應一個 `roc:task` Issue；完整規格、依賴及批准 hash 保存後才加上
-`roc:ready`。這不會將任務匯入 A 的執行佇列，A 發佈後可離線。
+Manifest 是發佈輸入，不是本機佇列。發佈完成後，規劃端可以離線。
 
-### Pi provider 設定
-
-B 需要 Bun 1.3+、Node.js 22.19+、Git、gh、Roc、可 push 的 clone、
-專案 build/test 工具，以及自己的 provider 憑證。
-在 Roc 目錄執行 `bun install` 會一併安裝指定版本的 Pi，毋須全域安裝 Pi CLI。
+執行端需要 Bun 1.3+、Node.js 22.19+、Git、GitHub CLI、已完成 `bun install`
+的 Roc 原始碼，以及專案測試工具。在執行端的專案 clone 執行：
 
 ```bash
-cd /absolute/path/to/execution-clone
+export ROC_CLI_ENTRY=/absolute/path/to/Roc/src/cli/main.ts
 gh auth login
 bun "$ROC_CLI_ENTRY" onboard
+export ROC_GITHUB_PUBLISHERS=your-publisher-login
+bun "$ROC_CLI_ENTRY" scheduler run --base-branch main
 ```
 
-Onboarding 會重用 Pi 的 Codex 認證；需要登入時，開啟瀏覽器讓你授權 ChatGPT。
-Pi 負責認證保存及 token 更新。Roc 發送一個小型測試，收到正確回應後，才將
-`openai-codex/gpt-5.5` 與 `high` reasoning 存為預設。
-已有支援所需 reasoning 的 Codex 預設模型會保留。登入或連線測試失敗時，
-原本的模型預設與 Roc 設定不變。按 `Ctrl-C` 取消，重新執行 onboard 重試。
-登入最多等候五分鐘，模型測試最多一分鐘。
-無桌面環境時，可在另一台電腦開啟 terminal 顯示的授權網址，登入後把 callback URL
-貼回執行端 terminal；不要貼到 Issue 或聊天。
+`ROC_GITHUB_PUBLISHERS` 以逗號分隔可信 GitHub 帳戶，預設為目前 `gh` 帳戶。
+執行紀錄的擁有者預設也是該帳戶，可用 `ROC_GITHUB_EXECUTOR` 指定。
+若看板用另一個 GitHub 帳戶登入，要把它設為 daemon 的帳戶，才能讀取同一批紀錄。
+Daemon 本身必須以該帳戶登入。
 
-流程圖見[登入時序圖](README.details.md#pi-provider-setup)。
-模型預設保存在 `~/.pi/agent/settings.json`，認證由 Pi 存在 `~/.pi/agent/auth.json`。
-設定 `PI_CODING_AGENT_DIR` 時會改用該目錄。
-週期、skills allowlist 與 `execution.allowUnsandboxed` 執行許可保存在
-`~/.config/roc/settings.json`。Onboarding 與 daemon 必須使用相同 OS 帳戶及設定路徑。
-Roc 停用專案內的 Pi 設定，避免它覆蓋已驗證模型或額外載入工具。
-若保存的 Codex 模型已失效，刪除 Pi settings 的 `defaultModel` 後重跑 onboarding。
+未指定目標 branch 時使用 repository 預設 branch。GitHub 已是唯一任務來源，
+不必加 `--source github`。`--once` 處理一項符合條件的任務後結束；持續模式閒置時
+每 30 秒輪詢。GitHub 讀取失敗會停止本次執行，連線恢復後可重新啟動。
+無法確認 checkpoint 寫入結果時保留本機鎖，須先核對遠端結果。
 
-Claude、GLM 屬進階設定。在 onboarding 後，以 daemon 的帳戶設定 Pi provider。
-可在 Roc 原始碼目錄執行 `bun x --no-install pi` 開啟隨附 CLI，以 `/login` 登入，
-使用 `/model` 並按 **Ctrl+S** 儲存預設；API key 須提供給 daemon process。
-模型必須支援 `high` reasoning。再次執行 Roc onboarding 會選回 Codex。
+### 可選的自動合併 PR
 
-| 模型 | Pi provider | 認證 |
-| --- | --- | --- |
-| Codex | `openai-codex` | Roc onboarding 的 ChatGPT 瀏覽器授權 |
-| Claude | `anthropic` | `ANTHROPIC_API_KEY` 或 Pi 支援的登入方式 |
-| GLM（全球 Coding Plan） | `zai` | `ZAI_API_KEY` |
-
-模型清單視帳戶與 Pi 版本而定。GLM 的 endpoint／方案須符合所選 provider。
-API key 必須存在於 daemon 的執行環境；只在 A 或互動 terminal 設定並不足夠。
-以啟動 daemon 的同一 OS 帳戶設定 Pi 預設。
-參考 Pi 官方 [providers](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md)
-與 [RPC](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md)。
-
-在 B 啟動唯一的 daemon：
+預設仍由人手合併。要啟用獨立 Review 後的自動 squash merge：
 
 ```bash
-ROC_GITHUB_PUBLISHERS=publisher-login \
-  bun "$ROC_CLI_ENTRY" scheduler run --source github --base-branch main
+bun "$ROC_CLI_ENTRY" scheduler run --base-branch main --auto-merge
 ```
 
-`--backend pi` 可省略。省略 `--source github` 就使用本機佇列。
-執行目錄固定為 B 的 project root；資料庫位於 `.agile/runtime/agile.db`。
-Onboarding 會保存一次執行許可；進階自動化仍可明確設定 `ROC_ALLOW_UNSANDBOXED=1`。
-Pi 沒有內建 sandbox，工具具有目前帳戶的權限。無人看管時應使用 OS/container 隔離，僅開放 repository、相鄰 task checkout
-及必要憑證。工作目錄本身不是安全邊界。
+目標 branch 必須設定 **classic branch protection**，至少一項 required status check、
+**Require branches to be up to date before merging**，以及對管理員同樣生效的保護
+（**Do not allow bypassing the above settings**），並允許 squash merge。
+Roc 不會修改保護、不會使用管理員 bypass，也不會直接 push 到目標 branch。
+GitHub merge API 只可指定預期 head SHA，不能指定 base SHA 條件；最後一刻的 base
+變動靠伺服器強制執行的 strict checks 保護。
 
-### 常駐服務與搬移
+Daemon 帳戶需要 Issue/comment 寫入、PR 讀寫及 contents 寫入權限，以及 checks、
+commit statuses、branch protection 和 repository／organization active rules 讀取權限。
+缺少保護或無法讀取 policy（包括未能使用 rules API 的 private repository）會顯示等待原因，
+不會繞過。已設定的人類 GitHub Review 仍須通過，Pi Review 不能代替。
+所有回報的 checks/statuses 必須在精確 reviewed head 成功；required checks 亦核對指定
+app 身份。Pending、failed、skipped、neutral、merge queue 或未支援的 active rule 均會等待。
 
-[英文詳細指南的 systemd／launchd 範例](README.details.md#pi-provider-setup)
-提供完整服務檔。使用固定 working directory、明確的 Bun/Node 路徑，並在服務帳戶
-設定 provider 與 GitHub 憑證。環境檔應限制為 `0600`，不要把密鑰提交到 repository。
+只有仍開啟、具精確可信批准及已保存獨立成功 Review 證據的受管理 Issue 可自動合併。
+等待維持 `awaiting_merge`，原因不變就不重寫 checkpoint，也不重跑 agent。
+外部 head 變動、PR 未合併便關閉、缺少 Review 證據（包括舊 accepted 紀錄）都要求
+明確 `needs_replan`。
 
-搬移前停止舊 daemon，保持它停止。確認沒有 Roc process 後，複製 project clone、
-完整 `.agile/runtime/`（包含 SQLite sidecar）及相鄰 `<project>.agile-checkout`，
-再以新機服務帳戶執行 onboarding，確認執行權限並連接 Codex，設定 GitHub 憑證及路徑。Roc 沒有熱備援或多 daemon 協調。
-若留下 checkout ownership lock，先依照[架構恢復指引](docs/architecture.md)
-確認相關 process／child 已停止；不要直接刪除 lock、資料庫或 checkout。
+目標 branch 前進時，每項任務**最多兩次乾淨的 rebase／重新 Review**，重啟不會重置次數。
+Roc 在修改 Git 前保存 intent，包括舊 head/base、新目標及剩餘次數，核對保留的乾淨
+worktree 只有自己的 trusted commit，且遠端 task head 未變，再把同一 patch rebase 到
+剛 fetch 的目標。只可用指定 expected-old-head 的 force-with-lease push task branch。
+衝突會 abort，保留原有工作；dirty files、異常歷史、外部 head 變動、push 結果不明或
+次數用盡都轉為 `needs_replan`，不會丟棄工作。舊 commit 保留在 `refs/agile-refresh/`。
 
-## 任務怎樣執行
+Refresh 結果確認並寫入後，啟動**新的獨立 Pi Review**，核對精確的新 head/base 並執行
+已批准的 validation commands。原規格、Implement output、歷史 attempts 和用量不變；
+純 Git rebase 不會虛構 Implement／模型 attempt。新 Review 記錄實際模型、effort 和用量。
+被拒絕便須 replan；通過後仍須等新 head 的 CI，再重新核對所有合併保護。
+重啟可繼續已確認 refresh 的 Review；只有 intent、沒有確認結果時必須明確核對，不能盲目重跑 Git。
 
-```mermaid
-flowchart LR
-    S["Scout：理解需求"] --> I["Implement：修改及測試"]
-    I --> C["可信 harness 建立 commit"]
-    C --> R["獨立 Review：檢查指定 commit"]
-    R -->|通過| P["Posthook → PR → done"]
-    R -->|拒絕| F["rejected + 後續任務草稿"]
+即使 `--concurrency 2`，refresh、新 Review 和合併決策仍逐項執行。
+Shutdown 等待 selector 擁有的 Git／Review 操作及所有 workers；清理或 checkpoint 結果
+不明時保留 ownership lock。每次 merge 回應（包括遺失回應）後都讀回
+PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依賴任務。
+`--once` 可核對已有 PR，但不會持續等待新 PR 的 CI；完整自動完成請用持續模式。
+自動合併已有涵蓋 refresh／重新 Review 的 transport／Fake Harness 測試，以及真實 Git
+衝突及 lease 測試。[真實 protected branch 驗收](docs/validation/m3-live-2026-09-09.md)
+亦已通過：兩個任務平行執行，其中一個經 rebase、新的獨立 Review 和 CI 後自動合併。
+這次驗收在同一部 Mac 完成，實體雙機流程仍待驗證。
+
+### 關閉 Issue
+
+發佈的 PR 附有普通 Issue 連結，不使用自動關閉關鍵字。人手或自動合併後，Roc 核對
+已記錄的 PR head 及 merge commit 確實合併到設定的目標 branch，寫入並讀回確認
+`done` checkpoint，才把仍開啟的 Issue 以 completed 原因關閉。`--base-branch`
+指定非預設 branch 也適用。關閉前會重新核對精確 checkpoint、已批准規格、完整計劃
+及合併證據。
+
+關閉失敗會保留 `done`，後續輪詢或重啟會自動重試，不會重跑模型。通過 admission
+的 done 任務也會修復過時的狀態 label，即使 Issue 已關閉；label 寫入失敗不會阻止
+關閉 Issue。未通過 admission 的候選任務不會觸發 label 修復，也不會進行關閉所需的
+檢查或寫入。
+
+[實際關閉與重啟驗收](docs/validation/issue-closure-live-2026-09-09.md)
+已確認非預設 branch 的 GitHub Issue 關閉及不重跑模型的恢復流程。報告亦保留了
+兩次中斷紀錄，並註明成功任務使用單次執行模式。
+
+### 平行執行
+
+預設為 `--concurrency 2`，`--concurrency 1` 可切回逐項執行。
+一項任務完成後會立即補位，不必等待另一項較慢的任務。
+`--once` 仍只處理一項。看板列出所有執行中 Issue，terminal 事件附有任務 ID。
+
+只有明確且不重疊的相對路徑 scope 可並行。例如 `src/auth/` 與
+`src/auth/login.ts` 重疊，與 `src/billing.ts` 則不重疊；比較時忽略大小寫。
+Root、glob、文字描述、repository 外的路徑，以及帶 hooks 的任務會單獨執行。
+共用資源應寫入批准的 scope，例如 `TCP port 3000`，讓該任務保持獨佔。
+這項規則不能偵測未聲明的共用資源，也不限制 agent 的檔案存取權限。
+
+依賴任務仍須等待 PR 合併。關閉執行中的 Issue 或撤回批准，會在下一次輪詢要求取消。
+個別任務失敗或取消，確認清理後只把該任務標為待處理，另一項可繼續。
+Pi 子程序退出獲確認後才會放行下一個角色或釋放名額。清理或 checkpoint 寫入結果
+不明時，停止新任務並保留鎖；`Ctrl-C` 會取消全部執行中任務。
+
+輪詢結果顯示授權失效時，Roc 會先直接讀取該 Issue 與已知的同計劃 Issues，重新驗證
+授權，再決定是否取消。列表暫時漏項不會取消仍獲批准的任務，正常輪詢也不會增加讀取。
+確認失敗時會以 `GITHUB_AUTHORITY_UNCONFIRMED` 安全停止，取消紀錄會包含具體原因。
+[輪詢回歸驗證](docs/validation/polling-authority-2026-09-09.md)涵蓋 worker、refresh 後的
+Review，以及真正撤回批准或關閉 Issue 的情況。
+
+### 可選的 Scout 省略
+
+資料已足夠的低風險任務，可在批准的 manifest 設定 `skipScout: true`，直接執行 Implement
+及獨立 Review。預設不啟用。Scope 必須是有副檔名的明確相對檔案路徑，不含空白、
+路徑跳轉或 glob；驗收條件和 validation 仍然必填。不確定或較廣的工作保留 Scout。
+Board 會顯示 Scout 已省略，基底更新後仍須新的 Review。詳見 [M4 實測及限制](docs/validation/m4-live-2026-09-09.md)。
+
+### 進度與失敗恢復
+
+`task board` 詳情會顯示總耗時、agent attempt 時間、等待合併時間，以及用量是否完整。
+`scheduler inspect` 另有各階段耗時。最近動作是 GitHub checkpoint 摘要，階段切換時保存，
+工具持續執行時最多每 30 秒補一次；逐項即時動作請看 daemon 輸出。
+舊紀錄沒有時間資料，或 Issue 已關閉但停止尚未確認時，會顯示 unavailable，不會算成零。
+
+失敗時查看執行主機的 `.agile/runtime/agile.log`。紀錄包含安全錯誤代碼、Issue、attempt
+及階段。先核對保留的 worktree；可把已驗證的 commit 填入新批准任務的 `sourceCommit`，
+重用成果並保留原失敗紀錄。程序或 GitHub 寫入結果未確認前，不要移除 ownership lock。
+啟動時若 repository lookup 超時，會在任務開始前重試該讀取一次；第二次失敗回報
+`GITHUB_REPOSITORY_UNAVAILABLE`。
+
+### Pi 和模型
+
+Onboarding 會重用 Pi 認證，或開啟瀏覽器讓你授權 ChatGPT。依終端指示完成登入，
+不要把 callback URL 或憑證貼到 Issue。Roc 發送小型測試請求，成功後才保存設定。
+
+新的 Codex 設定預設使用 `gpt-6-astra`、`high`。已有的明確 Codex 模型設定會保留。
+Pi 設定及憑證位於 `~/.pi/agent/settings.json`、`~/.pi/agent/auth.json`，
+或 `PI_CODING_AGENT_DIR` 指定的目錄。Roc 設定位於 `~/.config/roc/settings.json`。
+Onboarding 和 daemon 要使用同一個 OS 帳戶。
+
+`models.luna`、`models.terra`、`models.sol` 分別指定 Scout、Implement、Review
+的 Pi `provider/modelId`，未指定時用 Pi 預設。新 Scout／Review 使用 `high`，
+Implement 使用 `medium`，各風險等級及重試均相同。高風險任務保留 Sol profile；
+模型不支援時轉為 `needs_replan`。每個角色最多三次 attempt，重啟會保留已有 attempt
+的模型和 reasoning。三個角色都用 GPT-6 時，把以下欄位合併進現有 Roc 設定：
+
+```json
+"models": {
+  "luna": "openai-codex/gpt-6-astra",
+  "terra": "openai-codex/gpt-6-astra",
+  "sol": "openai-codex/gpt-6-astra"
+}
 ```
 
-任務各有一個 `agile/<task-id>` branch。Review 被指示只讀，Roc 比較其前後 checkout
-狀態；這不等於 filesystem sandbox，也偵測不到 checkout 以外的寫入。
-通過後才執行可信 posthook、push 並建立或更新 PR。發佈失敗會保留 commit，
-任務進入 `needs_replan`。拒絕會保留結果並建立一個未批准的後續草稿，回到聊天規劃。
+Claude 或 GLM 可在 daemon 帳戶下用 `bun x --no-install pi` 設定 provider 和預設模型。
+重新執行 Roc onboarding 會選回 Codex。Pi 工具擁有 OS 帳戶權限，worktree 不是
+filesystem sandbox；需要隔離時使用 OS/container。Onboarding 會記錄一次執行許可。
 
-GitHub 模式每約 30 秒輪詢；無法驗證批准時暫停新工作，但會保存執行中角色的結果。
-回寫失敗只重試同步，不重新執行已完成任務。Issue 的 Roc 標籤及 daemon 狀態留言
-反映 SQLite 的最新狀態，保留使用者其他留言與標籤。
+### Mac mini 常駐
 
-`done` 表示 PR 已發佈，不代表已合併。GitHub 模式的下游任務須等上游 PR 合併，
-並確認最新目標 branch 包含實際 merge commit，才鎖定 base 開始工作。
-規格／批准變更、缺少 context 或依賴失效時，任務進入需要處理的狀態。
+可用同一帳戶的 launchd job 啟動 daemon。`WorkingDirectory` 指向專案 clone，
+`ProgramArguments` 使用 Bun 和 Roc 的絕對路徑，環境包含正確 `PATH` 和
+`ROC_GITHUB_PUBLISHERS`。Pi、`gh` 使用該帳戶的認證。`KeepAlive` 不會越過 Roc 的鎖。
 
-`Ctrl-C` 後重新執行相同指令可恢復持久狀態；Pi 中斷的 turn 可能從 ticket 重試，
-不會重新連接死亡的 session。Roc 記錄模型、用量與事件；token target 是估算，
-不是自動中止的硬限制。可信 prehook/posthook 設定及清理契約見[架構](docs/architecture.md)。
+搬移 daemon 前，停止舊 daemon 並確認子程序已退出。Checkpoint 在 GitHub，但未推送
+commit 和 dirty worktree 仍在舊機器，須先完成或保留它們及共享 Git 目錄。
+目前沒有自動搬移 worktree、熱切換或多機搶任務協議。
 
 ## 規劃 skills
 
-Onboarding 會為 coding assistant 安裝 `roc-create-tasks`。
-建立任務須使用 `grilling` 及 `unslop`，缺少時請分別安裝。
-`--agent` 請選擇你用來規劃的 assistant，例如：
+規劃 assistant 需要 `grilling` 和 `unslop`，缺少時可安裝：
 
 ```bash
-npx skills add mattpocock/skills --skill grilling --global --agent codex
-npx skills add backnotprop/pstack --skill unslop --global --agent codex
+npx skills add mattpocock/skills --skill grilling --global
+npx skills add backnotprop/pstack --skill unslop --global
 ```
 
-重跑 onboarding 可把已安裝 skills 加入 daemon 的可信清單。
-`mattpocock/skills` 只列出釐清需求用的 `grilling` 及開發測試用的 `tdd`，
-毋須安裝整套。其他同來源 skills 不會載入執行，包括以前保存的選項。
-規劃使用 assistant 本身的登入；daemon 的模型登入由 Roc 處理。
+Roc onboarding 安裝隨附 skills，並讓你選擇可信 Pi skills。
+目標 skill 檔案已有不同內容時，會拒絕覆寫。
 
-## 看板與指令
+## 每項任務的流程
+
+```mermaid
+flowchart TD
+    work["已批准的 task worktree"]
+    scout["Scout 閱讀"]
+    implement["Implement 修改與驗證"]
+    review["獨立 Review"]
+    pr["PR：awaiting_merge"]
+    human["人手合併"]
+    guard["核對 Review、CI 與保護"]
+    refresh["乾淨 rebase，最多 2 次"]
+    merge["綁定 head SHA 的 squash merge"]
+    done["核對合併 → done"]
+    attention["保留工作，重新規劃"]
+    work --> scout
+    scout --> implement
+    work -->|"已批准 skipScout"| implement
+    implement --> review
+    review -->|"通過"| pr
+    review -->|"拒絕"| attention
+    pr -->|"預設"| human
+    human --> done
+    pr -->|"--auto-merge"| guard
+    guard -->|"等待條件"| pr
+    guard -->|"基底前進"| refresh
+    refresh -->|"新的 head"| review
+    guard -->|"全部通過"| merge
+    merge --> done
+    refresh -->|"不安全或次數用盡"| attention
+```
+
+## 進度、恢復及 hooks
+
+`task board` 每 30 秒讀取 GitHub checkpoints，顯示狀態、attempt、模型、用量及 PR。
+按 Enter 查看詳情，Q 離開；`--all` 包含其他週期，`--history` 包含已退役 Issue。
+即時工具動作在 daemon terminal 顯示，看板不會串流每個工具事件。
+
+`tokens` 只計算已確認用量，缺少 receipt 時標示總數不完整。
+Token ceiling 是規劃估算，不會強制中止 agent；Scout 也沒有額外 bytes 硬上限。
+
+Daemon 先驗證完整計劃、依賴關係及精確批准。依賴任務的 PR 必須合併到指定 branch，
+且 head 與保存的 implementation commit 一致。Roc fetch 目標 branch，核對
+merge commit 後才固定新任務的 base。
+
+預設由 Scout 閱讀程式，Implement 修改，harness 建立單一可信 commit，再由獨立 Pi session
+Review。接受後執行可信 posthook，再發佈 PR。開啟 PR 是 `awaiting_merge`，
+確認合併才是 `done`。拒絕的任務保留 `rejected`，由規劃流程處理後續。
+
+重啟重用已確認角色結果，沒有 cursor 的中斷 attempt 也先 reconcile。
+若已有無法確認來源的 implementation commit，會要求重新規劃，不會直接重跑。
+Roc 不會重新接管已死的 Pi process。修改規格或撤回批准會阻止後續角色及發佈。
+
+Hook 指令需要額外明確批准：
 
 ```bash
-bun "$ROC_CLI_ENTRY" task list
-bun "$ROC_CLI_ENTRY" task board
-bun "$ROC_CLI_ENTRY" scheduler inspect
-bun "$ROC_CLI_ENTRY" tokens
-bun "$ROC_CLI_ENTRY" help
+bun "$ROC_CLI_ENTRY" task trust-hooks 41 --phase prehook
+bun "$ROC_CLI_ENTRY" task trust-hooks 41 --phase posthook
 ```
 
-看板唯讀：方向鍵或 J/K 移動、Space 預覽、Enter 詳情、D 展開 Done、R 更新、
-Esc 返回、Q 離開。`--all` 包含舊週期，`--history` 包含已退役任務。
+已知失敗最多嘗試三次。中斷 hook 的副作用可能已發生，因此記錄待核對原因，
+不會自動重複執行。任務失敗後的 posthook 需要處理時，仍保留原本任務結果。
+先檢查副作用，再明確修正擁有者的 receipt，或建立另行批准的恢復任務。
 
-```bash
-bun "$ROC_CLI_ENTRY" task retire TASK_ID --reason "不再需要"
-bun "$ROC_CLI_ENTRY" task import .agile/backlog/approved.json
-bun "$ROC_CLI_ENTRY" task import-github
-```
+## 舊資料及鎖
 
-退役保留歷史；可用 `--replacement TASK_ID` 記錄替代任務。`task import-github`
-是單向匯入，不是 daemon 的持續同步模式。
+無法確認子程序退出、取消或 GitHub 寫入時，會保留
+`<canonical-project>.agile-checkout.lock`。先停止所有 Roc session、讀取鎖資料、
+確認子程序已停止，並檢查 worktree 和遠端 checkpoint，才可手動移除該鎖。
+單憑 PID 不存在不足以證明所有工作已停止。
 
-## 驗收與限制
+舊 SQLite 資料庫和 checkout 保留在磁碟，新版不接續其執行。
+請用舊版完成工作或明確遷移。只有舊 `roc:status` comment、沒有新 execution checkpoint
+的 Issue 會阻擋自動開始；不要為啟動任務而刪除這些紀錄。
 
-分別使用支援 `high` 的 Codex、Claude、GLM 模型完成一次真實 Pi 三角色流程，
-保留 Issue、模型及用量紀錄、implementation SHA、PR 和 done 回寫。
-先完成同機 A/B，再測試 A 離線、B 在另一台機器獨立完成工作，以及依賴合併後的 base。
-沒有做過的測試一律記為未驗證；RPC 探測不能取代完整流程。
-
-一個專案只支援一個 daemon、逐項任務執行，不自動合併或切換 provider。
-達到 1,000 個 managed Issues 時會明確停止發佈／輪詢，以免無法確認身份唯一性；
-不要刪除 identity 標籤來繞過上限。
-
-更多資料：[架構](docs/architecture.md)、[流程與驗收圖](docs/design/remote-task-workflow.md)、
-[完整規格](docs/specs/remote-task-workflow.md)、[開發指南](CONTRIBUTING.md)。
+完整指令見 [English guide](README.details.md#commands)。舊 `task import`、
+`task import-github`、local queue mode 和 `--base` 已移除。

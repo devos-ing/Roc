@@ -173,10 +173,13 @@ function elapsed(
   now: number,
 ): string {
   const end = attempt.endedAt === undefined ? now : Date.parse(attempt.endedAt);
-  const seconds = Math.max(
-    0,
-    Math.floor((end - Date.parse(attempt.startedAt)) / 1000),
-  );
+  return duration(end - Date.parse(attempt.startedAt));
+}
+
+/** Formats a measured duration without treating unavailable timing as zero. */
+function duration(milliseconds: number | undefined): string {
+  if (milliseconds === undefined) return "Unavailable";
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
   if (!Number.isFinite(seconds)) return "";
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
@@ -193,14 +196,17 @@ function renderProgress(
   return (["scout", "implement", "review"] as const).flatMap((role, index) => {
     const attempt = task.attempts
       .filter((candidate) => candidate.role === role)
-      .sort((left, right) => right.retryIndex - left.retryIndex)
-      .at(0);
+      .at(-1);
     let status =
       task.column === "attention" || task.rawStatus === "retired"
         ? "Not run"
         : "Waiting";
     let symbol = "○";
     let tone: keyof typeof colors = "muted";
+    if (role === "scout" && task.spec.skipScout && attempt === undefined) {
+      status = "Skipped by approved ticket";
+      symbol = "·";
+    }
     if (attempt !== undefined) {
       if (attempt.status === "running") {
         status = "Running";
@@ -255,7 +261,8 @@ function renderProgress(
 
 /** Returns the task's current role, falling back to its raw scheduler status. */
 function phase(task: TaskBoardTask, snapshot: TaskBoardSnapshot): string {
-  return currentAttempt(task, snapshot)?.role ?? task.rawStatus;
+  const attempt = currentAttempt(task, snapshot);
+  return attempt?.status === "running" ? attempt.role : task.rawStatus;
 }
 
 /** Joins dependency identifiers that presently block a task. */
@@ -525,6 +532,16 @@ function renderDetails(
   );
   const model = attempt?.model ?? task.modelDecisions.at(-1)?.model;
   const execution = [
+    detailField("Elapsed", duration(task.timing?.elapsedMs), width),
+    detailField("Attempt time", duration(task.timing?.attemptMs), width),
+    detailField("Merge wait", duration(task.timing?.waitingMs), width),
+    ...(task.issueUrl ? [detailField("Issue", task.issueUrl, width)] : []),
+    ...(task.pullRequestUrl
+      ? [detailField("PR", task.pullRequestUrl, width)]
+      : []),
+    ...(task.failure
+      ? [detailField("Reason", activitySummary(task.failure), width)]
+      : []),
     ...(attempt?.role === undefined
       ? []
       : [detailField("Role", attempt.role, width)]),
@@ -537,7 +554,7 @@ function renderDetails(
       : [detailField("Retry", String(attempt.retryIndex), width)]),
     detailField(
       "Tokens",
-      `${tokenCount(task.tokenTotals)}/${task.tokenTarget}`,
+      `${tokenCount(task.tokenTotals)}/${task.tokenTarget}${task.usageIncomplete ? " · partial usage" : ""}`,
       width,
     ),
   ].flat();
@@ -569,6 +586,24 @@ function renderDetails(
           ...criteria.flatMap((criterion) => wrap(criterion, width, "- ")),
         ]),
   ].flat();
+  const acceptance =
+    task.acceptanceChecklist.length === 0
+      ? []
+      : [
+          detailSection("Acceptance checklist", width, colorEnabled),
+          ...task.acceptanceChecklist.flatMap((item) => [
+            ...wrap(
+              `${item.status === "passed" ? "[x]" : "[ ]"} ${item.criterion}`,
+              width,
+            ),
+            ...wrap(`Status: ${item.status}`, width, "  "),
+            ...(item.evidence
+              ? item.evidence
+                  .split("\n")
+                  .flatMap((line) => wrap(`Evidence: ${line}`, width, "  "))
+              : ["  Evidence: No item-level evidence recorded."]),
+          ]),
+        ];
   const retirement =
     task.rawStatus !== "retired"
       ? []
@@ -610,6 +645,7 @@ function renderDetails(
     ...(brief.length === 0
       ? []
       : ["", detailSection("Brief", width, colorEnabled), ...brief]),
+    ...(acceptance.length === 0 ? [] : ["", ...acceptance]),
     ...retirement,
   ];
 }
@@ -650,7 +686,7 @@ function summary(
   const activeCount = snapshot.tasks.filter((task) => task.isActive).length;
   const activity = activeCount === 0 ? "" : ` · ${activeCount} active`;
   return fit(
-    `Roc · Cycle ${snapshot.currentCycleId} · ${taskCount} task${taskCount === 1 ? "" : "s"}${activity}${tokens}`,
+    `Roc${snapshot.remoteCheckpoints ? " · GitHub checkpoints" : ""} · Cycle ${snapshot.currentCycleId} · ${taskCount} task${taskCount === 1 ? "" : "s"}${activity}${tokens}${snapshot.usageIncomplete ? " · partial usage" : ""}`,
     width,
   );
 }

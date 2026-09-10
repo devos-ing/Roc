@@ -1,291 +1,88 @@
 import { expect, test } from "bun:test";
 import { buildTaskBoardSnapshot } from "../../src/cli/task-board-model";
-import { renderTaskBoard } from "../../src/cli/task-board-renderer";
-import { openDatabase } from "../../src/store/database";
-import { OrchestrationRepository } from "../../src/store/orchestration-repository";
-import { PlanningRepository } from "../../src/store/planning-repository";
+import { initialExecution } from "../../src/github/execution-store";
+import { githubTaskSnapshot } from "../../src/github/execution-view";
+import { memoryGitHub } from "../helpers/github-native";
 
-const spec = {
-  problem: "Show task state",
-  desiredOutcome: "A deterministic board",
-  scope: ["task board"],
-  nonGoals: [],
-  acceptanceCriteria: ["tasks are visible"],
-  validation: ["bun test"],
-  dependencies: [],
-  risk: "medium" as const,
-  contextCandidates: [],
-  tokenCeiling: 1_000,
-};
-
-test("the board marks every concurrent task active and keeps publication in progress", () => {
-  const { db, planning, orchestration } = setup();
-  try {
-    planning.importBacklog({
-      cycleId: "2026-W35",
-      goal: "Parallel board",
-      tasks: [
-        { id: "A", title: "First task", priority: 0, spec },
-        { id: "B", title: "Second task", priority: 1, spec },
-      ],
-    });
-    orchestration.claimNext(undefined, false, false, 2);
-    orchestration.claimNext(undefined, false, false, 2);
-    db.query("UPDATE tasks SET status = 'publishing' WHERE id = 'B'").run();
-    const board = snapshot({ planning, orchestration });
-    expect(
-      board.tasks.filter((task) => task.isActive).map((task) => task.id),
-    ).toEqual(["A", "B"]);
-    expect(board.columns.inProgress.map((task) => task.id)).toEqual(["A", "B"]);
-    expect(renderTaskBoard(board, { color: false })).toContain("2 active");
-  } finally {
-    db.close();
-  }
+test("an empty remote source produces an empty board without local storage", () => {
+  const snapshot = githubTaskSnapshot([]);
+  const board = buildTaskBoardSnapshot({
+    ...snapshot,
+    currentCycleId: "2026-W37",
+    remoteCheckpoints: true,
+  });
+  expect(board.tasks).toEqual([]);
+  expect(board.remoteCheckpoints).toBe(true);
 });
 
-/** Creates a task-board model backed by an in-memory project database. */
-function setup() {
-  const db = openDatabase(":memory:");
-  const planning = new PlanningRepository(db, () => "2026-08-24T00:00:00.000Z");
-  const counters: Record<string, number> = {};
-  const orchestration = new OrchestrationRepository(
-    db,
-    () => "2026-08-24T00:00:01.000Z",
-    (kind) => {
-      counters[kind] = (counters[kind] ?? 0) + 1;
-      return `${kind}-${counters[kind]}`;
+test("the GitHub board keeps awaiting-merge work in progress and uses Issue identities", async () => {
+  const fake = memoryGitHub();
+  const task = await fake.store().get(41);
+  task.execution = initialExecution(task, "main", "a".repeat(40));
+  task.execution.phase = "awaiting_merge";
+  task.task.status = "awaiting_merge";
+  const snapshot = githubTaskSnapshot([task]);
+  const board = buildTaskBoardSnapshot({
+    ...snapshot,
+    currentCycleId: "2026-W37",
+  });
+  expect(board.columns.inProgress.map((item) => item.id)).toEqual(["issue-41"]);
+  expect(board.columns.done).toEqual([]);
+  expect(board.tasks[0]?.rawStatus).toBe("awaiting_merge");
+});
+
+test("the GitHub board keeps failed evidence from a current rejected Review", async () => {
+  const fake = memoryGitHub();
+  const task = await fake.store().get(41);
+  const base = "a".repeat(40);
+  const head = "b".repeat(40);
+  task.execution = initialExecution(task, "main", base);
+  task.execution.phase = "rejected";
+  task.task.status = "rejected";
+  task.execution.attempts.push({
+    descriptor: {
+      attemptId: "review-1",
+      taskId: task.task.id,
+      role: "review",
+      retryIndex: 0,
+      model: "test/model",
+      modelProfile: "terra",
+      effort: "high",
     },
-  );
-  return { db, planning, orchestration };
-}
-
-/** Creates a task with the supplied board-relevant fields. */
-function createTask(
-  planning: PlanningRepository,
-  input: {
-    id: string;
-    cycleId?: string;
-    priority: number;
-    dependencies?: string[];
-    approved?: boolean;
-  },
-): void {
-  planning.createTask({
-    id: input.id,
-    cycleId: input.cycleId ?? "2026-W35",
-    title: `${input.id} title`,
-    spec: { ...spec, dependencies: input.dependencies ?? [] },
-    priority: input.priority,
-    approvalRequired: false,
-    approved: input.approved ?? false,
+    reviewTarget: { headSha: head, baseSha: base },
+    status: "succeeded",
+    startedAt: "2026-09-10T00:00:00.000Z",
+    endedAt: "2026-09-10T00:01:00.000Z",
+    sequence: 2,
+    events: {},
+    usage: {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+    },
+    usageKnown: true,
+    output: {
+      kind: "review",
+      decision: "rejected",
+      findings: ["answer differs"],
+      remainingGaps: ["return 42"],
+      acceptanceResults: [
+        {
+          criterionIndex: 0,
+          status: "failed",
+          evidence: "answer() returned 0",
+        },
+      ],
+    },
   });
-}
-
-/** Builds a board snapshot from the two repository read models. */
-function snapshot(input: {
-  planning: PlanningRepository;
-  orchestration: OrchestrationRepository;
-  allCycles?: boolean;
-  history?: boolean;
-}) {
-  return buildTaskBoardSnapshot({
-    tasks: input.planning.listTasks(),
-    inspection: input.orchestration.inspect(),
-    currentCycleId: "2026-W35",
-    ...(input.allCycles === undefined ? {} : { allCycles: input.allCycles }),
-    ...(input.history === undefined ? {} : { history: input.history }),
-  });
-}
-
-test("returns an empty valid snapshot for an empty project", () => {
-  const { db, planning, orchestration } = setup();
-  try {
-    expect(snapshot({ planning, orchestration })).toEqual({
-      currentCycleId: "2026-W35",
-      scheduler: {},
-      cycles: [],
-      tasks: [],
-      columns: { ready: [], inProgress: [], attention: [], done: [] },
-    });
-  } finally {
-    db.close();
-  }
-});
-
-test("maps every raw status to one board column while retaining it", () => {
-  const { db, planning, orchestration } = setup();
-  try {
-    planning.createCycle({
-      id: "2026-W35",
-      goal: "Board states",
-      nonGoals: [],
-      tokenBudget: 10_000,
-      ticketIds: [],
-    });
-    const statuses = [
-      "draft",
-      "needs_input",
-      "needs_replan",
-      "ready",
-      "claimed",
-      "scouting",
-      "implementing",
-      "reviewing",
-      "done",
-      "rejected",
-      "failed_infra",
-      "retired",
-    ] as const;
-    for (const [priority, status] of statuses.entries()) {
-      createTask(planning, { id: status, priority });
-      if (status === "retired") {
-        db.query(`
-          UPDATE tasks
-          SET status = 'retired', retirement_reason = 'obsolete', retired_at = 'now'
-          WHERE id = ?
-        `).run(status);
-      } else {
-        db.query("UPDATE tasks SET status = ? WHERE id = ?").run(
-          status,
-          status,
-        );
-      }
-    }
-
-    const board = snapshot({ planning, orchestration, history: true });
-    expect(board.columns.ready.map((task) => task.rawStatus)).toEqual([
-      "draft",
-      "ready",
-    ]);
-    expect(board.columns.inProgress.map((task) => task.rawStatus)).toEqual([
-      "claimed",
-      "scouting",
-      "implementing",
-      "reviewing",
-    ]);
-    expect(board.columns.attention.map((task) => task.rawStatus)).toEqual([
-      "needs_input",
-      "needs_replan",
-      "rejected",
-      "failed_infra",
-    ]);
-    expect(board.columns.done.map((task) => task.rawStatus)).toEqual([
-      "done",
-      "retired",
-    ]);
-    expect(board.tasks.map((task) => task.id).sort()).toEqual(
-      [...statuses].sort(),
-    );
-  } finally {
-    db.close();
-  }
-});
-
-test("keeps dependency-blocked ready tasks ready and filters cycles on request", () => {
-  const { db, planning, orchestration } = setup();
-  try {
-    for (const cycleId of ["2026-W35", "2026-W36"]) {
-      planning.createCycle({
-        id: cycleId,
-        goal: cycleId,
-        nonGoals: [],
-        tokenBudget: 10_000,
-        ticketIds: [],
-      });
-    }
-    createTask(planning, { id: "done", priority: 0 });
-    createTask(planning, {
-      id: "blocked",
-      priority: 1,
-      dependencies: ["done", "unfinished"],
-    });
-    createTask(planning, { id: "unfinished", priority: 2 });
-    createTask(planning, {
-      id: "other-cycle",
-      cycleId: "2026-W36",
-      priority: 0,
-    });
-    for (const id of ["done", "blocked", "unfinished", "other-cycle"])
-      db.query("UPDATE tasks SET status = 'ready' WHERE id = ?").run(id);
-    db.query("UPDATE tasks SET status = 'done' WHERE id = 'done'").run();
-
-    const current = snapshot({ planning, orchestration });
-    expect(current.tasks.map((task) => task.id)).toEqual([
-      "done",
-      "blocked",
-      "unfinished",
-    ]);
-    expect(
-      current.columns.ready.find((task) => task.id === "blocked"),
-    ).toMatchObject({
-      rawStatus: "ready",
-      blockingDependencyIds: ["unfinished"],
-    });
-    expect(
-      snapshot({ planning, orchestration, allCycles: true }).tasks.map(
-        (task) => task.id,
-      ),
-    ).toEqual(["done", "other-cycle", "blocked", "unfinished"]);
-  } finally {
-    db.close();
-  }
-});
-
-test("places the active task first with its attempt, model, retry, and token totals", () => {
-  const { db, planning, orchestration } = setup();
-  try {
-    planning.createCycle({
-      id: "2026-W35",
-      goal: "Active task",
-      nonGoals: [],
-      tokenBudget: 10_000,
-      ticketIds: [],
-    });
-    createTask(planning, { id: "first-ready", priority: 0 });
-    createTask(planning, { id: "active", priority: 2, approved: true });
-    db.query(
-      "UPDATE tasks SET status = 'ready' WHERE id IN ('first-ready', 'active')",
-    ).run();
-    const claim = orchestration.claimNext();
-    expect(claim).toEqual({ taskId: "active" });
-    const attempt = orchestration.beginNextAttempt();
-    if (attempt === undefined) throw new Error("Expected an active attempt");
-    db.query(`
-      INSERT INTO usage(
-        id, cycle_id, task_id, attempt_id, category,
-        input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      "usage-1",
-      "2026-W35",
-      "active",
-      attempt.attemptId,
-      "scout",
-      100,
-      20,
-      30,
-      40,
-    );
-
-    const board = snapshot({ planning, orchestration });
-    expect(board.tasks.map((task) => task.id)).toEqual([
-      "active",
-      "first-ready",
-    ]);
-    expect(board.active).toMatchObject({
-      taskId: "active",
-      attemptId: attempt.attemptId,
-      role: "scout",
-      retryCount: 0,
-    });
-    expect(board.active?.model).toBe(board.tasks[0]?.attempts[0]?.model);
-    expect(board.tasks[0]?.tokenTotals).toEqual({
-      inputTokens: 100,
-      cachedInputTokens: 20,
-      outputTokens: 30,
-      reasoningOutputTokens: 40,
-    });
-  } finally {
-    db.close();
-  }
+  const snapshot = githubTaskSnapshot([task]);
+  expect(snapshot.inspection.tasks[0]?.acceptanceChecklist).toEqual([
+    {
+      criterionIndex: 0,
+      criterion: "answer is 42",
+      status: "failed",
+      evidence: "answer() returned 0",
+    },
+  ]);
 });

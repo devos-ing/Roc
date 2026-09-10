@@ -1,7 +1,6 @@
 # Task Branch Manager
 
-Status: approved and implemented for sequential v1. The parallel scheduler
-extends the checkout layout and active-task limit in `parallel-task-execution.md`.
+Status: approved and implemented for sequential v1.
 
 ## Goal
 

@@ -1,383 +1,220 @@
 import { resolve } from "node:path";
-import { stripVTControlCharacters } from "node:util";
-import { Argument, type Command } from "commander";
+import type { Command } from "commander";
+import type { AcceptanceChecklistItem } from "../../domain/acceptance-checklist";
 import { BacklogManifestSchema } from "../../domain/schemas";
-import { safeTaskPathComponent } from "../../domain/task-path";
-import { importApprovedGitHubIssues } from "../../github/import-service";
-import { readApprovedGitHubIssueCandidates } from "../../github/import-source";
-import { GitHubTaskPublisher } from "../../github/remote-tasks";
-import { taskHookConfigHash } from "../../scheduler/task-hooks";
-import { openDatabase } from "../../store/database";
-import { OrchestrationRepository } from "../../store/orchestration-repository";
-import { PlanningRepository } from "../../store/planning-repository";
+import { BunGitHubCommandRunner } from "../../github/pr-publisher";
+import { jsonHash, withGitHubBodyFile } from "../../github/remote-tasks";
 import {
   commandProjectRoot,
   currentCycle,
   errorMessage,
-  projectDatabasePath,
 } from "../command-context";
-import { boxGuidance } from "../help-box";
-import { renderEmptyTaskList } from "../presentation";
-import { resolveProjectDisplaySlug } from "../project-root";
-import {
-  colorTaskDisplay,
-  formatTaskDisplayId,
-  taskStatusTone,
-} from "../task-display";
+import { connectGitHub } from "../runtime";
 import type { CliCommandContext } from "../types";
 import { executeTaskBoard } from "./tui";
 
-/** Returns whether a backlog manifest still uses the removed weekId field. */
-function usesLegacyWeekId(value: unknown): boolean {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    "weekId" in value
-  );
+/** Parses a GitHub Issue number without treating arbitrary text as a CLI argument. */
+function issueNumber(value: string): number {
+  const raw = value.replace(/^(?:#|issue-)/u, "");
+  if (!/^[1-9][0-9]*$/u.test(raw) || !Number.isSafeInteger(Number(raw)))
+    throw Error("Use a GitHub Issue number");
+  return Number(raw);
 }
 
-/** Imports one approved backlog manifest into the current project. */
-async function executeTaskImport(
-  context: CliCommandContext,
-  manifestPath: string,
-): Promise<number> {
-  try {
-    const input: unknown = await Bun.file(resolve(manifestPath)).json();
-    if (usesLegacyWeekId(input)) {
-      throw new Error("Manifest uses weekId; replace it with cycleId");
-    }
-    const manifest = BacklogManifestSchema.parse(input);
-    for (const task of manifest.tasks) safeTaskPathComponent(task.id);
-    const projectRoot = await commandProjectRoot(context);
-    const db = openDatabase(projectDatabasePath(projectRoot));
-    try {
-      const result = new PlanningRepository(db).importBacklog(manifest);
-      context.io.out(
-        [
-          `Created: ${result.created}`,
-          `Already present: ${result.skipped}`,
-          `Total: ${result.total}`,
-          boxGuidance(
-            "Next:\n  npx roc-it@latest task list",
-            context.io.output?.columns,
-          ),
-        ].join("\n"),
-      );
-      return 0;
-    } finally {
-      db.close();
-    }
-  } catch (error) {
-    context.io.err(errorMessage(error));
-    return 1;
-  }
-}
-
-/** Publishes one approved backlog manifest without importing it into the local queue. */
-async function executeGitHubPublish(
-  context: CliCommandContext,
-  manifestPath: string,
-): Promise<number> {
-  try {
-    const input: unknown = await Bun.file(resolve(manifestPath)).json();
-    if (usesLegacyWeekId(input)) {
-      throw new Error("Manifest uses weekId; replace it with cycleId");
-    }
-    const manifest = BacklogManifestSchema.parse(input);
-    for (const task of manifest.tasks) safeTaskPathComponent(task.id);
-    const projectRoot = await commandProjectRoot(context);
-    const published = context.runtime.publishGitHubTasks
-      ? await context.runtime.publishGitHubTasks(manifest, projectRoot)
-      : await new GitHubTaskPublisher(projectRoot).publish(manifest);
-    context.io.out(
-      published.map((task) => `${task.taskId}: ${task.issueUrl}`).join("\n"),
-    );
-    return 0;
-  } catch (error) {
-    context.io.err(errorMessage(error));
-    return 1;
-  }
-}
-
-/** Imports approved GitHub Issues into the current project. */
-async function executeGitHubImport(
-  context: CliCommandContext,
-): Promise<number> {
-  try {
-    const cycle = await currentCycle(context.runtime);
-    const issues = await (context.runtime.readGitHubIssues
-      ? context.runtime.readGitHubIssues()
-      : readApprovedGitHubIssueCandidates({ stderr: () => undefined }));
-    const projectRoot = await commandProjectRoot(context);
-    const db = openDatabase(projectDatabasePath(projectRoot));
-    try {
-      const result = await importApprovedGitHubIssues({
-        repository: new PlanningRepository(db),
-        cycleId: cycle.id,
-        readIssues: async () => issues,
-      });
-      context.io.out(
-        `created=${result.created} skipped=${result.skipped} total=${result.total}`,
-      );
-      return 0;
-    } finally {
-      db.close();
-    }
-  } catch (error) {
-    context.io.err(errorMessage(error));
-    return 1;
-  }
-}
-
-/** Renders one retired task's preserved retirement history for the task list. */
-function renderRetirementHistory(task: {
-  retirementReason?: string | null;
-  replacementTaskId?: string | null;
-  retiredAt?: string | null;
-}): string {
-  const label = task.replacementTaskId == null ? "Archived" : "Superseded";
-  const replacement =
-    task.replacementTaskId == null
-      ? ""
-      : ` by ${JSON.stringify(task.replacementTaskId)}`;
-  return `  ${label}${replacement}: ${JSON.stringify(task.retirementReason)} at ${task.retiredAt}`;
-}
-
-/** Pads a task-list cell to the requested terminal display width. */
-function padTaskListCell(value: string, width: number): string {
-  return `${value}${" ".repeat(
-    Math.max(0, width - Bun.stringWidth(stripVTControlCharacters(value))),
-  )}`;
-}
-
-/** Renders task records as a display-width-aware, left-aligned CLI table. */
-function renderTaskList(
-  tasks: Array<{
-    id: string;
-    status: string;
-    title: string;
-    retirementReason?: string | null;
-    replacementTaskId?: string | null;
-    retiredAt?: string | null;
-  }>,
-  options: {
-    projectSlug: string;
-    activeTaskId: string | undefined;
-    colorEnabled: boolean;
-  },
+/** Renders one read-only acceptance checklist without treating it as human approval. */
+function renderAcceptanceChecklist(
+  task: { id: string; title: string },
+  checklist: readonly AcceptanceChecklistItem[],
 ): string {
-  const rows = tasks.map((task) => ({
-    task,
-    id: JSON.stringify(formatTaskDisplayId(task.id, options.projectSlug)),
-    status: task.status,
-    title: JSON.stringify(task.title),
-  }));
-  const idWidth = Math.max(
-    Bun.stringWidth("ID"),
-    ...rows.map((row) => Bun.stringWidth(row.id)),
-  );
-  const statusWidth = Math.max(
-    Bun.stringWidth("STATUS"),
-    ...rows.map((row) => Bun.stringWidth(row.status)),
-  );
   return [
-    [
-      padTaskListCell("ID", idWidth),
-      padTaskListCell("STATUS", statusWidth),
-      "TITLE",
-    ].join("  "),
-    ...rows.flatMap((row) => [
-      [
-        padTaskListCell(row.id, idWidth),
-        padTaskListCell(
-          colorTaskDisplay(
-            row.status,
-            taskStatusTone(row.status, row.task.id, options.activeTaskId),
-            options.colorEnabled,
-          ),
-          statusWidth,
-        ),
-        row.title,
-      ].join("  "),
-      ...(row.task.status === "retired"
-        ? [renderRetirementHistory(row.task)]
-        : []),
+    `Acceptance checklist for ${task.id} · ${task.title}`,
+    "Automated Review evidence; human acceptance is separate.",
+    ...checklist.flatMap((item) => [
+      `[${item.status === "passed" ? "x" : " "}] ${item.criterion}`,
+      `  Status: ${item.status}`,
+      ...(item.evidence === undefined
+        ? ["  Evidence: No item-level evidence recorded."]
+        : [
+            "  Evidence:",
+            ...item.evidence.split("\n").map((line) => `    ${line}`),
+          ]),
     ]),
   ].join("\n");
 }
 
-/** Lists current-project tasks, optionally including preserved retirement history. */
-async function executeTaskList(
-  context: CliCommandContext,
-  history = false,
-): Promise<number> {
-  try {
-    const projectRoot = await commandProjectRoot(context);
-    const projectSlug = await resolveProjectDisplaySlug(projectRoot);
-    const db = openDatabase(projectDatabasePath(projectRoot));
-    try {
-      const tasks = new PlanningRepository(db)
-        .listTasks()
-        .filter((task) => history || task.status !== "retired");
-      const activeTaskId = new OrchestrationRepository(db).activeTaskId();
-      context.io.out(
-        tasks.length
-          ? renderTaskList(tasks, {
-              projectSlug,
-              activeTaskId,
-              colorEnabled: context.io.output?.isTTY === true,
-            })
-          : renderEmptyTaskList(context.io.output?.columns),
-      );
-      return 0;
-    } finally {
-      db.close();
-    }
-  } catch (error) {
-    context.io.err(errorMessage(error));
-    return 1;
-  }
-}
-
-/** Retires one obsolete task while preserving its history and optional replacement link. */
-async function executeTaskRetire(
-  context: CliCommandContext,
-  taskId: string,
-  options: { reason: string; replacement?: string },
-): Promise<number> {
-  try {
-    const projectRoot = await commandProjectRoot(context);
-    const db = openDatabase(projectDatabasePath(projectRoot));
-    try {
-      const result = new PlanningRepository(db).retireTask({
-        taskId,
-        reason: options.reason,
-        ...(options.replacement === undefined
-          ? {}
-          : { replacementTaskId: options.replacement }),
-      });
-      context.io.out(
-        result.replacementTaskId === undefined
-          ? `Archived ${JSON.stringify(result.taskId)}.`
-          : `Superseded ${JSON.stringify(result.taskId)} by ${JSON.stringify(result.replacementTaskId)}.`,
-      );
-      return 0;
-    } finally {
-      db.close();
-    }
-  } catch (error) {
-    context.io.err(errorMessage(error));
-    return 1;
-  }
-}
-
-/** Trusts the current task-scoped hook configuration for one phase. */
-async function executeHookTrust(
-  context: CliCommandContext,
-  taskId: string,
-  phase: "prehook" | "posthook",
-): Promise<number> {
-  try {
-    const projectRoot = await commandProjectRoot(context);
-    const db = openDatabase(projectDatabasePath(projectRoot));
-    try {
-      const repo = new OrchestrationRepository(db);
-      const task = repo.getTask(taskId);
-      if (task === undefined) {
-        context.io.err(`Task not found: ${taskId}`);
-        return 1;
-      }
-      const hook = task.spec[phase];
-      if (hook === undefined) {
-        context.io.err(`Task ${taskId} has no ${phase}`);
-        return 1;
-      }
-      const hash = taskHookConfigHash(hook);
-      repo.trustTaskHook(taskId, phase, hash);
-      context.io.out(`Trusted ${phase} for ${taskId}: ${hash}`);
-      return 0;
-    } finally {
-      db.close();
-    }
-  } catch (error) {
-    context.io.err(errorMessage(error));
-    return 1;
-  }
-}
-
-/** Registers task import, board, listing, and hook trust commands. */
+/** Registers task commands that read or modify GitHub directly. */
 export function registerTaskCommands(
   program: Command,
   context: CliCommandContext,
 ): void {
-  const task = program.command("task").description("Plan and inspect work");
+  const task = program
+    .command("task")
+    .description("Manage tasks in GitHub Issues");
   task
-    .command("import")
-    .description("Import an approved backlog")
-    .argument("<file>", "approved backlog JSON file")
-    .action(async (file: string) => {
-      context.exitCode = await executeTaskImport(context, file);
-    });
-  task
-    .command("import-github")
-    .description("Import approved GitHub Issues")
-    .action(async () => {
-      context.exitCode = await executeGitHubImport(context);
-    });
-  task
-    .command("publish-github")
-    .description("Publish an approved backlog as GitHub Issues")
-    .argument("<file>", "approved backlog JSON file")
-    .action(async (file: string) => {
-      context.exitCode = await executeGitHubPublish(context, file);
+    .command("publish-github <manifest>")
+    .description("Publish one approved backlog as GitHub Issues")
+    .action(async (path: string) => {
+      try {
+        const manifest = BacklogManifestSchema.parse(
+          await Bun.file(resolve(path)).json(),
+        );
+        const root = await commandProjectRoot(context);
+        if (!context.runtime.publishGitHubTasks)
+          throw Error("GitHub publication is unavailable");
+        for (const issue of await context.runtime.publishGitHubTasks(
+          manifest,
+          root,
+        ))
+          context.io.out(`${issue.taskId}: ${issue.issueUrl}`);
+      } catch (error) {
+        context.io.err(errorMessage(error));
+        context.exitCode = 1;
+      }
     });
   task
     .command("list")
-    .description("List the current project's tasks")
-    .option("--history", "include retired tasks and their history")
-    .action(async (options: { history?: boolean }) => {
-      context.exitCode = await executeTaskList(
-        context,
-        options.history === true,
-      );
+    .description("List GitHub task checkpoints")
+    .option("--all", "Include other Agile cycles")
+    .option("--history", "Include retired tasks")
+    .action(async (options: { all?: boolean; history?: boolean }) => {
+      try {
+        const root = await commandProjectRoot(context);
+        if (!context.runtime.readTasks)
+          throw Error("GitHub task reads are unavailable");
+        const snapshot = await context.runtime.readTasks(root);
+        const cycle = await currentCycle(context.runtime);
+        const tasks = snapshot.tasks.filter(
+          (item) =>
+            (options.all || item.cycleId === cycle.id) &&
+            (options.history || item.status !== "retired"),
+        );
+        for (const diagnostic of snapshot.diagnostics)
+          context.io.err(diagnostic);
+        if (!tasks.length)
+          context.io.out(
+            "No GitHub tasks. Publish an approved backlog with task publish-github.",
+          );
+        for (const item of tasks)
+          context.io.out(`${item.id} · ${item.status} · ${item.title}`);
+      } catch (error) {
+        context.io.err(errorMessage(error));
+        context.exitCode = 1;
+      }
     });
   task
-    .command("retire")
-    .description("Retire an obsolete task while preserving its history")
-    .argument("<task-id>", "task identifier")
-    .requiredOption("--reason <text>", "why this task is obsolete")
-    .option("--replacement <task-id>", "task that replaces this one")
-    .action(
-      async (
-        taskId: string,
-        options: { reason: string; replacement?: string },
-      ) => {
-        context.exitCode = await executeTaskRetire(context, taskId, options);
-      },
-    );
-  task
     .command("board")
-    .description("Open the read-only task board")
-    .option("--all", "include tasks from every cycle")
-    .option("--history", "include retired tasks and their history")
+    .description("Open the read-only GitHub task board")
+    .option("--all", "Include other Agile cycles")
+    .option("--history", "Include retired tasks")
     .action(async (options: { all?: boolean; history?: boolean }) => {
       context.exitCode = await executeTaskBoard(
         context,
-        options.all === true,
-        options.history === true,
+        options.all,
+        options.history,
       );
     });
   task
-    .command("hook")
-    .description("Manage task-scoped hooks")
-    .command("trust")
-    .description("Trust one task hook configuration")
-    .argument("<task-id>", "task identifier")
-    .addArgument(
-      new Argument("<phase>", "hook phase").choices(["prehook", "posthook"]),
-    )
-    .action(async (taskId: string, phase: "prehook" | "posthook") => {
-      context.exitCode = await executeHookTrust(context, taskId, phase);
+    .command("acceptance <issue>")
+    .description("Show read-only per-item Review evidence for one GitHub task")
+    .action(async (value: string) => {
+      try {
+        if (!context.runtime.readTasks)
+          throw Error("GitHub task reads are unavailable");
+        const root = await commandProjectRoot(context);
+        const snapshot = await context.runtime.readTasks(root);
+        const taskId = `issue-${issueNumber(value)}`;
+        const item = snapshot.tasks.find(
+          (candidate) => candidate.id === taskId,
+        );
+        const inspected = snapshot.inspection.tasks.find(
+          (candidate) => candidate.id === taskId,
+        );
+        if (!item || !inspected)
+          throw Error(`GitHub task ${taskId} was not found`);
+        context.io.out(
+          renderAcceptanceChecklist(item, inspected.acceptanceChecklist),
+        );
+      } catch (error) {
+        context.io.err(errorMessage(error));
+        context.exitCode = 1;
+      }
+    });
+  task
+    .command("trust-hooks <issue>")
+    .description("Approve exact hook commands in a GitHub task")
+    .requiredOption("--phase <phase>", "prehook or posthook")
+    .action(async (value: string, options: { phase: string }) => {
+      try {
+        const phase = options.phase;
+        if (phase !== "prehook" && phase !== "posthook")
+          throw Error("Choose prehook or posthook");
+        const root = await commandProjectRoot(context);
+        const { store, api, login } = await connectGitHub(root);
+        if (!store.publishers.has(login))
+          throw Error("Current GitHub login is not a trusted publisher");
+        const item = await store.get(issueNumber(value));
+        const hook = item.envelope.task.spec[phase];
+        if (!hook)
+          throw Error("This task has no configured hook for that phase");
+        if (!store.hookTrusted(item, phase))
+          await api.writeComment(
+            store.repository,
+            item.issue.number,
+            `<!-- roc:hook-trust ${jsonHash({ phase, hook })} -->`,
+          );
+        if (!store.hookTrusted(await store.get(item.issue.number), phase))
+          throw Error("Hook trust could not be confirmed");
+        context.io.out(`Trusted ${phase} for Issue #${item.issue.number}`);
+      } catch (error) {
+        context.io.err(errorMessage(error));
+        context.exitCode = 1;
+      }
+    });
+  task
+    .command("retire <issue>")
+    .description("Close a GitHub task without treating it as completed work")
+    .requiredOption("--reason <text>", "Why the task is no longer needed")
+    .action(async (value: string, options: { reason: string }) => {
+      try {
+        const root = await commandProjectRoot(context);
+        const { store, api } = await connectGitHub(root);
+        const item = await store.get(issueNumber(value));
+        if (item.issue.state === "CLOSED") {
+          context.io.out(`Issue #${item.issue.number} is already closed`);
+          return;
+        }
+        await api.writeComment(
+          store.repository,
+          item.issue.number,
+          `Retired: ${options.reason}`,
+        );
+        const runner = new BunGitHubCommandRunner();
+        const result = await withGitHubBodyFile(
+          JSON.stringify({ state: "closed", state_reason: "not_planned" }),
+          (path) =>
+            runner.run({
+              cwd: root,
+              command: [
+                "gh",
+                "api",
+                "--method",
+                "PATCH",
+                `repos/${store.repository}/issues/${item.issue.number}`,
+                "--input",
+                path,
+              ],
+            }),
+        );
+        if (
+          result.exitCode !== 0 ||
+          (await api.get(store.repository, item.issue.number)).state !==
+            "CLOSED"
+        )
+          throw Error("Issue retirement could not be confirmed");
+        context.io.out(`Retired Issue #${item.issue.number}`);
+      } catch (error) {
+        context.io.err(errorMessage(error));
+        context.exitCode = 1;
+      }
     });
 }

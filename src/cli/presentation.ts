@@ -59,14 +59,9 @@ export function formatOnboardingMessage(
     .join("\n");
 }
 
-/** Renders the completed database step without implying one exists for global onboarding. */
-export function renderDatabaseStep(input: {
-  dbPath?: string;
-  scope: OnboardingScope;
-}): string {
-  return input.scope.kind === "global"
-    ? "1. Database: Not created (global scope)"
-    : `1. Database: Ready (${input.dbPath})`;
+/** Identifies GitHub as the task source without claiming authentication has been verified. */
+export function renderTaskSourceStep(): string {
+  return "1. Task source: GitHub Issues";
 }
 
 /** Renders successful skill installation outcomes, including harmless identical copies. */
@@ -115,6 +110,8 @@ export function renderOnboardingComplete(
           "    npx roc-it@latest onboard",
         ]
       : []),
+    "  Connect GitHub if needed:",
+    "    gh auth login",
     ...createBacklogGuidance,
     "  Inspect the resulting tasks:",
     "    npx roc-it@latest task list",
