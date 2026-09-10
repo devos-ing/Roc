@@ -245,6 +245,41 @@ and at most every 30 seconds of tool activity; watch daemon output for individua
 live actions. Historical records without timing, or closed/changed Issues whose
 stop has not been reconciled, show unavailable timing rather than zero.
 
+#### Repairing Roc settings
+
+`ROC_SETTINGS_INVALID` names the Roc settings location, normally
+`~/.config/roc/settings.json`, and distinguishes missing files, invalid JSON,
+unsupported fields, invalid cycle/settings data, and read failures.
+
+- **Missing file:** run `npx roc-it@latest onboard` under the intended OS account.
+- **Cannot read:** check that the named path is a regular file, its ownership and
+  read permissions, and access to its parent directories. Fix access for the
+  intended account; do not make credentials or settings world-readable.
+- **Invalid content:** back up the exact file before editing it locally. For
+  example, `cp -ip ~/.config/roc/settings.json ~/.config/roc/settings.json.bak`
+  preserves permissions and asks before overwriting an existing backup; choose
+  another backup name if one already exists. Keep backups private and do not
+  paste settings or credentials into Issues or logs.
+
+Repair JSON syntax first, then review unsupported fields and invalid data against
+this version's format. The minimal weekly configuration is
+`{"cycle":{"type":"weekly"}}`; daily uses `"daily"`, and custom uses
+`{"cycle":{"type":"custom","days":14,"anchorDate":"2026-08-28"}}` with positive
+whole days and a real `YYYY-MM-DD` calendar date. Optional `skills.allowlist` is an
+array of `{ "name": "…", "source": "…" }` identities with nonempty strings;
+`execution.allowUnsandboxed` is a boolean. Optional top-level `models` supports
+only `luna`, `terra` and `sol`, each a `provider/modelId` string as described below.
+Do not remove a valid `models` mapping. Other fields, including nested extras,
+are rejected; review and manually correct misplaced/unsupported fields rather
+than blindly deleting them or replacing the entire file with the minimal example.
+Diagnostics show at most three fixed public field names and a count for hidden
+names, never arbitrary unknown names or configuration values.
+
+Roc does not rewrite invalid files, and **onboarding reads the same file and
+cannot repair it**. After manual repair, retry the failed command (for example,
+`npx roc-it@latest task board`). These are Roc settings, not Pi's separate
+`~/.pi/agent/settings.json` or `~/.pi/agent/auth.json`; leave credentials untouched.
+
 ### Pi provider setup
 
 Onboarding reuses Pi credentials or opens ChatGPT browser authorization. Follow

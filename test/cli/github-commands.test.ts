@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { runCli } from "../../src/cli/run";
 import type { CliRuntime, SchedulerRunInput } from "../../src/cli/types";
 import { githubTaskSnapshot } from "../../src/github/execution-view";
-import { saveRocSettings } from "../../src/settings";
+import { rocSettingsPath, saveRocSettings } from "../../src/settings";
 import { memoryGitHub } from "../helpers/github-native";
 
 test("public task reads use GitHub, preserve legacy files, and scheduler rejects the removed local queue", async () => {
@@ -81,6 +81,61 @@ test("public task reads use GitHub, preserve legacy files, and scheduler rejects
     expect(await readFile(legacy, "utf8")).toBe(
       "legacy data must remain untouched",
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("task board explains invalid settings before remote reads and opens after manual repair", async () => {
+  const root = await mkdtemp(join(tmpdir(), "roc-board-settings-"));
+  const remote = memoryGitHub();
+  const output: string[] = [];
+  const errors: string[] = [];
+  let reads = 0;
+  const runtime: CliRuntime = {
+    projectRoot: root,
+    homeRoot: root,
+    now: () => new Date("2026-09-08T00:00:00Z"),
+    async runScheduler() {},
+    async readTasks() {
+      reads++;
+      const data = await remote.store().list();
+      return githubTaskSnapshot(data.tasks, data.diagnostics);
+    },
+  };
+  const io = {
+    out: (line: string) => output.push(line),
+    err: (line: string) => errors.push(line),
+  };
+  try {
+    const path = await saveRocSettings({ cycle: { type: "weekly" } }, root);
+    // Top-level models is supported; type is unsupported at the settings root.
+    const invalid = Buffer.from(
+      '{"cycle":{"type":"weekly"},"type":"SECRET_VALUE"}\n',
+    );
+    await writeFile(path, invalid);
+    expect(await runCli(["task", "board"], io, runtime)).toBe(1);
+    expect(reads).toBe(0);
+    expect(output).toEqual([]);
+    const diagnostic = errors.join("\n");
+    expect(diagnostic).toContain("ROC_SETTINGS_INVALID");
+    expect(diagnostic).toContain(rocSettingsPath(root));
+    expect(diagnostic).toContain("Unsupported fields: type.");
+    expect(diagnostic).toContain("Back up this file");
+    expect(diagnostic).not.toContain("Run npx roc-it@latest onboard");
+    expect(diagnostic).not.toContain("SECRET_VALUE");
+    expect(await readFile(path)).toEqual(invalid);
+
+    await saveRocSettings(
+      { cycle: { type: "weekly" }, models: { luna: "provider/model" } },
+      root,
+    );
+    errors.length = 0;
+    expect(await runCli(["task", "board"], io, runtime)).toBe(0);
+    expect(reads).toBe(1);
+    expect(output.join("\n")).toContain("GitHub checkpoints");
+    expect(output.join("\n")).toContain("Return 42");
+    expect(errors).toEqual([]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
