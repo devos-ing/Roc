@@ -84,6 +84,64 @@ test("Roc development PR review helpers pass their Python suites", async () => {
   }
 });
 
+test("roc-create-tasks stays GitHub-only through a persistent merge handoff", async () => {
+  const [local, shipped] = await Promise.all([
+    readFile(
+      resolve(projectRoot, ".agents/skills/roc-create-tasks/SKILL.md"),
+      "utf8",
+    ),
+    readFile(resolve(projectRoot, "skills/roc-create-tasks/SKILL.md"), "utf8"),
+  ]);
+
+  expect(local).toBe(shipped);
+  const prose = shipped.replace(/\s+/g, " ");
+  expect(prose).not.toMatch(/\btask\s+import\b|\*\*Local queue/i);
+  for (const requirement of [
+    "the user explicitly invoked `roc-create-tasks`",
+    "Use the installed `grilling` skill for requirement discovery",
+    "approval of the complete task set and repository",
+    "Write and publish exactly the approved manifest",
+    "GitHub Issues are the only execution destination",
+    "npx roc-it@latest task publish-github FILE",
+    'bun "$ROC_CLI_ENTRY"',
+    "Respect the user's chosen merge mode and existing execution consent",
+    "Task-plan approval is not permission to start execution or enable automatic merge",
+    "Reuse prior consent for this execution",
+    "If execution consent is missing, ask before starting",
+    "manual merge is the default",
+    "Never enable `--auto-merge` without that choice",
+    "confirm its repository, base branch, and merge mode",
+    "Keep one daemon per repository",
+    "Reuse an existing daemon when its configuration matches",
+    "Never implicitly start a duplicate daemon or restart one to change its mode",
+    "without `--auto-merge`",
+    "`--once` processes one eligible task and exits",
+    "readable classic branch protection",
+    "at least one required status check",
+    "strict up-to-date checks",
+    "administrator enforcement",
+    "Human reviews remain required when configured",
+    "Never bypass or silently modify repository protection",
+    "PR creation does not establish completion",
+    "An open PR stays `awaiting_merge`",
+    "visible wait reasons",
+    "npx roc-it@latest scheduler inspect",
+    "confirmed `done` only after",
+    "PR is confirmed merged into the selected target branch",
+    "verified the merge commit is present in the fetched target",
+  ]) {
+    expect(prose).toContain(requirement);
+  }
+
+  const schedulerCommands = shipped.match(
+    /^npx roc-it@latest scheduler run .+$/gm,
+  );
+  expect(schedulerCommands).toEqual([
+    "npx roc-it@latest scheduler run --base-branch SELECTED_BASE --concurrency 1 --auto-merge",
+  ]);
+  expect(schedulerCommands?.join("\n")).not.toContain("--once");
+});
+
 test("npm archive contains only runtime files", async () => {
   const npmCache = resolve(projectRoot, ".tmp-agile-tests", "npm-cache");
   await mkdir(npmCache, { recursive: true });
