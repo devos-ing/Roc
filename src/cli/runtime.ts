@@ -16,6 +16,7 @@ import {
   GitHubPullRequestPublisher,
   type TaskPublisher,
 } from "../github/pr-publisher";
+import { GitHubRateLimitRunner } from "../github/rate-limit";
 import { GitHubTaskPublisher } from "../github/remote-tasks";
 import { AgileError, normalizeError } from "../runtime/errors";
 import { createJsonlLogger } from "../runtime/logger";
@@ -103,7 +104,16 @@ export async function runBackendSession(
         let retain = false;
         let failure: unknown;
         try {
-          const command = options.command ?? new BunGitHubCommandRunner();
+          const command = new GitHubRateLimitRunner(
+            options.command ?? new BunGitHubCommandRunner(),
+            {
+              signal: stop,
+              onWait: (until) =>
+                process.stderr.write(
+                  `GitHub rate limit reached; waiting until ${new Date(until).toISOString()} before retrying. Ctrl-C stops the scheduler.\n`,
+                ),
+            },
+          );
           let baseBranch = input.baseBranch;
           if (!baseBranch) {
             const result = await command.run({
