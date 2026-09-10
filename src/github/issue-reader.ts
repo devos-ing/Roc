@@ -42,6 +42,7 @@ type GitHubOperation =
   | "issue-comments-read"
   | "issue-list-read"
   | "comment-write"
+  | "issue-body-write"
   | "label-create"
   | "issue-label-write"
   | "issue-close";
@@ -53,6 +54,7 @@ const GitHubOperationNames: Record<GitHubOperation, string> = {
   "issue-comments-read": "Issue comment read",
   "issue-list-read": "Issue list",
   "comment-write": "comment write",
+  "issue-body-write": "Issue body update",
   "label-create": "label create",
   "issue-label-write": "Issue label update",
   "issue-close": "Issue close",
@@ -216,6 +218,28 @@ export class GitHubRemoteIssueReader {
           path,
         ],
         "comment-write",
+      ),
+    );
+  }
+
+  /** Rewrites one Issue body without touching its title, labels, comments or state. */
+  async editBody(
+    repository: string,
+    number: number,
+    body: string,
+  ): Promise<void> {
+    await withGitHubBodyFile(JSON.stringify({ body }), (path) =>
+      this.mustRun(
+        [
+          "gh",
+          "api",
+          "--method",
+          "PATCH",
+          `repos/${repository}/issues/${number}`,
+          "--input",
+          path,
+        ],
+        "issue-body-write",
       ),
     );
   }

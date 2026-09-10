@@ -452,6 +452,7 @@ task list [--all] [--history]              List GitHub tasks
 task board [--all] [--history]             Open the read-only board
 tui                                      Open the same board
 task trust-hooks ISSUE --phase PHASE      Approve an exact hook configuration
+task supersede OLD_ISSUE NEW_ISSUE         Repoint dependents of a dead task
 task retire ISSUE --reason TEXT           Close an Issue without completing it
 scheduler run [--base-branch BRANCH] [--concurrency 1-8] [--once] [--auto-merge]
 scheduler inspect                        Read GitHub execution checkpoints

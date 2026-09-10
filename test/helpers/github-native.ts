@@ -92,6 +92,9 @@ export function memoryGitHub(posthook?: TaskHook) {
         throw Error("response lost");
       }
     },
+    async editBody(_repo: string, _number: number, body: string) {
+      issue.body = body;
+    },
     async closeCompleted(_repo: string, number: number) {
       closures.push(number);
       if (denyClosure) throw Error("denied secret");

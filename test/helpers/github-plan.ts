@@ -9,7 +9,10 @@ import {
 import { manifest } from "./github-native";
 
 /** Creates several approved Issues backed by one complete in-memory GitHub plan. */
-export function memoryPlan(scopes: string[][]) {
+export function memoryPlan(
+  scopes: string[][],
+  dependencies: Record<string, string[]> = {},
+) {
   const template = manifest.tasks[0];
   if (!template) throw Error("Missing task fixture");
   const plan: BacklogManifest = {
@@ -19,7 +22,11 @@ export function memoryPlan(scopes: string[][]) {
       id: `T${index + 1}`,
       title: `Task ${index + 1}`,
       priority: index,
-      spec: { ...template.spec, scope },
+      spec: {
+        ...template.spec,
+        scope,
+        dependencies: dependencies[`T${index + 1}`] ?? [],
+      },
     })),
   };
   const issues: RemoteIssue[] = plan.tasks.map((task, index) => {
@@ -41,6 +48,7 @@ export function memoryPlan(scopes: string[][]) {
     };
   });
   let commentId = 100;
+  let author = "daemon";
   const api = {
     async read() {
       return structuredClone(issues);
@@ -63,9 +71,14 @@ export function memoryPlan(scopes: string[][]) {
       else
         issue.comments.push({
           databaseId: commentId++,
-          author: { login: "daemon" },
+          author: { login: author },
           body,
         });
+    },
+    async editBody(_repo: string, number: number, body: string) {
+      const issue = issues.find((item) => item.number === number);
+      if (!issue) throw Error("Missing fixture Issue");
+      issue.body = body;
     },
     async closeCompleted(_repo: string, number: number) {
       const issue = issues.find((item) => item.number === number);
@@ -80,6 +93,13 @@ export function memoryPlan(scopes: string[][]) {
   return {
     issues,
     api,
+    /** Models the GitHub login that owns the session writing new comments. */
+    get commentAuthor() {
+      return author;
+    },
+    set commentAuthor(login: string) {
+      author = login;
+    },
     store: new GitHubExecutionStore(
       "acme/test",
       "daemon",

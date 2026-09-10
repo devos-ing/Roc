@@ -3,7 +3,14 @@ import {
   initialExecution,
   renderExecution,
 } from "../../src/github/execution-store";
-import { memoryGitHub } from "../helpers/github-native";
+import {
+  parseRemoteTaskEnvelope,
+  remoteTaskEnvelope,
+  renderRemoteTaskApproval,
+  renderRemoteTaskBody,
+} from "../../src/github/remote-tasks";
+import { manifest, memoryGitHub } from "../helpers/github-native";
+import { memoryPlan } from "../helpers/github-plan";
 
 test("closure requires unchanged approved confirmed done evidence and preserves its checkpoint", async () => {
   for (const fault of [
@@ -102,4 +109,107 @@ test("authority confirmation does not authorize cached state when a direct read 
     message: expect.stringContaining("authority confirmation failed"),
   });
   expect(remote.issue).toEqual(before);
+});
+
+test("supersede rewrites same-plan dependents onto the replacement and re-approves the plan", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"], ["d.ts"]], {
+    T2: ["T1"],
+  });
+  const store = remote.store;
+  const dead = await store.get(41);
+  const rejected = initialExecution(dead, "main", "a".repeat(40));
+  rejected.phase = "rejected";
+  remote.issues[0]!.comments.push({
+    databaseId: 50,
+    author: { login: "daemon" },
+    body: renderExecution(rejected),
+  });
+  remote.commentAuthor = "owner";
+  const result = await store.supersede(41, 44);
+  expect(result.dependentIssues).toEqual([42]);
+  expect(result.rewrittenIssues).toEqual([41, 42, 43, 44]);
+  const view = await store.list();
+  for (const item of view.tasks) {
+    expect(item.envelope.planId).toBe(result.planId);
+    if (item.issue.number === 41) continue;
+    expect(item.approved).toBe(true);
+    expect(item.blockedReason).toBeUndefined();
+  }
+  const dependent = view.tasks.find((item) => item.issue.number === 42);
+  if (!dependent) throw Error("Missing dependent task");
+  expect(dependent.envelope.task.spec.dependencies).toEqual(["T4"]);
+  expect(dependent.task.status).toBe("ready");
+  expect(
+    parseRemoteTaskEnvelope(remote.issues[1]!.body).task.spec.dependencies,
+  ).toEqual(["T4"]);
+  expect(
+    remote.issues[1]!.comments.some(
+      (comment) =>
+        comment.body.includes("Supersede:") &&
+        comment.body.includes("T4 (Issue #44)"),
+    ),
+  ).toBe(true);
+});
+
+test("supersede refuses cross-plan replacements without writing", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"]], { T2: ["T1"] });
+  const foreign = remoteTaskEnvelope(
+    {
+      ...manifest,
+      cycleId: "2026-W40",
+      goal: "A different plan goal",
+      tasks: [manifest.tasks[0]!],
+    },
+    "T1",
+  );
+  remote.issues.push({
+    number: 61,
+    title: foreign.task.title,
+    body: renderRemoteTaskBody(foreign),
+    url: "https://github.com/acme/test/issues/61",
+    state: "OPEN",
+    labels: [{ name: "roc:task" }, { name: "roc:ready" }],
+    comments: [
+      {
+        databaseId: 61,
+        author: { login: "owner" },
+        body: renderRemoteTaskApproval(foreign),
+      },
+    ],
+  });
+  const before = structuredClone(remote.issues);
+  await expect(remote.store.supersede(41, 61)).rejects.toThrow(
+    /belong to different plans/,
+  );
+  expect(remote.issues).toEqual(before);
+});
+
+test("supersede refuses a terminal replacement without writing", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"]], {
+    T2: ["T1"],
+  });
+  const store = remote.store;
+  const replacement = await store.get(43);
+  const rejected = initialExecution(replacement, "main", "a".repeat(40));
+  rejected.phase = "rejected";
+  remote.issues[2]!.comments.push({
+    databaseId: 60,
+    author: { login: "daemon" },
+    body: renderExecution(rejected),
+  });
+  const before = structuredClone(remote.issues);
+  await expect(store.supersede(41, 43)).rejects.toThrow(/already terminal/);
+  expect(remote.issues).toEqual(before);
+});
+
+test("supersede refuses a rewrite that would create a dependency cycle", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"]], {
+    T2: ["T1"],
+    T3: ["T2"],
+  });
+  const before = structuredClone(remote.issues);
+  await expect(remote.store.supersede(41, 43)).rejects.toThrow(
+    /cyclic or incomplete/,
+  );
+  expect(remote.issues).toEqual(before);
 });
