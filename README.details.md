@@ -344,6 +344,24 @@ normal profile chain (for example Implement moves from Terra to Sol for
 `xhigh`). Raise effort for hard implementation work and lower it for cheap
 scouting when your provider and workload justify it.
 
+An optional `publicationMode` setting controls how finished tasks are
+published: `"pr"` (the default) keeps the pull-request flow, while `"branch"`
+pushes the task branch to the remote without opening a pull request. Set
+`publicationMode` to `"branch"` when tasks should complete on branch push
+instead of pull-request merge — for example, for internal or self-hosted work:
+
+```json
+"publicationMode": "branch"
+```
+
+Omit `publicationMode` and existing settings files stay byte-identical with
+the pull-request flow. In branch mode the task publishes by pushing its task
+branch to the remote; completion lands at push time because no pull request
+is opened. Dependency gating follows the upstream task's done phase instead
+of pull-request merge, and closure verifies the pushed head on the remote
+branch. Downstream tasks branch from the base branch, so they do not
+automatically include unmerged upstream task-branch changes.
+
 For advanced Claude or GLM setup, configure the bundled Pi CLI under the daemon
 account with `bun x --no-install pi`. Use its `/login` and `/model` commands where
 supported and save the default. Provider keys must be in the daemon environment.
