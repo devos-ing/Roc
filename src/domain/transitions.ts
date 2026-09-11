@@ -23,7 +23,15 @@ const allowed: Record<TaskStatus, readonly TaskStatus[]> = {
     "failed_infra",
   ],
   // Branch publication finishes at push, so only that mode completes directly from publishing.
-  publishing: ["needs_input", "needs_replan", "awaiting_merge", "done"],
+  // A branch base-refresh returns to Review: the rebased head needs a fresh independent Review
+  // before the base may fast-forward (pull requests re-enter Review from awaiting_merge).
+  publishing: [
+    "needs_input",
+    "needs_replan",
+    "awaiting_merge",
+    "done",
+    "reviewing",
+  ],
   done: [],
   rejected: [],
   failed_infra: [],

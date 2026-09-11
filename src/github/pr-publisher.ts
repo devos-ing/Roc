@@ -46,6 +46,16 @@ export type PullRequest = z.infer<typeof PullRequestSchema>;
 /** Describes a task branch published by fast-forwarding origin's base branch to its head. */
 export type BranchPublication = { branch: string; commitSha: string };
 
+/** Locates the idempotent origin traces of an already landed branch publication. */
+export type BranchTraceInput = {
+  taskId: string;
+  branch: string;
+  workspacePath: string;
+  /** The originally reviewed commit that the trace tag preserves across rebases. */
+  originalHead: string;
+  landedHead: string;
+};
+
 /** Supplies the task state needed to publish or reconcile one pull request. */
 export type PublishTaskInput = {
   task: StoredTask;
@@ -64,6 +74,11 @@ export type TaskPublisher = {
   readonly mode: "pr" | "branch";
   baseBranch: string;
   publish(input: PublishTaskInput): Promise<PullRequest | BranchPublication>;
+  /**
+   * Completes the idempotent origin traces after the runner checkpointed a branch landing.
+   * Only branch publishers implement it; a pull-request publication has no trace pushes.
+   */
+  completeTrace?(input: BranchTraceInput): Promise<void>;
 };
 
 /** Verifies that GitHub access is ready before a real scheduler starts work. */
@@ -125,6 +140,26 @@ export class GitHubPublicationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "GitHubPublicationError";
+  }
+}
+
+/** Signals that origin's base branch advanced past the persisted base before a fast-forward. */
+export class BaseAdvancedError extends Error {
+  /** Carries the fetched target base so the runner can schedule its bounded reviewed refresh. */
+  constructor(
+    readonly details: {
+      taskId: string;
+      branch: string;
+      workspacePath: string;
+      baseBranch: string;
+      expectedBase: string;
+      targetBase: string;
+    },
+  ) {
+    super(
+      `Base branch ${details.baseBranch} advanced to ${details.targetBase}; the rebased patch of ${details.branch} requires a fresh independent Review before landing`,
+    );
+    this.name = "BaseAdvancedError";
   }
 }
 
@@ -498,16 +533,13 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
   }
 }
 
-/** Bounded rebase retries when origin's base branch advances before a branch-mode fast-forward. */
-const BranchBaseForwardRetries = 2;
-
-/** Recognizes the local push rejection that a rebase onto the fetched base can legitimately resolve. */
+/** Recognizes the local push rejection that signals an advanced base to the runner. */
 function nonFastForwardRejection(stderr: string): boolean {
   // Server-side policy rejections ("[remote rejected]") never contain this local marker.
   return stderr.includes("[rejected]");
 }
 
-/** Publishes a validated task branch by fast-forwarding origin's base branch to its head. */
+/** Publishes a validated task branch by fast-forwarding origin's base branch to its reviewed head. */
 export class GitHubBranchPublisher implements TaskPublisher {
   /** Marks this publisher as the branch-push flow for checkpoint mode pinning. */
   readonly mode = "branch" as const;
@@ -519,109 +551,116 @@ export class GitHubBranchPublisher implements TaskPublisher {
     private readonly runner: GitHubCommandRunner = new BunGitHubCommandRunner(),
   ) {}
 
-  /** Fast-forwards the base branch, then records the original and landed commits as remote traces. */
+  /**
+   * Fast-forwards the base branch without any rebase. A rejected non-fast-forward throws
+   * BaseAdvancedError with the fetched target base; the runner owns the bounded refresh and
+   * the fresh independent Review that must re-accept a rebased head before it can land.
+   */
   async publish(input: PublishTaskInput): Promise<BranchPublication> {
     if (input.reconcileOnly)
       throw new GitHubPublicationError(
         "Branch publication has no pull request to reconcile; checklist reconciliation is a pull-request operation and must not push the base branch",
       );
     const workspace = await preparePublication(this.branches, input);
-    // The reviewed head is the original task commit; the tag preserves it across rebases.
-    const originalHead = input.publication.commitSha;
-    const commitSha = await this.forwardBase(workspace, input);
-    await this.pushTrace(workspace, originalHead, commitSha);
-    return { branch: workspace.branch, commitSha };
+    const head = await mustRun(
+      this.runner,
+      ["git", "rev-parse", "--verify", "HEAD"],
+      workspace.path,
+    );
+    // The Roc-owned task branch is pushed first so a later base refresh can verify the exact
+    // remote head with its expected-old-head lease before it rebases anything.
+    await this.pushTaskBranch(
+      { branch: workspace.branch, workspacePath: workspace.path },
+      head,
+    );
+    const result = await this.runner.run({
+      command: [
+        "git",
+        "push",
+        "origin",
+        `${head}:refs/heads/${input.publication.baseBranch}`,
+      ],
+      cwd: workspace.path,
+    });
+    if (result.exitCode !== 0) {
+      const diagnostic = result.stderr.trim() || result.stdout.trim();
+      if (!nonFastForwardRejection(result.stderr))
+        throw new GitHubPublicationError(`git push failed: ${diagnostic}`);
+      await mustRun(
+        this.runner,
+        // --no-tags keeps origin's trace tags out of the checkout's local refs.
+        ["git", "fetch", "--no-tags", "origin", input.publication.baseBranch],
+        workspace.path,
+      );
+      const targetBase = await mustRun(
+        this.runner,
+        [
+          "git",
+          "rev-parse",
+          "--verify",
+          `refs/remotes/origin/${input.publication.baseBranch}^{commit}`,
+        ],
+        workspace.path,
+      );
+      if (!/^[0-9a-f]{40}$/.test(targetBase))
+        throw new GitHubPublicationError(
+          `Advanced base branch ${input.publication.baseBranch} did not resolve to a commit`,
+        );
+      throw new BaseAdvancedError({
+        taskId: input.task.id,
+        branch: workspace.branch,
+        workspacePath: workspace.path,
+        baseBranch: input.publication.baseBranch,
+        expectedBase: input.task.baseCommit ?? "",
+        targetBase,
+      });
+    }
+    return { branch: workspace.branch, commitSha: head };
   }
 
-  /** Tags the original commit on origin and pushes the landed task branch only after the base fast-forward. */
-  private async pushTrace(
-    workspace: TaskWorkspace,
-    originalHead: string,
-    landedHead: string,
-  ): Promise<void> {
-    // The trace tag lives only on origin: re-pushing the same commit is an up-to-date no-op and
-    // a moved tag is rejected, while a local tag would collide with the task branch's short name.
+  /**
+   * Completes the origin traces after the runner checkpointed the landing. Both pushes are
+   * idempotent: re-pushing the tag at the same commit is an up-to-date no-op, a moved tag is
+   * rejected, and a remote task branch that already names the landed head is skipped.
+   */
+  async completeTrace(input: BranchTraceInput): Promise<void> {
+    // The trace tag lives only on origin, and a local tag would collide with the task branch.
     await mustRun(
       this.runner,
       [
         "git",
         "push",
         "origin",
-        `${originalHead}:refs/tags/agile-trace/${workspace.taskId}`,
+        `${input.originalHead}:refs/tags/agile-trace/${input.taskId}`,
       ],
-      workspace.path,
+      input.workspacePath,
     );
-    // First push only: a remote task branch that already names the landed head is a no-op, and
-    // a moved remote head stays a rejected non-fast-forward instead of a force push.
+    await this.pushTaskBranch(input, input.landedHead);
+  }
+
+  /** Pushes the task branch only when the remote does not already name the expected head. */
+  private async pushTaskBranch(
+    location: { branch: string; workspacePath: string },
+    head: string,
+  ): Promise<void> {
     const remote = await this.runner.run({
       command: [
         "git",
         "ls-remote",
         "--exit-code",
         "origin",
-        `refs/heads/${workspace.branch}`,
+        `refs/heads/${location.branch}`,
       ],
-      cwd: workspace.path,
+      cwd: location.workspacePath,
     });
     const remoteHead =
       remote.exitCode === 0 ? remote.stdout.trim().split(/\s+/)[0] : undefined;
-    if (remoteHead !== landedHead)
-      await mustRun(
-        this.runner,
-        [
-          "git",
-          "push",
-          "origin",
-          `${landedHead}:refs/heads/${workspace.branch}`,
-        ],
-        workspace.path,
-      );
-  }
-
-  /** Fast-forwards origin's base to the task head, rebasing with bounded retries instead of force-pushing. */
-  private async forwardBase(
-    workspace: TaskWorkspace,
-    input: PublishTaskInput,
-  ): Promise<string> {
-    const baseBranch = input.publication.baseBranch;
-    for (let attempt = 0; ; attempt++) {
-      const head = await mustRun(
-        this.runner,
-        ["git", "rev-parse", "--verify", "HEAD"],
-        workspace.path,
-      );
-      const result = await this.runner.run({
-        command: ["git", "push", "origin", `${head}:refs/heads/${baseBranch}`],
-        cwd: workspace.path,
-      });
-      if (result.exitCode === 0) return head;
-      const diagnostic = result.stderr.trim() || result.stdout.trim();
-      if (!nonFastForwardRejection(result.stderr))
-        throw new GitHubPublicationError(`git push failed: ${diagnostic}`);
-      if (attempt >= BranchBaseForwardRetries)
-        throw new GitHubPublicationError(
-          `Base branch ${baseBranch} kept rejecting the fast-forward of ${workspace.branch} after ${BranchBaseForwardRetries} rebase retries: ${diagnostic}`,
-        );
-      await mustRun(
-        this.runner,
-        // --no-tags keeps origin's trace tags out of the checkout's local refs.
-        ["git", "fetch", "--no-tags", "origin", baseBranch],
-        workspace.path,
-      );
-      const rebase = await this.runner.run({
-        command: ["git", "rebase", `origin/${baseBranch}`],
-        cwd: workspace.path,
-      });
-      if (rebase.exitCode !== 0) {
-        // Restore the task branch so a conflicting rebase never leaves the workspace mid-rebase.
-        await this.runner.run({
-          command: ["git", "rebase", "--abort"],
-          cwd: workspace.path,
-        });
-        throw new GitHubPublicationError(
-          `Rebasing ${workspace.branch} onto origin/${baseBranch} failed for ${input.task.id}; resolve the conflict manually instead of force-pushing: ${rebase.stderr.trim() || rebase.stdout.trim()}`,
-        );
-      }
-    }
+    if (remoteHead === head) return;
+    // First push only: a moved remote head stays a rejected non-fast-forward, never a force push.
+    await mustRun(
+      this.runner,
+      ["git", "push", "origin", `${head}:refs/heads/${location.branch}`],
+      location.workspacePath,
+    );
   }
 }

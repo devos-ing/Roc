@@ -8,9 +8,10 @@ import {
   type NativeTask,
 } from "../github/execution-store";
 import { GitHubPullRequestMerger, type MergeResult } from "../github/pr-merger";
-import type {
-  GitHubCommandRunner,
-  TaskPublisher,
+import {
+  BaseAdvancedError,
+  type GitHubCommandRunner,
+  type TaskPublisher,
 } from "../github/pr-publisher";
 import { jsonHash } from "../github/remote-tasks";
 import {
@@ -24,10 +25,16 @@ import {
 import { AgileError, normalizeError } from "../runtime/errors";
 import {
   type TaskBranchManager,
+  type TaskWorkspace,
   taskBranchName,
 } from "../workspace/task-branch";
 import type { ModelAdvisor } from "./model-routing";
 import { BunTaskHookRunner, type TaskHookRunner } from "./task-hooks";
+
+/** A branch publisher whose idempotent trace completion follows the runner's landing checkpoint. */
+type BranchTracePublisher = TaskPublisher & {
+  completeTrace: NonNullable<TaskPublisher["completeTrace"]>;
+};
 
 const zeroUsage = {
   inputTokens: 0,
@@ -477,6 +484,15 @@ export class GitHubTaskRunner {
       await this.checkpoint(task, record, signal);
       return;
     }
+    if (record.refreshes?.some((refresh) => !refresh.result)) {
+      // An intent without a confirmed result never replays Git; the checkpoint demands
+      // reconciliation before any role, publication or trace may resume.
+      record.phase = "needs_replan";
+      record.failure =
+        "Interrupted base refresh intent requires reconciliation; Git will not be replayed";
+      await this.checkpoint(task, record, signal);
+      return;
+    }
     task.task.baseCommit = record.baseCommit;
     await this.input.branches.prepare(task.task.id, record.baseCommit);
     if (!(await this.runHook(task, record, "prehook", signal))) return;
@@ -518,8 +534,15 @@ export class GitHubTaskRunner {
       publishingAuthority.issue.state !== "OPEN"
     )
       return;
+    const publisher = this.publisherFor(record.publication);
+    if (publisher.mode === "branch") {
+      // Branch publications land by fast-forward and complete at push; an advanced base
+      // returns through the shared bounded refresh for a fresh independent Review.
+      await this.publishBranch(task, record, signal);
+      return;
+    }
     const acceptance = this.publicationAcceptance(record);
-    const published = await this.publisherFor(record.publication).publish({
+    const published = await publisher.publish({
       task: {
         ...task.task,
         status: "publishing",
@@ -536,19 +559,173 @@ export class GitHubTaskRunner {
       ...(acceptance === undefined ? {} : { acceptance }),
     });
     signal.throwIfAborted();
-    if ("branch" in published) {
-      // Branch publication completes at push; a remote branch head leaves no pull request to await.
-      // A rebase onto an advanced base lands a new sha; the checkpoint must record what actually entered base.
-      record.publication.commitSha = published.commitSha;
-      record.phase = "done";
-      await this.checkpoint(task, record, signal);
-      await this.repairClosure(task, signal);
-      return;
-    }
+    if ("branch" in published)
+      throw Error("The pull-request publisher returned a branch publication");
     record.publication.number = published.number;
     record.publication.url = published.url;
     record.phase = "awaiting_merge";
     await this.checkpoint(task, record, signal);
+  }
+
+  /** Publishes a branch-mode task: verifies remote landing, fast-forwards, checkpoints, then traces. */
+  private async publishBranch(
+    task: NativeTask,
+    record: ExecutionRecord,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const publication = record.publication;
+    const publisher = publication ? this.publisherFor(publication) : undefined;
+    if (
+      !publication ||
+      !publisher?.completeTrace ||
+      publisher.mode !== "branch"
+    )
+      throw Error("Branch publication requires the branch publisher");
+    const traced = publisher as BranchTracePublisher;
+    const workspace = await this.input.branches.prepare(
+      task.task.id,
+      record.baseCommit,
+    );
+    // Recovery checks the remote before any stale-base validation: when the base already
+    // contains the persisted landing, only the idempotent traces and closure remain.
+    if (await this.baseContainsLanding(record, publication.commitSha, signal)) {
+      await this.completeBranchLanding(
+        task,
+        record,
+        traced,
+        workspace,
+        publication.commitSha,
+        signal,
+      );
+      return;
+    }
+    const implementation = record.attempts.findLast(
+      (attempt) =>
+        attempt.status === "succeeded" && attempt.output?.kind === "implement",
+    )?.output;
+    if (implementation?.kind !== "implement")
+      throw Error("Missing validated implementation");
+    const acceptance = this.publicationAcceptance(record);
+    let landed: string;
+    try {
+      const published = await traced.publish({
+        task: {
+          ...task.task,
+          status: "publishing",
+          baseCommit: record.baseCommit,
+        },
+        implementation,
+        publication: {
+          taskId: task.task.id,
+          branch: publication.branch,
+          baseBranch: record.baseBranch,
+          commitSha: publication.commitSha,
+          status: "pending",
+        },
+        ...(acceptance === undefined ? {} : { acceptance }),
+      });
+      if (!("branch" in published))
+        throw Error("The branch publisher returned a pull request");
+      landed = published.commitSha;
+    } catch (error) {
+      if (!(error instanceof BaseAdvancedError)) throw error;
+      // The rebased patch must earn a fresh independent Review before the base advances;
+      // the shared bounded refresh path records the intent, rebases and dispatches Review.
+      try {
+        await this.refreshBase(task, error.details.targetBase, signal);
+      } catch (refreshError) {
+        const reason =
+          refreshError instanceof Error
+            ? refreshError.message
+            : "Branch base refresh failed";
+        if (
+          !(await this.interrupt(task, `Branch base refresh failed: ${reason}`))
+        )
+          throw refreshError;
+        this.input.diagnostic?.(
+          `Issue #${task.issue.number}: Branch base refresh failed: ${reason}`,
+        );
+      }
+      // The fresh Review tail re-enters publishing for the rebased head.
+      return;
+    }
+    signal.throwIfAborted();
+    await this.completeBranchLanding(
+      task,
+      record,
+      traced,
+      workspace,
+      landed,
+      signal,
+    );
+  }
+
+  /** Persists the landed sha before the idempotent traces, then completes and closes the publication. */
+  private async completeBranchLanding(
+    task: NativeTask,
+    record: ExecutionRecord,
+    publisher: BranchTracePublisher,
+    workspace: TaskWorkspace,
+    landedHead: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const publication = record.publication;
+    const implementation = record.attempts.findLast(
+      (attempt) =>
+        attempt.status === "succeeded" && attempt.output?.kind === "implement",
+    )?.output;
+    if (!publication || implementation?.kind !== "implement")
+      throw Error("Missing branch publication evidence");
+    // The landing is durable before any trace push: an interrupted trace recovers by
+    // completing traces only, never by revalidating the branch against its previous base.
+    publication.commitSha = landedHead;
+    record.phase = "publishing";
+    await this.checkpoint(task, record, signal);
+    try {
+      await publisher.completeTrace({
+        taskId: workspace.taskId,
+        branch: publication.branch,
+        workspacePath: workspace.path,
+        originalHead: implementation.commitSha,
+        landedHead,
+      });
+    } catch (error) {
+      // A landed publication must not be discarded to needs_replan over its traces;
+      // the next poll re-enters through the remote landing check and retries them.
+      this.input.diagnostic?.(
+        `Issue #${task.issue.number}: branch trace completion is pending: ${
+          error instanceof Error ? error.message : "unknown failure"
+        }`,
+      );
+      return;
+    }
+    signal.throwIfAborted();
+    record.phase = "done";
+    await this.checkpoint(task, record, signal);
+    await this.repairClosure(task, signal);
+  }
+
+  /** Reports whether origin's base branch already contains a commit, without mutating anything. */
+  private async baseContainsLanding(
+    record: ExecutionRecord,
+    commitSha: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    await this.command(["git", "fetch", "origin", record.baseBranch]);
+    signal.throwIfAborted();
+    const ancestry = await this.input.command.run({
+      command: [
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        commitSha,
+        `refs/remotes/origin/${record.baseBranch}`,
+      ],
+      cwd: this.input.cwd,
+    });
+    if (ancestry.exitCode === 0) return true;
+    if (ancestry.exitCode === 1) return false;
+    throw Error("GitHub or Git execution boundary failed");
   }
 
   /** Executes or recovers one role using its persisted descriptor and exact delivery cursor. */
@@ -1125,7 +1302,12 @@ export class GitHubTaskRunner {
       jsonHash(authority.execution) !== jsonHash(record)
     )
       throw Error("Issue authority changed before base refresh");
-    if (!(await this.invalidateChecklistPublication(task, record, signal)))
+    // Only pull requests carry a checklist body to invalidate; branch publications re-enter
+    // publishing with the checklist evidence rebuilt from the fresh Review.
+    if (
+      this.publisherFor(publication).mode === "pr" &&
+      !(await this.invalidateChecklistPublication(task, record, signal))
+    )
       return;
     const headSha = await this.input.branches.refresh(task.task.id, {
       ...refresh,
@@ -1170,6 +1352,12 @@ export class GitHubTaskRunner {
     if (!(await this.runRole(task, record, "review", signal))) return;
     if (!this.hasMergeReview(record))
       throw Error("Fresh Review evidence is missing or mismatched");
+    if (this.publisherFor(record.publication).mode === "branch") {
+      // Branch publications have no pull request to await: the reviewed rebased head
+      // re-enters publishing and lands by fast-forward on the exact reviewed evidence.
+      await this.publishBranch(task, record, signal);
+      return;
+    }
     if (!(await this.refreshChecklistPublication(task, record, signal))) return;
     record.phase = "awaiting_merge";
     delete record.failure;
