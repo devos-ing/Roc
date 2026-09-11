@@ -139,7 +139,12 @@ export type NativeTask = {
 };
 export type IssueAccess = Pick<
   GitHubRemoteIssueReader,
-  "read" | "get" | "writeComment" | "setStatusLabel" | "closeCompleted"
+  | "read"
+  | "get"
+  | "getMany"
+  | "writeComment"
+  | "setStatusLabel"
+  | "closeCompleted"
 >;
 const marker = "<!-- roc:execution\n";
 
@@ -226,10 +231,12 @@ export class GitHubExecutionStore {
   ) {}
 
   /** Validates all complete remote plans while isolating malformed Issues. */
-  async list(): Promise<{ tasks: NativeTask[]; diagnostics: string[] }> {
+  async list(
+    signal?: AbortSignal,
+  ): Promise<{ tasks: NativeTask[]; diagnostics: string[] }> {
     const tasks: NativeTask[] = [];
     const diagnostics: string[] = [];
-    for (const issue of await this.api.read(this.repository)) {
+    for (const issue of await this.api.read(this.repository, signal)) {
       try {
         tasks.push(this.decode(issue));
       } catch {
@@ -266,6 +273,10 @@ export class GitHubExecutionStore {
           tasks: group.map((task) => task.envelope.task),
         };
         if (
+          new Set(group.map((task) => task.envelope.task.id)).size !==
+            group.length ||
+          new Set(group.map((task) => task.issue.number)).size !==
+            group.length ||
           remotePlanId(manifest) !== first.envelope.planId ||
           group.some(
             (task) =>
@@ -305,31 +316,43 @@ export class GitHubExecutionStore {
     }
   }
 
+  /** Rebuilds a complete known plan from fresh Issues, using remembered numbers only as locators. */
+  async freshPlan(
+    task: NativeTask,
+    signal?: AbortSignal,
+  ): Promise<{ tasks: NativeTask[]; version: string }> {
+    const numbers = this.planIssues.get(task.envelope.planId);
+    if (!numbers?.includes(task.issue.number))
+      throw Error("Known plan membership is unavailable");
+    const issues = await this.api.getMany(this.repository, numbers, signal);
+    signal?.throwIfAborted();
+    if (
+      issues.length !== numbers.length ||
+      new Set(issues.map((issue) => issue.number)).size !== numbers.length ||
+      issues.some((issue) => !numbers.includes(issue.number))
+    )
+      throw Error("Remote plan membership changed");
+    const tasks = issues.map((issue) => this.decode(issue));
+    this.validatePlans(tasks);
+    if (tasks.some((item) => item.envelope.planId !== task.envelope.planId)) {
+      for (const item of tasks)
+        item.blockedReason = "Remote plan is incomplete, changed or cyclic";
+    }
+    return {
+      tasks,
+      version: jsonHash(issues.sort((a, b) => a.number - b.number)),
+    };
+  }
+
   /** Confirms a negative list observation with fresh reads of the previously validated plan. */
   async confirmCancellation(
     task: NativeTask,
     observed?: NativeTask,
+    signal?: AbortSignal,
   ): Promise<string | undefined> {
     if (!authorityFailure(task, observed)) return;
     try {
-      const numbers = this.planIssues.get(task.envelope.planId);
-      if (!numbers?.includes(task.issue.number))
-        throw Error("Known plan membership is unavailable");
-      const current = await this.get(task.issue.number);
-      const reason = authorityFailure(task, current);
-      if (reason) return reason;
-      const fresh: NativeTask[] = [current];
-      const siblings = numbers.filter((number) => number !== task.issue.number);
-      for (let offset = 0; offset < siblings.length; offset += 4) {
-        const batch = await Promise.allSettled(
-          siblings.slice(offset, offset + 4).map((number) => this.get(number)),
-        );
-        for (const result of batch) {
-          if (result.status === "rejected") throw result.reason;
-          fresh.push(result.value);
-        }
-      }
-      this.validatePlans(fresh);
+      const { tasks: fresh } = await this.freshPlan(task, signal);
       return authorityFailure(
         task,
         fresh.find((item) => item.issue.number === task.issue.number),
@@ -348,14 +371,18 @@ export class GitHubExecutionStore {
   }
 
   /** Refreshes one Issue before a role boundary or checkpoint mutation. */
-  async get(number: number): Promise<NativeTask> {
-    return this.decode(await this.api.get(this.repository, number));
+  async get(number: number, signal?: AbortSignal): Promise<NativeTask> {
+    return this.decode(await this.api.get(this.repository, number, signal));
   }
 
   /** Saves a checkpoint only after reading back its exact content, including lost responses. */
-  async save(task: NativeTask, input: ExecutionRecord): Promise<void> {
+  async save(
+    task: NativeTask,
+    input: ExecutionRecord,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const record = ExecutionRecordSchema.parse(input);
-    const fresh = await this.get(task.issue.number);
+    const fresh = await this.get(task.issue.number, signal);
     if (
       record.issueNumber !== fresh.issue.number ||
       record.specHash !== jsonHash(fresh.envelope) ||
@@ -374,10 +401,12 @@ export class GitHubExecutionStore {
       assertTransition(fresh.execution.phase, record.phase);
     if (
       !fresh.execution &&
-      (!fresh.approved ||
+      (fresh.issue.state !== "OPEN" ||
+        !fresh.approved ||
         !fresh.issue.labels.some((label) => label.name === "roc:ready"))
     )
       throw new Error("Issue is not approved and ready");
+    signal?.throwIfAborted();
     try {
       await this.api.writeComment(
         this.repository,

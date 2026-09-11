@@ -92,6 +92,7 @@ export async function reportTaskFailure(
 /** Executes one admitted Issue with its own role and hook cancellation scope. */
 export class GitHubTaskRunner {
   private activeAttempt?: string;
+  admissionChanged = false;
   private pendingStart?: Promise<unknown>;
   private coordinated?: {
     task: NativeTask;
@@ -108,7 +109,7 @@ export class GitHubTaskRunner {
   /** Advances the first eligible task, leaving blocked plans and unmerged dependencies alone. */
   async runOnce(signal: AbortSignal): Promise<boolean> {
     signal.throwIfAborted();
-    const { tasks, diagnostics } = await this.input.store.list();
+    const { tasks, diagnostics } = await this.input.store.list(signal);
     for (const diagnostic of diagnostics) this.input.diagnostic?.(diagnostic);
     const task = await this.claimNext(tasks, signal);
     if (!task) return false;
@@ -122,7 +123,8 @@ export class GitHubTaskRunner {
     signal: AbortSignal,
     admit: (task: NativeTask) => boolean = () => true,
   ): Promise<NativeTask | undefined> {
-    for (const task of tasks) {
+    this.admissionChanged = false;
+    for (let task of tasks) {
       signal.throwIfAborted();
       if (!admit(task)) continue;
       await this.input.store
@@ -187,15 +189,36 @@ export class GitHubTaskRunner {
       )
         continue;
       if (!task.execution) {
-        const base = await this.dependencyBase(task, tasks, signal);
+        const plan = await this.input.store.freshPlan(task, signal);
+        const fresh = plan.tasks.find(
+          (item) => item.issue.number === task.issue.number,
+        );
+        if (
+          !fresh ||
+          fresh.execution ||
+          !fresh.approved ||
+          fresh.blockedReason ||
+          fresh.issue.state !== "OPEN" ||
+          fresh.task.status !== "ready" ||
+          jsonHash(fresh.envelope) !== jsonHash(task.envelope)
+        )
+          continue;
+        task = fresh;
+        const base = await this.dependencyBase(task, plan.tasks, signal);
         if (!base) continue;
+        const confirmed = await this.input.store.freshPlan(task, signal);
+        if (confirmed.version !== plan.version) {
+          this.admissionChanged = true;
+          return undefined;
+        }
+        signal.throwIfAborted();
         task.execution = initialExecution(
           task,
           this.input.baseBranch,
           base,
           this.now(),
         );
-        await this.input.store.save(task, task.execution);
+        await this.input.store.save(task, task.execution, signal);
       }
       return task;
     }
@@ -235,7 +258,7 @@ export class GitHubTaskRunner {
       attempt.retryable = false;
       attempt.endedAt = this.now();
     }
-    await this.checkpoint(fresh, record, new AbortController().signal);
+    await this.checkpoint(fresh, record, new AbortController().signal, true);
     return true;
   }
 
@@ -282,6 +305,7 @@ export class GitHubTaskRunner {
     const reason = await this.input.store.confirmCancellation(
       owned.task,
       fresh,
+      signal,
     );
     signal.throwIfAborted();
     if (this.coordinated === owned && reason)
@@ -351,13 +375,14 @@ export class GitHubTaskRunner {
     task: NativeTask,
     record: ExecutionRecord,
     signal: AbortSignal,
+    cleanup = false,
   ): Promise<void> {
     signal.throwIfAborted();
     record.revision += 1;
     record.updatedAt = this.now();
     if (record.timeline && record.timeline.at(-1)?.phase !== record.phase)
       record.timeline.push({ phase: record.phase, at: record.updatedAt });
-    await this.input.store.save(task, record);
+    await this.input.store.save(task, record, cleanup ? undefined : signal);
     this.input.progress?.(record);
     signal.throwIfAborted();
   }
@@ -384,10 +409,14 @@ export class GitHubTaskRunner {
         dependency?.execution?.phase !== "done" ||
         !dependency.execution.publication?.number ||
         !dependency.execution.publication.mergeCommit ||
+        !dependency.approved ||
         dependency.blockedReason
       )
         return undefined;
-      const pr = await this.readPr(dependency.execution.publication.number);
+      const pr = await this.readPr(
+        dependency.execution.publication.number,
+        signal,
+      );
       signal.throwIfAborted();
       if (
         pr.state !== "MERGED" ||
@@ -444,7 +473,7 @@ export class GitHubTaskRunner {
     )?.output;
     if (implementation?.kind !== "implement")
       throw Error("Missing validated implementation");
-    const fresh = await this.input.store.get(task.issue.number);
+    const fresh = await this.input.store.get(task.issue.number, signal);
     if (!fresh.approved || fresh.blockedReason || fresh.issue.state !== "OPEN")
       return;
     if (!(await this.runHook(task, record, "posthook", signal))) return;
@@ -458,7 +487,10 @@ export class GitHubTaskRunner {
       commitSha: implementation.commitSha,
     };
     await this.checkpoint(task, record, signal);
-    const publishingAuthority = await this.input.store.get(task.issue.number);
+    const publishingAuthority = await this.input.store.get(
+      task.issue.number,
+      signal,
+    );
     signal.throwIfAborted();
     if (
       !publishingAuthority.approved ||
@@ -511,7 +543,7 @@ export class GitHubTaskRunner {
         previous.output.decision === "accepted"
       );
     while (true) {
-      const fresh = await this.input.store.get(task.issue.number);
+      const fresh = await this.input.store.get(task.issue.number, signal);
       signal.throwIfAborted();
       if (
         !fresh.approved ||
@@ -788,7 +820,7 @@ export class GitHubTaskRunner {
   ): Promise<boolean> {
     const hook = task.task.spec[phase];
     if (!hook) return true;
-    const fresh = await this.input.store.get(task.issue.number);
+    const fresh = await this.input.store.get(task.issue.number, signal);
     signal.throwIfAborted();
     if (!fresh.approved || fresh.blockedReason || fresh.issue.state !== "OPEN")
       return false;
@@ -854,7 +886,7 @@ export class GitHubTaskRunner {
         publication.branch !== taskBranchName(task.task.id)
       )
         throw Error("Missing closure evidence");
-      const pr = await this.readPr(publication.number);
+      const pr = await this.readPr(publication.number, signal);
       if (
         pr.number !== publication.number ||
         pr.state !== "MERGED" ||
@@ -893,7 +925,7 @@ export class GitHubTaskRunner {
     task: NativeTask,
     signal: AbortSignal,
   ): Promise<void> {
-    const fresh = await this.input.store.get(task.issue.number);
+    const fresh = await this.input.store.get(task.issue.number, signal);
     signal.throwIfAborted();
     Object.assign(task, fresh);
     const record = task.execution;
@@ -936,7 +968,10 @@ export class GitHubTaskRunner {
             baseSha: record.baseCommit,
           },
           async () => {
-            const authority = await this.input.store.get(task.issue.number);
+            const authority = await this.input.store.get(
+              task.issue.number,
+              signal,
+            );
             signal.throwIfAborted();
             if (
               !authority.approved ||
@@ -956,7 +991,7 @@ export class GitHubTaskRunner {
       }
     } else {
       // Auto-closed Issues may recover a completed merge, but never submit one.
-      const pr = await this.readPr(record.publication.number);
+      const pr = await this.readPr(record.publication.number, signal);
       if (
         pr.baseRefName !== record.baseBranch ||
         pr.headRefName !== record.publication.branch ||
@@ -1039,7 +1074,7 @@ export class GitHubTaskRunner {
     delete record.mergeReview;
     delete record.failure;
     await this.checkpoint(task, record, signal);
-    const authority = await this.input.store.get(task.issue.number);
+    const authority = await this.input.store.get(task.issue.number, signal);
     signal.throwIfAborted();
     if (
       !authority.approved ||
@@ -1069,7 +1104,7 @@ export class GitHubTaskRunner {
     task: NativeTask,
     signal: AbortSignal,
   ): Promise<void> {
-    const fresh = await this.input.store.get(task.issue.number);
+    const fresh = await this.input.store.get(task.issue.number, signal);
     signal.throwIfAborted();
     Object.assign(task, fresh);
     const record = task.execution;
@@ -1224,7 +1259,7 @@ export class GitHubTaskRunner {
     const publication = record.publication;
     if (implementation?.kind !== "implement" || publication === undefined)
       throw Error("Refreshed publication implementation is missing");
-    const authority = await this.input.store.get(task.issue.number);
+    const authority = await this.input.store.get(task.issue.number, signal);
     signal.throwIfAborted();
     if (
       !authority.approved ||
@@ -1256,28 +1291,35 @@ export class GitHubTaskRunner {
   }
 
   /** Reads only the PR fields needed for dependency and completion verification. */
-  private async readPr(number: number) {
+  private async readPr(number: number, signal?: AbortSignal) {
     return PrSchema.parse(
       JSON.parse(
-        await this.command([
-          "gh",
-          "pr",
-          "view",
-          String(number),
-          "--repo",
-          this.input.store.repository,
-          "--json",
-          "number,state,baseRefName,headRefName,headRefOid,mergeCommit",
-        ]),
+        await this.command(
+          [
+            "gh",
+            "pr",
+            "view",
+            String(number),
+            "--repo",
+            this.input.store.repository,
+            "--json",
+            "number,state,baseRefName,headRefName,headRefOid,mergeCommit",
+          ],
+          signal,
+        ),
       ),
     );
   }
 
   /** Executes a bounded GitHub or Git command without exposing its raw diagnostics. */
-  private async command(command: string[]): Promise<string> {
+  private async command(
+    command: string[],
+    signal?: AbortSignal,
+  ): Promise<string> {
     const result = await this.input.command.run({
       command,
       cwd: this.input.cwd,
+      signal,
     });
     if (result.exitCode !== 0)
       throw Error("GitHub or Git execution boundary failed");

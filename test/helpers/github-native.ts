@@ -68,8 +68,11 @@ export function memoryGitHub(posthook?: TaskHook) {
     async read() {
       return [structuredClone(issue)];
     },
-    async get() {
+    async get(_repo?: string, _number?: number) {
       return structuredClone(issue);
+    },
+    async getMany(repo: string, numbers: readonly number[]) {
+      return Promise.all(numbers.map((number) => api.get(repo, number)));
     },
     async writeComment(
       _repo: string,

@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { graphQLFailure, graphQLQuota } from "./graphql-reader";
 import type { GitHubCommandResult, GitHubCommandRunner } from "./pr-publisher";
 
 export type GitHubRateLimitOptions = {
@@ -15,6 +16,7 @@ function isRead(command: string[]): boolean {
       (arg) => arg === "--method" || arg === "-X",
     );
     const method = methodIndex < 0 ? undefined : command[methodIndex + 1];
+    if (command.includes("graphql")) return false;
     if (method !== undefined) return method.toUpperCase() === "GET";
     return !command.some(
       (arg) =>
@@ -74,7 +76,7 @@ export class GitHubRateLimitRunner implements GitHubCommandRunner {
   }
 
   /** Waits once for concurrent callers and wakes immediately when the session stops. */
-  private async ready(): Promise<void> {
+  private async ready(signal?: AbortSignal): Promise<void> {
     while (this.resumeAt > this.now()) {
       this.options.signal.throwIfAborted();
       const milliseconds = Math.min(this.resumeAt - this.now(), 2_147_483_647);
@@ -84,15 +86,42 @@ export class GitHubRateLimitRunner implements GitHubCommandRunner {
       ).finally(() => {
         this.waiting = undefined;
       });
-      await this.waiting;
+      await this.waitForCaller(this.waiting, signal);
       this.options.signal.throwIfAborted();
+    }
+  }
+
+  /** Lets one caller leave a shared wait without aborting sibling callers. */
+  private async waitForCaller(
+    waiting: Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
+    if (!signal) return waiting;
+    let abort: (() => void) | undefined;
+    try {
+      await Promise.race([
+        waiting,
+        new Promise<never>((_resolve, reject) => {
+          /** Rejects only this caller when its worker is cancelled. */
+          abort = () => reject(signal.reason);
+          signal.addEventListener("abort", abort, { once: true });
+          if (signal.aborted) abort();
+        }),
+      ]);
+    } finally {
+      if (abort) signal.removeEventListener("abort", abort);
     }
   }
 
   /** Uses the quota endpoint only when a high-level gh command omitted reset headers. */
   private async resetTime(cwd: string): Promise<number | undefined> {
     this.probe ??= this.transport
-      .run({ command: ["gh", "api", "rate_limit"], cwd })
+      .run({
+        command: ["gh", "api", "rate_limit"],
+        cwd,
+        signal: this.options.signal,
+      })
       .then((result) => {
         if (result.exitCode !== 0) return undefined;
         const body = JSON.parse(result.stdout);
@@ -115,10 +144,28 @@ export class GitHubRateLimitRunner implements GitHubCommandRunner {
     if (input.command[0] !== "gh") return this.transport.run(input);
     let retries = 0;
     while (true) {
-      await this.ready();
-      const result = await this.transport.run(input);
-      const limit = result.rateLimit;
-      if (!isRateLimited(result)) {
+      const read = input.intent === "graphql-read" || isRead(input.command);
+      const signal =
+        read && input.signal
+          ? AbortSignal.any([this.options.signal, input.signal])
+          : input.signal;
+      signal?.throwIfAborted();
+      await this.ready(signal);
+      signal?.throwIfAborted();
+      const result = await this.transport.run({ ...input, signal });
+      signal?.throwIfAborted();
+      const failure =
+        input.intent === "graphql-read" ? graphQLFailure(result) : undefined;
+      const limit =
+        input.intent === "graphql-read"
+          ? { ...result.rateLimit, ...graphQLQuota(result.stdout) }
+          : result.rateLimit;
+      if (
+        failure === "permission" ||
+        (failure === "incomplete" && result.exitCode === 0)
+      )
+        return result;
+      if (failure !== "quota" && !isRateLimited(result)) {
         if (limit?.remaining === 0 && Number.isFinite(limit.resetAt))
           this.pause(limit.resetAt ?? 0);
         return result;
@@ -142,7 +189,7 @@ export class GitHubRateLimitRunner implements GitHubCommandRunner {
           ? until
           : now + Math.min(60_000 * 2 ** Math.min(retries, 4), 900_000),
       );
-      if (!isRead(input.command)) return result;
+      if (!read) return result;
       retries++;
     }
   }
