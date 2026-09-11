@@ -162,20 +162,25 @@ export async function runBackendSession(
           retain = false;
           stop.throwIfAborted();
           const lastProgress = new Map<number, string>();
+          const emitDiagnostic = (message: string) =>
+            process.stderr.write(`${message}\n`);
           const runner = new GitHubTaskPool({
             concurrency: input.concurrency,
             autoMerge: input.autoMerge,
             store,
             branches,
             harness: backend.harness,
-            advisor: createModelAdvisor(backend.catalog, backend.modelMapping),
+            advisor: createModelAdvisor(backend.catalog, backend.modelMapping, {
+              efforts: backend.efforts,
+              onDiagnostic: emitDiagnostic,
+            }),
             publisher:
               options.publisherFactory?.(branches) ??
               new GitHubPullRequestPublisher(baseBranch, branches, command),
             command,
             cwd: input.repoPath,
             baseBranch,
-            diagnostic: (message) => process.stderr.write(`${message}\n`),
+            diagnostic: emitDiagnostic,
             /** Emits confirmed phase changes and wait reasons once while tool activity stays local. */
             progress(record) {
               const summary = `Phase: ${record.phase}${record.failure ? ` · ${record.failure}` : ""}`;
