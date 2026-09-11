@@ -93,6 +93,8 @@ export const ExecutionRecordSchema = z
       .object({
         branch: z.string(),
         commitSha: Sha,
+        // Absent only on checkpoints written before the mode was recorded; those resume as "pr".
+        mode: z.enum(["pr", "branch"]).optional(),
         number: z.number().int().positive().optional(),
         url: z.string().url().optional(),
         mergeCommit: Sha.optional(),

@@ -164,6 +164,23 @@ export async function runBackendSession(
           const lastProgress = new Map<number, string>();
           const emitDiagnostic = (message: string) =>
             process.stderr.write(`${message}\n`);
+          // Both publishers share one Git boundary: new tasks follow the configured mode while
+          // recovered checkpoints route by the mode persisted before their first push.
+          const pullRequestPublisher = new GitHubPullRequestPublisher(
+            baseBranch,
+            branches,
+            command,
+          );
+          const branchPublisher = new GitHubBranchPublisher(
+            baseBranch,
+            branches,
+            command,
+          );
+          const publisher =
+            options.publisherFactory?.(branches) ??
+            (input.publicationMode === "branch"
+              ? branchPublisher
+              : pullRequestPublisher);
           const runner = new GitHubTaskPool({
             concurrency: input.concurrency,
             autoMerge: input.autoMerge,
@@ -174,16 +191,12 @@ export async function runBackendSession(
               efforts: backend.efforts,
               onDiagnostic: emitDiagnostic,
             }),
-            // Branch mode pushes the task branch without a pull request; pr mode stays the default flow.
-            publisher:
-              options.publisherFactory?.(branches) ??
-              (input.publicationMode === "branch"
-                ? new GitHubBranchPublisher(baseBranch, branches, command)
-                : new GitHubPullRequestPublisher(
-                    baseBranch,
-                    branches,
-                    command,
-                  )),
+            publisher,
+            alternatePublisher: options.publisherFactory
+              ? undefined
+              : publisher === branchPublisher
+                ? pullRequestPublisher
+                : branchPublisher,
             command,
             cwd: input.repoPath,
             baseBranch,

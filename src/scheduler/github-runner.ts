@@ -50,6 +50,8 @@ export type GitHubRunnerInput = {
   branches: TaskBranchManager;
   advisor: ModelAdvisor;
   publisher: TaskPublisher;
+  /** Publishes checkpoints persisted in the other mode so recovery never follows global settings. */
+  alternatePublisher?: TaskPublisher;
   command: GitHubCommandRunner;
   cwd: string;
   baseBranch: string;
@@ -373,7 +375,8 @@ export class GitHubTaskRunner {
     tasks: NativeTask[],
     signal: AbortSignal,
   ): Promise<string | undefined> {
-    const commits: string[] = [];
+    const mergeCommits: string[] = [];
+    const branchCommits: string[] = [];
     for (const id of task.envelope.task.spec.dependencies) {
       const dependency = tasks.find(
         (candidate) =>
@@ -401,9 +404,16 @@ export class GitHubTaskRunner {
           pr.headRefOid !== publication.commitSha
         )
           return undefined;
-        commits.push(pr.mergeCommit.oid);
-      } else if (publication.mergeCommit !== undefined) return undefined;
-      // Branch dependencies complete at push: publication fast-forwards their commits into the shared base branch, so no merge evidence exists to verify.
+        mergeCommits.push(pr.mergeCommit.oid);
+      } else {
+        // Branch dependencies complete at push: publication fast-forwards their commits into the
+        // shared base branch, so no merge evidence exists to verify. They must still have landed
+        // on this task's own base: a different upstream base or an advanced-away base stays blocked.
+        if (publication.mergeCommit !== undefined) return undefined;
+        if (dependency.execution.baseBranch !== this.input.baseBranch)
+          return undefined;
+        branchCommits.push(publication.commitSha);
+      }
     }
     await this.command(["git", "fetch", "origin", this.input.baseBranch]);
     const base = (
@@ -416,10 +426,45 @@ export class GitHubTaskRunner {
     ).trim();
     if (!/^[0-9a-f]{40}$/.test(base))
       throw Error("Invalid fetched base commit");
-    for (const commit of commits)
+    for (const commit of branchCommits) {
+      // A landed branch commit missing from the fetched base keeps the task blocked, not failed.
+      const ancestry = await this.input.command.run({
+        command: ["git", "merge-base", "--is-ancestor", commit, base],
+        cwd: this.input.cwd,
+      });
+      if (ancestry.exitCode === 1) return undefined;
+      if (ancestry.exitCode !== 0)
+        throw Error("GitHub or Git execution boundary failed");
+    }
+    for (const commit of mergeCommits)
       await this.command(["git", "merge-base", "--is-ancestor", commit, base]);
     signal.throwIfAborted();
     return base;
+  }
+
+  /** Resolves the publisher matching a checkpoint's persisted mode before any remote side effect. */
+  private publisherFor(
+    publication: ExecutionRecord["publication"],
+  ): TaskPublisher {
+    if (!publication) return this.input.publisher;
+    // Recorded pull-request evidence always reconciles through the pull-request publisher,
+    // and checkpoints without an explicit mode predate branch publication, so they resume as "pr".
+    const mode =
+      publication.number !== undefined || publication.mode !== "branch"
+        ? "pr"
+        : "branch";
+    const { publisher, alternatePublisher } = this.input;
+    const selected =
+      publisher.mode === mode
+        ? publisher
+        : alternatePublisher?.mode === mode
+          ? alternatePublisher
+          : undefined;
+    if (!selected)
+      throw Error(
+        `No ${mode} publisher is configured to resume the persisted publication of ${publication.branch}`,
+      );
+    return selected;
   }
 
   /** Runs the remaining roles and publication for a task with a pinned base. */
@@ -461,6 +506,8 @@ export class GitHubTaskRunner {
     record.publication ??= {
       branch: workspace.branch,
       commitSha: implementation.commitSha,
+      // Durable before the first push: recovery routes by this mode instead of global settings.
+      mode: this.input.publisher.mode,
     };
     await this.checkpoint(task, record, signal);
     const publishingAuthority = await this.input.store.get(task.issue.number);
@@ -472,7 +519,7 @@ export class GitHubTaskRunner {
     )
       return;
     const acceptance = this.publicationAcceptance(record);
-    const published = await this.input.publisher.publish({
+    const published = await this.publisherFor(record.publication).publish({
       task: {
         ...task.task,
         status: "publishing",
@@ -1261,7 +1308,14 @@ export class GitHubTaskRunner {
       authority.issue.state !== "OPEN"
     )
       return false;
-    const pr = await this.input.publisher.publish({
+    // Checklist reconciliation is a pull-request operation: resolve the publisher by the
+    // persisted mode before any remote effect so a branch checkpoint can never push the base.
+    const publisher = this.publisherFor(publication);
+    if (publisher.mode !== "pr")
+      throw Error(
+        "Branch publications have no pull-request checklist to reconcile",
+      );
+    const pr = await publisher.publish({
       task: {
         ...task.task,
         status: "publishing",
