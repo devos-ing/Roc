@@ -312,22 +312,35 @@ internal module paths when upgrading Pi.
 **Model attribution.** A short-lived probe process answers
 `get_available_models` and `get_state`; the probe's effective default model
 fills profiles omitted from the user's optional `models.luna`, `models.terra`,
-and `models.sol` settings. Explicit mappings must exist in the catalog and
-support `high`, or startup fails with `PI_MODEL_MAPPING_INVALID`. Onboarding
-preserves these mappings. Catalog ids are `provider/modelId` pairs, and each
-attempt re-asserts its routed pair with
+and `models.sol` settings. `models.allowlist` is an optional nonempty exact-ID
+admission list, and `models.implementPrimaryEffort` is `medium` or `high`
+(default `medium`). The backend snapshots both at scheduler startup. Luna must
+support high, Terra the selected primary effort, and Sol medium plus high;
+effective defaults are checked only for profiles they fill. Onboarding preserves
+the complete `models` object. The optional top-level `efforts` snapshot applies
+`medium`, `high`, or `xhigh` per role; its Implement value applies to Sol when
+high-risk or escalated, while `models.implementPrimaryEffort` overrides it only
+for primary Terra and a retained Terra retry. Catalog ids are `provider/modelId`
+pairs, and each attempt re-asserts its routed pair with
 `set_model` plus `set_thinking_level` (Roc efforts map one-to-one onto Pi
 thinking levels). A probe with no resolvable default model fails startup
 with `PI_MODEL_UNRESOLVED` instead of running an unobservable default. The
-resolved default must advertise `high` reasoning; otherwise startup fails with
-`PI_MODEL_UNSUPPORTED` rather than selecting a different model or provider.
+resolved default must satisfy the role requirements for every profile it fills;
+otherwise startup fails rather than selecting a different model or provider.
 
 By default, low- and medium-risk tasks start Scout on Luna, Implement on Terra, and Review
 on Sol. High-risk roles use only Sol. New Scout and Review attempts use `high`,
-while Implement uses `medium` across risk levels and retries. Unsupported
-effort routes the task to `needs_replan`. The operator chooses which actual
-model each profile represents. Existing attempt descriptors remain authoritative
-during recovery; new attempts use the mappings loaded at scheduler startup.
+while primary Implement uses the selected Terra effort and a retained Terra
+retry keeps it. High-risk and escalated Implement use Sol at `medium`.
+An invalid effective mapping, catalog lookup, allowlist, or primary-model effort
+requirement fails backend startup before task admission. An unsupported general
+role effort retains its existing diagnostic and default-effort fallback. After
+startup, an advisor with no compatible route or an allowlist-denied dispatch
+becomes `needs_replan` before a prompt, rather than falling through to Sol. The
+operator chooses which actual model each profile represents. Existing attempt
+descriptors remain authoritative during recovery; an unfinished descriptor denied
+by the run snapshot becomes `needs_replan` without substitution, while
+result-only reconciliation and cleanup remain possible.
 
 Pi Scout capsules use the existing structured output schema without a separate
 byte limit or truncation. Usage delivery and historical role-input recovery

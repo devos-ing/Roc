@@ -339,3 +339,78 @@ test("returns undefined when both configured and default efforts are unsupported
     'Configured implement effort "xhigh" is unsupported by the routed models; using the default "medium" instead.',
   ]);
 });
+
+test("enforces exact admission while retaining a high primary and using medium on Sol escalation", () => {
+  const codex = "openai-codex/gpt-5.6-sol";
+  const kimi = "kimi-coding/k3";
+  const advisor = createModelAdvisor(
+    [
+      { id: codex, supportedReasoningEfforts: ["medium", "high"] },
+      { id: kimi, supportedReasoningEfforts: ["high"] },
+    ],
+    { luna: codex, terra: kimi, sol: codex },
+    { policy: { allowlist: [codex, kimi], implementPrimaryEffort: "high" } },
+  );
+
+  expect(
+    advisor.decide({ role: "implement", risk: "medium", retryIndex: 0 }),
+  ).toMatchObject({ profile: "terra", model: kimi, effort: "high" });
+  expect(
+    advisor.decide({
+      role: "implement",
+      risk: "medium",
+      retryIndex: 1,
+      priorProfile: "terra",
+    }),
+  ).toMatchObject({ profile: "terra", model: kimi, effort: "high" });
+  expect(
+    advisor.decide({
+      role: "implement",
+      risk: "medium",
+      retryIndex: 2,
+      priorProfile: "terra",
+    }),
+  ).toMatchObject({ profile: "sol", model: codex, effort: "medium" });
+
+  expect(
+    createModelAdvisor(
+      [
+        { id: codex, supportedReasoningEfforts: ["medium", "high"] },
+        { id: kimi, supportedReasoningEfforts: ["high"] },
+      ],
+      { terra: kimi, sol: codex },
+      { policy: { allowlist: [codex, kimi] } },
+    ).decide({ role: "implement", risk: "low", retryIndex: 0 }),
+  ).toBeUndefined();
+});
+
+test("gives the Terra primary override precedence without changing Sol effort overrides", () => {
+  const codex = "openai-codex/gpt-5.6-sol";
+  const kimi = "kimi-coding/k3";
+  const advisor = createModelAdvisor(
+    [
+      { id: codex, supportedReasoningEfforts: ["medium", "high", "xhigh"] },
+      { id: kimi, supportedReasoningEfforts: ["high"] },
+    ],
+    { luna: codex, terra: kimi, sol: codex },
+    {
+      efforts: { implement: "xhigh" },
+      policy: { allowlist: [codex, kimi], implementPrimaryEffort: "high" },
+    },
+  );
+
+  expect(
+    advisor.decide({ role: "implement", risk: "medium", retryIndex: 0 }),
+  ).toMatchObject({ profile: "terra", model: kimi, effort: "high" });
+  expect(
+    advisor.decide({ role: "implement", risk: "high", retryIndex: 0 }),
+  ).toMatchObject({ profile: "sol", model: codex, effort: "xhigh" });
+  expect(
+    advisor.decide({
+      role: "implement",
+      risk: "medium",
+      retryIndex: 2,
+      priorProfile: "terra",
+    }),
+  ).toMatchObject({ profile: "sol", model: codex, effort: "xhigh" });
+});

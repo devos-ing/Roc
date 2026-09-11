@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Roc role execution \u00b7 M1 graph",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "viewBox": [1100, 500]
+  },
+  "components": [
+    {
+      "id": "approved-task",
+      "type": "external",
+      "label": "Approved task",
+      "sublabel": "Scope + acceptance",
+      "pos": [40, 40],
+      "size": [170, 75]
+    },
+    {
+      "id": "eligible-route",
+      "type": "security",
+      "label": "Validate route",
+      "sublabel": "Allowlist + effort",
+      "pos": [280, 40],
+      "size": [170, 75]
+    },
+    {
+      "id": "saved-attempt",
+      "type": "database",
+      "label": "Save attempt",
+      "sublabel": "Exact model + effort",
+      "pos": [520, 40],
+      "size": [170, 75]
+    },
+    {
+      "id": "scout-work",
+      "type": "backend",
+      "label": "Scout",
+      "sublabel": "Codex at high",
+      "pos": [760, 40],
+      "size": [170, 75]
+    },
+    {
+      "id": "implement-work",
+      "type": "backend",
+      "label": "Implement",
+      "sublabel": "Selected Kimi or GLM",
+      "pos": [760, 200],
+      "size": [170, 75]
+    },
+    {
+      "id": "review-work",
+      "type": "backend",
+      "label": "Review",
+      "sublabel": "Codex, exact commit",
+      "pos": [520, 200],
+      "size": [170, 75]
+    },
+    {
+      "id": "accepted-work",
+      "type": "backend",
+      "label": "Accepted",
+      "sublabel": "Existing delivery flow",
+      "pos": [280, 200],
+      "size": [170, 75]
+    },
+    {
+      "id": "denied-route",
+      "type": "security",
+      "label": "Stop",
+      "sublabel": "No role prompt",
+      "pos": [40, 200],
+      "size": [170, 75]
+    },
+    {
+      "id": "replan-work",
+      "type": "security",
+      "label": "Needs replan",
+      "sublabel": "Keep work + evidence",
+      "pos": [520, 350],
+      "size": [170, 75]
+    }
+  ],
+  "connections": [
+    {
+      "from": "approved-task",
+      "to": "eligible-route"
+    },
+    {
+      "from": "eligible-route",
+      "to": "saved-attempt"
+    },
+    {
+      "from": "saved-attempt",
+      "to": "scout-work"
+    },
+    {
+      "from": "scout-work",
+      "to": "implement-work"
+    },
+    {
+      "from": "implement-work",
+      "to": "review-work"
+    },
+    {
+      "from": "review-work",
+      "to": "accepted-work"
+    },
+    {
+      "from": "eligible-route",
+      "to": "denied-route",
+      "label": "invalid"
+    },
+    {
+      "from": "review-work",
+      "to": "replan-work",
+      "label": "rejected",
+      "labelDy": 24
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Every role is checked",
+      "items": [
+        "Repeat route validation and recording before each role.",
+        "Approved low-risk tasks may omit Scout."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Retries keep their recorded identity",
+      "items": [
+        "Retained primary retries keep the selected effort.",
+        "Codex escalation is a new attempt at medium effort."
+      ]
+    }
+  ]
+}
