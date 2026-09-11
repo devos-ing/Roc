@@ -1,5 +1,7 @@
+import { homedir } from "node:os";
 import type { Command } from "commander";
 import { backends, isRealBackendName } from "../../agents/registry";
+import { loadRocSettingsIfPresent } from "../../settings";
 import {
   commandProjectRoot,
   errorMessage,
@@ -68,6 +70,10 @@ export function registerSchedulerCommands(
         }
         try {
           context.io.out("Status: Starting GitHub task execution");
+          // Missing settings keep pull-request publication, so existing checkouts behave unchanged.
+          const settings = await loadRocSettingsIfPresent(
+            context.runtime.homeRoot ?? homedir(),
+          );
           await context.runtime.runScheduler({
             backend: options.backend,
             repoPath,
@@ -76,6 +82,7 @@ export function registerSchedulerCommands(
             once: options.once,
             autoMerge: options.autoMerge,
             concurrency: Number(options.concurrency),
+            publicationMode: settings?.publicationMode,
           });
           context.io.out("Result: Stopped");
         } catch (error) {

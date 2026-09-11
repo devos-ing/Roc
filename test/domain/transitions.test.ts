@@ -12,7 +12,8 @@ describe("task transitions", () => {
     expect(canTransition("reviewing", "publishing")).toBe(true);
     expect(canTransition("publishing", "awaiting_merge")).toBe(true);
     expect(canTransition("awaiting_merge", "done")).toBe(true);
-    expect(canTransition("publishing", "done")).toBe(false);
+    // Branch publication completes at push, so publishing may finish without awaiting a merge.
+    expect(canTransition("publishing", "done")).toBe(true);
   });
 
   test("permits ready tasks to return for input or replanning", () => {

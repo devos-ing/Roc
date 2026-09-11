@@ -411,10 +411,12 @@ export class GitHubExecutionStore {
     );
     const fresh = await this.get(task.issue.number);
     if (fresh.issue.state === "CLOSED") return;
+    // Pull-request publications carry number and mergeCommit; branch publications carry neither.
     if (
       record?.phase !== "done" ||
-      !record.publication?.number ||
-      !record.publication.mergeCommit ||
+      !record.publication ||
+      (record.publication.number === undefined) !==
+        (record.publication.mergeCommit === undefined) ||
       record.issueNumber !== task.issue.number ||
       fresh.issue.number !== task.issue.number ||
       task.blockedReason ||

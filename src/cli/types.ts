@@ -47,6 +47,8 @@ export type RealSchedulerRunInput = {
   concurrency?: number;
   /** Opts into strict-policy squash merge of the exact independently reviewed PR head. */
   autoMerge?: boolean;
+  /** Selects pull-request publication (default) or branch-only push without a pull request. */
+  publicationMode?: "pr" | "branch";
 };
 
 export type SchedulerRunInput = RealSchedulerRunInput;

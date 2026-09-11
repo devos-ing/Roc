@@ -7,7 +7,10 @@ import type { StoredTask } from "../domain/schemas";
 import type { ImplementOutput, ReviewOutput } from "../harness/contracts";
 import { AgileError } from "../runtime/errors";
 import { gitPathResolutionEnvironment } from "../workspace/git-environment";
-import type { TaskBranchManager } from "../workspace/task-branch";
+import type {
+  TaskBranchManager,
+  TaskWorkspace,
+} from "../workspace/task-branch";
 
 export type TaskPublicationRecord = {
   taskId: string;
@@ -40,6 +43,9 @@ const PullRequestSearchSchema = PullRequestSchema.extend({
 /** Describes the remote pull request that safely represents a published task branch. */
 export type PullRequest = z.infer<typeof PullRequestSchema>;
 
+/** Describes a task branch published by pushing it to origin without a pull request. */
+export type BranchPublication = { branch: string };
+
 /** Supplies the task state needed to publish or reconcile one pull request. */
 export type PublishTaskInput = {
   task: StoredTask;
@@ -55,7 +61,7 @@ export type PublishTaskInput = {
 /** Publishes a prepared task branch to its configured GitHub base branch. */
 export type TaskPublisher = {
   baseBranch: string;
-  publish(input: PublishTaskInput): Promise<PullRequest>;
+  publish(input: PublishTaskInput): Promise<PullRequest | BranchPublication>;
 };
 
 /** Verifies that GitHub access is ready before a real scheduler starts work. */
@@ -354,6 +360,47 @@ export class GitHubCliPreflight implements GitHubPreflight {
   }
 }
 
+/** Validates publication inputs against the freshly prepared task branch before any remote mutation. */
+async function preparePublication(
+  branches: TaskBranchManager,
+  input: PublishTaskInput,
+): Promise<TaskWorkspace> {
+  const baseBranch = input.publication.baseBranch;
+  assertBaseBranch(baseBranch);
+  const acceptedReviewHead =
+    input.acceptance?.review.decision === "accepted" &&
+    input.acceptance.binding.currentHeadSha === input.publication.commitSha &&
+    input.acceptance.binding.currentBaseSha === input.task.baseCommit &&
+    input.acceptance.binding.currentSpecHash ===
+      input.acceptance.binding.reviewedSpecHash &&
+    input.acceptance.binding.reviewedHeadSha === input.publication.commitSha &&
+    input.acceptance.binding.reviewedBaseSha === input.task.baseCommit;
+  if (
+    input.publication.commitSha !== input.implementation.commitSha &&
+    !acceptedReviewHead &&
+    !input.reconcileOnly
+  ) {
+    throw new GitHubPublicationError(
+      `Publication state does not match the current task implementation: ${input.task.id}`,
+    );
+  }
+  const workspace = await branches.prepare(
+    input.task.id,
+    input.task.baseCommit,
+  );
+  if (workspace.branch !== input.publication.branch) {
+    throw new GitHubPublicationError(
+      `Publication branch does not match task branch: ${input.task.id}`,
+    );
+  }
+  await branches.assertReviewReady(
+    input.task.id,
+    input.publication.commitSha,
+    input.task.baseCommit,
+  );
+  return workspace;
+}
+
 /** Reconciles existing pull requests before creating exactly one pull request per task branch. */
 export class GitHubPullRequestPublisher implements TaskPublisher {
   /** Connects branch validation and GitHub commands to one explicit PR base branch. */
@@ -366,39 +413,7 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
   /** Pushes a validated branch only when needed and creates or reconciles its pull request. */
   async publish(input: PublishTaskInput): Promise<PullRequest> {
     const baseBranch = input.publication.baseBranch;
-    assertBaseBranch(baseBranch);
-    const acceptedReviewHead =
-      input.acceptance?.review.decision === "accepted" &&
-      input.acceptance.binding.currentHeadSha === input.publication.commitSha &&
-      input.acceptance.binding.currentBaseSha === input.task.baseCommit &&
-      input.acceptance.binding.currentSpecHash ===
-        input.acceptance.binding.reviewedSpecHash &&
-      input.acceptance.binding.reviewedHeadSha ===
-        input.publication.commitSha &&
-      input.acceptance.binding.reviewedBaseSha === input.task.baseCommit;
-    if (
-      input.publication.commitSha !== input.implementation.commitSha &&
-      !acceptedReviewHead &&
-      !input.reconcileOnly
-    ) {
-      throw new GitHubPublicationError(
-        `Publication state does not match the current task implementation: ${input.task.id}`,
-      );
-    }
-    const workspace = await this.branches.prepare(
-      input.task.id,
-      input.task.baseCommit,
-    );
-    if (workspace.branch !== input.publication.branch) {
-      throw new GitHubPublicationError(
-        `Publication branch does not match task branch: ${input.task.id}`,
-      );
-    }
-    await this.branches.assertReviewReady(
-      input.task.id,
-      input.publication.commitSha,
-      input.task.baseCommit,
-    );
+    const workspace = await preparePublication(this.branches, input);
 
     const owner = await repositoryOwner(this.runner, workspace.path);
     const existing = await matchingPullRequest(
@@ -475,5 +490,28 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
       );
     }
     return created;
+  }
+}
+
+/** Publishes a validated task branch by pushing it to origin without opening a pull request. */
+export class GitHubBranchPublisher implements TaskPublisher {
+  /** Connects branch validation and Git commands to one explicit target base branch. */
+  constructor(
+    readonly baseBranch: string,
+    private readonly branches: TaskBranchManager,
+    private readonly runner: GitHubCommandRunner = new BunGitHubCommandRunner(),
+  ) {}
+
+  /** Pushes a validated branch to origin and reports it without pull-request metadata. */
+  async publish(input: PublishTaskInput): Promise<BranchPublication> {
+    const workspace = await preparePublication(this.branches, input);
+    // Branch reconciliation reuses the same idempotent push; a no-op push confirms the remote head.
+    if (!input.reconcileOnly)
+      await mustRun(
+        this.runner,
+        ["git", "push", "origin", workspace.branch],
+        workspace.path,
+      );
+    return { branch: workspace.branch };
   }
 }

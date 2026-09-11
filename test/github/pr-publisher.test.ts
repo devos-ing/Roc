@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   BunGitHubCommandRunner,
+  GitHubBranchPublisher,
   GitHubCliPreflight,
   type GitHubCommandRunner,
   GitHubPublicationError,
@@ -716,4 +717,40 @@ test("repository preflight retries one timed-out read and stops safely after a s
     }
     expect(reads).toBe(2);
   }
+});
+
+test("branch publication pushes the task branch without creating or editing a pull request", async () => {
+  const commands: string[][] = [];
+  const branchCalls: string[] = [];
+  const publisher = new GitHubBranchPublisher(
+    "main",
+    branches(branchCalls),
+    runner(commands, [{}]),
+  );
+
+  await expect(publisher.publish(input)).resolves.toEqual({
+    branch: "agile/T1",
+  });
+  expect(branchCalls).toEqual(["prepare", "assertReviewReady"]);
+  expect(commands).toEqual([["git", "push", "origin", "agile/T1"]]);
+  expect(commands.flat()).not.toContain("pr");
+});
+
+test("branch publication rejects publication evidence that does not match the implementation", async () => {
+  const commands: string[][] = [];
+  const publisher = new GitHubBranchPublisher(
+    "main",
+    branches([]),
+    runner(commands, []),
+  );
+
+  await expect(
+    publisher.publish({
+      ...input,
+      implementation: { ...input.implementation, commitSha: "c".repeat(40) },
+    }),
+  ).rejects.toThrow(
+    "Publication state does not match the current task implementation: T1",
+  );
+  expect(commands).toEqual([]);
 });

@@ -5,6 +5,7 @@ import {
   initialExecution,
   renderExecution,
 } from "../../src/github/execution-store";
+import type { RemoteIssue } from "../../src/github/issue-reader";
 import type { TaskPublisher } from "../../src/github/pr-publisher";
 import {
   jsonHash,
@@ -1001,4 +1002,281 @@ test("an interrupted terminal posthook records attention and never repeats an un
       new AbortController().signal,
     ),
   ).toBe(false);
+});
+
+test("branch publication completes at push, closes the Issue, and never writes PR evidence", async () => {
+  const remote = memoryGitHub();
+  const head = "d".repeat(40);
+  const accepted = {
+    kind: "review" as const,
+    decision: "accepted" as const,
+    findings: [],
+    remainingGaps: [],
+  };
+  await seed(remote, (record) => {
+    record.phase = "reviewing";
+    record.publication = { branch: "agile/issue-41", commitSha: head };
+    record.mergeReview = {
+      specHash: record.specHash,
+      headSha: head,
+      baseSha: base,
+      reviewAttemptId: "original-review",
+    };
+    for (const output of [
+      {
+        kind: "scout" as const,
+        summary: "Inspect",
+        files: ["answer.ts"],
+        tests: ["bun test"],
+        risks: [],
+      },
+      {
+        kind: "implement" as const,
+        commitSha: head,
+        validation: ["bun test"],
+        risks: [],
+        limitations: [],
+      },
+      accepted,
+    ])
+      record.attempts.push({
+        descriptor: {
+          attemptId: `original-${output.kind}`,
+          taskId: "issue-41",
+          role: output.kind,
+          retryIndex: 0,
+          model,
+          modelProfile: "sol",
+          effort: "high",
+        },
+        status: "succeeded",
+        startedAt: time,
+        endedAt: time,
+        sequence: 2,
+        events: {},
+        output,
+        usage: { ...zeroUsage },
+        usageKnown: true,
+      });
+  });
+  const publications: Parameters<TaskPublisher["publish"]>[0][] = [];
+  const publisher: TaskPublisher = {
+    baseBranch: "main",
+    async publish(input) {
+      publications.push(structuredClone(input));
+      return { branch: "agile/issue-41" };
+    },
+  };
+  const commands: string[][] = [];
+  const run = new GitHubTaskRunner({
+    store: remote.store(),
+    branches,
+    advisor: createModelAdvisor([]),
+    harness: {
+      async step() {
+        throw Error("No agent work should replay");
+      },
+      async cancel() {},
+    },
+    publisher,
+    command: {
+      async run({ command }) {
+        commands.push(command);
+        return { exitCode: 0, stdout: base, stderr: "" };
+      },
+    },
+    cwd: "/fixture",
+    baseBranch: "main",
+  });
+  expect(await run.runOnce(new AbortController().signal)).toBe(true);
+  const record = (await remote.store().get(41)).execution!;
+  expect(record.phase).toBe("done");
+  expect(record.publication).toEqual({
+    branch: "agile/issue-41",
+    commitSha: head,
+  });
+  expect(publications).toHaveLength(1);
+  expect(publications[0]).toMatchObject({
+    publication: {
+      taskId: "issue-41",
+      branch: "agile/issue-41",
+      commitSha: head,
+      status: "pending",
+    },
+    implementation: { kind: "implement", commitSha: head },
+  });
+  expect("reconcileOnly" in publications[0]!).toBe(false);
+  // Closure verifies the pushed branch on origin; no pull request is ever read or created.
+  expect(commands).toEqual([
+    ["git", "fetch", "origin", "agile/issue-41"],
+    [
+      "git",
+      "merge-base",
+      "--is-ancestor",
+      head,
+      "refs/remotes/origin/agile/issue-41",
+    ],
+  ]);
+  expect(commands.flat()).not.toContain("pr");
+  expect(remote.closures).toEqual([41]);
+  expect(remote.issue.state).toBe("CLOSED");
+});
+
+test("branch-published dependencies gate on completion alone while PR dependencies still require merge evidence", async () => {
+  for (const branchDependency of [true, false]) {
+    // Both envelopes share one manifest so their plan identity matches, as production plans do.
+    const planManifest = {
+      ...manifest,
+      tasks: [
+        {
+          ...manifest.tasks[0]!,
+          spec: { ...manifest.tasks[0]!.spec, dependencies: ["T2"] },
+        },
+        { ...manifest.tasks[0]!, id: "T2", title: "Upstream work" },
+      ],
+    };
+    const upstreamEnvelope = remoteTaskEnvelope(planManifest, "T2");
+    const downstreamEnvelope = remoteTaskEnvelope(planManifest, "T1");
+    const issue = (
+      number: number,
+      envelope: ReturnType<typeof remoteTaskEnvelope>,
+    ): RemoteIssue => ({
+      number,
+      title: envelope.task.title,
+      body: renderRemoteTaskBody(envelope),
+      url: `https://github.com/acme/test/issues/${number}`,
+      state: "OPEN",
+      labels: [{ name: "roc:task" }, { name: "roc:ready" }],
+      comments: [
+        {
+          databaseId: 1,
+          author: { login: "owner" },
+          body: renderRemoteTaskApproval(envelope),
+        },
+      ],
+    });
+    const issues = [issue(41, downstreamEnvelope), issue(42, upstreamEnvelope)];
+    const upstreamRecord: ExecutionRecord = {
+      version: 1,
+      issueNumber: 42,
+      specHash: jsonHash(upstreamEnvelope),
+      revision: 0,
+      baseBranch: "main",
+      baseCommit: base,
+      phase: "done",
+      updatedAt: time,
+      attempts: [],
+      hooks: {},
+      publication: branchDependency
+        ? { branch: "agile/T2", commitSha: base }
+        : { branch: "agile/T2", commitSha: base, number: 8, mergeCommit: base },
+    };
+    issues[1]!.comments.push({
+      databaseId: 2,
+      author: { login: "daemon" },
+      body: renderExecution(upstreamRecord),
+    });
+    const api = {
+      async read() {
+        return structuredClone(issues);
+      },
+      async get(_repo: string, number: number) {
+        return structuredClone(issues.find((item) => item.number === number)!);
+      },
+      async writeComment(_repo: string, _number: number, body: string) {
+        const target = JSON.parse(
+          body
+            .split("<!-- roc:execution\n")[1]!
+            .split("\nroc:execution -->")[0]!,
+        ) as ExecutionRecord;
+        const existing = issues
+          .find((item) => item.number === target.issueNumber)!
+          .comments.find((item) => item.databaseId === 2);
+        if (existing) existing.body = body;
+        else
+          issues
+            .find((item) => item.number === target.issueNumber)!
+            .comments.push({
+              databaseId: 2,
+              author: { login: "daemon" },
+              body,
+            });
+      },
+      async closeCompleted(_repo: string, number: number) {},
+      async setStatusLabel() {},
+    };
+    const store = new GitHubExecutionStore(
+      "acme/test",
+      "daemon",
+      new Set(["owner"]),
+      api,
+    );
+    const commands: string[][] = [];
+    const run = new GitHubTaskRunner({
+      store,
+      branches,
+      harness: {
+        async step() {
+          throw Error("No agent work");
+        },
+        async cancel() {},
+      },
+      advisor: createModelAdvisor([]),
+      publisher: {
+        baseBranch: "main",
+        async publish() {
+          throw Error("No publication");
+        },
+      },
+      command: {
+        async run({ command }) {
+          commands.push(command);
+          return {
+            exitCode: 0,
+            stdout:
+              command[0] === "gh"
+                ? JSON.stringify({
+                    number: 8,
+                    state: "OPEN",
+                    baseRefName: "main",
+                    headRefName: "agile/T2",
+                    headRefOid: base,
+                    mergeCommit: { oid: base },
+                  })
+                : base,
+            stderr: "",
+          };
+        },
+      },
+      cwd: "/fixture",
+      baseBranch: "main",
+    });
+    commands.length = 0;
+    await run.runOnce(new AbortController().signal).catch(() => undefined);
+    const downstream = (await store.get(41)).execution;
+    if (branchDependency) {
+      // A completed branch dependency admits the downstream task without reading any pull request.
+      expect(downstream).toBeDefined();
+      expect(commands).toEqual([
+        ["git", "fetch", "origin", "main"],
+        ["git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"],
+      ]);
+      expect(commands.flat()).not.toContain("view");
+    } else {
+      // An unmerged pull-request dependency keeps the downstream task blocked.
+      expect(downstream).toBeUndefined();
+      expect(commands).toEqual([
+        [
+          "gh",
+          "pr",
+          "view",
+          "8",
+          "--repo",
+          "acme/test",
+          "--json",
+          "number,state,baseRefName,headRefName,headRefOid,mergeCommit",
+        ],
+      ]);
+    }
+  }
 });

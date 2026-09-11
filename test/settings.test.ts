@@ -313,3 +313,45 @@ test("both loaders reject unreadable settings with file and permission checks", 
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test("publication mode round-trips, defaults to pull requests when absent, and rejects unknown modes", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "roc-settings-publication-"));
+  try {
+    // Absence keeps the legacy pull-request flow and leaves stored bytes untouched.
+    const legacyPath = await saveRocSettings(
+      { cycle: { type: "weekly" } },
+      homeRoot,
+    );
+    expect(await loadRocSettings(homeRoot)).toEqual({
+      cycle: { type: "weekly" },
+    });
+    expect(JSON.parse(await readFile(legacyPath, "utf8"))).toEqual({
+      cycle: { type: "weekly" },
+    });
+
+    await saveRocSettings(
+      { cycle: { type: "weekly" }, publicationMode: "branch" },
+      homeRoot,
+    );
+    expect(await loadRocSettings(homeRoot)).toEqual({
+      cycle: { type: "weekly" },
+      publicationMode: "branch",
+    });
+
+    await writeFile(
+      rocSettingsPath(homeRoot),
+      '{"cycle":{"type":"weekly"},"publicationMode":"patch"}',
+    );
+    await expect(loadRocSettings(homeRoot)).rejects.toThrow(
+      "Invalid settings data",
+    );
+    expect(
+      RocSettingsSchema.safeParse({
+        cycle: { type: "weekly" },
+        publicationMode: "patch",
+      }).success,
+    ).toBe(false);
+  } finally {
+    await rm(homeRoot, { recursive: true, force: true });
+  }
+});

@@ -382,23 +382,28 @@ export class GitHubTaskRunner {
       );
       if (
         dependency?.execution?.phase !== "done" ||
-        !dependency.execution.publication?.number ||
-        !dependency.execution.publication.mergeCommit ||
+        !dependency.execution.publication ||
         dependency.blockedReason
       )
         return undefined;
-      const pr = await this.readPr(dependency.execution.publication.number);
-      signal.throwIfAborted();
-      if (
-        pr.state !== "MERGED" ||
-        pr.baseRefName !== this.input.baseBranch ||
-        !pr.mergeCommit ||
-        pr.mergeCommit.oid !== dependency.execution.publication.mergeCommit ||
-        pr.headRefName !== dependency.execution.publication.branch ||
-        pr.headRefOid !== dependency.execution.publication.commitSha
-      )
-        return undefined;
-      commits.push(pr.mergeCommit.oid);
+      const publication = dependency.execution.publication;
+      if (publication.number !== undefined) {
+        // Pull-request dependencies still require complete, currently verified merge evidence.
+        if (publication.mergeCommit === undefined) return undefined;
+        const pr = await this.readPr(publication.number);
+        signal.throwIfAborted();
+        if (
+          pr.state !== "MERGED" ||
+          pr.baseRefName !== this.input.baseBranch ||
+          !pr.mergeCommit ||
+          pr.mergeCommit.oid !== publication.mergeCommit ||
+          pr.headRefName !== publication.branch ||
+          pr.headRefOid !== publication.commitSha
+        )
+          return undefined;
+        commits.push(pr.mergeCommit.oid);
+      } else if (publication.mergeCommit !== undefined) return undefined;
+      // Branch dependencies complete at push: their commits live on the remote task branch alone.
     }
     await this.command(["git", "fetch", "origin", this.input.baseBranch]);
     const base = (
@@ -467,7 +472,7 @@ export class GitHubTaskRunner {
     )
       return;
     const acceptance = this.publicationAcceptance(record);
-    const pr = await this.input.publisher.publish({
+    const published = await this.input.publisher.publish({
       task: {
         ...task.task,
         status: "publishing",
@@ -484,8 +489,15 @@ export class GitHubTaskRunner {
       ...(acceptance === undefined ? {} : { acceptance }),
     });
     signal.throwIfAborted();
-    record.publication.number = pr.number;
-    record.publication.url = pr.url;
+    if ("branch" in published) {
+      // Branch publication completes at push; a remote branch head leaves no pull request to await.
+      record.phase = "done";
+      await this.checkpoint(task, record, signal);
+      await this.repairClosure(task, signal);
+      return;
+    }
+    record.publication.number = published.number;
+    record.publication.url = published.url;
     record.phase = "awaiting_merge";
     await this.checkpoint(task, record, signal);
   }
@@ -848,30 +860,45 @@ export class GitHubTaskRunner {
         task.blockedReason ||
         !task.approved ||
         record?.phase !== "done" ||
-        !publication?.number ||
-        !publication.mergeCommit ||
+        !publication ||
         record.baseBranch !== this.input.baseBranch ||
         publication.branch !== taskBranchName(task.task.id)
       )
         throw Error("Missing closure evidence");
-      const pr = await this.readPr(publication.number);
-      if (
-        pr.number !== publication.number ||
-        pr.state !== "MERGED" ||
-        pr.baseRefName !== record.baseBranch ||
-        pr.headRefName !== publication.branch ||
-        pr.headRefOid !== publication.commitSha ||
-        pr.mergeCommit?.oid !== publication.mergeCommit
-      )
-        throw Error("Merge evidence changed");
-      await this.command(["git", "fetch", "origin", record.baseBranch]);
-      await this.command([
-        "git",
-        "merge-base",
-        "--is-ancestor",
-        publication.mergeCommit,
-        `refs/remotes/origin/${record.baseBranch}`,
-      ]);
+      if (publication.number === undefined) {
+        // Branch publications close on push evidence: the published commit must be on origin's task branch.
+        if (publication.mergeCommit !== undefined)
+          throw Error("Missing closure evidence");
+        await this.command(["git", "fetch", "origin", publication.branch]);
+        await this.command([
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          publication.commitSha,
+          `refs/remotes/origin/${publication.branch}`,
+        ]);
+      } else {
+        if (publication.mergeCommit === undefined)
+          throw Error("Missing closure evidence");
+        const pr = await this.readPr(publication.number);
+        if (
+          pr.number !== publication.number ||
+          pr.state !== "MERGED" ||
+          pr.baseRefName !== record.baseBranch ||
+          pr.headRefName !== publication.branch ||
+          pr.headRefOid !== publication.commitSha ||
+          pr.mergeCommit?.oid !== publication.mergeCommit
+        )
+          throw Error("Merge evidence changed");
+        await this.command(["git", "fetch", "origin", record.baseBranch]);
+        await this.command([
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          publication.mergeCommit,
+          `refs/remotes/origin/${record.baseBranch}`,
+        ]);
+      }
       signal.throwIfAborted();
       await this.input.store.closeCompleted(task);
     } catch {
@@ -881,7 +908,7 @@ export class GitHubTaskRunner {
         component: "github-state",
         retryable: true,
         taskId: task.task.id,
-        message: `Issue #${task.issue.number}: completed checkpoint retained; closure pending. Check approval, specification, PR merge evidence and repository access; polling will retry`,
+        message: `Issue #${task.issue.number}: completed checkpoint retained; closure pending. Check approval, specification, publication evidence and repository access; polling will retry`,
       });
       this.input.diagnostic?.(error.message);
       await this.input.logError?.(error).catch(() => undefined);
@@ -1250,6 +1277,8 @@ export class GitHubTaskRunner {
       ...(acceptance === undefined ? {} : { acceptance }),
     });
     signal.throwIfAborted();
+    // Checklist reconciliation only follows pull-request publications, which always reconcile a PR.
+    if (!("number" in pr)) return false;
     publication.number = pr.number;
     publication.url = pr.url;
     return true;

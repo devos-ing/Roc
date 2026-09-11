@@ -22,7 +22,8 @@ const allowed: Record<TaskStatus, readonly TaskStatus[]> = {
     "rejected",
     "failed_infra",
   ],
-  publishing: ["needs_input", "needs_replan", "awaiting_merge"],
+  // Branch publication finishes at push, so only that mode completes directly from publishing.
+  publishing: ["needs_input", "needs_replan", "awaiting_merge", "done"],
   done: [],
   rejected: [],
   failed_infra: [],

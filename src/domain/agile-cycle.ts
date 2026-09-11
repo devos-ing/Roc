@@ -47,11 +47,14 @@ export const RocSettingsSchema = z
       .partialRecord(ModelProfileSchema, z.string().regex(/^[^\s/]+\/[^\s]+$/u))
       .optional(),
     efforts: z.partialRecord(AgentRoleSchema, ReasoningEffortSchema).optional(),
+    // Absence keeps the pull-request publication flow, so existing settings files stay byte-identical.
+    publicationMode: z.enum(["pr", "branch"]).optional(),
   })
   .strict();
 
 export type AgileCycleSetting = z.infer<typeof AgileCycleSettingSchema>;
 export type RocSettings = z.infer<typeof RocSettingsSchema>;
+export type PublicationMode = NonNullable<RocSettings["publicationMode"]>;
 export type ActiveAgileCycle = {
   id: string;
   startDate: string;

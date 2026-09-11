@@ -11,6 +11,7 @@ import {
 } from "../github/issue-reader";
 import {
   BunGitHubCommandRunner,
+  GitHubBranchPublisher,
   GitHubCliPreflight,
   type GitHubCommandRunner,
   GitHubPullRequestPublisher,
@@ -173,9 +174,16 @@ export async function runBackendSession(
               efforts: backend.efforts,
               onDiagnostic: emitDiagnostic,
             }),
+            // Branch mode pushes the task branch without a pull request; pr mode stays the default flow.
             publisher:
               options.publisherFactory?.(branches) ??
-              new GitHubPullRequestPublisher(baseBranch, branches, command),
+              (input.publicationMode === "branch"
+                ? new GitHubBranchPublisher(baseBranch, branches, command)
+                : new GitHubPullRequestPublisher(
+                    baseBranch,
+                    branches,
+                    command,
+                  )),
             command,
             cwd: input.repoPath,
             baseBranch,
