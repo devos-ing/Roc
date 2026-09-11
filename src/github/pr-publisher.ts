@@ -43,8 +43,8 @@ const PullRequestSearchSchema = PullRequestSchema.extend({
 /** Describes the remote pull request that safely represents a published task branch. */
 export type PullRequest = z.infer<typeof PullRequestSchema>;
 
-/** Describes a task branch published by pushing it to origin without a pull request. */
-export type BranchPublication = { branch: string };
+/** Describes a task branch published by fast-forwarding origin's base branch to its head. */
+export type BranchPublication = { branch: string; commitSha: string };
 
 /** Supplies the task state needed to publish or reconcile one pull request. */
 export type PublishTaskInput = {
@@ -493,7 +493,16 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
   }
 }
 
-/** Publishes a validated task branch by pushing it to origin without opening a pull request. */
+/** Bounded rebase retries when origin's base branch advances before a branch-mode fast-forward. */
+const BranchBaseForwardRetries = 2;
+
+/** Recognizes the local push rejection that a rebase onto the fetched base can legitimately resolve. */
+function nonFastForwardRejection(stderr: string): boolean {
+  // Server-side policy rejections ("[remote rejected]") never contain this local marker.
+  return stderr.includes("[rejected]");
+}
+
+/** Publishes a validated task branch by fast-forwarding origin's base branch to its head. */
 export class GitHubBranchPublisher implements TaskPublisher {
   /** Connects branch validation and Git commands to one explicit target base branch. */
   constructor(
@@ -502,16 +511,68 @@ export class GitHubBranchPublisher implements TaskPublisher {
     private readonly runner: GitHubCommandRunner = new BunGitHubCommandRunner(),
   ) {}
 
-  /** Pushes a validated branch to origin and reports it without pull-request metadata. */
+  /** Pushes the task branch as a trace, fast-forwards the base branch, and reports the landed commit. */
   async publish(input: PublishTaskInput): Promise<BranchPublication> {
     const workspace = await preparePublication(this.branches, input);
-    // Branch reconciliation reuses the same idempotent push; a no-op push confirms the remote head.
-    if (!input.reconcileOnly)
+    // Both pushes are idempotent; a no-op push confirms the remote head during reconciliation.
+    await mustRun(
+      this.runner,
+      ["git", "push", "origin", workspace.branch],
+      workspace.path,
+    );
+    const commitSha = await this.forwardBase(workspace, input);
+    return { branch: workspace.branch, commitSha };
+  }
+
+  /** Fast-forwards origin's base to the task head, rebasing with bounded retries instead of force-pushing. */
+  private async forwardBase(
+    workspace: TaskWorkspace,
+    input: PublishTaskInput,
+  ): Promise<string> {
+    const baseBranch = input.publication.baseBranch;
+    for (let attempt = 0; ; attempt++) {
+      const head = await mustRun(
+        this.runner,
+        ["git", "rev-parse", "--verify", "HEAD"],
+        workspace.path,
+      );
+      const result = await this.runner.run({
+        command: ["git", "push", "origin", `${head}:refs/heads/${baseBranch}`],
+        cwd: workspace.path,
+      });
+      if (result.exitCode === 0) return head;
+      const diagnostic = result.stderr.trim() || result.stdout.trim();
+      if (!nonFastForwardRejection(result.stderr))
+        throw new GitHubPublicationError(`git push failed: ${diagnostic}`);
+      if (attempt >= BranchBaseForwardRetries)
+        throw new GitHubPublicationError(
+          `Base branch ${baseBranch} kept rejecting the fast-forward of ${workspace.branch} after ${BranchBaseForwardRetries} rebase retries: ${diagnostic}`,
+        );
+      await mustRun(
+        this.runner,
+        ["git", "fetch", "origin", baseBranch],
+        workspace.path,
+      );
+      const rebase = await this.runner.run({
+        command: ["git", "rebase", `origin/${baseBranch}`],
+        cwd: workspace.path,
+      });
+      if (rebase.exitCode !== 0) {
+        // Restore the task branch so a conflicting rebase never leaves the workspace mid-rebase.
+        await this.runner.run({
+          command: ["git", "rebase", "--abort"],
+          cwd: workspace.path,
+        });
+        throw new GitHubPublicationError(
+          `Rebasing ${workspace.branch} onto origin/${baseBranch} failed for ${input.task.id}; resolve the conflict manually instead of force-pushing: ${rebase.stderr.trim() || rebase.stdout.trim()}`,
+        );
+      }
+      // Keep the trace branch identical to the commit that actually enters the base branch.
       await mustRun(
         this.runner,
         ["git", "push", "origin", workspace.branch],
         workspace.path,
       );
-    return { branch: workspace.branch };
+    }
   }
 }

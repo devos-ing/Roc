@@ -1004,9 +1004,10 @@ test("an interrupted terminal posthook records attention and never repeats an un
   ).toBe(false);
 });
 
-test("branch publication completes at push, closes the Issue, and never writes PR evidence", async () => {
+test("branch publication fast-forwards the base branch, records the landed sha, and closes on base ancestry", async () => {
   const remote = memoryGitHub();
   const head = "d".repeat(40);
+  const landed = "e".repeat(40);
   const accepted = {
     kind: "review" as const,
     decision: "accepted" as const,
@@ -1064,7 +1065,8 @@ test("branch publication completes at push, closes the Issue, and never writes P
     baseBranch: "main",
     async publish(input) {
       publications.push(structuredClone(input));
-      return { branch: "agile/issue-41" };
+      // Simulates a rebase onto an advanced base: the landed sha differs from the implemented head.
+      return { branch: "agile/issue-41", commitSha: landed };
     },
   };
   const commands: string[][] = [];
@@ -1093,7 +1095,7 @@ test("branch publication completes at push, closes the Issue, and never writes P
   expect(record.phase).toBe("done");
   expect(record.publication).toEqual({
     branch: "agile/issue-41",
-    commitSha: head,
+    commitSha: landed,
   });
   expect(publications).toHaveLength(1);
   expect(publications[0]).toMatchObject({
@@ -1106,16 +1108,10 @@ test("branch publication completes at push, closes the Issue, and never writes P
     implementation: { kind: "implement", commitSha: head },
   });
   expect("reconcileOnly" in publications[0]!).toBe(false);
-  // Closure verifies the pushed branch on origin; no pull request is ever read or created.
+  // Closure verifies the published commit is an ancestor of origin's base branch; no pull request is read.
   expect(commands).toEqual([
-    ["git", "fetch", "origin", "agile/issue-41"],
-    [
-      "git",
-      "merge-base",
-      "--is-ancestor",
-      head,
-      "refs/remotes/origin/agile/issue-41",
-    ],
+    ["git", "fetch", "origin", "main"],
+    ["git", "merge-base", "--is-ancestor", landed, "refs/remotes/origin/main"],
   ]);
   expect(commands.flat()).not.toContain("pr");
   expect(remote.closures).toEqual([41]);

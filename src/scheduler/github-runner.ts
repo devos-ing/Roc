@@ -403,7 +403,7 @@ export class GitHubTaskRunner {
           return undefined;
         commits.push(pr.mergeCommit.oid);
       } else if (publication.mergeCommit !== undefined) return undefined;
-      // Branch dependencies complete at push: their commits live on the remote task branch alone.
+      // Branch dependencies complete at push: publication fast-forwards their commits into the shared base branch, so no merge evidence exists to verify.
     }
     await this.command(["git", "fetch", "origin", this.input.baseBranch]);
     const base = (
@@ -491,6 +491,8 @@ export class GitHubTaskRunner {
     signal.throwIfAborted();
     if ("branch" in published) {
       // Branch publication completes at push; a remote branch head leaves no pull request to await.
+      // A rebase onto an advanced base lands a new sha; the checkpoint must record what actually entered base.
+      record.publication.commitSha = published.commitSha;
       record.phase = "done";
       await this.checkpoint(task, record, signal);
       await this.repairClosure(task, signal);
@@ -866,16 +868,16 @@ export class GitHubTaskRunner {
       )
         throw Error("Missing closure evidence");
       if (publication.number === undefined) {
-        // Branch publications close on push evidence: the published commit must be on origin's task branch.
+        // Branch publications close on push evidence: the published commit must be on origin's base branch.
         if (publication.mergeCommit !== undefined)
           throw Error("Missing closure evidence");
-        await this.command(["git", "fetch", "origin", publication.branch]);
+        await this.command(["git", "fetch", "origin", record.baseBranch]);
         await this.command([
           "git",
           "merge-base",
           "--is-ancestor",
           publication.commitSha,
-          `refs/remotes/origin/${publication.branch}`,
+          `refs/remotes/origin/${record.baseBranch}`,
         ]);
       } else {
         if (publication.mergeCommit === undefined)

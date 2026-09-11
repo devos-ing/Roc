@@ -346,21 +346,28 @@ scouting when your provider and workload justify it.
 
 An optional `publicationMode` setting controls how finished tasks are
 published: `"pr"` (the default) keeps the pull-request flow, while `"branch"`
-pushes the task branch to the remote without opening a pull request. Set
-`publicationMode` to `"branch"` when tasks should complete on branch push
-instead of pull-request merge — for example, for internal or self-hosted work:
+fast-forwards the base branch to the finished task on the remote without
+opening a pull request. Set `publicationMode` to `"branch"` when tasks
+should complete on landing in the base branch instead of pull-request
+merge — for example, for internal or self-hosted work:
 
 ```json
 "publicationMode": "branch"
 ```
 
 Omit `publicationMode` and existing settings files stay byte-identical with
-the pull-request flow. In branch mode the task publishes by pushing its task
-branch to the remote; completion lands at push time because no pull request
-is opened. Dependency gating follows the upstream task's done phase instead
-of pull-request merge, and closure verifies the pushed head on the remote
-branch. Downstream tasks branch from the base branch, so they do not
-automatically include unmerged upstream task-branch changes.
+the pull-request flow. In branch mode a task publishes by fast-forwarding
+the remote base branch to the task head; the task branch is still pushed to
+origin as a trace. Completion lands when the commit enters the base branch
+rather than at pull-request merge, dependency gating follows the upstream
+task's done phase, and closure verifies the published commit is an ancestor
+of the remote base. When the remote base has advanced, the task branch is
+rebased onto it with bounded retries and the rebased head is what lands;
+publication fails instead of force-pushing if the rebase conflicts or the
+base keeps advancing. Downstream tasks branch from the base, so they
+automatically include upstream outputs that landed before the downstream
+task branched; tasks running concurrently on the base linearize through the
+same rebase-at-push behavior.
 
 For advanced Claude or GLM setup, configure the bundled Pi CLI under the daemon
 account with `bun x --no-install pi`. Use its `/login` and `/model` commands where
