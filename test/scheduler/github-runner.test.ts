@@ -6,7 +6,10 @@ import {
   renderExecution,
 } from "../../src/github/execution-store";
 import type { RemoteIssue } from "../../src/github/issue-reader";
-import type { TaskPublisher } from "../../src/github/pr-publisher";
+import type {
+  BranchTraceInput,
+  TaskPublisher,
+} from "../../src/github/pr-publisher";
 import {
   jsonHash,
   remoteTaskEnvelope,
@@ -1009,7 +1012,7 @@ test("an interrupted terminal posthook records attention and never repeats an un
   ).toBe(false);
 });
 
-test("branch publication fast-forwards the base branch, records the landed sha, and closes on base ancestry", async () => {
+test("branch publication verifies the remote first, lands through the publisher, then traces and closes", async () => {
   const remote = memoryGitHub();
   const head = "d".repeat(40);
   const landed = "e".repeat(40);
@@ -1020,7 +1023,7 @@ test("branch publication fast-forwards the base branch, records the landed sha, 
     remainingGaps: [],
   };
   await seed(remote, (record) => {
-    record.phase = "reviewing";
+    record.phase = "publishing";
     record.publication = {
       branch: "agile/issue-41",
       commitSha: head,
@@ -1070,16 +1073,20 @@ test("branch publication fast-forwards the base branch, records the landed sha, 
       });
   });
   const publications: Parameters<TaskPublisher["publish"]>[0][] = [];
+  const traces: BranchTraceInput[] = [];
   const publisher: TaskPublisher = {
     baseBranch: "main",
     mode: "branch",
     async publish(input) {
       publications.push(structuredClone(input));
-      // Simulates a rebase onto an advanced base: the landed sha differs from the implemented head.
       return { branch: "agile/issue-41", commitSha: landed };
+    },
+    async completeTrace(input) {
+      traces.push(structuredClone(input));
     },
   };
   const commands: string[][] = [];
+  let ancestryChecks = 0;
   const run = new GitHubTaskRunner({
     store: remote.store(),
     branches,
@@ -1094,6 +1101,14 @@ test("branch publication fast-forwards the base branch, records the landed sha, 
     command: {
       async run({ command }) {
         commands.push(command);
+        // The first ancestry check is the publication pre-check (not yet landed); the
+        // second one is closure verification after the landing.
+        if (command[1] === "merge-base")
+          return {
+            exitCode: ++ancestryChecks === 1 ? 1 : 0,
+            stdout: "",
+            stderr: "",
+          };
         return { exitCode: 0, stdout: base, stderr: "" };
       },
     },
@@ -1119,14 +1134,125 @@ test("branch publication fast-forwards the base branch, records the landed sha, 
     implementation: { kind: "implement", commitSha: head },
   });
   expect("reconcileOnly" in publications[0]!).toBe(false);
-  // Closure verifies the published commit is an ancestor of origin's base branch; no pull request is read.
+  // The landing checkpoint precedes the idempotent trace pushes.
+  expect(traces).toEqual([
+    {
+      taskId: "issue-41",
+      branch: "agile/issue-41",
+      workspacePath: "/fixture",
+      originalHead: head,
+      landedHead: landed,
+    },
+  ]);
+  // Pre-check fetch plus ancestry, then closure fetch plus ancestry; no pull request is read.
   expect(commands).toEqual([
+    ["git", "fetch", "origin", "main"],
+    ["git", "merge-base", "--is-ancestor", head, "refs/remotes/origin/main"],
     ["git", "fetch", "origin", "main"],
     ["git", "merge-base", "--is-ancestor", landed, "refs/remotes/origin/main"],
   ]);
   expect(commands.flat()).not.toContain("pr");
   expect(remote.closures).toEqual([41]);
   expect(remote.issue.state).toBe("CLOSED");
+});
+
+test("an interrupted branch refresh intent reconciles to replan without running any Git", async () => {
+  const remote = memoryGitHub();
+  const head = "d".repeat(40);
+  const targetBase = "f".repeat(40);
+  await seed(remote, (record) => {
+    record.phase = "publishing";
+    record.publication = {
+      branch: "agile/issue-41",
+      commitSha: head,
+      mode: "branch",
+    };
+    // An intent without a confirmed result: the rebase may or may not have happened.
+    record.refreshes = [
+      {
+        expectedHead: head,
+        expectedBase: base,
+        targetBase,
+        budgetRemaining: 1,
+      },
+    ];
+    for (const output of [
+      {
+        kind: "scout" as const,
+        summary: "Inspect",
+        files: ["answer.ts"],
+        tests: ["bun test"],
+        risks: [],
+      },
+      {
+        kind: "implement" as const,
+        commitSha: head,
+        validation: ["bun test"],
+        risks: [],
+        limitations: [],
+      },
+      {
+        kind: "review" as const,
+        decision: "accepted" as const,
+        findings: [],
+        remainingGaps: [],
+      },
+    ])
+      record.attempts.push({
+        descriptor: {
+          attemptId: `original-${output.kind}`,
+          taskId: "issue-41",
+          role: output.kind,
+          retryIndex: 0,
+          model,
+          modelProfile: "sol",
+          effort: "high",
+        },
+        status: "succeeded",
+        startedAt: time,
+        endedAt: time,
+        sequence: 2,
+        events: {},
+        output,
+        usage: { ...zeroUsage },
+        usageKnown: true,
+      });
+  });
+  const commands: string[][] = [];
+  const run = new GitHubTaskRunner({
+    store: remote.store(),
+    branches,
+    advisor: createModelAdvisor([]),
+    harness: {
+      async step() {
+        throw Error("No agent work should replay");
+      },
+      async cancel() {},
+    },
+    publisher: {
+      baseBranch: "main",
+      mode: "branch",
+      async publish() {
+        throw Error("Branch publication must not run during reconciliation");
+      },
+    },
+    command: {
+      async run({ command }) {
+        commands.push(command);
+        return { exitCode: 0, stdout: base, stderr: "" };
+      },
+    },
+    cwd: "/fixture",
+    baseBranch: "main",
+  });
+  expect(await run.runOnce(new AbortController().signal)).toBe(true);
+  const record = (await remote.store().get(41)).execution!;
+  expect(record.phase).toBe("needs_replan");
+  expect(record.failure).toBe(
+    "Interrupted base refresh intent requires reconciliation; Git will not be replayed",
+  );
+  expect(commands).toEqual([]);
+  expect(remote.issue.state).toBe("OPEN");
 });
 
 test("branch-published dependencies gate on completion alone while PR dependencies still require merge evidence", async () => {
