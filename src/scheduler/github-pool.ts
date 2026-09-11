@@ -117,7 +117,11 @@ export class GitHubTaskPool {
           if (this.failure) throw this.failure;
           return;
         }
-        if (this.completions !== completedBeforeRead) continue;
+        if (
+          this.completions !== completedBeforeRead ||
+          this.selector.admissionChanged
+        )
+          continue;
         await waitForChange(
           [...this.workers.values()].map((worker) => worker.done),
           admission,
@@ -136,7 +140,7 @@ export class GitHubTaskPool {
 
   /** Refreshes Issue authority for workers and selector-owned Review even while admission is occupied. */
   private async refreshAuthority(signal: AbortSignal): Promise<NativeTask[]> {
-    const { tasks, diagnostics } = await this.input.store.list();
+    const { tasks, diagnostics } = await this.input.store.list(signal);
     signal.throwIfAborted();
     for (const message of diagnostics) this.input.diagnostic?.(message);
     for (const worker of this.workers.values()) {
@@ -144,6 +148,7 @@ export class GitHubTaskPool {
       const reason = await this.input.store.confirmCancellation(
         worker.task,
         fresh,
+        signal,
       );
       signal.throwIfAborted();
       if (reason && this.workers.get(worker.task.task.id) === worker)
