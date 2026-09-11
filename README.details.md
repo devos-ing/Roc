@@ -239,6 +239,16 @@ ownership lock until its processes and uncertain remote writes are reconciled.
 A timed-out repository lookup during startup gets one read-only retry before
 any task starts; a second failure reports `GITHUB_REPOSITORY_UNAVAILABLE`.
 
+When GitHub reports a rate limit, the daemon pauses GitHub requests and retries
+reads after `Retry-After` or the quota reset time. Workers share this pause. If
+GitHub supplies neither deadline, retries start after one minute and back off
+to at most fifteen minutes between attempts. Ctrl-C interrupts the wait.
+See [GitHub's rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
+
+Permission failures still report an error. Mutating commands are not blindly
+replayed: checkpoint and PR writes keep their existing readback checks, and
+unconfirmed writes or child cleanup can still retain the ownership lock.
+
 `task board` details show elapsed time, time in agent attempts, merge waiting and
 partial token usage. `scheduler inspect` includes the phase-duration breakdown.
 Recent actions are GitHub checkpoint summaries, refreshed at phase boundaries
@@ -373,6 +383,14 @@ Use `roc-create-tasks` in your coding assistant to create and approve tasks.
 
 ## The task board
 
+`tui` opens Welcome with setup/connection status, even before Roc settings or
+GitHub login are available. `task board` opens Tasks directly. Both are read-only:
+neither starts a scheduler or changes tasks. Switch pages with Tab, 1/2, or a
+mouse click on the top tabs. R refreshes; failed reads keep the last snapshot
+marked stale. Selection and details survive page switches and resizing. Narrow
+terminals stack the board; use PgUp/PgDn to scroll long pages/details while the
+tabs stay visible. Piped `task board` output remains a plain snapshot.
+
 `task board` reads GitHub checkpoints every 30 seconds and shows persisted
 status, attempts, models, usage and PR links. Use `--all` for other cycles and
 `--history` to include retired Issues. Press Enter for details and Q to quit.
@@ -469,7 +487,7 @@ cycle current                            Show the active Agile cycle
 task publish-github MANIFEST              Publish approved tasks to GitHub
 task list [--all] [--history]              List GitHub tasks
 task board [--all] [--history]             Open the read-only board
-tui                                      Open the same board
+tui                                      Open Welcome and the Tasks monitor
 task trust-hooks ISSUE --phase PHASE      Approve an exact hook configuration
 task retire ISSUE --reason TEXT           Close an Issue without completing it
 scheduler run [--base-branch BRANCH] [--concurrency 1-8] [--once] [--auto-merge]

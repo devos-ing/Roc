@@ -1,11 +1,17 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import { runCli } from "../../src/cli/run";
 import type {
   TaskBoardSnapshot,
   TaskBoardTask,
 } from "../../src/cli/task-board-model";
 import { runTaskBoardSession } from "../../src/cli/task-board-session";
+import { githubTaskSnapshot } from "../../src/github/execution-view";
+import { saveRocSettings } from "../../src/settings";
 
 const tokens = {
   inputTokens: 0,
@@ -100,6 +106,7 @@ class Input extends EventEmitter {
 class Output extends EventEmitter {
   isTTY = true;
   columns = 120;
+  rows = 60;
   writes: string[] = [];
   failFrame = false;
   deferWriteCallbacks = false;
@@ -206,9 +213,12 @@ test("opens clicked cards as full details, toggles Done by mouse, and retains se
   });
 
   await waitFor(() => frame(output).includes("Ready · 2"));
-  input.emit("data", "\u001B[<0;1;7M");
+  const offset = stripVTControlCharacters(frame(output))
+    .split("\n")
+    .findIndex((line) => line.startsWith("Roc"));
+  input.emit("data", `\u001B[<0;1;${7 + offset}M`);
   expect(frame(output)).not.toContain("Task first");
-  input.emit("data", "\u001B[<0;1;8M");
+  input.emit("data", `\u001B[<0;1;${8 + offset}M`);
   expect(frame(output)).toContain("Task second");
   input.emit("data", "\u001B");
   await Bun.sleep(25);
@@ -217,12 +227,125 @@ test("opens clicked cards as full details, toggles Done by mouse, and retains se
   expect(stripVTControlCharacters(frame(output))).toContain("▌   second");
   output.columns = 120;
   output.emit("resize");
-  input.emit("data", "\u001B[<0;91;3M");
+  input.emit("data", `\u001B[<0;91;${3 + offset}M`);
   expect(frame(output)).toContain("finished work");
   input.emit("data", "\u0003");
   await running;
   expectRestored(input, output);
 });
+
+test.each([120, 80, 40])(
+  "keeps keyboard selection visible on a long board at %i columns",
+  async (width) => {
+    const input = new Input();
+    const output = new Output();
+    output.columns = width;
+    output.rows = 24;
+    const tasks = Array.from({ length: 12 }, (_, index) =>
+      task({ id: `row-${String(index + 1).padStart(2, "0")}` }),
+    );
+    const snapshot = {
+      ...board(),
+      tasks,
+      columns: { ready: tasks, inProgress: [], attention: [], done: [] },
+    };
+    const running = runTaskBoardSession({
+      input: input as never,
+      output: output as never,
+      read: () => snapshot,
+    });
+
+    try {
+      await waitFor(() => frame(output).includes("Ready · 12"));
+      input.emit("data", "jjjjjj");
+      expect(stripVTControlCharacters(frame(output))).toMatch(
+        /▌[^\n]*row-07 work[^\n]*\n {4}ready/u,
+      );
+      const selectedFrame = frame(output);
+      input.emit("data", "\u001B[6~");
+      expect(frame(output)).not.toBe(selectedFrame);
+      for (const [keys, expectedId] of [
+        ["j", "#project-8"],
+        ["\u001B[A", "#project-7"],
+        ["k", "#project-6"],
+        ["\u001B[5~j", "#project-7"],
+        ["jjjjj", "#project-12"],
+        ["\u001B[B", "#project-1"],
+        ["k", "#project-12"],
+      ]) {
+        input.emit("data", keys);
+        expect(stripVTControlCharacters(frame(output))).toContain(
+          `▌   ${expectedId} `,
+        );
+      }
+    } finally {
+      input.emit("data", "q");
+      await running;
+    }
+    expectRestored(input, output);
+  },
+);
+
+test.each([40, 80, 120])(
+  "selects across populated columns and clicks scrolled cards at %i columns",
+  async (width) => {
+    const input = new Input();
+    const output = new Output();
+    output.columns = width;
+    output.rows = 24;
+    const tasks = Array.from({ length: 12 }, (_, index) =>
+      task({
+        id: `mixed-${index + 1}`,
+        title: `work ${index + 1}`,
+        column: index < 6 ? "ready" : "attention",
+        rawStatus: index < 6 ? "ready" : "needs_input",
+        blockingDependencyIds: index < 6 ? [] : ["setup"],
+      }),
+    );
+    const snapshot = {
+      ...board(),
+      tasks,
+      columns: {
+        ready: tasks.slice(0, 6),
+        inProgress: [],
+        attention: tasks.slice(6),
+        done: [],
+      },
+    };
+    const running = runTaskBoardSession({
+      input: input as never,
+      output: output as never,
+      read: () => snapshot,
+    });
+    try {
+      await waitFor(() => frame(output).includes("Ready · 6"));
+      for (const [keys, id] of [
+        ["jjjjjj", 7],
+        ["\u001B[6~\u001B[B", 8],
+        ["\u001B[A", 7],
+        ["jjjjj", 12],
+        ["j", 1],
+        ["k", 12],
+      ] as const) {
+        input.emit("data", keys);
+        const lines = stripVTControlCharacters(frame(output)).split("\n");
+        const row = lines.findIndex((line) => line.includes("▌"));
+        expect(lines[row]).toContain(`#project-${id} `);
+        expect(lines[row + 1]).toContain(id < 7 ? "ready" : "needs_input");
+      }
+      // The last card is selected below the initial viewport in every layout.
+      const lines = stripVTControlCharacters(frame(output)).split("\n");
+      const row = lines.findIndex((line) => line.includes("▌"));
+      const x = (lines[row]?.indexOf("▌") ?? -1) + 1;
+      input.emit("data", `\u001B[<0;${x};${row + 1}M`);
+      expect(frame(output)).toContain("Task mixed-12");
+    } finally {
+      input.emit("data", "q");
+      await running;
+    }
+    expectRestored(input, output);
+  },
+);
 
 test("keeps the last valid frame on a transient read failure and retries on demand", async () => {
   const input = new Input();
@@ -243,9 +366,7 @@ test("keeps the last valid frame on a transient read failure and retries on dema
   input.emit("data", "R");
   await waitFor(() => frame(output).includes("temporary read failure"));
   const errorFrame = frame(output);
-  expect(errorFrame).toContain(
-    "\u001B[31mError: temporary read failure\u001B[0m",
-  );
+  expect(errorFrame).toContain("STALE");
   expect(stripVTControlCharacters(errorFrame)).toContain(
     "Error: temporary read failure",
   );
@@ -365,4 +486,148 @@ test("keeps the output error listener through deferred restoration writes", asyn
   output.failDeferredWrite(new Error("late output failure"));
   await running;
   expectRestored(input, output);
+});
+
+test("Welcome navigation retains details across keyboard, mouse, resize and paged evidence", async () => {
+  const input = new Input();
+  const output = new Output();
+  output.columns = 80;
+  output.rows = 24;
+  const snapshot = board();
+  const second = snapshot.tasks[1];
+  if (!second) throw new Error("Missing fixture task");
+  second.issueUrl = "https://github.com/example/repo/issues/2";
+  second.pullRequestUrl = "https://github.com/example/repo/pull/3";
+  second.acceptanceChecklist = [
+    {
+      criterionIndex: 0,
+      criterion: "read only",
+      status: "passed",
+      evidence: "fixture evidence",
+    },
+  ];
+  const running = runTaskBoardSession({
+    input: input as never,
+    output: output as never,
+    initialTab: "welcome",
+    read: () => snapshot,
+  });
+  await waitFor(() => frame(output).includes("checkpoints loaded"));
+  expect(frame(output)).toContain("Welcome to Roc");
+  input.emit("data", "\tj\r");
+  expect(frame(output)).toContain("Task second");
+  input.emit("data", "1");
+  expect(frame(output)).toContain("Welcome to Roc");
+  output.columns = 40;
+  output.emit("resize");
+  input.emit("data", "\u001B[<0;15;1M");
+  expect(frame(output)).toContain("Task second");
+  const pages: string[] = [frame(output)];
+  for (let i = 0; i < 10; i++) {
+    input.emit("data", "\u001B[6~");
+    pages.push(frame(output));
+    expect(frame(output).split("\n").length).toBeLessThanOrEqual(24);
+    expect(stripVTControlCharacters(frame(output)).split("\n")[0]).toContain(
+      "1 Welcome",
+    );
+  }
+  expect(pages.join("\n")).toContain("Issue:");
+  expect(pages.join("\n")).toContain("PR:");
+  expect(pages.join("\n")).toContain("fixture evidence");
+  input.emit("data", "\u001B[5~");
+  input.emit("data", "q");
+  await running;
+  expectRestored(input, output);
+});
+
+test("quit and terminal errors restore immediately during the pending initial read", async () => {
+  for (const failure of [false, true]) {
+    const input = new Input();
+    const output = new Output();
+    let release!: (snapshot: TaskBoardSnapshot) => void;
+    const running = runTaskBoardSession({
+      input: input as never,
+      output: output as never,
+      initialTab: "welcome",
+      read: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    });
+    expect(frame(output)).toContain("Welcome to Roc");
+    expect(frame(output)).toContain("Checking settings");
+    if (failure) {
+      output.emit("error", new Error("pending output failure"));
+      await expect(running).rejects.toThrow("pending output failure");
+    } else {
+      input.emit("data", "q");
+      await running;
+    }
+    expectRestored(input, output);
+    const writes = output.writes.length;
+    release(board());
+    await Bun.sleep(1);
+    expect(output.writes.length).toBe(writes);
+  }
+});
+
+test("CLI entries are read only, Welcome survives absent settings and rejected GitHub reads", async () => {
+  const root = await mkdtemp(join(tmpdir(), "roc-tui-entry-"));
+  let runs = 0;
+  let reads = 0;
+  let rejectRead = false;
+  const runtime = {
+    projectRoot: root,
+    homeRoot: root,
+    async runScheduler() {
+      runs++;
+    },
+    async readTasks() {
+      reads++;
+      if (rejectRead) throw new Error("GitHub authentication unavailable");
+      return githubTaskSnapshot([], []);
+    },
+  };
+  try {
+    for (const mode of ["missing", "remote failure", "welcome", "tasks"]) {
+      if (mode !== "missing")
+        await saveRocSettings({ cycle: { type: "weekly" } }, root);
+      rejectRead = mode === "remote failure";
+      const input = new Input();
+      const output = new Output();
+      const errors: string[] = [];
+      const running = runCli(
+        mode === "tasks" ? ["task", "board"] : ["tui"],
+        {
+          input: input as never,
+          output: output as never,
+          out() {},
+          err(message) {
+            errors.push(message);
+          },
+        },
+        runtime,
+      );
+      await waitFor(() =>
+        frame(output).includes(
+          mode === "missing"
+            ? "not configured"
+            : mode === "remote failure"
+              ? "authentication unavailable"
+              : "checkpoints loaded",
+        ),
+      );
+      expect(frame(output)).toContain(
+        mode === "tasks" ? "GitHub checkpoints" : "Welcome to Roc",
+      );
+      if (mode === "missing") expect(reads).toBe(0);
+      input.emit("data", "q");
+      expect(await running).toBe(0);
+      expect(errors).toEqual([]);
+      expectRestored(input, output);
+    }
+    expect(runs).toBe(0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
