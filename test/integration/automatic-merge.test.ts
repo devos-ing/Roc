@@ -1,10 +1,18 @@
 import { expect, spyOn, test } from "bun:test";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type ExecutionRecord,
   GitHubExecutionStore,
   renderExecution,
 } from "../../src/github/execution-store";
+import { GitHubRemoteIssueReader } from "../../src/github/issue-reader";
 import type { GitHubCommandRunner } from "../../src/github/pr-publisher";
+import {
+  BunGitHubCommandRunner,
+  GitHubPullRequestPublisher,
+} from "../../src/github/pr-publisher";
 import {
   jsonHash,
   parseRemoteTaskEnvelope,
@@ -19,7 +27,11 @@ import { GitHubTaskPool } from "../../src/scheduler/github-pool";
 import { GitHubTaskRunner } from "../../src/scheduler/github-runner";
 import { createModelAdvisor } from "../../src/scheduler/model-routing";
 import type { TaskBranchManager } from "../../src/workspace/task-branch";
+import { createTaskBranchManager } from "../../src/workspace/task-branch";
+import { git } from "../helpers/git";
 import { barrier, memoryPlan } from "../helpers/github-plan";
+import { githubWorkflowLedger } from "../helpers/github-workflow-ledger";
+import { protocolGitHub } from "../helpers/graphql-github";
 
 const initialBase = "a".repeat(40);
 const model = "test/model";
@@ -80,19 +92,22 @@ function fixture(count = 1, dependent = false, skipScout = false) {
   const publications: Parameters<
     import("../../src/github/pr-publisher").TaskPublisher["publish"]
   >[0][] = [];
+  const protocol = protocolGitHub(remote.issues);
+  const reader = new GitHubRemoteIssueReader("/fixture", {
+    async run(input) {
+      if (input.command.includes("POST") || input.command.includes("PATCH")) {
+        writes++;
+        if (data.denyCheckpoint)
+          throw Error("unknown checkpoint write outcome");
+      }
+      return protocol.command.run(input);
+    },
+  });
   const store = new GitHubExecutionStore(
     "acme/test",
     "daemon",
     new Set(["owner"]),
-    {
-      ...remote.api,
-      async writeComment(repo, number, body, id) {
-        writes++;
-        if (data.denyCheckpoint)
-          throw Error("unknown checkpoint write outcome");
-        await remote.api.writeComment(repo, number, body, id);
-      },
-    },
+    reader,
   );
   const prs = new Map<
     number,
@@ -233,6 +248,7 @@ function fixture(count = 1, dependent = false, skipScout = false) {
           };
         } else
           value = {
+            number,
             state: pr.merged ? "MERGED" : pr.state.toUpperCase(),
             baseRefName: pr.base.ref,
             headRefName: pr.head.ref,
@@ -366,6 +382,8 @@ function fixture(count = 1, dependent = false, skipScout = false) {
   };
   return {
     ...remote,
+    protocol,
+    reader,
     store,
     fake,
     input,
@@ -1263,4 +1281,474 @@ test("unknown done checkpoint writes remain daemon failures and cannot release d
   expect(f.events.filter((event) => event === "merge-start:41")).toHaveLength(
     1,
   );
+});
+
+test("fresh claim rejects withdrawal, spec/member changes and dependency checkpoint races before any role or checkpoint write", async () => {
+  for (const fault of [
+    "approval",
+    "spec",
+    "closed",
+    "member",
+    "checkpoint",
+    "duplicate",
+  ] as const) {
+    const f = fixture(2, true);
+    await tick(f, false);
+    f.issues[1]!.labels = f.issues[1]!.labels.filter(
+      (label) => label.name !== "roc:ready",
+    );
+    f.data.check = "success";
+    await tick(f);
+    expect((await f.record()).phase).toBe("done");
+    expect(f.issues[0]!.state).toBe("CLOSED");
+    f.issues[1]!.labels.push({ name: "roc:ready" });
+    const snapshot = (await f.store.list()).tasks;
+    const writes = f.writes();
+    const roles = f.roleCalls();
+    const mutate = () => {
+      if (fault === "approval") f.issues[1]!.comments.shift();
+      if (fault === "spec")
+        f.issues[1]!.body = f.issues[1]!.body.replaceAll(
+          "Wrong answer",
+          "Changed requirement",
+        );
+      if (fault === "closed") f.issues[1]!.state = "CLOSED";
+      if (fault === "member") f.issues.splice(0, 1);
+      if (fault === "checkpoint")
+        f.issues[0]!.comments = f.issues[0]!.comments.filter(
+          (comment) => comment.author?.login !== "daemon",
+        );
+      if (fault === "duplicate")
+        f.issues[0]!.comments.push({
+          ...f.issues[0]!.comments.find(
+            (comment) => comment.author?.login === "daemon",
+          )!,
+          databaseId: 989898,
+        });
+    };
+    if (["approval", "spec", "closed", "member"].includes(fault)) mutate();
+    else {
+      const command = f.input.command;
+      f.input.command = {
+        async run(input) {
+          const result = await command.run(input);
+          if (input.command[1] === "merge-base") mutate();
+          return result;
+        },
+      };
+    }
+    const result = await new GitHubTaskRunner(f.input)
+      .claimNext(
+        snapshot,
+        new AbortController().signal,
+        (task) => task.issue.number === 42,
+      )
+      .catch((error: unknown) => error);
+    expect(result === undefined || result instanceof Error).toBe(true);
+    expect(f.writes()).toBe(writes);
+    expect(f.roleCalls()).toBe(roles);
+    expect(
+      f.issues
+        .find((issue) => issue.number === 42)!
+        .comments.some((comment) => comment.author?.login === "daemon"),
+    ).toBe(false);
+  }
+});
+
+test("production GraphQL, real worktrees, Fake Harness, PR publication and guarded merge release T2 without replay after restart", async () => {
+  const temp = await realpath(
+    await mkdtemp(join(tmpdir(), "roc-gql-vertical-")),
+  );
+  const root = join(temp, "repo");
+  try {
+    await git(["init", "--bare", join(temp, "origin.git")], temp);
+    await git(["clone", join(temp, "origin.git"), root], temp);
+    await git(["checkout", "-b", "main"], root);
+    await git(["config", "user.name", "Test"], root);
+    await git(["config", "user.email", "test@example.test"], root);
+    await writeFile(join(root, "answer.txt"), "0\n");
+    await git(["add", "."], root);
+    await git(["commit", "-m", "seed"], root);
+    const base = await git(["rev-parse", "HEAD"], root);
+    await git(["push", "origin", "main"], root);
+    const seedPath = join(temp, "seed-work");
+    await git(
+      ["worktree", "add", "-b", "fixture-seed", seedPath, "main"],
+      root,
+    );
+    const heads = new Map<number, string>();
+    for (const number of [41, 42]) {
+      await writeFile(join(seedPath, "answer.txt"), `${number}\n`);
+      await git(["add", "."], seedPath);
+      await git(
+        ["commit", "-m", `agile(issue-${number}): implement ticket`],
+        seedPath,
+      );
+      heads.set(number, await git(["rev-parse", "HEAD"], seedPath));
+    }
+    const f = fixture(2, true);
+    const ledger = githubWorkflowLedger();
+    ledger.observeStore(f.store);
+    const protocolRun = f.protocol.command.run.bind(f.protocol.command);
+    f.protocol.command.run = ledger.observeRunner({ run: protocolRun }).run;
+    const actualBranches = await createTaskBranchManager(
+      root,
+      "refs/remotes/origin/main",
+    );
+    const branches = new Proxy(actualBranches, {
+      get(target, key) {
+        const method = Reflect.get(target, key);
+        if (typeof method !== "function") return method;
+        return (...args: unknown[]) => {
+          ledger.event(`worktree-${String(key)}`, "worktree-operation");
+          return Reflect.apply(method, target, args);
+        };
+      },
+    });
+    f.input.branches = branches;
+    f.input.cwd = root;
+    f.data.base = base;
+    const real = new BunGitHubCommandRunner();
+    const remoteCommand = f.input.command;
+    let publications = 0;
+    let merges = 0;
+    const boundaryCommands: string[][] = [];
+    const command: GitHubCommandRunner = ledger.observeRunner({
+      async run(input) {
+        const args = input.command;
+        boundaryCommands.push(args);
+        if (args[0] === "git") return real.run(input);
+        if (args[1] === "repo")
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: '{"nameWithOwner":"acme/test"}',
+          };
+        if (args[1] === "pr" && args[2] === "list") {
+          const branch = args[args.indexOf("--head") + 1];
+          const pr = [...f.prs.values()].find((pr) => pr.head.ref === branch);
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify(
+              pr
+                ? [
+                    {
+                      number: pr.number,
+                      url: `https://github.com/acme/test/pull/${pr.number}`,
+                      state: pr.merged ? "MERGED" : "OPEN",
+                      headRepositoryOwner: { login: "acme" },
+                      headRefOid: pr.head.sha,
+                    },
+                  ]
+                : [],
+            ),
+          };
+        }
+        if (args[1] === "pr" && args[2] === "create") {
+          publications++;
+          const branch = args[args.indexOf("--head") + 1]!;
+          const number = Number(branch.split("-").at(-1));
+          f.prs.set(number, {
+            number,
+            state: "open",
+            merged: false,
+            merge_commit_sha: null,
+            draft: false,
+            mergeable: true,
+            mergeable_state: "clean",
+            head: {
+              ref: branch,
+              sha: heads.get(number)!,
+              repository: "acme/test",
+            },
+            base: { ref: "main", sha: f.data.base, repository: "acme/test" },
+          });
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: `https://github.com/acme/test/pull/${number}`,
+          };
+        }
+        const result = await remoteCommand.run(input);
+        if (args.includes("PUT")) {
+          merges++;
+          const number = Number(args[2]!.match(/pulls\/(\d+)/u)?.[1]);
+          const head = heads.get(number)!;
+          await git(["push", "origin", `${head}:main`], root);
+          f.prs.get(number)!.merge_commit_sha = head;
+          f.data.base = head;
+        }
+        return result;
+      },
+    });
+    f.input.command = command;
+    const publisher = new GitHubPullRequestPublisher("main", branches, command);
+    f.input.publisher = {
+      baseBranch: "main",
+      async publish(input) {
+        if (input.task.id === "issue-41" && publications === 0)
+          ledger.snapshot("before-t1-publication");
+        const result = await publisher.publish(input);
+        return { ...result, state: "OPEN" };
+      },
+    };
+    const roles: string[] = [];
+    const fake = createFakeHarness({
+      attempts: [41, 42].flatMap((number) =>
+        ["scout", "implement", "review"].map((role) => ({
+          taskId: `issue-${number}`,
+          role,
+          retryIndex: 0,
+          expect: { model, effort: role === "implement" ? "medium" : "high" },
+          deliveries: [
+            {
+              nextCursor: "output",
+              event: {
+                type: "attempt.output",
+                eventId: "output",
+                attemptId: "fixture",
+                sequence: 1,
+                occurredAt: time,
+                output:
+                  role === "scout"
+                    ? {
+                        kind: role,
+                        summary: "Read approved files",
+                        files: ["answer.txt"],
+                        tests: [],
+                        risks: [],
+                      }
+                    : role === "implement"
+                      ? {
+                          kind: role,
+                          commitSha: heads.get(number)!,
+                          validation: ["verified fixture commit"],
+                          risks: [],
+                          limitations: [],
+                        }
+                      : {
+                          kind: role,
+                          decision: "accepted",
+                          findings: [],
+                          remainingGaps: [],
+                          acceptanceResults: [
+                            {
+                              criterionIndex: 0,
+                              status: "passed",
+                              evidence: "Fixture commit inspected",
+                            },
+                          ],
+                        },
+              },
+            },
+            {
+              nextCursor: "done",
+              event: {
+                type: "attempt.completed",
+                eventId: "done",
+                attemptId: "fixture",
+                sequence: 2,
+                occurredAt: time,
+              },
+            },
+          ],
+        })),
+      ),
+    });
+    f.input.harness = {
+      async step(request) {
+        if (!request.backendCursor) {
+          roles.push(`${request.attempt.taskId}:${request.attempt.role}`);
+          ledger.event(`role-${request.attempt.role}`, "role-start");
+          if (request.attempt.retryIndex > 0)
+            ledger.event("role-retry", "role-start");
+          if (request.attempt.role === "implement") {
+            const number = Number(request.attempt.taskId.slice(6));
+            const workspace = await branches.prepare(
+              request.attempt.taskId,
+              (await f.store.get(number)).execution!.baseCommit,
+            );
+            await git(
+              ["merge", "--ff-only", heads.get(number)!],
+              workspace.path,
+            );
+          }
+        }
+        return fake.harness.step(request);
+      },
+      async cancel() {},
+    };
+    const signal = new AbortController().signal;
+    await new GitHubTaskPool({ ...f.input, autoMerge: false }).run(
+      signal,
+      true,
+    );
+    const t1 = (await f.store.get(41)).execution!;
+    expect(t1.phase, t1.failure).toBe("awaiting_merge");
+    expect((await f.store.get(42)).execution).toBeUndefined();
+    expect(roles).toEqual([
+      "issue-41:scout",
+      "issue-41:implement",
+      "issue-41:review",
+    ]);
+    expect(publications).toBe(1);
+    const restarted = new GitHubExecutionStore(
+      "acme/test",
+      "daemon",
+      new Set(["owner"]),
+      f.reader,
+    );
+    ledger.observeStore(restarted);
+    f.input.store = restarted;
+    f.data.check = "success";
+    await new GitHubTaskPool({ ...f.input, autoMerge: true }).run(signal, true);
+    expect((await restarted.get(41)).execution).toMatchObject({
+      phase: "done",
+      attempts: t1.attempts,
+    });
+    expect((await restarted.get(41)).issue.state).toBe("CLOSED");
+    expect((await restarted.get(42)).execution).toMatchObject({
+      phase: "awaiting_merge",
+      baseCommit: heads.get(41),
+    });
+    expect(roles).toHaveLength(6);
+    expect(publications).toBe(2);
+    expect(merges).toBe(1);
+    ledger.snapshot("restart-t1-done-and-t2-published");
+    await new GitHubTaskPool({ ...f.input, autoMerge: true }).run(signal, true);
+    expect((await restarted.get(42)).execution?.phase).toBe("done");
+    ledger.snapshot("t2-done");
+    await new GitHubTaskPool({ ...f.input, autoMerge: true }).run(signal, true);
+    expect(roles).toHaveLength(6);
+    expect(publications).toBe(2);
+    expect(merges).toBe(2);
+    expect(await git(["show", "origin/main:answer.txt"], root)).toBe("42");
+    expect(
+      f.protocol.commands.some((args) =>
+        args.some((arg) => arg.startsWith("query=query KnownIssues")),
+      ),
+    ).toBe(true);
+    fake.assertComplete();
+    ledger.snapshot("final-idempotent-run");
+    const report = ledger.report();
+    expect(report.stages).toHaveLength(4);
+    expect(
+      report.entries.filter(
+        (entry) => entry.kind === "fixture-github-dispatch",
+      ),
+    ).toHaveLength(
+      f.protocol.commands.length +
+        boundaryCommands.filter((args) => args[0] === "gh").length,
+    );
+    expect(
+      report.entries.filter((entry) => entry.kind === "local-git-command"),
+    ).toHaveLength(boundaryCommands.filter((args) => args[0] === "git").length);
+    expect(report.totals.fixtureGraphQLCostSum).toBe(
+      f.protocol.commands.filter((args) => args[2] === "graphql").length,
+    );
+    expect(report.totals.counts["checkpoint-write"]).toBe(f.writes());
+    expect(report.totals.counts["known-issues-checkpoint-readback"]).toBe(
+      f.writes(),
+    );
+    expect(report.totals.failedDispatches).toBe(0);
+    expect(report.totals.rateHeaderResponses).toBe(0);
+    expect(report.transportRetries).toBe(0);
+    expect(report.totals.counts["role-retry"]).toBe(0);
+    expect(report.totals.counts["worktree-refresh"]).toBe(0);
+    for (const [category, count] of Object.entries(report.totals.counts)) {
+      expect(
+        report.stages.reduce(
+          (sum, stage) => sum + (stage.counts[category] ?? 0),
+          0,
+        ),
+      ).toBe(count);
+      expect(
+        report.entries.filter((entry) => entry.category === category),
+      ).toHaveLength(count);
+    }
+    expect(
+      report.stages.reduce(
+        (sum, stage) => sum + stage.fixtureGraphQLCostSum,
+        0,
+      ),
+    ).toBe(report.totals.fixtureGraphQLCostSum);
+    expect(
+      report.stages.reduce(
+        (sum, stage) => sum + stage.toEntry - stage.fromEntry,
+        0,
+      ),
+    ).toBe(report.entries.length);
+    expect(
+      report.stages.reduce((sum, stage) => sum + stage.localElapsedMs, 0),
+    ).toBeCloseTo(report.localElapsedMs, 6);
+    const final = report.stages[3]!;
+    for (const category of [
+      "role-scout",
+      "role-implement",
+      "role-review",
+      "publication-write",
+      "merge-write",
+      "checkpoint-write",
+    ])
+      expect(final.counts[category]).toBe(0);
+    expect(final.counts["managed-issues-list"]).toBeGreaterThan(0);
+    const artifact =
+      ".scratch/deliver-code/graphql-runtime/local-workflow-ledger.json";
+    await mkdir(".scratch/deliver-code/graphql-runtime", { recursive: true });
+    await writeFile(artifact, `${JSON.stringify(report, null, 2)}\n`);
+    console.log(
+      JSON.stringify({
+        localWorkflowLedger: artifact,
+        totalEntries: report.entries.length,
+        simulatedGraphQLCost: report.totals.fixtureGraphQLCostSum,
+        stageCosts: report.stages.map((stage) => ({
+          boundary: stage.boundary,
+          fixtureGraphQLCostSum: stage.fixtureGraphQLCostSum,
+        })),
+      }),
+    );
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("cancelling a blocked dependency PR read drains the transport before any claim write", async () => {
+  const f = fixture(2, true);
+  await tick(f, false);
+  f.issues[1]!.labels = f.issues[1]!.labels.filter(
+    (label) => label.name !== "roc:ready",
+  );
+  f.data.check = "success";
+  await tick(f);
+  f.issues[1]!.labels.push({ name: "roc:ready" });
+  const snapshot = (await f.store.list()).tasks;
+  const entered = barrier();
+  const stop = new AbortController();
+  const writes = f.writes();
+  let drained = false;
+  const source = f.input.command;
+  const command: GitHubCommandRunner = {
+    async run(input) {
+      if (input.command[1] !== "pr") return source.run(input);
+      expect(input.signal).toBe(stop.signal);
+      entered.release();
+      await new Promise<void>((resolve) =>
+        input.signal!.addEventListener("abort", () => resolve(), {
+          once: true,
+        }),
+      );
+      drained = true;
+      input.signal?.throwIfAborted();
+      throw Error("No result after cancellation");
+    },
+  };
+  const pending = new GitHubTaskRunner({ ...f.input, command })
+    .claimNext(snapshot, stop.signal, (task) => task.issue.number === 42)
+    .catch((error: unknown) => error);
+  await entered.promise;
+  stop.abort();
+  expect(await pending).toBeInstanceOf(Error);
+  expect(drained).toBe(true);
+  expect(f.writes()).toBe(writes);
 });

@@ -12,6 +12,7 @@ import { acquireCheckoutOwnership } from "../../src/workspace/checkout-ownership
 import { git } from "../helpers/git";
 import { memoryGitHub } from "../helpers/github-native";
 import { barrier, memoryPlan } from "../helpers/github-plan";
+import { graphqlResponse } from "../helpers/graphql-github";
 
 test("backend session routing uses its immutable policy snapshot", () => {
   const advisor = createBackendModelAdvisor({
@@ -87,7 +88,7 @@ test("a scheduler waits through comment-read rate limits and remains cancellable
                 return command[1] === "fetch"
                   ? { exitCode: 0, stdout: "", stderr: "" }
                   : real.run(input);
-              if (command.some((part) => part.includes("/comments?"))) {
+              if (command[2] === "graphql") {
                 comments++;
                 if (comments === 1) {
                   limited.release();
@@ -103,13 +104,9 @@ test("a scheduler waits through comment-read rate limits and remains cancellable
                 }
                 return {
                   exitCode: 0,
-                  stdout: JSON.stringify([
-                    remote.issue.comments.map((c) => ({
-                      id: c.databaseId,
-                      body: c.body,
-                      user: c.author,
-                    })),
-                  ]),
+                  stdout: JSON.stringify(
+                    graphqlResponse([remote.issue], command),
+                  ),
                   stderr: "",
                 };
               }
@@ -221,6 +218,14 @@ test("active shutdown persists needs_replan through the wrapped production GitHu
               };
             if (command[1] === "auth")
               return { exitCode: 0, stdout: "", stderr: "" };
+            if (command[2] === "graphql")
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify(
+                  graphqlResponse([remote.issue], command),
+                ),
+              };
             if (command[1] === "label")
               return { exitCode: 0, stdout: "", stderr: "" };
             if (command[1] === "issue") {

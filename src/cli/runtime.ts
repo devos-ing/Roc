@@ -55,10 +55,11 @@ export function createBackendModelAdvisor(
 export async function connectGitHub(
   cwd: string,
   command: GitHubCommandRunner = new BunGitHubCommandRunner(),
+  signal?: AbortSignal,
 ) {
   const api = new GitHubRemoteIssueReader(cwd, command);
-  const repository = await api.repository();
-  const login = await api.authenticatedLogin();
+  const repository = await api.repository(signal);
+  const login = await api.authenticatedLogin(signal);
   const executor = process.env.ROC_GITHUB_EXECUTOR ?? login;
   return {
     store: new GitHubExecutionStore(
@@ -151,7 +152,7 @@ export async function runBackendSession(
           ).assertReady();
           const connected = options.store
             ? undefined
-            : await connectGitHub(input.repoPath, command);
+            : await connectGitHub(input.repoPath, command, stop);
           if (connected && connected.login !== connected.executor)
             throw Error("Run the daemon as ROC_GITHUB_EXECUTOR");
           const store = options.store ?? connected?.store;
@@ -329,9 +330,23 @@ export const defaultRuntime: CliRuntime = {
   },
   /** Reads GitHub checkpoints for task and token inspection. */
   async readTasks(cwd) {
-    const { store } = await connectGitHub(cwd);
-    const result = await store.list();
-    return githubTaskSnapshot(result.tasks, result.diagnostics);
+    let snapshot: ReturnType<typeof githubTaskSnapshot> | undefined;
+    await runSession((signal) =>
+      Effect.tryPromise({
+        try: async () => {
+          const command = new GitHubRateLimitRunner(
+            new BunGitHubCommandRunner(),
+            { signal },
+          );
+          const { store } = await connectGitHub(cwd, command, signal);
+          const result = await store.list(signal);
+          snapshot = githubTaskSnapshot(result.tasks, result.diagnostics);
+        },
+        catch: (error) => error,
+      }),
+    );
+    if (!snapshot) throw Error("GitHub task inspection was cancelled");
+    return snapshot;
   },
   /** Writes only sanitized operational diagnostics to the project log. */
   async logError(error, input) {

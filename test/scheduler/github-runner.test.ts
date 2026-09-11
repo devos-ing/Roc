@@ -372,6 +372,9 @@ test("dependencies wait for the recorded PR head to merge into the target before
     async get(_repo: string, number: number) {
       return structuredClone(number === 41 ? remote.issue : next);
     },
+    async getMany(repo: string, numbers: readonly number[]) {
+      return Promise.all(numbers.map((number) => api.get(repo, number)));
+    },
     async writeComment(
       _repo: string,
       number: number,

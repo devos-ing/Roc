@@ -63,7 +63,12 @@ export type GitHubPreflight = { assertReady(): Promise<void> };
 
 /** Runs a local gh or git subprocess with argv-only input and bounded diagnostics. */
 export type GitHubCommandRunner = {
-  run(input: { command: string[]; cwd: string }): Promise<GitHubCommandResult>;
+  run(input: {
+    command: string[];
+    cwd: string;
+    signal?: AbortSignal;
+    intent?: "graphql-read";
+  }): Promise<GitHubCommandResult>;
 };
 
 export type GitHubCommandResult = {
@@ -72,6 +77,8 @@ export type GitHubCommandResult = {
   stderr: string;
   httpStatus?: number;
   rateLimit?: {
+    cost?: number;
+    limit?: number;
     remaining?: number;
     resetAt?: number;
     retryAfterMs?: number;
@@ -129,7 +136,10 @@ export class BunGitHubCommandRunner implements GitHubCommandRunner {
   async run(input: {
     command: string[];
     cwd: string;
+    signal?: AbortSignal;
+    intent?: "graphql-read";
   }): Promise<GitHubCommandResult> {
+    input.signal?.throwIfAborted();
     const api = input.command[0] === "gh" && input.command[1] === "api";
     const command =
       api &&
@@ -145,6 +155,10 @@ export class BunGitHubCommandRunner implements GitHubCommandRunner {
       stdout: "pipe",
       stderr: "pipe",
     });
+    /** Terminates an aborted read and lets output collection drain before returning. */
+    const abort = () => process.kill("SIGKILL");
+    input.signal?.addEventListener("abort", abort, { once: true });
+    if (input.signal?.aborted) abort();
     let timedOut = false;
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -156,6 +170,7 @@ export class BunGitHubCommandRunner implements GitHubCommandRunner {
         new Response(process.stdout).text(),
         new Response(process.stderr).text(),
       ]);
+      input.signal?.throwIfAborted();
       return {
         exitCode: timedOut ? 124 : exitCode,
         ...(api ? githubApiResponse(stdout) : { stdout }),
@@ -165,6 +180,7 @@ export class BunGitHubCommandRunner implements GitHubCommandRunner {
       };
     } finally {
       clearTimeout(timeout);
+      input.signal?.removeEventListener("abort", abort);
     }
   }
 }
