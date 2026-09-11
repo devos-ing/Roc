@@ -164,6 +164,7 @@ test("Fake Harness completes on a non-default target and restart retries only de
       ),
       publisher: {
         baseBranch: "release",
+        mode: "pr",
         async publish() {
           publications++;
           return {
@@ -354,6 +355,7 @@ for (const skipScout of [false, true])
         ),
         publisher: {
           baseBranch: "main",
+          mode: "pr",
           async publish(input) {
             publications++;
             await branches.assertReviewReady(
@@ -428,6 +430,7 @@ for (const skipScout of [false, true])
         advisor: createModelAdvisor([]),
         publisher: {
           baseBranch: "main",
+          mode: "pr",
           async publish() {
             publications++;
             return {

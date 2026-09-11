@@ -155,6 +155,7 @@ function fixture(scopes: string[][], concurrency = 2) {
     },
     publisher: {
       baseBranch: "main",
+      mode: "pr",
       async publish(input) {
         completed[ids.indexOf(input.task.id)]?.release();
         return {

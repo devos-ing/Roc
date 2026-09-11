@@ -105,6 +105,7 @@ test("done-open repair rejects absent or mismatched authority and merge evidence
       advisor: createModelAdvisor([]),
       publisher: {
         baseBranch: "main",
+        mode: "pr",
         async publish() {
           throw Error("No publication");
         },
@@ -186,6 +187,7 @@ test.each([
       advisor: createModelAdvisor([]),
       publisher: {
         baseBranch: "main",
+        mode: "pr",
         async publish() {
           throw Error("No publication");
         },
@@ -413,6 +415,7 @@ test("dependencies wait for the recorded PR head to merge into the target before
     },
     publisher: {
       baseBranch: "main",
+      mode: "pr",
       async publish() {
         throw Error("Unexpected publication");
       },
@@ -484,6 +487,7 @@ function runner(
     ),
     publisher: publisher ?? {
       baseBranch: "main",
+      mode: "pr",
       async publish() {
         throw Error("Unexpected publication");
       },
@@ -737,6 +741,7 @@ test("confirmed refresh recovery selects only the new exact-target Review and ne
     const publications: Parameters<TaskPublisher["publish"]>[0][] = [];
     const publisher: TaskPublisher = {
       baseBranch: "main",
+      mode: "pr",
       async publish(input) {
         publications.push(structuredClone(input));
         return {
@@ -1016,7 +1021,11 @@ test("branch publication fast-forwards the base branch, records the landed sha, 
   };
   await seed(remote, (record) => {
     record.phase = "reviewing";
-    record.publication = { branch: "agile/issue-41", commitSha: head };
+    record.publication = {
+      branch: "agile/issue-41",
+      commitSha: head,
+      mode: "branch",
+    };
     record.mergeReview = {
       specHash: record.specHash,
       headSha: head,
@@ -1063,6 +1072,7 @@ test("branch publication fast-forwards the base branch, records the landed sha, 
   const publications: Parameters<TaskPublisher["publish"]>[0][] = [];
   const publisher: TaskPublisher = {
     baseBranch: "main",
+    mode: "branch",
     async publish(input) {
       publications.push(structuredClone(input));
       // Simulates a rebase onto an advanced base: the landed sha differs from the implemented head.
@@ -1096,6 +1106,7 @@ test("branch publication fast-forwards the base branch, records the landed sha, 
   expect(record.publication).toEqual({
     branch: "agile/issue-41",
     commitSha: landed,
+    mode: "branch",
   });
   expect(publications).toHaveLength(1);
   expect(publications[0]).toMatchObject({
@@ -1164,8 +1175,14 @@ test("branch-published dependencies gate on completion alone while PR dependenci
       attempts: [],
       hooks: {},
       publication: branchDependency
-        ? { branch: "agile/T2", commitSha: base }
-        : { branch: "agile/T2", commitSha: base, number: 8, mergeCommit: base },
+        ? { branch: "agile/T2", commitSha: base, mode: "branch" }
+        : {
+            branch: "agile/T2",
+            commitSha: base,
+            mode: "pr",
+            number: 8,
+            mergeCommit: base,
+          },
     };
     issues[1]!.comments.push({
       databaseId: 2,
@@ -1220,6 +1237,7 @@ test("branch-published dependencies gate on completion alone while PR dependenci
       advisor: createModelAdvisor([]),
       publisher: {
         baseBranch: "main",
+        mode: "pr",
         async publish() {
           throw Error("No publication");
         },
@@ -1251,11 +1269,13 @@ test("branch-published dependencies gate on completion alone while PR dependenci
     await run.runOnce(new AbortController().signal).catch(() => undefined);
     const downstream = (await store.get(41)).execution;
     if (branchDependency) {
-      // A completed branch dependency admits the downstream task without reading any pull request.
+      // A completed branch dependency admits the downstream task without reading any pull request,
+      // after verifying its landed commit is an ancestor of the fetched base.
       expect(downstream).toBeDefined();
       expect(commands).toEqual([
         ["git", "fetch", "origin", "main"],
         ["git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"],
+        ["git", "merge-base", "--is-ancestor", base, base],
       ]);
       expect(commands.flat()).not.toContain("view");
     } else {
@@ -1275,4 +1295,333 @@ test("branch-published dependencies gate on completion alone while PR dependenci
       ]);
     }
   }
+});
+
+test("branch dependencies require the same base and the landed commit inside the fetched base", async () => {
+  for (const scenario of [
+    {
+      name: "same base with landed ancestry",
+      upstreamBaseBranch: "main",
+      ancestryExitCode: 0,
+      admissible: true,
+      expectedCommands: [
+        ["git", "fetch", "origin", "main"],
+        ["git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"],
+        ["git", "merge-base", "--is-ancestor", "c".repeat(40), base],
+      ],
+    },
+    {
+      name: "upstream done on another base",
+      upstreamBaseBranch: "release/next",
+      ancestryExitCode: 0,
+      admissible: false,
+      expectedCommands: [],
+    },
+    {
+      name: "same base that no longer contains the upstream commit",
+      upstreamBaseBranch: "main",
+      ancestryExitCode: 1,
+      admissible: false,
+      expectedCommands: [
+        ["git", "fetch", "origin", "main"],
+        ["git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"],
+        ["git", "merge-base", "--is-ancestor", "c".repeat(40), base],
+      ],
+    },
+  ]) {
+    // Both envelopes share one manifest so their plan identity matches, as production plans do.
+    const planManifest = {
+      ...manifest,
+      tasks: [
+        {
+          ...manifest.tasks[0]!,
+          spec: { ...manifest.tasks[0]!.spec, dependencies: ["T2"] },
+        },
+        { ...manifest.tasks[0]!, id: "T2", title: "Upstream work" },
+      ],
+    };
+    const upstreamEnvelope = remoteTaskEnvelope(planManifest, "T2");
+    const downstreamEnvelope = remoteTaskEnvelope(planManifest, "T1");
+    const issue = (
+      number: number,
+      envelope: ReturnType<typeof remoteTaskEnvelope>,
+    ): RemoteIssue => ({
+      number,
+      title: envelope.task.title,
+      body: renderRemoteTaskBody(envelope),
+      url: `https://github.com/acme/test/issues/${number}`,
+      state: "OPEN",
+      labels: [{ name: "roc:task" }, { name: "roc:ready" }],
+      comments: [
+        {
+          databaseId: 1,
+          author: { login: "owner" },
+          body: renderRemoteTaskApproval(envelope),
+        },
+      ],
+    });
+    const issues = [issue(41, downstreamEnvelope), issue(42, upstreamEnvelope)];
+    const upstreamRecord: ExecutionRecord = {
+      version: 1,
+      issueNumber: 42,
+      specHash: jsonHash(upstreamEnvelope),
+      revision: 0,
+      baseBranch: scenario.upstreamBaseBranch,
+      baseCommit: base,
+      phase: "done",
+      updatedAt: time,
+      attempts: [],
+      hooks: {},
+      publication: {
+        branch: "agile/T2",
+        commitSha: "c".repeat(40),
+        mode: "branch",
+      },
+    };
+    issues[1]!.comments.push({
+      databaseId: 2,
+      author: { login: "daemon" },
+      body: renderExecution(upstreamRecord),
+    });
+    const api = {
+      async read() {
+        return structuredClone(issues);
+      },
+      async get(_repo: string, number: number) {
+        return structuredClone(issues.find((item) => item.number === number)!);
+      },
+      async writeComment(_repo: string, _number: number, body: string) {
+        const target = JSON.parse(
+          body
+            .split("<!-- roc:execution\n")[1]!
+            .split("\nroc:execution -->")[0]!,
+        ) as ExecutionRecord;
+        const existing = issues
+          .find((item) => item.number === target.issueNumber)!
+          .comments.find((item) => item.databaseId === 2);
+        if (existing) existing.body = body;
+        else
+          issues
+            .find((item) => item.number === target.issueNumber)!
+            .comments.push({
+              databaseId: 2,
+              author: { login: "daemon" },
+              body,
+            });
+      },
+      async closeCompleted(_repo: string, number: number) {},
+      async setStatusLabel() {},
+    };
+    const store = new GitHubExecutionStore(
+      "acme/test",
+      "daemon",
+      new Set(["owner"]),
+      api,
+    );
+    const commands: string[][] = [];
+    const run = new GitHubTaskRunner({
+      store,
+      branches,
+      harness: {
+        async step() {
+          throw Error("No agent work");
+        },
+        async cancel() {},
+      },
+      advisor: createModelAdvisor([]),
+      publisher: {
+        baseBranch: "main",
+        mode: "pr",
+        async publish() {
+          throw Error("No publication");
+        },
+      },
+      command: {
+        async run({ command }) {
+          commands.push(command);
+          return {
+            exitCode:
+              command[1] === "merge-base" ? scenario.ancestryExitCode : 0,
+            stdout: command[1] === "rev-parse" ? base : "",
+            stderr: "",
+          };
+        },
+      },
+      cwd: "/fixture",
+      baseBranch: "main",
+    });
+    await run.runOnce(new AbortController().signal).catch(() => undefined);
+    const downstream = (await store.get(41)).execution;
+    expect(downstream !== undefined, scenario.name).toBe(scenario.admissible);
+    expect(commands, scenario.name).toEqual(scenario.expectedCommands);
+    expect(commands.flat()).not.toContain("view");
+  }
+});
+
+test("a reviewing pull-request checkpoint reroutes to the pull-request publisher when the daemon restarts in branch mode", async () => {
+  const remote = memoryGitHub();
+  const targetBase = "c".repeat(40);
+  const head = "d".repeat(40);
+  const accepted = {
+    kind: "review" as const,
+    decision: "accepted" as const,
+    findings: [],
+    remainingGaps: [],
+  };
+  await seed(remote, (record) => {
+    record.phase = "reviewing";
+    record.baseCommit = targetBase;
+    record.publication = {
+      number: 7,
+      url: "https://github.com/acme/test/pull/7",
+      branch: "agile/issue-41",
+      commitSha: head,
+      mode: "pr",
+    };
+    record.refreshes = [
+      {
+        expectedHead: "b".repeat(40),
+        expectedBase: base,
+        targetBase,
+        budgetRemaining: 1,
+        result: { headSha: head },
+      },
+    ];
+    record.hooks.posthook = {
+      hash: "historical-hook",
+      status: "succeeded",
+      attempts: 1,
+    };
+    for (const output of [
+      {
+        kind: "scout" as const,
+        summary: "Inspect",
+        files: ["answer.ts"],
+        tests: ["bun test"],
+        risks: [],
+      },
+      {
+        kind: "implement" as const,
+        commitSha: "b".repeat(40),
+        validation: ["original validation"],
+        risks: [],
+        limitations: [],
+      },
+    ])
+      record.attempts.push({
+        descriptor: {
+          attemptId: `original-${output.kind}`,
+          taskId: "issue-41",
+          role: output.kind,
+          retryIndex: 0,
+          model,
+          modelProfile: "sol",
+          effort: "high",
+        },
+        status: "succeeded",
+        startedAt: time,
+        endedAt: time,
+        sequence: 2,
+        events: {},
+        output,
+        usage: { ...zeroUsage },
+        usageKnown: true,
+      });
+  });
+  const fake = createFakeHarness({
+    attempts: [
+      {
+        taskId: "issue-41",
+        role: "review",
+        retryIndex: 0,
+        expect: { model, effort: "high" },
+        deliveries: [
+          {
+            nextCursor: "output",
+            event: {
+              type: "attempt.output",
+              eventId: "output",
+              attemptId: "fixture",
+              sequence: 1,
+              occurredAt: time,
+              output: accepted,
+            },
+          },
+          {
+            nextCursor: "completed",
+            event: {
+              type: "attempt.completed",
+              eventId: "completed",
+              attemptId: "fixture",
+              sequence: 2,
+              occurredAt: time,
+            },
+          },
+        ],
+      },
+    ],
+  });
+  const branchPublications: Parameters<TaskPublisher["publish"]>[0][] = [];
+  const prPublications: Parameters<TaskPublisher["publish"]>[0][] = [];
+  const commands: string[][] = [];
+  const run = new GitHubTaskRunner({
+    store: remote.store(),
+    branches,
+    advisor: createModelAdvisor(
+      [{ id: model, supportedReasoningEfforts: ["medium", "high", "xhigh"] }],
+      { luna: model, terra: model, sol: model },
+    ),
+    harness: {
+      async step(request) {
+        return fake.harness.step(request);
+      },
+      async cancel() {},
+    },
+    // The daemon restarted with branch publication configured; the checkpoint still says "pr".
+    publisher: {
+      baseBranch: "main",
+      mode: "branch",
+      async publish(input) {
+        branchPublications.push(structuredClone(input));
+        return { branch: "agile/issue-41", commitSha: "e".repeat(40) };
+      },
+    },
+    alternatePublisher: {
+      baseBranch: "main",
+      mode: "pr",
+      async publish(input) {
+        prPublications.push(structuredClone(input));
+        return {
+          number: 7,
+          url: "https://github.com/acme/test/pull/7",
+          state: "OPEN" as const,
+        };
+      },
+    },
+    command: {
+      async run({ command }) {
+        commands.push(command);
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    },
+    cwd: "/fixture",
+    baseBranch: "main",
+  });
+  expect(await run.runOnce(new AbortController().signal)).toBe(false);
+  const record = (await remote.store().get(41)).execution!;
+  // The task returned to the pull-request waiting flow on the original pull request.
+  expect(record.phase).toBe("awaiting_merge");
+  expect(record.publication).toMatchObject({ number: 7, mode: "pr" });
+  expect(branchPublications).toEqual([]);
+  expect(prPublications).toHaveLength(1);
+  expect(prPublications[0]).toMatchObject({
+    reconcileOnly: true,
+    publication: { commitSha: head, branch: "agile/issue-41" },
+    acceptance: {
+      binding: { currentHeadSha: head, currentBaseSha: targetBase },
+    },
+  });
+  // No Git command ran at all, so nothing could push the base branch.
+  expect(commands).toEqual([]);
+  fake.assertComplete();
 });

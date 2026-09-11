@@ -327,6 +327,7 @@ function fixture(count = 1, dependent = false, skipScout = false) {
     ),
     publisher: {
       baseBranch: "main",
+      mode: "pr" as const,
       async publish(
         input: Parameters<
           import("../../src/github/pr-publisher").TaskPublisher["publish"]

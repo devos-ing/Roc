@@ -725,14 +725,21 @@ const rejectedBasePush = {
   stderr:
     "To example.test/acme/roc\n ! [rejected]        HEAD -> main (non-fast-forward)\nerror: failed to push some refs to 'example.test:acme/roc'\n",
 };
+const missingRemoteBranchResult = { exitCode: 2, stderr: "" };
 
-test("branch publication pushes the task branch as a trace and fast-forwards the base branch to its head", async () => {
+test("branch publication fast-forwards the base branch and only then records the tag and task branch traces", async () => {
   const commands: string[][] = [];
   const branchCalls: string[] = [];
   const publisher = new GitHubBranchPublisher(
     "main",
     branches(branchCalls),
-    runner(commands, [{}, { stdout: head }, {}]),
+    runner(commands, [
+      { stdout: head }, // rev-parse HEAD
+      {}, // base push
+      {}, // trace tag push
+      missingRemoteBranchResult, // remote task branch lookup
+      {}, // task branch first push
+    ]),
   );
 
   await expect(publisher.publish(input)).resolves.toEqual({
@@ -741,46 +748,49 @@ test("branch publication pushes the task branch as a trace and fast-forwards the
   });
   expect(branchCalls).toEqual(["prepare", "assertReviewReady"]);
   expect(commands).toEqual([
-    ["git", "push", "origin", "agile/T1"],
     ["git", "rev-parse", "--verify", "HEAD"],
     ["git", "push", "origin", `${head}:refs/heads/main`],
+    ["git", "push", "origin", `${head}:refs/tags/agile-trace/T1`],
+    ["git", "ls-remote", "--exit-code", "origin", "refs/heads/agile/T1"],
+    ["git", "push", "origin", `${head}:refs/heads/agile/T1`],
   ]);
   expect(commands.flat()).not.toContain("pr");
 });
 
-test("branch publication reconciles by re-pushing the trace branch and confirming the base head", async () => {
+test("branch publication rejects pull-request checklist reconciliation before any push", async () => {
   const commands: string[][] = [];
+  const branchCalls: string[] = [];
   const publisher = new GitHubBranchPublisher(
     "main",
-    branches([]),
-    runner(commands, [{}, { stdout: head }, {}]),
+    branches(branchCalls),
+    runner(commands, []),
   );
 
   await expect(
     publisher.publish({ ...input, reconcileOnly: true }),
-  ).resolves.toEqual({ branch: "agile/T1", commitSha: head });
-  expect(commands).toEqual([
-    ["git", "push", "origin", "agile/T1"],
-    ["git", "rev-parse", "--verify", "HEAD"],
-    ["git", "push", "origin", `${head}:refs/heads/main`],
-  ]);
+  ).rejects.toThrow(
+    "Branch publication has no pull request to reconcile; checklist reconciliation is a pull-request operation and must not push the base branch",
+  );
+  expect(branchCalls).toEqual([]);
+  expect(commands).toEqual([]);
 });
 
-test("branch publication rebases onto an advanced base and reports the rebased head that entered base", async () => {
+test("branch publication rebases onto an advanced base, tags the original commit, and pushes the landed head as the trace", async () => {
   const commands: string[][] = [];
   const rebased = "c".repeat(40);
   const publisher = new GitHubBranchPublisher(
     "main",
     branches([]),
     runner(commands, [
-      {}, // trace push
       { stdout: head }, // rev-parse HEAD
       rejectedBasePush, // base push rejected: non-fast-forward
       {}, // fetch origin main
       {}, // rebase onto origin/main
-      {}, // trace re-push of the rebased branch
       { stdout: rebased }, // rev-parse HEAD after rebase
       {}, // base push of the rebased head
+      {}, // trace tag push of the original commit
+      missingRemoteBranchResult, // remote task branch lookup
+      {}, // task branch first push at the landed head
     ]),
   );
 
@@ -788,24 +798,42 @@ test("branch publication rebases onto an advanced base and reports the rebased h
     branch: "agile/T1",
     commitSha: rebased,
   });
-  expect(commands[3]).toEqual(["git", "fetch", "origin", "main"]);
-  expect(commands[4]).toEqual(["git", "rebase", "origin/main"]);
-  expect(commands[7]).toEqual([
+  expect(commands[1]).toEqual([
+    "git",
+    "push",
+    "origin",
+    `${head}:refs/heads/main`,
+  ]);
+  expect(commands[2]).toEqual(["git", "fetch", "--no-tags", "origin", "main"]);
+  expect(commands[3]).toEqual(["git", "rebase", "origin/main"]);
+  expect(commands[5]).toEqual([
     "git",
     "push",
     "origin",
     `${rebased}:refs/heads/main`,
   ]);
+  // The tag preserves the original reviewed commit, not the rebased rewrite.
+  expect(commands[6]).toEqual([
+    "git",
+    "push",
+    "origin",
+    `${head}:refs/tags/agile-trace/T1`,
+  ]);
+  expect(commands[8]).toEqual([
+    "git",
+    "push",
+    "origin",
+    `${rebased}:refs/heads/agile/T1`,
+  ]);
   expect(commands.flat()).not.toContain("--force");
 });
 
-test("branch publication aborts a conflicting rebase and fails instead of force-pushing", async () => {
+test("branch publication aborts a conflicting rebase and fails without any trace side effects", async () => {
   const commands: string[][] = [];
   const publisher = new GitHubBranchPublisher(
     "main",
     branches([]),
     runner(commands, [
-      {},
       { stdout: head },
       rejectedBasePush,
       {}, // fetch
@@ -822,25 +850,27 @@ test("branch publication aborts a conflicting rebase and fails instead of force-
   );
   expect(commands).toContainEqual(["git", "rebase", "--abort"]);
   expect(commands.flat()).not.toContain("--force");
+  expect(
+    commands.filter((command) => command.slice(0, 2).join(" ") === "git tag"),
+  ).toEqual([]);
+  expect(commands.flat()).not.toContain("refs/tags/agile-trace/T1");
+  expect(commands.flat()).not.toContain("ls-remote");
 });
 
-test("branch publication exhausts two rebase retries when the base keeps advancing, then fails", async () => {
+test("branch publication exhausts two rebase retries when the base keeps advancing, then fails without traces", async () => {
   const commands: string[][] = [];
   const publisher = new GitHubBranchPublisher(
     "main",
     branches([]),
     runner(commands, [
-      {}, // trace push
       { stdout: head },
       rejectedBasePush, // base push rejected (1)
       {}, // fetch
       {}, // rebase
-      {}, // trace re-push
       { stdout: "c".repeat(40) },
       rejectedBasePush, // base push rejected (2)
       {}, // fetch
       {}, // rebase
-      {}, // trace re-push
       { stdout: "d".repeat(40) },
       rejectedBasePush, // base push rejected (3): retries exhausted
     ]),
@@ -861,6 +891,8 @@ test("branch publication exhausts two rebase retries when the base keeps advanci
     `${"d".repeat(40)}:refs/heads/main`,
   ]);
   expect(commands.flat()).not.toContain("--force");
+  expect(commands.flat()).not.toContain("refs/tags/agile-trace/T1");
+  expect(commands.flat()).not.toContain("ls-remote");
 });
 
 test("branch publication fails a server-side push rejection immediately without rebasing", async () => {
@@ -869,7 +901,6 @@ test("branch publication fails a server-side push rejection immediately without 
     "main",
     branches([]),
     runner(commands, [
-      {},
       { stdout: head },
       {
         exitCode: 1,
@@ -881,8 +912,99 @@ test("branch publication fails a server-side push rejection immediately without 
   await expect(publisher.publish(input)).rejects.toThrow(
     "! [remote rejected] main -> main (pre-receive hook declined)",
   );
-  expect(commands).toHaveLength(3);
+  expect(commands).toHaveLength(2);
   expect(commands.flat()).not.toContain("rebase");
+});
+
+test("branch publication fails without trace pushes when the remote refuses the trace tag update", async () => {
+  const commands: string[][] = [];
+  const publisher = new GitHubBranchPublisher(
+    "main",
+    branches([]),
+    runner(commands, [
+      { stdout: head },
+      {}, // base push
+      {
+        exitCode: 1,
+        stderr:
+          "To example.test/acme/roc\n ! [rejected]        bbbb... -> agile-trace/T1 (non-fast-forward)\n",
+      }, // trace tag names a different commit: never updated
+    ]),
+  );
+
+  await expect(publisher.publish(input)).rejects.toBeInstanceOf(
+    GitHubPublicationError,
+  );
+  expect(commands.at(-1)).toEqual([
+    "git",
+    "push",
+    "origin",
+    `${head}:refs/tags/agile-trace/T1`,
+  ]);
+  expect(commands.flat()).not.toContain("ls-remote");
+  expect(commands.flat()).not.toContain("refs/heads/agile/T1");
+  expect(commands.flat()).not.toContain("--force");
+});
+
+test("branch publication skips the task branch push when the remote already names the landed head", async () => {
+  const commands: string[][] = [];
+  const publisher = new GitHubBranchPublisher(
+    "main",
+    branches([]),
+    runner(commands, [
+      { stdout: head },
+      {}, // base push
+      {}, // trace tag push
+      { stdout: `${head}\trefs/heads/agile/T1\n` }, // remote branch already landed
+    ]),
+  );
+
+  await expect(publisher.publish(input)).resolves.toMatchObject({
+    commitSha: head,
+  });
+  expect(commands.at(-1)).toEqual([
+    "git",
+    "ls-remote",
+    "--exit-code",
+    "origin",
+    "refs/heads/agile/T1",
+  ]);
+  expect(commands).not.toContainEqual([
+    "git",
+    "push",
+    "origin",
+    `${head}:refs/heads/agile/T1`,
+  ]);
+});
+
+test("branch publication never force-pushes a trace branch that names another head", async () => {
+  const commands: string[][] = [];
+  const publisher = new GitHubBranchPublisher(
+    "main",
+    branches([]),
+    runner(commands, [
+      { stdout: head },
+      {}, // base push
+      {}, // trace tag push
+      { stdout: `${"e".repeat(40)}\trefs/heads/agile/T1\n` }, // remote branch moved
+      {
+        exitCode: 1,
+        stderr:
+          "To example.test/acme/roc\n ! [rejected]        agile/T1 -> agile/T1 (non-fast-forward)\n",
+      },
+    ]),
+  );
+
+  await expect(publisher.publish(input)).rejects.toBeInstanceOf(
+    GitHubPublicationError,
+  );
+  expect(commands.at(-1)).toEqual([
+    "git",
+    "push",
+    "origin",
+    `${head}:refs/heads/agile/T1`,
+  ]);
+  expect(commands.flat()).not.toContain("--force");
 });
 
 test("branch publication rejects publication evidence that does not match the implementation", async () => {

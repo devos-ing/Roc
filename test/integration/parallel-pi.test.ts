@@ -118,6 +118,7 @@ test("two Pi role flows overlap in real worktrees and keep commits, model settin
       ),
       publisher: {
         baseBranch: "main",
+        mode: "pr",
         async publish(input) {
           await branches.assertReviewReady(
             input.task.id,
