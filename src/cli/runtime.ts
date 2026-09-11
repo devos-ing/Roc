@@ -151,6 +151,7 @@ export async function runBackendSession(
           retain = false;
           stop.throwIfAborted();
           const lastProgress = new Map<number, string>();
+          /** Writes one diagnostic line to standard error. */
           const emitDiagnostic = (message: string) =>
             process.stderr.write(`${message}\n`);
           const runner = new GitHubTaskPool({
