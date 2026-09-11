@@ -206,3 +206,136 @@ test("keeps an immutable snapshot of catalog and mapping inputs", () => {
     model: "model-a",
   });
 });
+
+test("applies configured per-role efforts and leaves unset roles unchanged", () => {
+  const advisor = createModelAdvisor(catalog, undefined, {
+    efforts: { implement: "high", scout: "medium" },
+  });
+
+  expect(
+    advisor.decide({ role: "implement", risk: "medium", retryIndex: 0 }),
+  ).toMatchObject({
+    profile: "terra",
+    model: "gpt-5.6-terra",
+    effort: "high",
+    rationale: [
+      "implement baseline",
+      "medium risk",
+      "effort high (configured)",
+    ],
+  });
+  expect(
+    advisor.decide({ role: "scout", risk: "medium", retryIndex: 0 }),
+  ).toMatchObject({
+    profile: "luna",
+    model: "gpt-5.6-luna",
+    effort: "medium",
+  });
+  expect(
+    advisor.decide({ role: "review", risk: "medium", retryIndex: 0 }),
+  ).toMatchObject({
+    profile: "sol",
+    model: "gpt-5.6-sol",
+    effort: "high",
+    rationale: ["review baseline", "medium risk"],
+  });
+});
+
+test("routes a configured xhigh effort and advances the chain for support", () => {
+  const advisor = createModelAdvisor(catalog, undefined, {
+    efforts: { implement: "xhigh" },
+  });
+  expect(
+    advisor.decide({ role: "implement", risk: "medium", retryIndex: 0 }),
+  ).toMatchObject({
+    profile: "terra",
+    model: "gpt-5.6-terra",
+    effort: "xhigh",
+  });
+
+  const terraWithoutXhigh = createModelAdvisor(
+    [
+      { id: "gpt-5.6-luna", supportedReasoningEfforts: ["medium", "high"] },
+      { id: "gpt-5.6-terra", supportedReasoningEfforts: ["medium", "high"] },
+      {
+        id: "gpt-5.6-sol",
+        supportedReasoningEfforts: ["medium", "high", "xhigh"],
+      },
+    ],
+    undefined,
+    { efforts: { implement: "xhigh" } },
+  );
+  expect(
+    terraWithoutXhigh.decide({
+      role: "implement",
+      risk: "medium",
+      retryIndex: 0,
+    }),
+  ).toMatchObject({
+    profile: "sol",
+    model: "gpt-5.6-sol",
+    effort: "xhigh",
+  });
+});
+
+test("falls back to the role default with one diagnostic per role when the configured effort is unsupported", () => {
+  const mediumHighOnly = [
+    { id: "gpt-5.6-luna", supportedReasoningEfforts: ["medium", "high"] },
+    { id: "gpt-5.6-terra", supportedReasoningEfforts: ["medium", "high"] },
+    { id: "gpt-5.6-sol", supportedReasoningEfforts: ["medium", "high"] },
+  ];
+  const diagnostics: string[] = [];
+  const advisor = createModelAdvisor(mediumHighOnly, undefined, {
+    efforts: { implement: "xhigh" },
+    onDiagnostic: (message) => diagnostics.push(message),
+  });
+
+  expect(
+    advisor.decide({ role: "implement", risk: "medium", retryIndex: 0 }),
+  ).toMatchObject({
+    profile: "terra",
+    model: "gpt-5.6-terra",
+    effort: "medium",
+    rationale: [
+      "implement baseline",
+      "medium risk",
+      "configured effort xhigh unsupported",
+      "effort medium (default)",
+    ],
+  });
+  expect(diagnostics).toEqual([
+    'Configured implement effort "xhigh" is unsupported by the routed models; using the default "medium" instead.',
+  ]);
+
+  advisor.decide({
+    role: "implement",
+    risk: "high",
+    retryIndex: 1,
+    priorProfile: "terra",
+  });
+  expect(diagnostics).toHaveLength(1);
+
+  expect(
+    advisor.decide({ role: "scout", risk: "medium", retryIndex: 0 }),
+  ).toMatchObject({ profile: "luna", model: "gpt-5.6-luna", effort: "high" });
+  expect(diagnostics).toHaveLength(1);
+});
+
+test("returns undefined when both configured and default efforts are unsupported", () => {
+  const diagnostics: string[] = [];
+  const advisor = createModelAdvisor(
+    [{ id: "provider/astra", supportedReasoningEfforts: ["high"] }],
+    { luna: "provider/astra", terra: "provider/astra", sol: "provider/astra" },
+    {
+      efforts: { implement: "xhigh" },
+      onDiagnostic: (message) => diagnostics.push(message),
+    },
+  );
+
+  expect(
+    advisor.decide({ role: "implement", risk: "low", retryIndex: 0 }),
+  ).toBeUndefined();
+  expect(diagnostics).toEqual([
+    'Configured implement effort "xhigh" is unsupported by the routed models; using the default "medium" instead.',
+  ]);
+});
