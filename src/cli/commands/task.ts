@@ -1,10 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { AcceptanceChecklistItem } from "../../domain/acceptance-checklist";
-import { BacklogManifestSchema } from "../../domain/schemas";
+import { BacklogManifestSchema, type TaskStatus } from "../../domain/schemas";
 import { BunGitHubCommandRunner } from "../../github/pr-publisher";
 import { jsonHash, withGitHubBodyFile } from "../../github/remote-tasks";
-import { cleanupTaskWorktrees } from "../../workspace/task-branch";
+import { acquireCheckoutOwnership } from "../../workspace/checkout-ownership";
+import {
+  cleanupTaskWorktrees,
+  type TaskWorktreeCleanupResult,
+} from "../../workspace/task-branch";
 import {
   commandProjectRoot,
   currentCycle,
@@ -41,6 +46,23 @@ function renderAcceptanceChecklist(
           ]),
     ]),
   ].join("\n");
+}
+
+/** Removes finished task worktrees while holding the exclusive checkout ownership guard. */
+async function removeTaskWorktrees(
+  repoPath: string,
+  taskStatuses: ReadonlyMap<string, TaskStatus>,
+  all: boolean,
+): Promise<TaskWorktreeCleanupResult> {
+  const ownership = await acquireCheckoutOwnership(repoPath, randomUUID());
+  try {
+    return await cleanupTaskWorktrees(repoPath, taskStatuses, {
+      dryRun: false,
+      all,
+    });
+  } finally {
+    await ownership.release();
+  }
 }
 
 /** Registers task commands that read or modify GitHub directly. */
@@ -187,13 +209,21 @@ export function registerTaskCommands(
         const snapshot = await context.runtime.readTasks(root);
         for (const diagnostic of snapshot.diagnostics)
           context.io.err(diagnostic);
-        const result = await cleanupTaskWorktrees(
-          root,
-          new Map(
-            snapshot.tasks.map((task) => [task.id, task.status] as const),
-          ),
-          { dryRun: options.dryRun === true, all: options.all === true },
+        const taskStatuses = new Map(
+          snapshot.tasks.map((task) => [task.id, task.status] as const),
         );
+        const result =
+          options.dryRun === true
+            ? // Dry-run stays strictly read-only and never touches the guard.
+              await cleanupTaskWorktrees(root, taskStatuses, {
+                dryRun: true,
+                all: options.all === true,
+              })
+            : await removeTaskWorktrees(
+                root,
+                taskStatuses,
+                options.all === true,
+              );
         context.io.out(
           JSON.stringify(
             { removed: result.removed, kept: result.kept },

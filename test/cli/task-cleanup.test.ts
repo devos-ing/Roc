@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   mkdir,
   mkdtemp,
+  readFile,
   realpath,
   rm,
   stat,
@@ -76,6 +77,7 @@ async function createFixture() {
     async cleanup(): Promise<void> {
       await rm(root, { recursive: true, force: true });
       await rm(worktreeRoot, { recursive: true, force: true });
+      await rm(`${root}.agile-checkout.lock`, { force: true });
     },
   };
 }
@@ -289,6 +291,80 @@ test("task cleanup fails safely without GitHub task reads", async () => {
     expect(run.code).toBe(1);
     expect(run.errors).toEqual(["GitHub task reads are unavailable"]);
     expect(await exists(path)).toBe(true);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+/** Writes a foreign checkout guard so cleanup sees the checkout as owned. */
+async function holdCheckoutGuard(root: string): Promise<string> {
+  const lockPath = `${root}.agile-checkout.lock`;
+  await writeFile(
+    lockPath,
+    JSON.stringify({
+      version: 1,
+      runId: "foreign-run",
+      ownerPid: process.pid,
+      acquiredAt: new Date().toISOString(),
+      ownerToken: "foreign-owner-token",
+    }),
+  );
+  return lockPath;
+}
+
+test("a held checkout guard blocks real removal without deleting anything", async () => {
+  const f = await createFixture();
+  try {
+    const path = await f.prepare("issue-41");
+    const lockPath = await holdCheckoutGuard(f.root);
+    const guard = await readFile(lockPath, "utf8");
+    const run = await runCleanup(f.root, [storedTask("issue-41", "done")], []);
+    expect(run.code).toBe(1);
+    expect(run.errors).toEqual(["Scheduler checkout is already in use"]);
+    expect(run.out).toEqual([]);
+    expect(await exists(path)).toBe(true);
+    expect(await git(["worktree", "list", "--porcelain"], f.root)).toContain(
+      path,
+    );
+    expect(await readFile(lockPath, "utf8")).toBe(guard);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("dry-run ignores a held guard and a successful real run releases its own guard", async () => {
+  const f = await createFixture();
+  try {
+    const path = await f.prepare("issue-42");
+    const lockPath = await holdCheckoutGuard(f.root);
+    const guard = await readFile(lockPath, "utf8");
+    const dry = await runCleanup(
+      f.root,
+      [storedTask("issue-42", "done")],
+      ["--dry-run"],
+    );
+    expect(dry.code).toBe(0);
+    expect(dry.errors).toEqual([]);
+    expect(dry.plan?.removed.map((entry) => entry.task)).toEqual(["issue-42"]);
+    expect(dry.summary).toContain("Dry run");
+    expect(await exists(path)).toBe(true);
+    expect(await readFile(lockPath, "utf8")).toBe(guard);
+
+    await rm(lockPath);
+    const run = await runCleanup(f.root, [storedTask("issue-42", "done")], []);
+    expect(run.code).toBe(0);
+    expect(run.errors).toEqual([]);
+    expect(run.plan?.removed.map((entry) => entry.task)).toEqual(["issue-42"]);
+    expect(await exists(path)).toBe(false);
+    expect(await exists(lockPath)).toBe(false);
+    // A follow-up real run proves the guard was released instead of leaked.
+    const again = await runCleanup(
+      f.root,
+      [storedTask("issue-42", "done")],
+      [],
+    );
+    expect(again.code).toBe(0);
+    expect(again.errors).toEqual([]);
   } finally {
     await f.cleanup();
   }

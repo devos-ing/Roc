@@ -518,13 +518,16 @@ entry carries its reason — followed by a summary line. Safety rules:
 - Worktrees of tickets that are not in a terminal state, tickets missing from
   the GitHub snapshot, and entries under `<project>.agile-worktrees` that are
   not registered worktrees (other repositories' directories, plain files) are
-  kept and reported. The checkout ownership lock is never touched.
+  kept and reported. Real removal holds the exclusive checkout ownership guard
+  (`<project>.agile-checkout.lock`) for the whole run and refuses to start
+  while a scheduler owns the checkout; `--dry-run` never touches the guard.
 
 Exit codes: `0` when the plan printed and every attempted removal succeeded
 (`--dry-run` exits `0` once the plan prints); `1` when GitHub task reads are
-unavailable, the worktree root is unusable, or any removal failed. Failed
-removals stay on disk, appear in `kept[]` with a `Worktree removal failed`
-reason, and the remaining worktrees are still processed.
+unavailable, the checkout ownership guard is already held, the worktree root
+is unusable, or any removal failed. Failed removals stay on disk, appear in
+`kept[]` with a `Worktree removal failed` reason, and the remaining worktrees
+are still processed.
 
 ## Commands
 

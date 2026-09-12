@@ -68,6 +68,7 @@ export class GitHubTaskPool {
   private failure?: unknown;
   private completions = 0;
   private readFailures = 0;
+  private justBackedOff = false;
   private readonly selector: GitHubTaskRunner;
   private readonly admissionStop = new AbortController();
   private selection?: Promise<NativeTask | undefined>;
@@ -189,6 +190,7 @@ export class GitHubTaskPool {
     try {
       const tasks = await this.refreshAuthority(signal);
       this.readFailures = 0;
+      this.justBackedOff = false;
       return tasks;
     } catch (error) {
       if (
@@ -206,6 +208,7 @@ export class GitHubTaskPool {
         `GitHub task read failed (${error.code}); consecutive failures: ${this.readFailures}; retrying in ${Math.round(delay / 1000)}s`,
       );
       await backoffDelay(delay, signal);
+      this.justBackedOff = true;
       return undefined;
     }
   }
@@ -221,7 +224,10 @@ export class GitHubTaskPool {
     });
     try {
       while (!settled && !signal.aborted) {
-        await waitForChange([owned.then(() => undefined)], signal);
+        // A just-completed read backoff already waited, so retry immediately
+        // instead of stacking the ordinary poll interval on top of it.
+        if (this.justBackedOff) this.justBackedOff = false;
+        else await waitForChange([owned.then(() => undefined)], signal);
         if (!settled && !signal.aborted) await this.pollAuthority(signal);
       }
       return await owned;

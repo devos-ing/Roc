@@ -701,6 +701,72 @@ test("backoff for consecutive retryable read failures doubles to a five-minute c
   }
 });
 
+test("selection-path retries follow the backoff ladder without a stacked ordinary wait", async () => {
+  const f = fixture([["a.ts"]]);
+  const timers = compressPollingTimers();
+  const apiRead = f.api.read;
+  // Read 1 admits the task; reads 2-7 fail so the selector stays in flight and
+  // every retry is driven by awaitSelection; read 8 succeeds; read 9 fails
+  // again to prove the ladder reset.
+  const failOnCall = new Set([2, 3, 4, 5, 6, 7, 9]);
+  let calls = 0;
+  f.api.read = async () => {
+    calls++;
+    if (failOnCall.has(calls)) throw transientReadFailure();
+    return apiRead();
+  };
+  const syncLabels = f.store.syncLabels.bind(f.store);
+  const selecting = barrier();
+  const releaseSelection = barrier();
+  f.store.syncLabels = async (task) => {
+    selecting.release();
+    await releaseSelection.promise;
+    await syncLabels(task);
+  };
+  const stop = new AbortController();
+  const run = f.pool.run(stop.signal).catch((error) => {
+    if (!stop.signal.aborted) throw error;
+  });
+  try {
+    await selecting.promise;
+    await until(() => timers.delays.length >= 7);
+    // The first delay is the ordinary poll before the first failure; the six
+    // that follow must be exactly the backoff ladder at its cap with no
+    // ordinary 30s wait stacked between rungs.
+    expect(timers.delays.slice(1, 7)).toEqual([
+      30_000, 60_000, 120_000, 240_000, 300_000, 300_000,
+    ]);
+    expect(failureCounts(f.diagnostics)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+    ]);
+    // After the successful read the ladder resets, so the next failure waits
+    // one ordinary interval and then backs off 30s again.
+    await until(() => timers.delays.length >= 9);
+    expect(timers.delays.slice(7, 9)).toEqual([30_000, 30_000]);
+    expect(failureCounts(f.diagnostics)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "1",
+    ]);
+  } finally {
+    stop.abort();
+    releaseSelection.release();
+    for (const gate of f.release) gate.release();
+    await f.pool.cancel().catch(() => undefined);
+    await run;
+    timers.restore();
+  }
+});
+
 test("a non-retryable read failure such as a 401 still terminates the run loop", async () => {
   const f = fixture([["a.ts"]]);
   f.api.read = async () => {

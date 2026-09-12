@@ -171,6 +171,7 @@ export async function cleanupTaskWorktrees(
   let worktrees = await registeredWorktrees(sourceGit);
   for (const name of (await readdir(root)).sort()) {
     const path = resolve(root, name);
+    /** Records one retained entry together with the reason its worktree was kept. */
     const keep = (reason: string) => {
       result.kept.push({ task: name, path, reason });
     };
