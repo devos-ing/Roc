@@ -183,11 +183,7 @@ export async function readCheckoutOwnerRecord(
   try {
     serialized = await readFile(lockPath, "utf8");
   } catch (error) {
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "ENOENT"
-    ) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return { state: "absent" };
     }
     // Unreadable guards (EISDIR, EACCES, ...) still block acquisition, so they

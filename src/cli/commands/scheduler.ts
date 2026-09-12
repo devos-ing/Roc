@@ -144,9 +144,7 @@ export function registerSchedulerCommands(
           alive = true;
         } catch (error) {
           alive =
-            error instanceof Error &&
-            "code" in error &&
-            error.code === "EPERM";
+            error instanceof Error && "code" in error && error.code === "EPERM";
         }
         if (alive) {
           context.io.out(
