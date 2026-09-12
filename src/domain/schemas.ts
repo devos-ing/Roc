@@ -72,6 +72,13 @@ export const TicketSpecSchema = z
   })
   .strict()
   .superRefine((spec, context) => {
+    if (spec.continues && spec.dependencies.length > 0)
+      context.addIssue({
+        code: "custom",
+        path: ["continues"],
+        message:
+          "Chained tasks must not declare completion dependencies; use continues only",
+      });
     if (!spec.skipScout) return;
     const files = spec.scope.every(
       (path) =>

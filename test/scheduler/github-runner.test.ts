@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { TicketSpecSchema } from "../../src/domain/schemas";
 import {
   type ExecutionRecord,
   GitHubExecutionStore,
@@ -612,7 +613,7 @@ function chainFixture(continues: { issue: number }) {
     body: renderRemoteTaskApproval(predecessorEnvelope),
   };
   const chainEnvelope = remoteTaskEnvelope(plan, "T2");
-  const chain = {
+  const chain: RemoteIssue = {
     ...structuredClone(remote.issue),
     number: 42,
     body: renderRemoteTaskBody(chainEnvelope),
@@ -650,6 +651,14 @@ function chainFixture(continues: { issue: number }) {
           author: { login: "daemon" },
           body,
         });
+    },
+    async closeCompleted(_repo: string, number: number) {
+      remote.closures.push(number);
+      const issue = number === 41 ? remote.issue : chain;
+      if (issue.state === "OPEN") {
+        issue.state = "CLOSED";
+        issue.stateReason = "COMPLETED";
+      }
     },
   };
   const store = new GitHubExecutionStore(
@@ -711,7 +720,7 @@ test("a chain ticket claims onto the frozen predecessor branch segment while the
   expect(diagnostics).toEqual([]);
 });
 
-test("a chain ticket stays unclaimed while its predecessor is already merged to done", async () => {
+test("a chain ticket whose predecessor is already merged to done is durably marked needs_replan", async () => {
   const { remote, store } = chainFixture({ issue: 41 });
   await seed(remote, (record) => {
     record.phase = "done";
@@ -724,14 +733,23 @@ test("a chain ticket stays unclaimed while its predecessor is already merged to 
   });
   remote.issue.state = "CLOSED";
   const diagnostics: string[] = [];
+  const runner = chainRunner(store, diagnostics);
   const { tasks } = await store.list();
-  const claimed = await chainRunner(store, diagnostics).claimNext(
-    tasks,
-    new AbortController().signal,
-  );
-  expect(claimed).toBeUndefined();
-  expect((await store.get(42)).execution).toBeUndefined();
-  expect(diagnostics.join()).toContain("has no frozen branch segment yet");
+  expect(
+    await runner.claimNext(tasks, new AbortController().signal),
+  ).toBeUndefined();
+  expect((await store.get(42)).execution).toMatchObject({
+    phase: "needs_replan",
+    baseBranch: "agile/issue-1",
+    failure: expect.stringContaining("already merged"),
+  });
+  expect(diagnostics.join()).toContain("already merged or closed");
+  // The persisted needs_replan checkpoint keeps every later claim attempt away.
+  const after = await store.list();
+  expect(
+    await runner.claimNext(after.tasks, new AbortController().signal),
+  ).toBeUndefined();
+  expect(after.tasks.map((task) => task.task.status)).toContain("needs_replan");
 });
 
 test("a chain ticket stays unclaimed when its declared predecessor issue does not exist", async () => {
@@ -962,7 +980,7 @@ test("a merged chain branch credits every awaiting chain ticket with the same me
   expect(await run.runOnce(new AbortController().signal)).toBe(false);
 });
 
-test("a chain ticket stays awaiting when its frozen segment is absent from the merged history", async () => {
+test("a merged chain PR that dropped its segment leaves an explicit replan instead of waiting forever", async () => {
   const { remote, store, chain } = chainFixture({ issue: 41 });
   const chainBranch = "agile/issue-1";
   const segment = "b".repeat(40);
@@ -1030,10 +1048,10 @@ test("a chain ticket stays awaiting when its frozen segment is absent from the m
   expect(await run.runOnce(new AbortController().signal)).toBe(false);
   const after = (await store.get(42)).execution;
   expect(after).toMatchObject({
-    phase: "awaiting_merge",
+    phase: "needs_replan",
     baseBranch: chainBranch,
   });
-  expect(after?.failure).toContain("ancestor");
+  expect(after?.failure).toContain("squash merge dropped or excluded");
   expect(after?.publication?.mergeCommit).toBeUndefined();
   expect(chain.state).toBe("OPEN");
   expect(commands).toContainEqual([
@@ -1043,6 +1061,272 @@ test("a chain ticket stays awaiting when its frozen segment is absent from the m
     segment,
     merged,
   ]);
+  expect(commands).toContainEqual([
+    "gh",
+    "pr",
+    "view",
+    "7",
+    "--repo",
+    "acme/test",
+    "--json",
+    "commits",
+    "--jq",
+    ".[].oid",
+  ]);
+});
+
+test("a squash-merged chain PR verifies its segment via the PR commit list and credits the squash commit", async () => {
+  const { remote, store, chain } = chainFixture({ issue: 41 });
+  const chainBranch = "agile/issue-1";
+  const segment = "b".repeat(40);
+  const merged = "c".repeat(40);
+  await seed(remote, (record) => {
+    record.phase = "done";
+    record.publication = {
+      number: 7,
+      branch: chainBranch,
+      commitSha: base,
+      mergeCommit: base,
+    };
+  });
+  remote.issue.state = "CLOSED";
+  const task = await store.get(42);
+  const record = initialExecution(task, chainBranch, base);
+  record.phase = "awaiting_merge";
+  record.publication = { number: 7, branch: chainBranch, commitSha: segment };
+  chain.comments.push({
+    databaseId: 4,
+    author: { login: "daemon" },
+    body: renderExecution(record),
+  });
+  const diagnostics: string[] = [];
+  const commands: string[][] = [];
+  const run = new GitHubTaskRunner({
+    store,
+    branches,
+    advisor: createModelAdvisor([]),
+    harness: {
+      async step() {
+        throw Error("Unexpected agent work");
+      },
+      async cancel() {},
+    },
+    publisher: {
+      baseBranch: "main",
+      async publish() {
+        throw Error("Unexpected publication");
+      },
+    },
+    command: {
+      async run({ command }) {
+        commands.push(command);
+        return {
+          exitCode:
+            command[1] === "merge-base" && command[3] === segment ? 1 : 0,
+          stderr: "",
+          stdout:
+            command[0] === "gh"
+              ? command.includes("--jq")
+                ? `${segment}\n`
+                : JSON.stringify({
+                    number: 7,
+                    state: "MERGED",
+                    baseRefName: "main",
+                    headRefName: chainBranch,
+                    headRefOid: "e".repeat(40),
+                    mergeCommit: { oid: merged },
+                  })
+              : "",
+        };
+      },
+    },
+    cwd: "/fixture",
+    baseBranch: "main",
+    diagnostic: (message) => diagnostics.push(message),
+  });
+  expect(await run.runOnce(new AbortController().signal)).toBe(false);
+  const after = (await store.get(42)).execution;
+  expect(after).toMatchObject({
+    phase: "done",
+    baseBranch: chainBranch,
+    publication: {
+      number: 7,
+      branch: chainBranch,
+      commitSha: segment,
+      mergeCommit: merged,
+    },
+  });
+  expect(after?.failure).toBeUndefined();
+  expect(diagnostics.join()).toContain(
+    "segment verified via PR commit list (squash merge; ancestry unavailable)",
+  );
+  expect(chain.state).toBe("CLOSED");
+});
+
+test("an auto-merge predecessor recovers read-only while its chain successor keeps the PR open", async () => {
+  const { remote, store } = chainFixture({ issue: 41 });
+  const taskBranch = "agile/issue-41";
+  const segmentA = "b".repeat(40);
+  const pushed = "e".repeat(40);
+  await seed(remote, (record) => {
+    record.phase = "awaiting_merge";
+    record.publication = {
+      number: 7,
+      branch: taskBranch,
+      commitSha: segmentA,
+    };
+  });
+  const diagnostics: string[] = [];
+  const commands: string[][] = [];
+  const run = new GitHubTaskRunner({
+    store,
+    branches,
+    advisor: createModelAdvisor([]),
+    harness: {
+      async step() {
+        throw Error("Unexpected agent work");
+      },
+      async cancel() {},
+    },
+    publisher: {
+      baseBranch: "main",
+      async publish() {
+        throw Error("Unexpected publication");
+      },
+    },
+    command: {
+      async run({ command }) {
+        commands.push(command);
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout:
+            command[0] === "gh"
+              ? JSON.stringify({
+                  number: 7,
+                  state: "OPEN",
+                  baseRefName: "main",
+                  headRefName: taskBranch,
+                  headRefOid: pushed,
+                  mergeCommit: null,
+                })
+              : "",
+        };
+      },
+    },
+    cwd: "/fixture",
+    baseBranch: "main",
+    autoMerge: true,
+    diagnostic: (message) => diagnostics.push(message),
+  });
+  const { tasks } = await store.list();
+  await run.claimNext(tasks, new AbortController().signal);
+  const record = (await store.get(41)).execution;
+  expect(record).toMatchObject({
+    phase: "awaiting_merge",
+    baseBranch: "main",
+    publication: { number: 7, branch: taskBranch, commitSha: segmentA },
+  });
+  expect(record?.failure).toBeUndefined();
+  expect(record?.publication?.mergeCommit).toBeUndefined();
+  expect(remote.issue.state).toBe("OPEN");
+  expect(diagnostics).toEqual([]);
+  // The read-only recovery never constructs a merger; every merger call goes through `gh api`.
+  expect(commands.some((command) => command.includes("gh api"))).toBe(false);
+  expect(commands).not.toContainEqual([
+    "git",
+    "merge-base",
+    "--is-ancestor",
+    segmentA,
+    pushed,
+  ]);
+});
+
+test("an unapproved successor's reference does not shield its predecessor from replan", async () => {
+  const { remote, store, chain } = chainFixture({ issue: 41 });
+  const taskBranch = "agile/issue-41";
+  const segmentA = "b".repeat(40);
+  const pushed = "e".repeat(40);
+  await seed(remote, (record) => {
+    record.phase = "awaiting_merge";
+    record.publication = {
+      number: 7,
+      branch: taskBranch,
+      commitSha: segmentA,
+    };
+  });
+  // The successor references #41 without a trusted approval, so it must not confer the exemption.
+  chain.comments = [];
+  const commands: string[][] = [];
+  const run = new GitHubTaskRunner({
+    store,
+    branches,
+    advisor: createModelAdvisor([]),
+    harness: {
+      async step() {
+        throw Error("Unexpected agent work");
+      },
+      async cancel() {},
+    },
+    publisher: {
+      baseBranch: "main",
+      async publish() {
+        throw Error("Unexpected publication");
+      },
+    },
+    command: {
+      async run({ command }) {
+        commands.push(command);
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout:
+            command[0] === "gh"
+              ? JSON.stringify({
+                  number: 7,
+                  state: "OPEN",
+                  baseRefName: "main",
+                  headRefName: taskBranch,
+                  headRefOid: pushed,
+                  mergeCommit: null,
+                })
+              : "",
+        };
+      },
+    },
+    cwd: "/fixture",
+    baseBranch: "main",
+  });
+  const { tasks } = await store.list();
+  await run.claimNext(tasks, new AbortController().signal);
+  const record = (await store.get(41)).execution;
+  expect(record).toMatchObject({ phase: "needs_replan", baseBranch: "main" });
+  expect(record?.failure).toContain(
+    "Published PR changed or closed without merge",
+  );
+});
+
+test("a chained ticket spec rejects completion dependencies at the schema boundary", () => {
+  const first = manifest.tasks[0];
+  if (!first) throw Error("Missing task fixture");
+  const conflicting = TicketSpecSchema.safeParse({
+    ...first.spec,
+    dependencies: ["T1"],
+    continues: { issue: 41 },
+  });
+  expect(conflicting.success).toBe(false);
+  if (!conflicting.success)
+    expect(
+      conflicting.error.issues.some(
+        (issue) =>
+          issue.path.includes("continues") &&
+          issue.message.includes("use continues only"),
+      ),
+    ).toBe(true);
+  expect(
+    TicketSpecSchema.safeParse({ ...first.spec, continues: { issue: 41 } })
+      .success,
+  ).toBe(true);
 });
 
 test("a merged PR pushed forward by its chain successor still credits the predecessor ticket", async () => {
