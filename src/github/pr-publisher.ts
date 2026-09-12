@@ -7,7 +7,10 @@ import type { StoredTask } from "../domain/schemas";
 import type { ImplementOutput, ReviewOutput } from "../harness/contracts";
 import { AgileError } from "../runtime/errors";
 import { gitPathResolutionEnvironment } from "../workspace/git-environment";
-import type { TaskBranchManager } from "../workspace/task-branch";
+import {
+  type TaskBranchManager,
+  taskBranchName,
+} from "../workspace/task-branch";
 
 export type TaskPublicationRecord = {
   taskId: string;
@@ -404,6 +407,9 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
     const workspace = await this.branches.prepare(
       input.task.id,
       input.task.baseCommit,
+      input.publication.branch !== taskBranchName(input.task.id)
+        ? input.publication.branch
+        : undefined,
     );
     if (workspace.branch !== input.publication.branch) {
       throw new GitHubPublicationError(
