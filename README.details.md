@@ -245,6 +245,16 @@ GitHub supplies neither deadline, retries start after one minute and back off
 to at most fifteen minutes between attempts. Ctrl-C interrupts the wait.
 See [GitHub's rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
 
+A transient failure of the daemon's scheduled task-list read no longer stops a
+long-running `scheduler run`. When a poll fails with a retryable infra error
+such as a network timeout, the daemon logs a warning naming the error code, the
+consecutive-failure count and the next delay, then keeps running and skips
+admission until a fresh read succeeds; in-flight workers are unaffected. The
+wait starts at 30 seconds, doubles after each consecutive failure up to five
+minutes, and resets to 30 seconds after one successful poll. Failures marked
+non-retryable still report an error and exit through the normal failure path;
+Ctrl-C keeps its immediate graceful stop.
+
 Permission failures still report an error. Mutating commands are not blindly
 replayed: checkpoint and PR writes keep their existing readback checks, and
 unconfirmed writes or child cleanup can still retain the ownership lock.
