@@ -5,6 +5,7 @@ import {
   initialExecution,
   renderExecution,
 } from "../../src/github/execution-store";
+import type { RemoteIssue } from "../../src/github/issue-reader";
 import type { TaskPublisher } from "../../src/github/pr-publisher";
 import {
   jsonHash,
@@ -657,7 +658,7 @@ function chainFixture(continues: { issue: number }) {
     new Set(["owner"]),
     api,
   );
-  return { remote, store };
+  return { remote, store, chain };
 }
 
 /** Constructs a claim-only runner whose unexpected execution boundaries fail the test. */
@@ -748,6 +749,300 @@ test("a chain ticket stays unclaimed when its declared predecessor issue does no
   expect(claimed).toBeUndefined();
   expect((await store.get(42)).execution).toBeUndefined();
   expect(diagnostics.join()).toContain("chain predecessor issue #99 not found");
+});
+
+/** Builds a three-issue chain plan: normal T1 on #41, chain tickets T2 on #42 and T3 on #43. */
+function chainPairFixture() {
+  const remote = memoryGitHub();
+  const first = manifest.tasks[0];
+  if (!first) throw Error("Missing task fixture");
+  const plan = {
+    ...manifest,
+    tasks: [
+      first,
+      { ...first, id: "T2", spec: { ...first.spec, continues: { issue: 41 } } },
+      { ...first, id: "T3", spec: { ...first.spec, continues: { issue: 42 } } },
+    ],
+  };
+  const issueFor = (
+    id: string,
+    number: number,
+    commentId: number,
+  ): RemoteIssue => {
+    const envelope = remoteTaskEnvelope(plan, id);
+    return {
+      ...structuredClone(remote.issue),
+      number,
+      body: renderRemoteTaskBody(envelope),
+      comments: [
+        {
+          databaseId: commentId,
+          author: { login: "owner" },
+          body: renderRemoteTaskApproval(envelope),
+        },
+      ],
+    };
+  };
+  const firstEnvelope = remoteTaskEnvelope(plan, "T1");
+  remote.issue.body = renderRemoteTaskBody(firstEnvelope);
+  remote.issue.comments[0] = {
+    databaseId: 1,
+    author: { login: "owner" },
+    body: renderRemoteTaskApproval(firstEnvelope),
+  };
+  const predecessor = issueFor("T2", 42, 3);
+  const successor = issueFor("T3", 43, 5);
+  const issueByNumber = (number: number) =>
+    number === 41 ? remote.issue : number === 42 ? predecessor : successor;
+  const api = {
+    ...remote.api,
+    async read() {
+      return structuredClone([remote.issue, predecessor, successor]);
+    },
+    async get(_repo: string, number: number) {
+      return structuredClone(issueByNumber(number));
+    },
+    async getMany(repo: string, numbers: readonly number[]) {
+      return Promise.all(numbers.map((number) => api.get(repo, number)));
+    },
+    async writeComment(
+      _repo: string,
+      number: number,
+      body: string,
+      id?: number,
+    ) {
+      const issue = issueByNumber(number);
+      const comment = issue.comments.find((item) => item.databaseId === id);
+      if (comment) comment.body = body;
+      else
+        issue.comments.push({
+          databaseId: issue.comments.length + 1,
+          author: { login: "daemon" },
+          body,
+        });
+    },
+    async closeCompleted(_repo: string, number: number) {
+      remote.closures.push(number);
+      const issue = issueByNumber(number);
+      if (issue.state === "OPEN") {
+        issue.state = "CLOSED";
+        issue.stateReason = "COMPLETED";
+      }
+    },
+  };
+  const store = new GitHubExecutionStore(
+    "acme/test",
+    "daemon",
+    new Set(["owner"]),
+    api,
+  );
+  return { remote, store, predecessor, successor };
+}
+
+/** Seeds a durable chain-ticket checkpoint as if an earlier process stopped there. */
+async function seedChainTicket(
+  store: GitHubExecutionStore,
+  issue: RemoteIssue,
+  baseBranch: string,
+  baseCommit: string,
+  edit: (record: ExecutionRecord) => void,
+) {
+  const task = await store.get(issue.number);
+  const record = initialExecution(task, baseBranch, baseCommit);
+  edit(record);
+  issue.comments.push({
+    databaseId: 100 + issue.number,
+    author: { login: "daemon" },
+    body: renderExecution(record),
+  });
+}
+
+test("a merged chain branch credits every awaiting chain ticket with the same merge commit", async () => {
+  const { remote, store, predecessor, successor } = chainPairFixture();
+  const chainBranch = "agile/issue-1";
+  const segmentA = "b".repeat(40);
+  const segmentB = "e".repeat(40);
+  const merged = "c".repeat(40);
+  await seed(remote, (record) => {
+    record.phase = "done";
+    record.publication = {
+      number: 7,
+      branch: chainBranch,
+      commitSha: base,
+      mergeCommit: base,
+    };
+  });
+  remote.issue.state = "CLOSED";
+  await seedChainTicket(store, predecessor, chainBranch, base, (record) => {
+    record.phase = "awaiting_merge";
+    record.publication = {
+      number: 7,
+      branch: chainBranch,
+      commitSha: segmentA,
+    };
+  });
+  await seedChainTicket(store, successor, chainBranch, segmentA, (record) => {
+    record.phase = "awaiting_merge";
+    record.publication = {
+      number: 7,
+      branch: chainBranch,
+      commitSha: segmentB,
+    };
+  });
+  const diagnostics: string[] = [];
+  const commands: string[][] = [];
+  const run = new GitHubTaskRunner({
+    store,
+    branches,
+    advisor: createModelAdvisor([]),
+    harness: {
+      async step() {
+        throw Error("Unexpected agent work");
+      },
+      async cancel() {},
+    },
+    publisher: {
+      baseBranch: "main",
+      async publish() {
+        throw Error("Unexpected publication");
+      },
+    },
+    command: {
+      async run({ command }) {
+        commands.push(command);
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout:
+            command[0] === "gh"
+              ? JSON.stringify({
+                  number: 7,
+                  state: "MERGED",
+                  baseRefName: "main",
+                  headRefName: chainBranch,
+                  headRefOid: segmentB,
+                  mergeCommit: { oid: merged },
+                })
+              : "",
+        };
+      },
+    },
+    cwd: "/fixture",
+    baseBranch: "main",
+    diagnostic: (message) => diagnostics.push(message),
+  });
+  expect(await run.runOnce(new AbortController().signal)).toBe(false);
+  for (const [number, commitSha] of [
+    [42, segmentA],
+    [43, segmentB],
+  ] as const) {
+    expect((await store.get(number)).execution).toMatchObject({
+      phase: "done",
+      baseBranch: chainBranch,
+      publication: {
+        number: 7,
+        branch: chainBranch,
+        commitSha,
+        mergeCommit: merged,
+      },
+    });
+  }
+  expect(predecessor.state).toBe("CLOSED");
+  expect(successor.state).toBe("CLOSED");
+  expect(diagnostics).toEqual([]);
+  expect(commands).toContainEqual([
+    "git",
+    "merge-base",
+    "--is-ancestor",
+    segmentA,
+    merged,
+  ]);
+  expect(commands).toContainEqual(["git", "fetch", "origin", "main"]);
+  expect(commands).not.toContainEqual(["git", "fetch", "origin", chainBranch]);
+  expect(await run.runOnce(new AbortController().signal)).toBe(false);
+});
+
+test("a chain ticket stays awaiting when its frozen segment is absent from the merged history", async () => {
+  const { remote, store, chain } = chainFixture({ issue: 41 });
+  const chainBranch = "agile/issue-1";
+  const segment = "b".repeat(40);
+  const merged = "c".repeat(40);
+  await seed(remote, (record) => {
+    record.phase = "done";
+    record.publication = {
+      number: 7,
+      branch: chainBranch,
+      commitSha: base,
+      mergeCommit: base,
+    };
+  });
+  remote.issue.state = "CLOSED";
+  const task = await store.get(42);
+  const record = initialExecution(task, chainBranch, base);
+  record.phase = "awaiting_merge";
+  record.publication = { number: 7, branch: chainBranch, commitSha: segment };
+  chain.comments.push({
+    databaseId: 4,
+    author: { login: "daemon" },
+    body: renderExecution(record),
+  });
+  const commands: string[][] = [];
+  const run = new GitHubTaskRunner({
+    store,
+    branches,
+    advisor: createModelAdvisor([]),
+    harness: {
+      async step() {
+        throw Error("Unexpected agent work");
+      },
+      async cancel() {},
+    },
+    publisher: {
+      baseBranch: "main",
+      async publish() {
+        throw Error("Unexpected publication");
+      },
+    },
+    command: {
+      async run({ command }) {
+        commands.push(command);
+        return {
+          exitCode:
+            command[1] === "merge-base" && command[3] === segment ? 1 : 0,
+          stderr: "",
+          stdout:
+            command[0] === "gh"
+              ? JSON.stringify({
+                  number: 7,
+                  state: "MERGED",
+                  baseRefName: "main",
+                  headRefName: chainBranch,
+                  headRefOid: "e".repeat(40),
+                  mergeCommit: { oid: merged },
+                })
+              : "",
+        };
+      },
+    },
+    cwd: "/fixture",
+    baseBranch: "main",
+  });
+  expect(await run.runOnce(new AbortController().signal)).toBe(false);
+  const after = (await store.get(42)).execution;
+  expect(after).toMatchObject({
+    phase: "awaiting_merge",
+    baseBranch: chainBranch,
+  });
+  expect(after?.failure).toContain("ancestor");
+  expect(after?.publication?.mergeCommit).toBeUndefined();
+  expect(chain.state).toBe("OPEN");
+  expect(commands).toContainEqual([
+    "git",
+    "merge-base",
+    "--is-ancestor",
+    segment,
+    merged,
+  ]);
 });
 
 test("confirmed refresh recovery selects only the new exact-target Review and never replays historical roles, hooks or publication", async () => {
