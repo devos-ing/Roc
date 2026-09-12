@@ -16,6 +16,7 @@ import {
   GitHubPullRequestPublisher,
   type TaskPublisher,
 } from "../github/pr-publisher";
+import { GitHubRateLimitRunner } from "../github/rate-limit";
 import { GitHubTaskPublisher } from "../github/remote-tasks";
 import { AgileError, normalizeError } from "../runtime/errors";
 import { createJsonlLogger } from "../runtime/logger";
@@ -42,10 +43,11 @@ export {
 export async function connectGitHub(
   cwd: string,
   command: GitHubCommandRunner = new BunGitHubCommandRunner(),
+  signal?: AbortSignal,
 ) {
   const api = new GitHubRemoteIssueReader(cwd, command);
-  const repository = await api.repository();
-  const login = await api.authenticatedLogin();
+  const repository = await api.repository(signal);
+  const login = await api.authenticatedLogin(signal);
   const executor = process.env.ROC_GITHUB_EXECUTOR ?? login;
   return {
     store: new GitHubExecutionStore(
@@ -103,7 +105,16 @@ export async function runBackendSession(
         let retain = false;
         let failure: unknown;
         try {
-          const command = options.command ?? new BunGitHubCommandRunner();
+          const command = new GitHubRateLimitRunner(
+            options.command ?? new BunGitHubCommandRunner(),
+            {
+              signal: stop,
+              onWait: (until) =>
+                process.stderr.write(
+                  `GitHub rate limit reached; waiting until ${new Date(until).toISOString()} before retrying. Ctrl-C stops the scheduler.\n`,
+                ),
+            },
+          );
           let baseBranch = input.baseBranch;
           if (!baseBranch) {
             const result = await command.run({
@@ -129,7 +140,7 @@ export async function runBackendSession(
           ).assertReady();
           const connected = options.store
             ? undefined
-            : await connectGitHub(input.repoPath, command);
+            : await connectGitHub(input.repoPath, command, stop);
           if (connected && connected.login !== connected.executor)
             throw Error("Run the daemon as ROC_GITHUB_EXECUTOR");
           const store = options.store ?? connected?.store;
@@ -151,20 +162,25 @@ export async function runBackendSession(
           retain = false;
           stop.throwIfAborted();
           const lastProgress = new Map<number, string>();
+          const emitDiagnostic = (message: string) =>
+            process.stderr.write(`${message}\n`);
           const runner = new GitHubTaskPool({
             concurrency: input.concurrency,
             autoMerge: input.autoMerge,
             store,
             branches,
             harness: backend.harness,
-            advisor: createModelAdvisor(backend.catalog, backend.modelMapping),
+            advisor: createModelAdvisor(backend.catalog, backend.modelMapping, {
+              efforts: backend.efforts,
+              onDiagnostic: emitDiagnostic,
+            }),
             publisher:
               options.publisherFactory?.(branches) ??
               new GitHubPullRequestPublisher(baseBranch, branches, command),
             command,
             cwd: input.repoPath,
             baseBranch,
-            diagnostic: (message) => process.stderr.write(`${message}\n`),
+            diagnostic: emitDiagnostic,
             /** Emits confirmed phase changes and wait reasons once while tool activity stays local. */
             progress(record) {
               const summary = `Phase: ${record.phase}${record.failure ? ` · ${record.failure}` : ""}`;
@@ -305,9 +321,23 @@ export const defaultRuntime: CliRuntime = {
   },
   /** Reads GitHub checkpoints for task and token inspection. */
   async readTasks(cwd) {
-    const { store } = await connectGitHub(cwd);
-    const result = await store.list();
-    return githubTaskSnapshot(result.tasks, result.diagnostics);
+    let snapshot: ReturnType<typeof githubTaskSnapshot> | undefined;
+    await runSession((signal) =>
+      Effect.tryPromise({
+        try: async () => {
+          const command = new GitHubRateLimitRunner(
+            new BunGitHubCommandRunner(),
+            { signal },
+          );
+          const { store } = await connectGitHub(cwd, command, signal);
+          const result = await store.list(signal);
+          snapshot = githubTaskSnapshot(result.tasks, result.diagnostics);
+        },
+        catch: (error) => error,
+      }),
+    );
+    if (!snapshot) throw Error("GitHub task inspection was cancelled");
+    return snapshot;
   },
   /** Writes only sanitized operational diagnostics to the project log. */
   async logError(error, input) {

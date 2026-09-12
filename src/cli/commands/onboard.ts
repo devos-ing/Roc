@@ -137,6 +137,9 @@ async function executeOnboard(
         ...(priorSettings?.models === undefined
           ? {}
           : { models: priorSettings.models }),
+        ...(priorSettings?.efforts === undefined
+          ? {}
+          : { efforts: priorSettings.efforts }),
       },
       homeRoot,
     );

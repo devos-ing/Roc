@@ -51,7 +51,11 @@ acceptance evidence, and review PRs in GitHub. The board reads shared checkpoint
 it does not launch another worker or grant approval.
 
 New Codex setups select GPT-6 Astra; existing model settings are preserved.
-New Scout/Review attempts use `high` reasoning; Implement uses `medium`.
+New Scout/Review attempts use `high` reasoning; Implement uses `medium`. An
+optional `efforts` object in `~/.config/roc/settings.json` overrides these
+per-role defaults with `medium`, `high`, or `xhigh` (for example
+`"efforts": { "implement": "xhigh" }`); an effort the routed models do not
+support falls back to the role default with a diagnostic.
 Roc uses Pi's tools and agent loop. It does not launch Codex CLI or Claude Code.
 
 Pi automatically summarizes older context as a session approaches its context

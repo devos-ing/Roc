@@ -147,14 +147,14 @@ export class GitHubPullRequestMerger {
   ): Promise<MergeResult> {
     try {
       signal.throwIfAborted();
-      const pr = await this.readPr(candidate.number);
+      const pr = await this.readPr(candidate.number, signal);
       const existing = this.classify(pr, candidate);
       if (existing) return existing;
       const refresh = await this.changedBase(pr, candidate, authorize, signal);
       if (refresh) return refresh;
       const reason = await this.policy(candidate, pr, signal);
       if (reason) return { kind: "waiting", reason };
-      const final = await this.readPr(candidate.number);
+      const final = await this.readPr(candidate.number, signal);
       const changed = this.classify(final, candidate);
       if (changed) return changed;
       const finalRefresh = await this.changedBase(
@@ -222,7 +222,7 @@ export class GitHubPullRequestMerger {
     authorize: () => Promise<string | undefined>,
     signal: AbortSignal,
   ): Promise<MergeResult | undefined> {
-    const targetBase = await this.baseSha(candidate.baseBranch);
+    const targetBase = await this.baseSha(candidate.baseBranch, signal);
     if (targetBase !== candidate.baseSha) {
       const denied = await authorize();
       signal.throwIfAborted();
@@ -283,6 +283,7 @@ export class GitHubPullRequestMerger {
       "{strict: .required_status_checks.strict, enforceAdmins: .enforce_admins.enabled, contexts: .required_status_checks.contexts, checks: [.required_status_checks.checks[] | {context, app_id}], requiredReviews: (if .required_pull_request_reviews == null then null else .required_pull_request_reviews | {required_approving_review_count, require_code_owner_reviews, require_last_push_approval} end)}",
       ProtectionSchema,
       "Classic branch protection is missing or unreadable; grant policy read access and configure strict required checks enforced for administrators",
+      signal,
     );
     if (!protection.strict || !protection.enforceAdmins)
       return "Enable strict required status checks and enforcement for administrators in classic branch protection";
@@ -394,6 +395,7 @@ export class GitHubPullRequestMerger {
       ],
       ReviewSchema,
       "Required human review decision is unreadable; inspect PR reviews",
+      signal,
     );
     if (
       review.number !== candidate.number ||
@@ -412,17 +414,18 @@ export class GitHubPullRequestMerger {
   }
 
   /** Reads projected PR fields through a strict schema without accepting fork or ref substitutions. */
-  private readPr(number: number) {
+  private readPr(number: number, signal?: AbortSignal) {
     return this.api(
       `pulls/${number}`,
       "{number, state, merged, merge_commit_sha, draft, mergeable, mergeable_state, head: {ref: .head.ref, sha: .head.sha, repository: .head.repo.full_name}, base: {ref: .base.ref, sha: .base.sha, repository: .base.repo.full_name}}",
       PrSchema,
       "PR state is unreadable; reconcile remote merge state before retrying",
+      signal,
     );
   }
 
   /** Reads the current target ref independently of the PR's base snapshot. */
-  private async baseSha(branch: string): Promise<string> {
+  private async baseSha(branch: string, signal?: AbortSignal): Promise<string> {
     return (
       await this.api(
         `git/ref/heads/${encodeURIComponent(branch)}`,
@@ -435,6 +438,7 @@ export class GitHubPullRequestMerger {
           })
           .strict(),
         "Target branch identity is unreadable; inspect the configured base branch",
+        signal,
       )
     ).sha;
   }
@@ -462,6 +466,7 @@ export class GitHubPullRequestMerger {
           })
           .strict(),
         reason,
+        signal,
       );
       if (total === undefined) total = result.total_count;
       if (result.total_count !== total)
@@ -492,6 +497,7 @@ export class GitHubPullRequestMerger {
     projection: string,
     schema: z.ZodType<T>,
     reason: string,
+    signal?: AbortSignal,
   ): Promise<T> {
     return this.read(
       [
@@ -505,6 +511,7 @@ export class GitHubPullRequestMerger {
       ],
       schema,
       reason,
+      signal,
     );
   }
 
@@ -513,9 +520,10 @@ export class GitHubPullRequestMerger {
     command: string[],
     schema: z.ZodType<T>,
     reason: string,
+    signal?: AbortSignal,
   ): Promise<T> {
     try {
-      const result = await this.command.run({ command, cwd: this.cwd });
+      const result = await this.command.run({ command, cwd: this.cwd, signal });
       if (result.exitCode !== 0) throw Error("GitHub read failed");
       return schema.parse(JSON.parse(result.stdout));
     } catch {

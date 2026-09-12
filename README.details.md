@@ -239,6 +239,16 @@ ownership lock until its processes and uncertain remote writes are reconciled.
 A timed-out repository lookup during startup gets one read-only retry before
 any task starts; a second failure reports `GITHUB_REPOSITORY_UNAVAILABLE`.
 
+When GitHub reports a rate limit, the daemon pauses GitHub requests and retries
+reads after `Retry-After` or the quota reset time. Workers share this pause. If
+GitHub supplies neither deadline, retries start after one minute and back off
+to at most fifteen minutes between attempts. Ctrl-C interrupts the wait.
+See [GitHub's rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
+
+Permission failures still report an error. Mutating commands are not blindly
+replayed: checkpoint and PR writes keep their existing readback checks, and
+unconfirmed writes or child cleanup can still retain the ownership lock.
+
 `task board` details show elapsed time, time in agent attempts, merge waiting and
 partial token usage. `scheduler inspect` includes the phase-duration breakdown.
 Recent actions are GitHub checkpoint summaries, refreshed at phase boundaries
@@ -315,6 +325,25 @@ The role routing applies `high` to Scout/Review and `medium` to Implement:
 }
 ```
 
+An optional `efforts` object overrides the per-role reasoning defaults —
+Scout `high`, Implement `medium`, Review `high` — with `medium`, `high`, or
+`xhigh`:
+
+```json
+"efforts": {
+  "implement": "xhigh",
+  "scout": "medium"
+}
+```
+
+Omitted roles keep the defaults, and existing attempts keep their recorded
+effort on restart. A configured effort the routed models do not support
+falls back to the role default with a diagnostic instead of failing the run;
+when only a stronger fallback model supports it, routing advances along the
+normal profile chain (for example Implement moves from Terra to Sol for
+`xhigh`). Raise effort for hard implementation work and lower it for cheap
+scouting when your provider and workload justify it.
+
 For advanced Claude or GLM setup, configure the bundled Pi CLI under the daemon
 account with `bun x --no-install pi`. Use its `/login` and `/model` commands where
 supported and save the default. Provider keys must be in the daemon environment.
@@ -353,6 +382,14 @@ trusted installed skills for Pi. It refuses to overwrite modified skill files.
 Use `roc-create-tasks` in your coding assistant to create and approve tasks.
 
 ## The task board
+
+`tui` opens Welcome with setup/connection status, even before Roc settings or
+GitHub login are available. `task board` opens Tasks directly. Both are read-only:
+neither starts a scheduler or changes tasks. Switch pages with Tab, 1/2, or a
+mouse click on the top tabs. R refreshes; failed reads keep the last snapshot
+marked stale. Selection and details survive page switches and resizing. Narrow
+terminals stack the board; use PgUp/PgDn to scroll long pages/details while the
+tabs stay visible. Piped `task board` output remains a plain snapshot.
 
 `task board` reads GitHub checkpoints every 30 seconds and shows persisted
 status, attempts, models, usage and PR links. Use `--all` for other cycles and
@@ -450,7 +487,7 @@ cycle current                            Show the active Agile cycle
 task publish-github MANIFEST              Publish approved tasks to GitHub
 task list [--all] [--history]              List GitHub tasks
 task board [--all] [--history]             Open the read-only board
-tui                                      Open the same board
+tui                                      Open Welcome and the Tasks monitor
 task trust-hooks ISSUE --phase PHASE      Approve an exact hook configuration
 task retire ISSUE --reason TEXT           Close an Issue without completing it
 scheduler run [--base-branch BRANCH] [--concurrency 1-8] [--once] [--auto-merge]

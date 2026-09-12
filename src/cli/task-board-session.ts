@@ -1,6 +1,18 @@
+import { stripVTControlCharacters } from "node:util";
 import { renderHelpBox } from "./help-box";
 import type { TaskBoardSnapshot } from "./task-board-model";
-import { renderTaskBoard, taskBoardHitTest } from "./task-board-renderer";
+import {
+  renderTaskBoard,
+  taskBoardHitTest,
+  taskBoardSelectionRows,
+} from "./task-board-renderer";
+import {
+  renderTuiFrame,
+  renderWelcome,
+  type TuiTab,
+  tabTargets,
+  tuiTabs,
+} from "./tui-renderer";
 import type { CliTerminalInput, CliTerminalOutput } from "./types";
 
 export type TaskBoardSessionOptions = {
@@ -11,6 +23,7 @@ export type TaskBoardSessionOptions = {
   /** Optionally supplies the project-scoped label prefix resolved for this session. */
   projectSlug?: string;
   refreshIntervalMs?: number;
+  initialTab?: TuiTab;
 };
 
 type DetailMode = "peek" | "full" | "none";
@@ -22,17 +35,12 @@ const showCursor = "\u001B[?25h";
 const enableMouse = "\u001B[?1000h\u001B[?1006h";
 const disableMouse = "\u001B[?1000l\u001B[?1006l";
 const clearScreen = "\u001B[2J\u001B[H";
-const red = "\u001B[31m";
-const reset = "\u001B[0m";
 
 /** Converts an unknown failure into text that is safe to place in the status area. */
 function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/** Clips one status line to the current terminal width. */
-function statusLine(value: string, width: number): string {
-  return Array.from(value).slice(0, Math.max(1, width)).join("");
+  return stripVTControlCharacters(
+    error instanceof Error ? error.message : String(error),
+  ).replace(/[\r\t]/gu, " ");
 }
 
 /** Renders the keyboard fallback reference without requiring a board snapshot. */
@@ -40,6 +48,8 @@ function renderHelp(width: number): string {
   return renderHelpBox(
     "Task board controls",
     [
+      "Tab / 1 / 2  Switch pages (or click a tab)",
+      "PgUp/PgDn     Scroll page or task details",
       "↑/↓ or J/K  Select a task",
       "Space         Peek at the selected task",
       "Enter         Open full task details",
@@ -61,6 +71,10 @@ export async function runTaskBoardSession(
   if (input.isTTY === false || output.isTTY === false || !input.setRawMode)
     throw new Error("Task board requires an interactive terminal");
 
+  let tab = options.initialTab ?? "tasks";
+  const scrolls: Record<TuiTab, number> = { welcome: 0, tasks: 0 };
+  let bodyOffset = 0;
+  let bodyRows = 1;
   let snapshot: TaskBoardSnapshot | undefined;
   let selectedTaskId: string | undefined;
   let detailMode: DetailMode = "none";
@@ -84,11 +98,17 @@ export async function runTaskBoardSession(
   };
 
   /** Draws the latest successful frame or a readable recovery status after a failed read. */
-  const render = () => {
+  const render = (revealSelection = false) => {
     const width = Math.max(1, output.columns ?? 80);
     let frame: string;
     if (helpVisible) frame = renderHelp(width);
-    else if (snapshot === undefined) frame = "Task board data is unavailable.";
+    else if (tab === "welcome") frame = renderWelcome(width);
+    else if (snapshot === undefined)
+      frame = renderHelpBox(
+        "Tasks",
+        "Data unavailable. Refresh with R after setup.",
+        width,
+      );
     else {
       frame = renderTaskBoard(snapshot, {
         width,
@@ -101,11 +121,33 @@ export async function runTaskBoardSession(
         doneExpanded,
       });
     }
-    if (lastError !== undefined) {
-      const error = statusLine(`Error: ${lastError}`, width);
-      frame = `${frame}\n\n${red}${error}${reset}`;
-    }
-    output.write(`${clearScreen}${frame}`);
+    const status =
+      lastError !== undefined
+        ? `${snapshot ? "STALE — last successful snapshot retained" : "Setup / connection needs attention"}\nError: ${errorText(lastError)}\nR retries; this monitor never starts execution.`
+        : snapshot
+          ? "GitHub checkpoints loaded · Read-only"
+          : "Checking settings and GitHub connection… · Read-only";
+    const viewport = renderTuiFrame({
+      tab,
+      body: frame,
+      status,
+      width,
+      rows: Math.max(1, output.rows ?? 40),
+      scroll: scrolls[tab],
+      revealRows:
+        revealSelection && tab === "tasks" && detailMode === "none" && snapshot
+          ? taskBoardSelectionRows(snapshot, {
+              width,
+              selectedTaskId,
+              detailMode,
+              doneExpanded,
+            })
+          : undefined,
+    });
+    bodyOffset = viewport.bodyOffset;
+    bodyRows = viewport.bodyRows;
+    scrolls[tab] = viewport.scroll;
+    output.write(`${clearScreen}${viewport.text}`);
   };
 
   /** Reads one snapshot and leaves the previous frame in place when that read fails. */
@@ -153,7 +195,7 @@ export async function runTaskBoardSession(
       tasks[(current + offset + tasks.length) % tasks.length]?.id;
     detailMode = "none";
     helpVisible = false;
-    render();
+    render(true);
   };
 
   /** Applies one supported task-board action without changing task or scheduler state. */
@@ -173,6 +215,8 @@ export async function runTaskBoardSession(
       finish();
       return;
     }
+    if (tab !== "tasks" && !["refresh", "help", "escape"].includes(action))
+      return;
     if (action === "next" || action === "previous") {
       moveSelection(action === "next" ? 1 : -1);
       return;
@@ -190,6 +234,7 @@ export async function runTaskBoardSession(
       if (!helpVisible && detailMode === "none") return;
       helpVisible = false;
       detailMode = "none";
+      scrolls[tab] = 0;
       render();
       return;
     }
@@ -201,15 +246,40 @@ export async function runTaskBoardSession(
     if (selectedTaskId === undefined) return;
     helpVisible = false;
     detailMode = action === "peek" ? "peek" : "full";
+    scrolls.tasks = 0;
+    render();
+  };
+
+  /** Changes only the page, retaining task identity, detail mode and viewport. */
+  const switchTab = (next: TuiTab) => {
+    tab = next;
+    helpVisible = false;
     render();
   };
 
   /** Handles a decoded mouse-reporting click if it lands on a board control. */
   const click = (button: number, x: number, y: number) => {
-    if (snapshot === undefined || button >= 64 || (button & 3) !== 0) return;
+    if (button >= 64 || (button & 3) !== 0) return;
+    if (y === 1) {
+      const target = tabTargets().find(
+        (target) =>
+          x >= target.start && x <= target.end && x <= (output.columns ?? 80),
+      );
+      if (target) switchTab(target.id);
+      return;
+    }
+    if (
+      tab !== "tasks" ||
+      helpVisible ||
+      snapshot === undefined ||
+      y <= bodyOffset ||
+      y > bodyOffset + bodyRows
+    )
+      return;
+    if (detailMode === "peek" && (output.columns ?? 80) < 88) return;
     const hit = taskBoardHitTest(
       snapshot,
-      { x, y },
+      { x, y: y - bodyOffset + scrolls.tasks },
       {
         width: Math.max(1, output.columns ?? 80),
         selectedTaskId,
@@ -226,6 +296,7 @@ export async function runTaskBoardSession(
       selectedTaskId = hit.taskId;
       helpVisible = false;
       detailMode = "full";
+      scrolls.tasks = 0;
       render();
     }
   };
@@ -255,6 +326,15 @@ export async function runTaskBoardSession(
         continue;
       }
       if (inputBuffer.startsWith("\u001B[<")) return;
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: parses terminal paging keys.
+      const page = inputBuffer.match(/^\u001B\[([56])~/u);
+      if (page) {
+        inputBuffer = inputBuffer.slice(page[0].length);
+        scrolls[tab] += (page[1] === "6" ? 1 : -1) * bodyRows;
+        render();
+        continue;
+      }
+      if (["\u001B[5", "\u001B[6"].includes(inputBuffer)) return;
       if (inputBuffer.startsWith("\u001B[A")) {
         inputBuffer = inputBuffer.slice(3);
         act("previous");
@@ -271,7 +351,15 @@ export async function runTaskBoardSession(
       }
       const key = inputBuffer[0];
       inputBuffer = inputBuffer.slice(1);
-      if (key === "\u0003") act("quit");
+      if (key === "\t")
+        switchTab(
+          tuiTabs[
+            (tuiTabs.findIndex((item) => item.id === tab) + 1) % tuiTabs.length
+          ]?.id ?? "welcome",
+        );
+      else if (key === "1") switchTab("welcome");
+      else if (key === "2") switchTab("tasks");
+      else if (key === "\u0003") act("quit");
       else if (key === "\u001B") act("escape");
       else if (key === "\r" || key === "\n") act("details");
       else if (key === " ") act("peek");
@@ -369,17 +457,11 @@ export async function runTaskBoardSession(
     output.on("close", onOutputClose);
     process.once("SIGINT", onSignal);
     interval = setInterval(requestRefresh, options.refreshIntervalMs ?? 1_000);
-    refreshInFlight = true;
     try {
-      await refresh();
+      render();
+      requestRefresh();
     } catch (error) {
       finish(error);
-    } finally {
-      refreshInFlight = false;
-      if (refreshQueued && !closed) {
-        refreshQueued = false;
-        requestRefresh();
-      }
     }
     await stopped;
   } finally {
