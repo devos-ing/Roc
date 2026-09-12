@@ -370,11 +370,10 @@ still be working.
 
 ## Planning skills
 
-The planning assistant needs `grilling` and `unslop`. Install them if missing:
+The planning assistant needs `grilling`. Install it if missing:
 
 ```bash
 npx skills add mattpocock/skills --skill grilling --global
-npx skills add backnotprop/pstack --skill unslop --global
 ```
 
 Roc onboarding installs its packaged skills into the project and lets you choose

@@ -84,18 +84,34 @@ test("Roc development PR review helpers pass their Python suites", async () => {
   }
 });
 
-test("roc-create-tasks stays GitHub-only through a persistent merge handoff", async () => {
-  const [local, shipped] = await Promise.all([
-    readFile(
-      resolve(projectRoot, ".agents/skills/roc-create-tasks/SKILL.md"),
-      "utf8",
+test("roc-create-tasks keeps its main and execution safeguards across every mirror", async () => {
+  const mainPaths = [
+    "skills/roc-create-tasks/SKILL.md",
+    ".agents/skills/roc-create-tasks/SKILL.md",
+    ".claude/skills/roc-create-tasks/SKILL.md",
+  ];
+  const executionPaths = mainPaths.map((path) =>
+    path.replace("SKILL.md", "execution.md"),
+  );
+  const skillFiles = await Promise.all(
+    [...mainPaths, ...executionPaths].map((path) =>
+      readFile(resolve(projectRoot, path), "utf8"),
     ),
-    readFile(resolve(projectRoot, "skills/roc-create-tasks/SKILL.md"), "utf8"),
-  ]);
+  );
+  const shipped = skillFiles[0]!;
+  const agents = skillFiles[1]!;
+  const claude = skillFiles[2]!;
+  const execution = skillFiles[3]!;
+  const agentsExecution = skillFiles[4]!;
+  const claudeExecution = skillFiles[5]!;
 
-  expect(local).toBe(shipped);
-  const prose = shipped.replace(/\s+/g, " ");
-  expect(prose).not.toMatch(/\btask\s+import\b|\*\*Local queue/i);
+  expect(agents).toBe(shipped);
+  expect(claude).toBe(shipped);
+  expect(agentsExecution).toBe(execution);
+  expect(claudeExecution).toBe(execution);
+  const mainProse = shipped.replace(/\s+/g, " ");
+  const executionProse = execution.replace(/\s+/g, " ");
+  expect(mainProse).not.toMatch(/\btask\s+import\b|\*\*Local queue/i);
   for (const requirement of [
     "the user explicitly invoked `roc-create-tasks`",
     "Use the installed `grilling` skill for requirement discovery",
@@ -104,6 +120,11 @@ test("roc-create-tasks stays GitHub-only through a persistent merge handoff", as
     "GitHub Issues are the only execution destination",
     "npx roc-it@latest task publish-github FILE",
     'bun "$ROC_CLI_ENTRY"',
+    "Before starting, reusing, inspecting, or monitoring a scheduler",
+  ]) {
+    expect(mainProse).toContain(requirement);
+  }
+  for (const requirement of [
     "Respect the user's chosen merge mode and existing execution consent",
     "Task-plan approval is not permission to start execution or enable automatic merge",
     "Reuse prior consent for this execution",
@@ -130,10 +151,10 @@ test("roc-create-tasks stays GitHub-only through a persistent merge handoff", as
     "PR is confirmed merged into the selected target branch",
     "verified the merge commit is present in the fetched target",
   ]) {
-    expect(prose).toContain(requirement);
+    expect(executionProse).toContain(requirement);
   }
 
-  const schedulerCommands = shipped.match(
+  const schedulerCommands = execution.match(
     /^npx roc-it@latest scheduler run .+$/gm,
   );
   expect(schedulerCommands).toEqual([
@@ -196,6 +217,7 @@ test("npm archive contains only runtime files", async () => {
   expect(paths).toContain("package.json");
   expect(paths).toContain("src/cli/main.ts");
   expect(paths).toContain("skills/roc-create-tasks/SKILL.md");
+  expect(paths).toContain("skills/roc-create-tasks/execution.md");
   expect(paths.some((path) => path.includes("pr-review-to-closure"))).toBe(
     false,
   );

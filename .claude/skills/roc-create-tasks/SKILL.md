@@ -9,9 +9,17 @@ the user explicitly invoked `roc-create-tasks`.
 Accept the rest of this invocation as the requirement. If it explicitly names
 local files, read every one of those files before asking questions.
 
-**REQUIRED SUB-SKILL:** Use the installed `unslop` skill for every user-facing
-question, preview, manifest prose value, and final report. Run its self-audit
-before showing or writing text. Keep commands, paths, IDs, and JSON keys exact.
+Write questions, previews, manifest prose, and reports in plain, specific
+language. Remove filler, hype, vague attribution, and repeated conclusions.
+Review the wording before presenting it; preserve facts, uncertainty, scope,
+acceptance criteria, citations, commands, paths, IDs, and JSON keys.
+
+Before splitting tasks, understand the affected code and choose the smallest
+solution that meets the agreed requirement. Reuse existing code, then standard
+library or native features, then installed dependencies before adding custom
+code. Avoid speculative abstractions. Fix shared causes rather than individual
+symptoms. Preserve validation, recovery, security, accessibility, and explicit
+requirements. Give each task the smallest check that proves its behavior.
 
 Use the installed `grilling` skill for requirement discovery. Do not replace it
 with your own interview. If `grilling` is unavailable, stop and tell the user to
@@ -69,31 +77,31 @@ Create one strict JSON manifest with this shape:
 ```
 
 Before writing anything, show the complete preview: cycle goal, every task in
-order, dependencies, risk, acceptance criteria, validation, and one destination:
+order, dependencies, risk, acceptance criteria, validation, and the target
+GitHub repository. GitHub Issues are the only execution destination.
 
-- **Local queue** imports the manifest into this project's Roc database.
-- **Roc daemon via GitHub Issues** publishes approved tasks for a daemon in a separate clone on this host or another machine.
-
-If the invocation did not choose a destination, ask the user to choose one as
-part of the preview. Ask for explicit approval of the complete task set and its
-destination immediately before writing. Do not create a backlog file, import it,
-or publish Issues without that approval.
+Ask for explicit approval of the complete task set and repository immediately
+before writing. A prior approval of the same concrete task set remains valid.
+Write and publish exactly the approved manifest; do not add, remove, or rewrite
+tasks after approval. If the plan or repository changes, obtain fresh approval.
 
 After approval, create `.agile/backlog` safely and write the manifest to a new
-unused `YYYY-MM-DD-<slug>.json` path. Never overwrite an existing file.
+unused `YYYY-MM-DD-<slug>.json` path. This file is a publication input, not a
+local execution queue. Never overwrite an existing file.
 
-For the local queue destination, run:
-
-```bash
-npx roc-it@latest task import FILE
-```
-
-For the Roc daemon via GitHub Issues destination, run:
+Publish the approved tasks:
 
 ```bash
 npx roc-it@latest task publish-github FILE
 ```
 
-Replace `FILE` with the new manifest path. Remote publication is the complete
-machine-A action: never also run `task import` on machine A. Report the local
-import counts or the published Issue URLs, according to the selected destination.
+Replace `FILE` with the new manifest path. Report the published Issue URLs.
+The execution host reads the Issues directly and creates a worktree per Issue.
+
+## Execution handoff
+
+Before starting, reusing, inspecting, or monitoring a scheduler, or advising on
+merge readiness, read [execution.md](execution.md). It defines execution
+consent, daemon ownership, merge protection, and the confirmed completion check.
+Task-plan approval does not authorize execution or automatic merge. Publication
+alone does not mean implementation is complete.

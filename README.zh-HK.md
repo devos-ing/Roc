@@ -82,7 +82,7 @@ Onboarding 會安裝 Roc skills，讓你選擇可信 skills 與 Agile 週期，�
 
 Skill 會提問釐清需求，提出任務與驗收條件，等你批准完整計劃後才發佈到 GitHub。
 若 assistant 無法讀取 terminal 的環境變數，直接提供 Roc entrypoint 的絕對路徑。
-規劃 assistant 須有 `grilling` 及 `unslop`；缺少時依照[詳細指南](README.details.zh-HK.md#規劃-skills)安裝。
+規劃 assistant 須有 `grilling`；缺少時依照[詳細指南](README.details.zh-HK.md#規劃-skills)安裝。
 
 ### 3. 啟動 daemon
 
