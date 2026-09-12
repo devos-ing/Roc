@@ -489,6 +489,43 @@ or migrate it explicitly. An old daemon-owned `roc:status` comment without a
 native execution checkpoint blocks automatic admission. Preserve that evidence;
 do not remove it just to make a task run again.
 
+### Task worktree cleanup
+
+Worktrees are retained by design so merges can be verified and failed work
+recovered, so finished tasks accumulate disk usage. `task cleanup` is the
+explicit operator command that reclaims it:
+
+```bash
+bun "$ROC_CLI_ENTRY" task cleanup --dry-run
+bun "$ROC_CLI_ENTRY" task cleanup
+bun "$ROC_CLI_ENTRY" task cleanup --all
+```
+
+By default it removes only the worktrees of `done` tasks; `done` implies the
+PR was merged and verified, so nothing in flight references the worktree.
+`--all` also removes worktrees of `rejected`, `failed_infra` and `retired`
+tasks. These are opt-in because their branches may still be referenced by open
+upstream PRs. `--dry-run` prints the same plan and touches nothing.
+
+The command prints one JSON object with `removed[]` and `kept[]` — every kept
+entry carries its reason — followed by a summary line. Safety rules:
+
+- Removal runs `git worktree remove` from the main checkout, so Git prunes its
+  own worktree metadata; worktree directories are never deleted by hand.
+- Task branches (`agile/<task>`) are never deleted; only working directories
+  are removed.
+- Dirty worktrees are skipped and reported, never force-removed.
+- Worktrees of tickets that are not in a terminal state, tickets missing from
+  the GitHub snapshot, and entries under `<project>.agile-worktrees` that are
+  not registered worktrees (other repositories' directories, plain files) are
+  kept and reported. The checkout ownership lock is never touched.
+
+Exit codes: `0` when the plan printed and every attempted removal succeeded
+(`--dry-run` exits `0` once the plan prints); `1` when GitHub task reads are
+unavailable, the worktree root is unusable, or any removal failed. Failed
+removals stay on disk, appear in `kept[]` with a `Worktree removal failed`
+reason, and the remaining worktrees are still processed.
+
 ## Commands
 
 ```text
@@ -500,6 +537,7 @@ task board [--all] [--history]             Open the read-only board
 tui                                      Open Welcome and the Tasks monitor
 task trust-hooks ISSUE --phase PHASE      Approve an exact hook configuration
 task retire ISSUE --reason TEXT           Close an Issue without completing it
+task cleanup [--dry-run] [--all]          Remove worktrees of finished tasks
 scheduler run [--base-branch BRANCH] [--concurrency 1-8] [--once] [--auto-merge]
 scheduler inspect                        Read GitHub execution checkpoints
 scheduler status                        Report daemon health from the checkout lock
