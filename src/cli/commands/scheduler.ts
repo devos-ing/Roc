@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { backends, isRealBackendName } from "../../agents/registry";
+import { readCheckoutOwnerRecord } from "../../workspace/checkout-ownership";
 import {
   commandProjectRoot,
   errorMessage,
@@ -96,6 +97,80 @@ export function registerSchedulerCommands(
         context.io.out(
           JSON.stringify(await context.runtime.readTasks(root), null, 2),
         );
+      } catch (error) {
+        context.io.err(errorMessage(error));
+        context.exitCode = 1;
+      }
+    });
+  scheduler
+    .command("status")
+    .description(
+      "Report daemon health from the checkout lock; exits 0 while the owner process is alive, 1 when stopped, stale or unreadable",
+    )
+    .action(async () => {
+      try {
+        const root = await commandProjectRoot(context);
+        const owner = await readCheckoutOwnerRecord(root);
+        if (owner.state === "absent") {
+          context.io.out(
+            JSON.stringify({ running: false, reason: "no-lock" }, null, 2),
+          );
+          context.exitCode = 1;
+          return;
+        }
+        if (owner.state === "unreadable") {
+          context.io.out(
+            JSON.stringify(
+              {
+                running: false,
+                reason: "unreadable-lock",
+                hint: "the checkout lock exists but its owner record is unreadable; inspect it and confirm no scheduler is running before removing it",
+              },
+              null,
+              2,
+            ),
+          );
+          context.exitCode = 1;
+          return;
+        }
+        const { ownerPid, runId, acquiredAt } = owner.record;
+        // Best-effort liveness: signal 0 to the recorded owner. EPERM still
+        // proves the process exists (another user owns it) while ESRCH marks
+        // it gone. A recycled PID can make a stale lock look live; that
+        // residual reuse risk is accepted and unverifiable from the lock alone.
+        let alive = false;
+        try {
+          process.kill(ownerPid, 0);
+          alive = true;
+        } catch (error) {
+          alive =
+            error instanceof Error && "code" in error && error.code === "EPERM";
+        }
+        if (alive) {
+          context.io.out(
+            JSON.stringify(
+              { running: true, pid: ownerPid, runId, acquiredAt },
+              null,
+              2,
+            ),
+          );
+          return;
+        }
+        context.io.out(
+          JSON.stringify(
+            {
+              running: false,
+              staleLock: true,
+              pid: ownerPid,
+              runId,
+              acquiredAt,
+              hint: "owner process is gone; the stale guard can be removed after verifying no scheduler is running",
+            },
+            null,
+            2,
+          ),
+        );
+        context.exitCode = 1;
       } catch (error) {
         context.io.err(errorMessage(error));
         context.exitCode = 1;
