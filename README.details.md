@@ -245,6 +245,16 @@ GitHub supplies neither deadline, retries start after one minute and back off
 to at most fifteen minutes between attempts. Ctrl-C interrupts the wait.
 See [GitHub's rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
 
+A transient failure of the daemon's scheduled task-list read no longer stops a
+long-running `scheduler run`. When a poll fails with a retryable infra error
+such as a network timeout, the daemon logs a warning naming the error code, the
+consecutive-failure count and the next delay, then keeps running and skips
+admission until a fresh read succeeds; in-flight workers are unaffected. The
+wait starts at 30 seconds, doubles after each consecutive failure up to five
+minutes, and resets to 30 seconds after one successful poll. Failures marked
+non-retryable still report an error and exit through the normal failure path;
+Ctrl-C keeps its immediate graceful stop.
+
 Permission failures still report an error. Mutating commands are not blindly
 replayed: checkpoint and PR writes keep their existing readback checks, and
 unconfirmed writes or child cleanup can still retain the ownership lock.
@@ -479,6 +489,46 @@ or migrate it explicitly. An old daemon-owned `roc:status` comment without a
 native execution checkpoint blocks automatic admission. Preserve that evidence;
 do not remove it just to make a task run again.
 
+### Task worktree cleanup
+
+Worktrees are retained by design so merges can be verified and failed work
+recovered, so finished tasks accumulate disk usage. `task cleanup` is the
+explicit operator command that reclaims it:
+
+```bash
+bun "$ROC_CLI_ENTRY" task cleanup --dry-run
+bun "$ROC_CLI_ENTRY" task cleanup
+bun "$ROC_CLI_ENTRY" task cleanup --all
+```
+
+By default it removes only the worktrees of `done` tasks; `done` implies the
+PR was merged and verified, so nothing in flight references the worktree.
+`--all` also removes worktrees of `rejected`, `failed_infra` and `retired`
+tasks. These are opt-in because their branches may still be referenced by open
+upstream PRs. `--dry-run` prints the same plan and touches nothing.
+
+The command prints one JSON object with `removed[]` and `kept[]` — every kept
+entry carries its reason — followed by a summary line. Safety rules:
+
+- Removal runs `git worktree remove` from the main checkout, so Git prunes its
+  own worktree metadata; worktree directories are never deleted by hand.
+- Task branches (`agile/<task>`) are never deleted; only working directories
+  are removed.
+- Dirty worktrees are skipped and reported, never force-removed.
+- Worktrees of tickets that are not in a terminal state, tickets missing from
+  the GitHub snapshot, and entries under `<project>.agile-worktrees` that are
+  not registered worktrees (other repositories' directories, plain files) are
+  kept and reported. Real removal holds the exclusive checkout ownership guard
+  (`<project>.agile-checkout.lock`) for the whole run and refuses to start
+  while a scheduler owns the checkout; `--dry-run` never touches the guard.
+
+Exit codes: `0` when the plan printed and every attempted removal succeeded
+(`--dry-run` exits `0` once the plan prints); `1` when GitHub task reads are
+unavailable, the checkout ownership guard is already held, the worktree root
+is unusable, or any removal failed. Failed removals stay on disk, appear in
+`kept[]` with a `Worktree removal failed` reason, and the remaining worktrees
+are still processed.
+
 ## Commands
 
 ```text
@@ -490,8 +540,10 @@ task board [--all] [--history]             Open the read-only board
 tui                                      Open Welcome and the Tasks monitor
 task trust-hooks ISSUE --phase PHASE      Approve an exact hook configuration
 task retire ISSUE --reason TEXT           Close an Issue without completing it
+task cleanup [--dry-run] [--all]          Remove worktrees of finished tasks
 scheduler run [--base-branch BRANCH] [--concurrency 1-8] [--once] [--auto-merge]
 scheduler inspect                        Read GitHub execution checkpoints
+scheduler status                        Report daemon health from the checkout lock
 tokens [--no-color]                       Show confirmed token usage
 ```
 
@@ -503,3 +555,22 @@ Run these after `bun "$ROC_CLI_ENTRY"`. Task identifiers are Issue numbers,
 [automatic merge specification](docs/specs/automatic-merge.md),
 [M4 specification](docs/specs/execution-efficiency.md) and
 [roadmap](docs/roadmap.md) for implementation scope.
+
+### Scheduler daemon status
+
+`scheduler status` reports process-level daemon health as JSON from the
+checkout ownership lock beside the project, without contacting GitHub and
+without requiring the daemon to be running:
+
+- No lock file: `{"running": false, "reason": "no-lock"}`.
+- Live owner process: `{"running": true, "pid": 1234, "runId": "…", "acquiredAt": "…"}`.
+- Owner process gone: the same fields plus `"staleLock": true` and a `hint`
+  to verify no scheduler is running before removing the guard.
+
+The exit code is `0` only while the recorded owner process is alive and `1`
+for no-lock, stale or unreadable locks, so launchd jobs, agents and CI can
+branch on it. Liveness is best-effort (signal `0` to the recorded PID), so a
+reused PID can make a stale lock look live. An unreadable lock is reported as
+`{"running": false, "reason": "unreadable-lock"}`; `scheduler run` refuses such
+repositories, so inspect the lock and follow the retained-ownership guidance
+above before deleting any guard.

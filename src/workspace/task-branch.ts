@@ -1,7 +1,8 @@
-import { lstat, mkdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { type SimpleGit, simpleGit } from "simple-git";
+import type { TaskStatus } from "../domain/schemas";
 import { safeTaskPathComponent } from "../domain/task-path";
 
 export type TaskWorkspace = {
@@ -94,6 +95,143 @@ async function applySourcePatch(
 /** Returns the deterministic remote branch name owned by a task. */
 export function taskBranchName(taskId: string): string {
   return `${TASK_BRANCH_PREFIX}${safeTaskPathComponent(taskId)}`;
+}
+
+/** Terminal task states whose worktrees --all may also remove. */
+const OTHER_TERMINAL_TASK_STATUSES: readonly TaskStatus[] = [
+  "rejected",
+  "failed_infra",
+  "retired",
+];
+
+export type RemovedTaskWorktree = {
+  task: string;
+  path: string;
+};
+
+export type KeptTaskWorktree = {
+  task: string;
+  path: string;
+  reason: string;
+};
+
+export type TaskWorktreeCleanupResult = {
+  /** Worktrees removed, or that a dry run would remove. */
+  removed: RemovedTaskWorktree[];
+  /** Worktrees retained on disk, each with the reason it was kept. */
+  kept: KeptTaskWorktree[];
+  /** Counts attempted removals that failed; those worktrees stay listed in kept. */
+  failures: number;
+};
+
+/** Reads the absolute paths Git registers as worktrees of this checkout. */
+async function registeredWorktrees(git: SimpleGit): Promise<Set<string>> {
+  const output = await git.raw(["worktree", "list", "--porcelain"]);
+  const paths = new Set<string>();
+  for (const line of output.split("\n")) {
+    if (!line.startsWith("worktree ")) continue;
+    const path = line.slice("worktree ".length).trim();
+    if (path === "") continue;
+    try {
+      paths.add(await realpath(path));
+    } catch {
+      // Prunable registrations that no longer resolve on disk are ignored.
+    }
+  }
+  return paths;
+}
+
+/**
+ * Enumerates task worktrees under the shared root and removes only the ones
+ * whose task state is finished. Removal always runs `git worktree remove` from
+ * the main checkout so Git prunes its own admin metadata; task branches are
+ * never deleted, dirty worktrees are always kept, and unknown or non-worktree
+ * entries under the root are reported but untouched.
+ */
+export async function cleanupTaskWorktrees(
+  repoPath: string,
+  taskStatuses: ReadonlyMap<string, TaskStatus>,
+  options: { dryRun?: boolean; all?: boolean } = {},
+): Promise<TaskWorktreeCleanupResult> {
+  const canonicalRepo = await realpath(resolve(repoPath));
+  const sourceGit = gitAt(canonicalRepo);
+  if ((await sourceGit.revparse("--show-toplevel")).trim() !== canonicalRepo) {
+    throw new Error("Repository path is not the Git checkout root");
+  }
+  const root = `${canonicalRepo}.agile-worktrees`;
+  const result: TaskWorktreeCleanupResult = {
+    removed: [],
+    kept: [],
+    failures: 0,
+  };
+  const rootKind = await pathKind(root);
+  if (rootKind === "missing") return result;
+  if (rootKind === "other")
+    throw new Error("Task worktree root is not a real directory");
+  let worktrees = await registeredWorktrees(sourceGit);
+  for (const name of (await readdir(root)).sort()) {
+    const path = resolve(root, name);
+    /** Records one retained entry together with the reason its worktree was kept. */
+    const keep = (reason: string) => {
+      result.kept.push({ task: name, path, reason });
+    };
+    const kind = await pathKind(path);
+    // Entries that vanished between listing and inspection are neither removed nor kept.
+    if (kind === "missing") continue;
+    if (kind === "other") {
+      keep("Entry is not a task worktree directory");
+      continue;
+    }
+    if (!worktrees.has(path)) {
+      keep("Directory is not a registered Git worktree of this checkout");
+      continue;
+    }
+    const status = taskStatuses.get(name);
+    if (status === undefined) {
+      keep("Task has no GitHub checkpoint in this repository");
+      continue;
+    }
+    const removable =
+      status === "done" ||
+      (options.all === true && OTHER_TERMINAL_TASK_STATUSES.includes(status));
+    if (!removable) {
+      keep(
+        OTHER_TERMINAL_TASK_STATUSES.includes(status)
+          ? `Task status is ${status}; rerun with --all to remove its worktree`
+          : `Task status is ${status}; worktrees of unfinished tasks are retained`,
+      );
+      continue;
+    }
+    const checkoutGit = gitAt(path);
+    const porcelain = await checkoutGit.raw([
+      "--no-optional-locks",
+      "status",
+      "--porcelain",
+    ]);
+    if (porcelain.trim() !== "") {
+      keep("Worktree has uncommitted changes");
+      continue;
+    }
+    if (options.dryRun === true) {
+      result.removed.push({ task: name, path });
+      continue;
+    }
+    try {
+      await sourceGit.raw(["worktree", "remove", path]);
+      worktrees = await registeredWorktrees(sourceGit);
+      if (worktrees.has(path))
+        throw new Error("Git still lists the worktree after removal");
+      result.removed.push({ task: name, path });
+    } catch (error) {
+      result.failures += 1;
+      keep(
+        `Worktree removal failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  return result;
 }
 
 /** Creates a noninteractive SimpleGit client that can optionally use global credentials. */

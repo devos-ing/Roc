@@ -1,9 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { AcceptanceChecklistItem } from "../../domain/acceptance-checklist";
-import { BacklogManifestSchema } from "../../domain/schemas";
+import { BacklogManifestSchema, type TaskStatus } from "../../domain/schemas";
 import { BunGitHubCommandRunner } from "../../github/pr-publisher";
 import { jsonHash, withGitHubBodyFile } from "../../github/remote-tasks";
+import { acquireCheckoutOwnership } from "../../workspace/checkout-ownership";
+import {
+  cleanupTaskWorktrees,
+  type TaskWorktreeCleanupResult,
+} from "../../workspace/task-branch";
 import {
   commandProjectRoot,
   currentCycle,
@@ -40,6 +46,23 @@ function renderAcceptanceChecklist(
           ]),
     ]),
   ].join("\n");
+}
+
+/** Removes finished task worktrees while holding the exclusive checkout ownership guard. */
+async function removeTaskWorktrees(
+  repoPath: string,
+  taskStatuses: ReadonlyMap<string, TaskStatus>,
+  all: boolean,
+): Promise<TaskWorktreeCleanupResult> {
+  const ownership = await acquireCheckoutOwnership(repoPath, randomUUID());
+  try {
+    return await cleanupTaskWorktrees(repoPath, taskStatuses, {
+      dryRun: false,
+      all,
+    });
+  } finally {
+    await ownership.release();
+  }
 }
 
 /** Registers task commands that read or modify GitHub directly. */
@@ -165,6 +188,60 @@ export function registerTaskCommands(
         if (!store.hookTrusted(await store.get(item.issue.number), phase))
           throw Error("Hook trust could not be confirmed");
         context.io.out(`Trusted ${phase} for Issue #${item.issue.number}`);
+      } catch (error) {
+        context.io.err(errorMessage(error));
+        context.exitCode = 1;
+      }
+    });
+  task
+    .command("cleanup")
+    .description("Remove worktrees of finished GitHub tasks")
+    .option("--dry-run", "Print the removal plan without changing anything")
+    .option(
+      "--all",
+      "Also remove worktrees of rejected, failed_infra and retired tasks",
+    )
+    .action(async (options: { dryRun?: boolean; all?: boolean }) => {
+      try {
+        if (!context.runtime.readTasks)
+          throw Error("GitHub task reads are unavailable");
+        const root = await commandProjectRoot(context);
+        const snapshot = await context.runtime.readTasks(root);
+        for (const diagnostic of snapshot.diagnostics)
+          context.io.err(diagnostic);
+        const taskStatuses = new Map(
+          snapshot.tasks.map((task) => [task.id, task.status] as const),
+        );
+        const result =
+          options.dryRun === true
+            ? // Dry-run stays strictly read-only and never touches the guard.
+              await cleanupTaskWorktrees(root, taskStatuses, {
+                dryRun: true,
+                all: options.all === true,
+              })
+            : await removeTaskWorktrees(
+                root,
+                taskStatuses,
+                options.all === true,
+              );
+        context.io.out(
+          JSON.stringify(
+            { removed: result.removed, kept: result.kept },
+            null,
+            2,
+          ),
+        );
+        context.io.out(
+          options.dryRun
+            ? `Dry run: would remove ${result.removed.length} task worktree(s), kept ${result.kept.length}.`
+            : `Removed ${result.removed.length} task worktree(s), kept ${result.kept.length}. Task branches are never deleted.`,
+        );
+        if (result.failures > 0) {
+          context.io.err(
+            `${result.failures} task worktree removal(s) failed; see kept reasons`,
+          );
+          context.exitCode = 1;
+        }
       } catch (error) {
         context.io.err(errorMessage(error));
         context.exitCode = 1;

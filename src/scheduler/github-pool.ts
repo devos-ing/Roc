@@ -17,6 +17,11 @@ type Worker = {
   stopReason?: string;
 };
 
+/** Initial wait before retrying a transient remote read failure between polls. */
+const READ_BACKOFF_START_MS = 30_000;
+/** Upper bound for the transient-read backoff so a recovered daemon stays responsive. */
+const READ_BACKOFF_MAX_MS = 300_000;
+
 /** Waits for a task completion, a remote refresh deadline or daemon shutdown and removes its listeners. */
 async function waitForChange(
   work: Promise<void>[],
@@ -38,6 +43,23 @@ async function waitForChange(
   }
 }
 
+/** Waits out a transient-read backoff while still waking immediately for daemon shutdown. */
+async function backoffDelay(delay: number, signal: AbortSignal): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let wake: (() => void) | undefined;
+  try {
+    await new Promise<void>((resolve) => {
+      wake = () => resolve();
+      timer = setTimeout(resolve, delay);
+      signal.addEventListener("abort", wake, { once: true });
+      if (signal.aborted) resolve();
+    });
+  } finally {
+    clearTimeout(timer);
+    if (wake) signal.removeEventListener("abort", wake);
+  }
+}
+
 /** Owns bounded admission and independent Issue workers for one GitHub daemon. */
 export class GitHubTaskPool {
   private readonly workers = new Map<string, Worker>();
@@ -45,6 +67,8 @@ export class GitHubTaskPool {
   private stopped = false;
   private failure?: unknown;
   private completions = 0;
+  private readFailures = 0;
+  private justBackedOff = false;
   private readonly selector: GitHubTaskRunner;
   private readonly admissionStop = new AbortController();
   private selection?: Promise<NativeTask | undefined>;
@@ -77,7 +101,8 @@ export class GitHubTaskPool {
         if (this.failure) throw this.failure;
         const selected = new Set(this.workers.keys());
         const completedBeforeRead = this.completions;
-        const tasks = await this.refreshAuthority(admission);
+        const tasks = await this.pollAuthority(admission);
+        if (!tasks) continue;
         while (
           !this.stopped &&
           !signal.aborted &&
@@ -158,6 +183,36 @@ export class GitHubTaskPool {
     return tasks;
   }
 
+  /** Reads Issue authority while treating retryable infra read failures as transient polling losses. */
+  private async pollAuthority(
+    signal: AbortSignal,
+  ): Promise<NativeTask[] | undefined> {
+    try {
+      const tasks = await this.refreshAuthority(signal);
+      this.readFailures = 0;
+      this.justBackedOff = false;
+      return tasks;
+    } catch (error) {
+      if (
+        !(error instanceof AgileError) ||
+        error.category !== "infra" ||
+        !error.retryable
+      )
+        throw error;
+      this.readFailures++;
+      const delay = Math.min(
+        READ_BACKOFF_START_MS * 2 ** (this.readFailures - 1),
+        READ_BACKOFF_MAX_MS,
+      );
+      this.input.diagnostic?.(
+        `GitHub task read failed (${error.code}); consecutive failures: ${this.readFailures}; retrying in ${Math.round(delay / 1000)}s`,
+      );
+      await backoffDelay(delay, signal);
+      this.justBackedOff = true;
+      return undefined;
+    }
+  }
+
   /** Maintains authority polling during a long refresh/Review while keeping its entire selection owned until drained. */
   private async awaitSelection(
     selection: Promise<NativeTask | undefined>,
@@ -169,8 +224,11 @@ export class GitHubTaskPool {
     });
     try {
       while (!settled && !signal.aborted) {
-        await waitForChange([owned.then(() => undefined)], signal);
-        if (!settled && !signal.aborted) await this.refreshAuthority(signal);
+        // A just-completed read backoff already waited, so retry immediately
+        // instead of stacking the ordinary poll interval on top of it.
+        if (this.justBackedOff) this.justBackedOff = false;
+        else await waitForChange([owned.then(() => undefined)], signal);
+        if (!settled && !signal.aborted) await this.pollAuthority(signal);
       }
       return await owned;
     } catch (error) {
