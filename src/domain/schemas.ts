@@ -42,6 +42,13 @@ export const TaskHookSchema = z
 
 export const TaskHookPhaseSchema = z.enum(["prehook", "posthook"]);
 
+/** Locates the predecessor whose branch this task continues on (issue-scoped, globally unique). */
+export const ContinuesSchema = z
+  .object({
+    issue: z.number().int().positive(),
+  })
+  .strict();
+
 export const TicketSpecSchema = z
   .object({
     problem: NonEmpty,
@@ -51,6 +58,7 @@ export const TicketSpecSchema = z
     acceptanceCriteria: z.array(NonEmpty).min(1),
     validation: z.array(NonEmpty).min(1),
     dependencies: z.array(NonEmpty),
+    continues: ContinuesSchema.optional(),
     risk: z.enum(["low", "medium", "high"]),
     skipScout: z.boolean().optional(),
     contextCandidates: z.array(ContextRefSchema),
@@ -64,6 +72,13 @@ export const TicketSpecSchema = z
   })
   .strict()
   .superRefine((spec, context) => {
+    if (spec.continues && spec.dependencies.length > 0)
+      context.addIssue({
+        code: "custom",
+        path: ["continues"],
+        message:
+          "Chained tasks must not declare completion dependencies; use continues only",
+      });
     if (!spec.skipScout) return;
     const files = spec.scope.every(
       (path) =>
@@ -168,6 +183,7 @@ export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 export type TicketSpec = z.infer<typeof TicketSpecSchema>;
 export type TaskHook = z.infer<typeof TaskHookSchema>;
 export type TaskHookPhase = z.infer<typeof TaskHookPhaseSchema>;
+export type Continues = z.infer<typeof ContinuesSchema>;
 export type AgileCyclePlan = z.infer<typeof AgileCyclePlanSchema>;
 export type TaskCreate = z.infer<typeof TaskCreateSchema>;
 export type BacklogManifest = z.infer<typeof BacklogManifestSchema>;
