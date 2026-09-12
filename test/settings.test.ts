@@ -33,6 +33,9 @@ test("round-trips optional profile mappings and rejects malformed configuration"
     { luna: "model" },
     { luna: "provider/" },
     { luna: "provider/model\nsecret" },
+    { allowlist: [] },
+    { allowlist: ["provider/model", "provider/model"] },
+    { implementPrimaryEffort: "low" },
   ]) {
     expect(
       RocSettingsSchema.safeParse({ cycle: { type: "weekly" }, models })
@@ -77,6 +80,26 @@ test("rejects malformed efforts with bounded diagnostics", async () => {
     expect(error?.message).toContain(expected);
     expect(error?.message).not.toContain("secret");
   }
+});
+
+test("round-trips exact model admission and primary effort settings", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "roc-routing-settings-"));
+  const settings = {
+    cycle: { type: "weekly" as const },
+    models: {
+      luna: "openai-codex/gpt-5.6-luna",
+      terra: "kimi-coding/k3",
+      sol: "openai-codex/gpt-5.6-sol",
+      allowlist: [
+        "openai-codex/gpt-5.6-luna",
+        "kimi-coding/k3",
+        "openai-codex/gpt-5.6-sol",
+      ],
+      implementPrimaryEffort: "high" as const,
+    },
+  };
+  await saveRocSettings(settings, homeRoot);
+  expect(await loadRocSettings(homeRoot)).toEqual(settings);
 });
 
 test("saves and loads strict global settings", async () => {

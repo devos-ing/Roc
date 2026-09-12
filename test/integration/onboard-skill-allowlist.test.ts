@@ -72,7 +72,12 @@ test("onboarding selection becomes the scheduler skill configuration", async () 
     expect(settings.skills?.allowlist).toEqual([
       { name: "unslop", source: "backnotprop/pstack" },
     ]);
-    const models = { luna: "openai-codex/gpt-5.6-luna" };
+    const models = {
+      luna: "openai-codex/gpt-5.6-luna",
+      terra: "kimi-coding/k3",
+      allowlist: ["openai-codex/gpt-5.6-luna", "kimi-coding/k3"],
+      implementPrimaryEffort: "high" as const,
+    };
     await saveRocSettings({ ...settings, models }, home);
     expect(await runCli(["onboard", "--global"], io, runtime)).toBe(0);
     expect((await loadRocSettings(home)).models).toEqual(models);

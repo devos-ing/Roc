@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runBackendSession } from "../../src/cli/runtime";
+import {
+  createBackendModelAdvisor,
+  runBackendSession,
+} from "../../src/cli/runtime";
 import { GitHubExecutionStore } from "../../src/github/execution-store";
 import { BunGitHubCommandRunner } from "../../src/github/pr-publisher";
 import { acquireCheckoutOwnership } from "../../src/workspace/checkout-ownership";
@@ -10,6 +13,37 @@ import { git } from "../helpers/git";
 import { memoryGitHub } from "../helpers/github-native";
 import { barrier, memoryPlan } from "../helpers/github-plan";
 import { graphqlResponse } from "../helpers/graphql-github";
+
+test("backend session routing uses its immutable policy snapshot", () => {
+  const advisor = createBackendModelAdvisor({
+    catalog: [
+      {
+        id: "openai-codex/gpt-5.6-sol",
+        supportedReasoningEfforts: ["medium", "high"],
+      },
+      { id: "kimi-coding/k3", supportedReasoningEfforts: ["high"] },
+    ],
+    modelMapping: {
+      luna: "openai-codex/gpt-5.6-sol",
+      terra: "kimi-coding/k3",
+      sol: "openai-codex/gpt-5.6-sol",
+    },
+    modelRoutingPolicy: {
+      allowlist: ["openai-codex/gpt-5.6-sol", "kimi-coding/k3"],
+      implementPrimaryEffort: "high",
+    },
+    harness: {
+      async step(): Promise<never> {
+        throw Error("No task should run");
+      },
+      async cancel() {},
+    },
+    async close() {},
+  });
+  expect(
+    advisor.decide({ role: "implement", risk: "medium", retryIndex: 0 }),
+  ).toMatchObject({ model: "kimi-coding/k3", effort: "high" });
+});
 
 test("a scheduler waits through comment-read rate limits and remains cancellable without retaining an idle guard", async () => {
   for (const cancel of [false, true]) {

@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Roc model routing \u00b7 M1 design",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "viewBox": [1290, 680]
+  },
+  "components": [
+    {
+      "id": "operator-settings",
+      "type": "security",
+      "label": "Model settings",
+      "sublabel": "Exact allowlist + effort",
+      "pos": [37.5, 80],
+      "size": [165.0, 80]
+    },
+    {
+      "id": "pi-catalog",
+      "type": "database",
+      "label": "Pi model catalog",
+      "sublabel": "Available IDs + capabilities",
+      "pos": [37.5, 360],
+      "size": [165.0, 80]
+    },
+    {
+      "id": "route-policy",
+      "type": "backend",
+      "label": "Model selector",
+      "sublabel": "Role, risk, retry rules",
+      "pos": [300.0, 220],
+      "size": [165.0, 80]
+    },
+    {
+      "id": "task-scheduler",
+      "type": "backend",
+      "label": "Roc scheduler",
+      "sublabel": "One recorded role attempt",
+      "pos": [562.5, 220],
+      "size": [165.0, 80]
+    },
+    {
+      "id": "attempt-record",
+      "type": "database",
+      "label": "Attempt record",
+      "sublabel": "Model, effort, cursor, result",
+      "pos": [562.5, 470],
+      "size": [165.0, 80]
+    },
+    {
+      "id": "pi-execution",
+      "type": "backend",
+      "label": "Pi role process",
+      "sublabel": "Agent loop + tools",
+      "pos": [825.0, 220],
+      "size": [165.0, 80]
+    },
+    {
+      "id": "codex-model",
+      "type": "external",
+      "label": "Codex model",
+      "sublabel": "Scout, Review, escalation",
+      "pos": [1087.5, 50],
+      "size": [165.0, 80]
+    },
+    {
+      "id": "kimi-model",
+      "type": "external",
+      "label": "Kimi model",
+      "sublabel": "Selected implementer",
+      "pos": [1087.5, 220],
+      "size": [165.0, 80]
+    },
+    {
+      "id": "glm-model",
+      "type": "external",
+      "label": "GLM model",
+      "sublabel": "Selected implementer",
+      "pos": [1087.5, 390],
+      "size": [165.0, 80]
+    }
+  ],
+  "connections": [
+    {
+      "from": "operator-settings",
+      "to": "route-policy",
+      "label": "policy"
+    },
+    {
+      "from": "pi-catalog",
+      "to": "route-policy",
+      "label": "eligibility"
+    },
+    {
+      "from": "route-policy",
+      "to": "task-scheduler",
+      "label": "route",
+      "variant": "emphasis"
+    },
+    {
+      "from": "task-scheduler",
+      "to": "pi-execution",
+      "label": "RPC",
+      "variant": "emphasis"
+    },
+    {
+      "from": "task-scheduler",
+      "to": "attempt-record",
+      "label": "checkpoint",
+      "labelDy": 24
+    },
+    {
+      "from": "pi-execution",
+      "to": "codex-model"
+    },
+    {
+      "from": "pi-execution",
+      "to": "kimi-model"
+    },
+    {
+      "from": "pi-execution",
+      "to": "glm-model"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "One runtime, separate agents",
+      "items": [
+        "Each role uses its own Pi process and session.",
+        "Kimi or GLM is selected for primary implementation."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Advice and selection have different jobs",
+      "items": [
+        "Model selection uses deterministic rules.",
+        "Architectural advice is not an extra paid routing call."
+      ]
+    }
+  ]
+}

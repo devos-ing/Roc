@@ -279,7 +279,10 @@ this version's format. The minimal weekly configuration is
 whole days and a real `YYYY-MM-DD` calendar date. Optional `skills.allowlist` is an
 array of `{ "name": "…", "source": "…" }` identities with nonempty strings;
 `execution.allowUnsandboxed` is a boolean. Optional top-level `models` supports
-only `luna`, `terra` and `sol`, each a `provider/modelId` string as described below.
+`luna`, `terra` and `sol` as `provider/modelId` strings, plus a nonempty unique
+`allowlist` of exact IDs and `implementPrimaryEffort` of `medium` or `high`.
+Optional top-level `efforts` maps `scout`, `implement`, or `review` to `medium`,
+`high`, or `xhigh`.
 Do not remove a valid `models` mapping. Other fields, including nested extras,
 are rejected; review and manually correct misplaced/unsupported fields rather
 than blindly deleting them or replacing the entire file with the minimal example.
@@ -306,22 +309,33 @@ Use the same OS account for onboarding and the daemon.
 
 Optional `models.luna`, `models.terra` and `models.sol` map Scout, Implement and
 Review profiles to exact Pi `provider/modelId` values. Omitted profiles use the
-Pi default. Configured models must exist in the catalog and support `high`.
-New Scout and Review attempts use `high`; Implement uses `medium` across risk
-levels and retries. High-risk tasks retain the Sol profile; unsupported efforts
-become `needs_replan`.
+Pi default. `models.allowlist` restricts all effective mappings and newly started
+or unfinished recovered attempts to exact IDs. Luna must support `high`, Terra
+must support `implementPrimaryEffort` (default `medium`), and Sol must support
+both `medium` and `high`. New Scout and Review attempts use `high`; primary
+Implement and a retained Terra retry use the configured primary effort;
+high-risk and escalated Implement use Sol at `medium`. Unsupported or denied
+effective mappings fail Pi backend startup before task admission. After startup,
+an advisor with no compatible route or a dispatch or unfinished-recovery policy
+denial stops before a prompt and becomes `needs_replan`.
 Each role gets at most three attempts. A first retry normally keeps its profile;
 model unavailability or the final retry can advance the profile. Existing
 attempts keep their recorded model and effort on restart.
 
-For GPT-6 Astra across all roles, merge this field into existing Roc settings.
-The role routing applies `high` to Scout/Review and `medium` to Implement:
+For a Kimi primary implementer with Codex Scout and independent Review, merge
+this field into existing Roc settings. Pi must already be configured for the
+providers under the daemon account:
 
 ```json
 "models": {
   "luna": "openai-codex/gpt-6-astra",
-  "terra": "openai-codex/gpt-6-astra",
-  "sol": "openai-codex/gpt-6-astra"
+  "terra": "kimi-coding/k3",
+  "sol": "openai-codex/gpt-6-astra",
+  "allowlist": [
+    "openai-codex/gpt-6-astra",
+    "kimi-coding/k3"
+  ],
+  "implementPrimaryEffort": "high"
 }
 ```
 
@@ -343,6 +357,19 @@ when only a stronger fallback model supports it, routing advances along the
 normal profile chain (for example Implement moves from Terra to Sol for
 `xhigh`). Raise effort for hard implementation work and lower it for cheap
 scouting when your provider and workload justify it.
+
+When `models.implementPrimaryEffort` is set, it is more specific than
+`efforts.implement`: it applies only to primary Terra Implement work and a
+retained Terra retry. High-risk or escalated Sol Implement uses an explicit
+`efforts.implement` value when present, otherwise `medium`. With an allowlist
+or primary policy, an unavailable Terra primary becomes `needs_replan` rather
+than silently selecting Sol.
+
+Use catalog IDs exactly as Pi reports them. If startup rejects a mapping or
+primary-model effort, correct that profile or effort to a catalog-supported value
+and restart; do not remove the allowlist to force a fallback. If recovery is
+denied after a policy change, inspect the retained descriptor and worktree, then
+create or approve a replan instead of rewriting its historical model or cursor.
 
 For advanced Claude or GLM setup, configure the bundled Pi CLI under the daemon
 account with `bun x --no-install pi`. Use its `/login` and `/model` commands where

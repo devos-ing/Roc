@@ -1,7 +1,8 @@
+import type { ModelSettings } from "../../domain/agile-cycle";
 import { AgileError } from "../../runtime/errors";
 import type {
   CatalogModel,
-  ModelMapping,
+  ModelRoutingPolicy,
   RoleEfforts,
 } from "../../scheduler/model-routing";
 import { loadRocSettings } from "../../settings";
@@ -50,6 +51,35 @@ function supportedEfforts(model: PiModel): string[] {
 function validateDefaultModel(raw: unknown): PiModel | undefined {
   const parsed = PiModelSchema.safeParse(raw);
   return parsed.success ? parsed.data : undefined;
+}
+
+/** Extracts the optional routing policy fields from validated model settings. */
+function routingPolicyForModels(
+  models: ModelSettings | undefined,
+): ModelRoutingPolicy | undefined {
+  if (
+    models?.allowlist === undefined &&
+    models?.implementPrimaryEffort === undefined
+  )
+    return undefined;
+  return {
+    ...(models.allowlist === undefined
+      ? {}
+      : { allowlist: [...models.allowlist] }),
+    ...(models.implementPrimaryEffort === undefined
+      ? {}
+      : { implementPrimaryEffort: models.implementPrimaryEffort }),
+  };
+}
+
+/** Returns the Roc efforts required for every role that can select a profile. */
+function requiredEfforts(
+  profile: "luna" | "terra" | "sol",
+  policy: ModelRoutingPolicy | undefined,
+): readonly ("medium" | "high")[] {
+  if (profile === "luna") return ["high"];
+  if (profile === "terra") return [policy?.implementPrimaryEffort ?? "medium"];
+  return ["medium", "high"];
 }
 
 /** Requires explicit acknowledgement before Pi runs with the process user permissions. */
@@ -105,7 +135,7 @@ export function buildPiBackendFactory(input: {
   startProbeClient: () => Promise<PiClientApi>;
   skillPaths?: readonly string[];
   allowUnsandboxed?: boolean;
-  models?: ModelMapping;
+  models?: ModelSettings;
   efforts?: RoleEfforts;
   startAttemptClient?: (cwd: string) => Promise<PiClientApi>;
 }): BackendFactory {
@@ -148,17 +178,6 @@ export function buildPiBackendFactory(input: {
         });
       }
       const defaultEfforts = supportedEfforts(defaultModel);
-      if (!defaultEfforts.includes("high")) {
-        throw new AgileError({
-          code: "PI_MODEL_UNSUPPORTED",
-          category: "startup",
-          retryable: false,
-          component: "pi-backend",
-          message:
-            "The Pi default model does not support the Roc reasoning efforts",
-        });
-      }
-
       const defaultId = catalogId(defaultModel);
       const catalog: CatalogModel[] = [];
       for (const model of catalogModels) {
@@ -181,25 +200,44 @@ export function buildPiBackendFactory(input: {
         terra: defaultId,
         sol: defaultId,
       };
+      const modelRoutingPolicy = routingPolicyForModels(input.models);
       for (const profile of ["luna", "terra", "sol"] as const) {
         const configured = input.models?.[profile];
-        if (configured === undefined) continue;
+        const selected = configured ?? defaultId;
+        const efforts = requiredEfforts(profile, modelRoutingPolicy);
         if (
+          (modelRoutingPolicy?.allowlist !== undefined &&
+            !modelRoutingPolicy.allowlist.includes(selected)) ||
           !catalog.some(
             (model) =>
-              model.id === configured &&
-              model.supportedReasoningEfforts.includes("high"),
+              model.id === selected &&
+              efforts.every((effort) =>
+                model.supportedReasoningEfforts.includes(effort),
+              ),
           )
         ) {
           throw new AgileError({
-            code: "PI_MODEL_MAPPING_INVALID",
+            code:
+              configured === undefined &&
+              profile === "luna" &&
+              efforts.length === 1 &&
+              efforts[0] === "high"
+                ? "PI_MODEL_UNSUPPORTED"
+                : "PI_MODEL_MAPPING_INVALID",
             category: "startup",
             retryable: false,
             component: "pi-backend",
-            message: `The configured ${profile} model must exist in the Pi catalog and support high reasoning`,
+            message:
+              configured !== undefined &&
+              efforts.length === 1 &&
+              efforts[0] === "high"
+                ? `The configured ${profile} model must exist in the Pi catalog and support high reasoning`
+                : configured === undefined && profile === "luna"
+                  ? "The Pi default model does not support the Roc reasoning efforts"
+                  : `The ${configured === undefined ? "default" : "configured"} ${profile} model must exist in the Pi catalog, be allowed, and support ${efforts.join(" and ")} reasoning`,
           });
         }
-        modelMapping[profile] = configured;
+        modelMapping[profile] = selected;
       }
 
       // The probe process is only a catalog oracle; role attempts spawn
@@ -243,7 +281,12 @@ export function buildPiBackendFactory(input: {
         catalog,
         modelMapping,
         efforts: input.efforts,
-        harness: createPiHarness({ branches, startClient: startAttemptClient }),
+        modelRoutingPolicy,
+        harness: createPiHarness({
+          branches,
+          startClient: startAttemptClient,
+          allowedModels: modelRoutingPolicy?.allowlist,
+        }),
         close: () => {
           closed ??= (async () => {
             const results = await Promise.allSettled(

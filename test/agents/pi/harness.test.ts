@@ -843,3 +843,57 @@ test("dispatch fails closed when the thinking level was clamped", async () => {
     },
   });
 });
+
+test("denied model admission blocks a new or recovered turn without a prompt", async () => {
+  const clients: RecordedPiClient[] = [];
+  const branches = memoryBranches();
+  const admitted = createPiHarness({
+    branches,
+    startClient: async () => {
+      const client = new RecordedPiClient();
+      clients.push(client);
+      return client;
+    },
+  });
+  const started = await admitted.step(makeScoutRequest("policy-recovery"));
+  if (started.kind !== "event") throw new Error("expected started delivery");
+  await admitted.cancel("policy-recovery");
+
+  let recoveredClients = 0;
+  const denied = createPiHarness({
+    branches,
+    allowedModels: ["openai-codex/gpt-5.6-sol"],
+    startClient: async () => {
+      recoveredClients += 1;
+      return new RecordedPiClient();
+    },
+  });
+  const newTurn = await denied.step(makeScoutRequest("policy-new"));
+  expect(newTurn).toMatchObject({
+    kind: "event",
+    event: { type: "attempt.blocked_policy", code: "model_not_allowed" },
+  });
+  const recoveredTurn = await denied.step({
+    ...makeScoutRequest("policy-recovery"),
+    mode: "reconcile",
+    backendCursor: started.nextCursor,
+  });
+  expect(recoveredTurn).toMatchObject({
+    kind: "event",
+    event: { type: "attempt.blocked_policy", code: "model_not_allowed" },
+  });
+  expect(recoveredClients).toBe(0);
+  expect(clients).toHaveLength(1);
+  expect(
+    clients[0]?.requests.some((request) => request.command === "prompt"),
+  ).toBe(true);
+  const cursorlessRecovery = await denied.step({
+    ...makeScoutRequest("policy-cursorless"),
+    mode: "reconcile",
+  });
+  expect(cursorlessRecovery).toMatchObject({
+    kind: "event",
+    event: { type: "attempt.blocked_policy", code: "model_not_allowed" },
+  });
+  expect(recoveredClients).toBe(0);
+});

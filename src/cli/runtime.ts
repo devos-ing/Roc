@@ -39,6 +39,18 @@ export {
   loadSchedulerSkillPolicy,
 } from "../skills/policy";
 
+/** Creates the run-scoped advisor from a backend's immutable routing snapshots. */
+export function createBackendModelAdvisor(
+  backend: BackendRuntime,
+  onDiagnostic?: (message: string) => void,
+) {
+  return createModelAdvisor(backend.catalog, backend.modelMapping, {
+    efforts: backend.efforts,
+    policy: backend.modelRoutingPolicy,
+    onDiagnostic,
+  });
+}
+
 /** Connects GitHub checkpoints to an explicit repository and configured executor identity. */
 export async function connectGitHub(
   cwd: string,
@@ -170,10 +182,7 @@ export async function runBackendSession(
             store,
             branches,
             harness: backend.harness,
-            advisor: createModelAdvisor(backend.catalog, backend.modelMapping, {
-              efforts: backend.efforts,
-              onDiagnostic: emitDiagnostic,
-            }),
+            advisor: createBackendModelAdvisor(backend, emitDiagnostic),
             publisher:
               options.publisherFactory?.(branches) ??
               new GitHubPullRequestPublisher(baseBranch, branches, command),
