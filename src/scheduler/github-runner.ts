@@ -449,6 +449,7 @@ export class GitHubTaskRunner {
     mergeCommit: string,
   ): Promise<MergeResult> {
     try {
+      await this.command(["git", "fetch", "origin", this.input.baseBranch]);
       await this.command([
         "git",
         "merge-base",
