@@ -22,7 +22,16 @@ export type TaskBranchRefresh = {
 export type TaskBranchManager = {
   /** Rebases a retained trusted patch and lease-pushes only its owned task branch. */
   refresh(taskId: string, input: TaskBranchRefresh): Promise<string>;
-  prepare(taskId: string, baseCommit?: string): Promise<TaskWorkspace>;
+  /**
+   * Creates or validates the retained worktree for the task. The optional
+   * branch is a chain override: the ticket continues work on its predecessor's
+   * branch instead of its own deterministic task branch.
+   */
+  prepare(
+    taskId: string,
+    baseCommit?: string,
+    branch?: string,
+  ): Promise<TaskWorkspace>;
   /** Restores an approved source commit as uncommitted task work when the branch is untouched. */
   restoreChanges(
     taskId: string,
@@ -326,6 +335,7 @@ export async function createTaskBranchManager(
   function manager(
     taskId: string,
     persistedBase?: string,
+    branchOverride?: string,
   ): Promise<TaskBranchManager> {
     const safeId = safeTaskPathComponent(taskId);
     const base = persistedBase ?? defaultBase;
@@ -342,6 +352,7 @@ export async function createTaskBranchManager(
       root,
       safeId,
       base,
+      branchOverride,
     );
     managers.set(safeId, { base, value });
     return value;
@@ -363,8 +374,8 @@ export async function createTaskBranchManager(
       return head;
     },
     /** Creates or validates the retained worktree for the task. */
-    async prepare(id, base) {
-      return (await manager(id, base)).prepare(id, base);
+    async prepare(id, base, branch) {
+      return (await manager(id, base, branch)).prepare(id, base);
     },
     /** Restores only the approved source changes into this task's worktree. */
     async restoreChanges(id, source, base) {
@@ -396,9 +407,10 @@ async function createWorktreeManager(
   root: string,
   taskId: string,
   baseCommit: string,
+  branchOverride?: string,
 ): Promise<TaskBranchManager> {
   const checkoutPath = resolve(root, taskId);
-  const branch = taskBranchName(taskId);
+  const branch = branchOverride ?? taskBranchName(taskId);
   const kind = await pathKind(checkoutPath);
   if (kind === "other")
     throw new Error("Task worktree path is not a real directory");
@@ -452,7 +464,7 @@ async function createWorktreeManager(
     return {
       taskId: safeTaskId,
       path: checkoutPath,
-      branch: taskBranchName(safeTaskId),
+      branch,
       baseCommit: taskBaseCommit,
     };
   }
