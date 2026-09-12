@@ -1045,6 +1045,160 @@ test("a chain ticket stays awaiting when its frozen segment is absent from the m
   ]);
 });
 
+test("a merged PR pushed forward by its chain successor still credits the predecessor ticket", async () => {
+  const { remote, store } = chainFixture({ issue: 41 });
+  const taskBranch = "agile/issue-41";
+  const segmentA = "b".repeat(40);
+  const pushed = "e".repeat(40);
+  const merged = "c".repeat(40);
+  await seed(remote, (record) => {
+    record.phase = "awaiting_merge";
+    record.publication = {
+      number: 7,
+      branch: taskBranch,
+      commitSha: segmentA,
+    };
+  });
+  const diagnostics: string[] = [];
+  const commands: string[][] = [];
+  const run = new GitHubTaskRunner({
+    store,
+    branches,
+    advisor: createModelAdvisor([]),
+    harness: {
+      async step() {
+        throw Error("Unexpected agent work");
+      },
+      async cancel() {},
+    },
+    publisher: {
+      baseBranch: "main",
+      async publish() {
+        throw Error("Unexpected publication");
+      },
+    },
+    command: {
+      async run({ command }) {
+        commands.push(command);
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout:
+            command[0] === "gh"
+              ? JSON.stringify({
+                  number: 7,
+                  state: "MERGED",
+                  baseRefName: "main",
+                  headRefName: taskBranch,
+                  headRefOid: pushed,
+                  mergeCommit: { oid: merged },
+                })
+              : "",
+        };
+      },
+    },
+    cwd: "/fixture",
+    baseBranch: "main",
+    diagnostic: (message) => diagnostics.push(message),
+  });
+  expect(await run.runOnce(new AbortController().signal)).toBe(false);
+  expect((await store.get(41)).execution).toMatchObject({
+    phase: "done",
+    baseBranch: "main",
+    publication: {
+      number: 7,
+      branch: taskBranch,
+      commitSha: segmentA,
+      mergeCommit: merged,
+    },
+  });
+  expect((await store.get(41)).execution?.failure).toBeUndefined();
+  expect(remote.issue.state).toBe("CLOSED");
+  expect(remote.closures).toEqual([41]);
+  expect(diagnostics.join()).not.toContain("Issue #41");
+  expect(commands).toContainEqual([
+    "git",
+    "merge-base",
+    "--is-ancestor",
+    segmentA,
+    merged,
+  ]);
+});
+
+test("a predecessor ticket stays quietly awaiting while its chain successor keeps the PR open with new commits", async () => {
+  const { remote, store } = chainFixture({ issue: 41 });
+  const taskBranch = "agile/issue-41";
+  const segmentA = "b".repeat(40);
+  const pushed = "e".repeat(40);
+  await seed(remote, (record) => {
+    record.phase = "awaiting_merge";
+    record.publication = {
+      number: 7,
+      branch: taskBranch,
+      commitSha: segmentA,
+    };
+  });
+  const diagnostics: string[] = [];
+  const commands: string[][] = [];
+  const run = new GitHubTaskRunner({
+    store,
+    branches,
+    advisor: createModelAdvisor([]),
+    harness: {
+      async step() {
+        throw Error("Unexpected agent work");
+      },
+      async cancel() {},
+    },
+    publisher: {
+      baseBranch: "main",
+      async publish() {
+        throw Error("Unexpected publication");
+      },
+    },
+    command: {
+      async run({ command }) {
+        commands.push(command);
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout:
+            command[0] === "gh"
+              ? JSON.stringify({
+                  number: 7,
+                  state: "OPEN",
+                  baseRefName: "main",
+                  headRefName: taskBranch,
+                  headRefOid: pushed,
+                  mergeCommit: null,
+                })
+              : "",
+        };
+      },
+    },
+    cwd: "/fixture",
+    baseBranch: "main",
+    diagnostic: (message) => diagnostics.push(message),
+  });
+  const { tasks } = await store.list();
+  await run.claimNext(tasks, new AbortController().signal);
+  const record = (await store.get(41)).execution;
+  expect(record).toMatchObject({
+    phase: "awaiting_merge",
+    baseBranch: "main",
+  });
+  expect(record?.failure).toBeUndefined();
+  expect(remote.issue.state).toBe("OPEN");
+  expect(diagnostics).toEqual([]);
+  expect(commands).not.toContainEqual([
+    "git",
+    "merge-base",
+    "--is-ancestor",
+    segmentA,
+    pushed,
+  ]);
+});
+
 test("confirmed refresh recovery selects only the new exact-target Review and never replays historical roles, hooks or publication", async () => {
   for (const recovering of [false, true]) {
     const remote = memoryGitHub({

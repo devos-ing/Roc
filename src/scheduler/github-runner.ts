@@ -466,6 +466,27 @@ export class GitHubTaskRunner {
     }
   }
 
+  /** Credits a ticket continued by any successor with the chain reconciliation exemptions. */
+  private isChainPredecessor(
+    task: NativeTask,
+    tasks: readonly NativeTask[],
+  ): boolean {
+    return tasks.some(
+      (candidate) => candidate.task.spec.continues?.issue === task.issue.number,
+    );
+  }
+
+  /** Lists every remote task for predecessor detection, degrading to none on listing failure. */
+  private async chainDetectionTasks(
+    signal: AbortSignal,
+  ): Promise<NativeTask[]> {
+    try {
+      return (await this.input.store.list(signal)).tasks;
+    } catch {
+      return [];
+    }
+  }
+
   /** Fetches a base containing every dependency's confirmed merge commit. */
   private async dependencyBase(
     task: NativeTask,
@@ -957,7 +978,9 @@ export class GitHubTaskRunner {
       signal.throwIfAborted();
       const record = task.execution;
       const publication = record?.publication;
-      const chain = Boolean(task.task.spec.continues);
+      const chain =
+        Boolean(task.task.spec.continues) ||
+        this.isChainPredecessor(task, await this.chainDetectionTasks(signal));
       if (
         task.blockedReason ||
         !task.approved ||
@@ -1090,7 +1113,9 @@ export class GitHubTaskRunner {
     } else {
       // Auto-closed Issues may recover a completed merge, but never submit one.
       const pr = await this.readPr(record.publication.number, signal);
-      const chain = Boolean(task.task.spec.continues);
+      const chain =
+        Boolean(task.task.spec.continues) ||
+        this.isChainPredecessor(task, await this.chainDetectionTasks(signal));
       if (
         pr.baseRefName !== this.mergeTargetBase(task, record) ||
         pr.headRefName !== record.publication.branch ||
