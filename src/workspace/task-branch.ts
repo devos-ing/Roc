@@ -409,7 +409,10 @@ async function createWorktreeManager(
   baseCommit: string,
   branchOverride?: string,
 ): Promise<TaskBranchManager> {
-  const checkoutPath = resolve(root, taskId);
+  const worktreeDir = branchOverride
+    ? branchOverride.replace(/^agile\//, "")
+    : taskId;
+  const checkoutPath = resolve(root, worktreeDir);
   const branch = branchOverride ?? taskBranchName(taskId);
   const kind = await pathKind(checkoutPath);
   if (kind === "other")
