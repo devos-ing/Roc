@@ -204,7 +204,13 @@ export class GitHubTaskRunner {
         )
           continue;
         task = fresh;
-        const base = await this.dependencyBase(task, plan.tasks, signal);
+        const chain = task.task.spec.continues
+          ? this.chainBase(task, tasks)
+          : undefined;
+        if (task.task.spec.continues && !chain) continue;
+        const base = chain
+          ? chain.base
+          : await this.dependencyBase(task, plan.tasks, signal);
         if (!base) continue;
         const confirmed = await this.input.store.freshPlan(task, signal);
         if (confirmed.version !== plan.version) {
@@ -214,7 +220,7 @@ export class GitHubTaskRunner {
         signal.throwIfAborted();
         task.execution = initialExecution(
           task,
-          this.input.baseBranch,
+          chain?.baseBranch ?? this.input.baseBranch,
           base,
           this.now(),
         );
@@ -392,6 +398,36 @@ export class GitHubTaskRunner {
     return this.input.now?.() ?? new Date().toISOString();
   }
 
+  /** Resolves the frozen branch segment of the declared chain predecessor, or explains why the chain is blocked. */
+  private chainBase(
+    task: NativeTask,
+    tasks: NativeTask[],
+  ): { base: string; baseBranch: string } | undefined {
+    const continues = task.task.spec.continues;
+    if (!continues) return undefined;
+    const predecessor = tasks.find(
+      (candidate) => candidate.issue.number === continues.issue,
+    );
+    if (!predecessor) {
+      this.input.diagnostic?.(
+        `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} not found`,
+      );
+      return undefined;
+    }
+    const publication = predecessor.execution?.publication;
+    if (
+      predecessor.execution?.phase !== "awaiting_merge" ||
+      !publication?.branch ||
+      !publication.commitSha
+    ) {
+      this.input.diagnostic?.(
+        `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} has no frozen branch segment yet`,
+      );
+      return undefined;
+    }
+    return { base: publication.commitSha, baseBranch: publication.branch };
+  }
+
   /** Fetches a base containing every dependency's confirmed merge commit. */
   private async dependencyBase(
     task: NativeTask,
@@ -450,14 +486,21 @@ export class GitHubTaskRunner {
   private async runTask(task: NativeTask, signal: AbortSignal): Promise<void> {
     const record = task.execution;
     if (!record) throw Error("Task has no remote checkpoint");
-    if (record.baseBranch !== this.input.baseBranch) {
+    if (
+      record.baseBranch !== this.input.baseBranch &&
+      !task.task.spec.continues
+    ) {
       record.phase = "needs_replan";
       record.failure = "Configured target branch changed";
       await this.checkpoint(task, record, signal);
       return;
     }
     task.task.baseCommit = record.baseCommit;
-    await this.input.branches.prepare(task.task.id, record.baseCommit);
+    await this.input.branches.prepare(
+      task.task.id,
+      record.baseCommit,
+      task.task.spec.continues ? record.baseBranch : undefined,
+    );
     if (!(await this.runHook(task, record, "prehook", signal))) return;
     for (const role of ["scout", "implement", "review"] as const) {
       if (role === "scout" && task.task.spec.skipScout) continue;

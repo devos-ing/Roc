@@ -594,6 +594,162 @@ async function seed(
   });
 }
 
+/** Builds a chain plan fixture: predecessor ticket T1 on issue #41, continues ticket T2 on issue #42. */
+function chainFixture(continues: { issue: number }) {
+  const remote = memoryGitHub();
+  const first = manifest.tasks[0];
+  if (!first) throw Error("Missing task fixture");
+  const plan = {
+    ...manifest,
+    tasks: [first, { ...first, id: "T2", spec: { ...first.spec, continues } }],
+  };
+  const predecessorEnvelope = remoteTaskEnvelope(plan, "T1");
+  remote.issue.body = renderRemoteTaskBody(predecessorEnvelope);
+  remote.issue.comments[0] = {
+    databaseId: 1,
+    author: { login: "owner" },
+    body: renderRemoteTaskApproval(predecessorEnvelope),
+  };
+  const chainEnvelope = remoteTaskEnvelope(plan, "T2");
+  const chain = {
+    ...structuredClone(remote.issue),
+    number: 42,
+    body: renderRemoteTaskBody(chainEnvelope),
+    comments: [
+      {
+        databaseId: 3,
+        author: { login: "owner" },
+        body: renderRemoteTaskApproval(chainEnvelope),
+      },
+    ],
+  };
+  const api = {
+    ...remote.api,
+    async read() {
+      return structuredClone([remote.issue, chain]);
+    },
+    async get(_repo: string, number: number) {
+      return structuredClone(number === 41 ? remote.issue : chain);
+    },
+    async getMany(repo: string, numbers: readonly number[]) {
+      return Promise.all(numbers.map((number) => api.get(repo, number)));
+    },
+    async writeComment(
+      _repo: string,
+      number: number,
+      body: string,
+      id?: number,
+    ) {
+      const issue = number === 41 ? remote.issue : chain;
+      const comment = issue.comments.find((item) => item.databaseId === id);
+      if (comment) comment.body = body;
+      else
+        issue.comments.push({
+          databaseId: 4,
+          author: { login: "daemon" },
+          body,
+        });
+    },
+  };
+  const store = new GitHubExecutionStore(
+    "acme/test",
+    "daemon",
+    new Set(["owner"]),
+    api,
+  );
+  return { remote, store };
+}
+
+/** Constructs a claim-only runner whose unexpected execution boundaries fail the test. */
+function chainRunner(store: GitHubExecutionStore, diagnostics: string[]) {
+  return new GitHubTaskRunner({
+    store,
+    branches,
+    advisor: createModelAdvisor([]),
+    harness: {
+      async step() {
+        throw Error("Unexpected agent work");
+      },
+      async cancel() {},
+    },
+    publisher: {
+      baseBranch: "main",
+      async publish() {
+        throw Error("Unexpected publication");
+      },
+    },
+    command: {
+      async run() {
+        throw Error("Unexpected git execution");
+      },
+    },
+    cwd: "/fixture",
+    baseBranch: "main",
+    diagnostic: (message) => diagnostics.push(message),
+  });
+}
+
+test("a chain ticket claims onto the frozen predecessor branch segment while the predecessor awaits merge", async () => {
+  const { remote, store } = chainFixture({ issue: 41 });
+  await seed(remote, (record) => {
+    record.phase = "awaiting_merge";
+    record.publication = { branch: "agile/issue-1", commitSha: base };
+  });
+  const diagnostics: string[] = [];
+  const { tasks } = await store.list();
+  const claimed = await chainRunner(store, diagnostics).claimNext(
+    tasks,
+    new AbortController().signal,
+  );
+  expect(claimed?.issue.number).toBe(42);
+  expect((await store.get(42)).execution).toMatchObject({
+    baseCommit: base,
+    baseBranch: "agile/issue-1",
+  });
+  expect((await store.get(41)).execution?.phase).toBe("awaiting_merge");
+  expect(diagnostics).toEqual([]);
+});
+
+test("a chain ticket stays unclaimed while its predecessor is already merged to done", async () => {
+  const { remote, store } = chainFixture({ issue: 41 });
+  await seed(remote, (record) => {
+    record.phase = "done";
+    record.publication = {
+      number: 7,
+      branch: "agile/issue-1",
+      commitSha: base,
+      mergeCommit: base,
+    };
+  });
+  remote.issue.state = "CLOSED";
+  const diagnostics: string[] = [];
+  const { tasks } = await store.list();
+  const claimed = await chainRunner(store, diagnostics).claimNext(
+    tasks,
+    new AbortController().signal,
+  );
+  expect(claimed).toBeUndefined();
+  expect((await store.get(42)).execution).toBeUndefined();
+  expect(diagnostics.join()).toContain("has no frozen branch segment yet");
+});
+
+test("a chain ticket stays unclaimed when its declared predecessor issue does not exist", async () => {
+  const { remote, store } = chainFixture({ issue: 99 });
+  await seed(remote, (record) => {
+    record.phase = "awaiting_merge";
+    record.publication = { branch: "agile/issue-1", commitSha: base };
+  });
+  const diagnostics: string[] = [];
+  const { tasks } = await store.list();
+  const claimed = await chainRunner(store, diagnostics).claimNext(
+    tasks,
+    new AbortController().signal,
+  );
+  expect(claimed).toBeUndefined();
+  expect((await store.get(42)).execution).toBeUndefined();
+  expect(diagnostics.join()).toContain("chain predecessor issue #99 not found");
+});
+
 test("confirmed refresh recovery selects only the new exact-target Review and never replays historical roles, hooks or publication", async () => {
   for (const recovering of [false, true]) {
     const remote = memoryGitHub({
