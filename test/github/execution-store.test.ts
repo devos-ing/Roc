@@ -339,15 +339,14 @@ test("supersede refuses a replacement whose checkpoint carries terminal evidence
   const store = remote.store;
   remote.commentAuthor = "owner";
   const dead = await store.get(41);
-  const stale = initialExecution(dead, "main", "a".repeat(40));
-  stale.phase = "rejected";
-  // A checkpoint left stale by an earlier plan change: the projection reads
-  // needs_replan while the execution evidence stays rejected.
-  stale.specHash = `sha256:${"f".repeat(64)}`;
+  const rejected = initialExecution(dead, "main", "a".repeat(40));
+  rejected.phase = "rejected";
+  // The migrated checkpoint keeps its terminal phase, so the rejection
+  // evidence survives the plan rewrite and still blocks a reverse supersede.
   remote.issues[0]!.comments.push({
     databaseId: 50,
     author: { login: "daemon" },
-    body: renderExecution(stale),
+    body: renderExecution(rejected),
   });
   await store.supersede(41, 43);
   const before = structuredClone(remote.issues);
@@ -355,4 +354,199 @@ test("supersede refuses a replacement whose checkpoint carries terminal evidence
     /already terminal.*execution phase rejected/s,
   );
   expect(remote.issues).toEqual(before);
+});
+
+test("supersede re-anchors mergeReview bindings when migrating awaiting_merge evidence", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"]], { T2: ["T1"] });
+  const store = remote.store;
+  remote.commentAuthor = "owner";
+  const dead = await store.get(41);
+  const rejected = initialExecution(dead, "main", "a".repeat(40));
+  rejected.phase = "rejected";
+  remote.issues[0]!.comments.push({
+    databaseId: 50,
+    author: { login: "daemon" },
+    body: renderExecution(rejected),
+  });
+  const dependent = await store.get(42);
+  const merging = ExecutionRecordSchema.parse({
+    ...initialExecution(dependent, "main", "a".repeat(40)),
+    phase: "awaiting_merge",
+    publication: {
+      number: 7,
+      branch: "agile/issue-42",
+      commitSha: "b".repeat(40),
+    },
+    // mergeReview.specHash binds to the pre-supersede envelope exactly like
+    // the top-level specHash does at creation time in the runner.
+    mergeReview: {
+      specHash: jsonHash(dependent.envelope),
+      headSha: "b".repeat(40),
+      baseSha: "a".repeat(40),
+      reviewAttemptId: "review-1",
+    },
+  });
+  remote.issues[1]!.comments.push({
+    databaseId: 51,
+    author: { login: "daemon" },
+    body: renderExecution(merging),
+  });
+  const result = await store.supersede(41, 43);
+  expect(result.rewrittenIssues).toEqual([41, 42, 43]);
+  const view = await store.list();
+  const migrated = view.tasks.find((item) => item.issue.number === 42);
+  if (!migrated?.execution) throw Error("Missing dependent task");
+  expect(migrated.execution.specHash).toBe(jsonHash(migrated.envelope));
+  // The binding pointer follows the top-level hash; every other mergeReview
+  // field survives verbatim so the awaiting_merge member stays mergeable.
+  expect(migrated.execution.mergeReview).toEqual({
+    specHash: jsonHash(migrated.envelope),
+    headSha: "b".repeat(40),
+    baseSha: "a".repeat(40),
+    reviewAttemptId: "review-1",
+  });
+  expect(migrated.execution.phase).toBe("awaiting_merge");
+  expect(migrated.task.status).toBe("awaiting_merge");
+  expect(migrated.blockedReason).toBeUndefined();
+  const deadTask = view.tasks.find((item) => item.issue.number === 41);
+  if (!deadTask?.execution) throw Error("Missing superseded task");
+  expect(deadTask.execution.specHash).toBe(jsonHash(deadTask.envelope));
+  expect(deadTask.execution.mergeReview).toBeUndefined();
+});
+
+test("supersede re-sends an approval lost mid-attempt so a retry converges instead of deadlocking", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"]], { T2: ["T1"] });
+  const store = remote.store;
+  remote.commentAuthor = "owner";
+  const dead = await store.get(41);
+  const rejected = initialExecution(dead, "main", "a".repeat(40));
+  rejected.phase = "rejected";
+  remote.issues[0]!.comments.push({
+    databaseId: 50,
+    author: { login: "daemon" },
+    body: renderExecution(rejected),
+  });
+  const originalWriteComment = remote.api.writeComment;
+  let failing = true;
+  remote.api.writeComment = async (
+    repo: string,
+    number: number,
+    body: string,
+    id?: number,
+  ) => {
+    if (failing && id === undefined && body.includes("roc:approval"))
+      throw Error("injected approval failure");
+    return originalWriteComment(repo, number, body, id);
+  };
+  await expect(store.supersede(41, 43)).rejects.toMatchObject({
+    code: "GITHUB_SUPERSEDE_UNCONFIRMED",
+  });
+  failing = false;
+  const result = await store.supersede(41, 43);
+  const view = await store.list();
+  expect(view.tasks).toHaveLength(3);
+  for (const item of view.tasks) {
+    expect(item.envelope.planId).toBe(result.planId);
+    expect(item.approved).toBe(true);
+    expect(item.blockedReason).toBeUndefined();
+  }
+  const migrated = view.tasks.find((item) => item.issue.number === 41);
+  if (!migrated?.execution) throw Error("Missing superseded task");
+  expect(migrated.execution.specHash).toBe(jsonHash(migrated.envelope));
+  expect(migrated.execution.phase).toBe("rejected");
+});
+
+test("supersede finishes an interrupted checkpoint migration so a retry truly completes", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"]], { T2: ["T1"] });
+  const store = remote.store;
+  remote.commentAuthor = "owner";
+  const dependent = await store.get(42);
+  const rejected = initialExecution(dependent, "main", "a".repeat(40));
+  rejected.phase = "rejected";
+  remote.issues[1]!.comments.push({
+    databaseId: 51,
+    author: { login: "daemon" },
+    body: renderExecution(rejected),
+  });
+  const originalWriteComment = remote.api.writeComment;
+  let failing = true;
+  remote.api.writeComment = async (
+    repo: string,
+    number: number,
+    body: string,
+    id?: number,
+  ) => {
+    if (failing && id !== undefined) throw Error("injected checkpoint failure");
+    return originalWriteComment(repo, number, body, id);
+  };
+  await expect(store.supersede(41, 43)).rejects.toMatchObject({
+    code: "GITHUB_SUPERSEDE_UNCONFIRMED",
+  });
+  // The dependent's body and approval were already rewritten; without the
+  // precheck the retry would skip its stale checkpoint and report fake success.
+  failing = false;
+  const result = await store.supersede(41, 43);
+  const view = await store.list();
+  expect(view.tasks).toHaveLength(3);
+  for (const item of view.tasks) {
+    expect(item.envelope.planId).toBe(result.planId);
+    expect(item.approved).toBe(true);
+    expect(item.blockedReason).toBeUndefined();
+  }
+  const migrated = view.tasks.find((item) => item.issue.number === 42);
+  if (!migrated?.execution) throw Error("Missing dependent task");
+  expect(migrated.execution.specHash).toBe(jsonHash(migrated.envelope));
+  expect(migrated.execution.phase).toBe("rejected");
+});
+
+test("supersede refuses a checkpoint matching no known specification before any write", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"]], { T2: ["T1"] });
+  const store = remote.store;
+  const dependent = await store.get(42);
+  const stale = initialExecution(dependent, "main", "a".repeat(40));
+  stale.phase = "rejected";
+  // A checkpoint left unanchored by an earlier plan change matches neither
+  // the current nor the target specification, so the whole supersede refuses.
+  stale.specHash = `sha256:${"f".repeat(64)}`;
+  remote.issues[1]!.comments.push({
+    databaseId: 51,
+    author: { login: "daemon" },
+    body: renderExecution(stale),
+  });
+  const before = structuredClone(remote.issues);
+  await expect(store.supersede(41, 43)).rejects.toThrow(
+    /Issue #42 has a checkpoint .* reconcile the stale checkpoint/s,
+  );
+  expect(remote.issues).toEqual(before);
+});
+
+test("supersede resumes a retry whose anchors were both rewritten before the interruption", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"], ["d.ts"]], {
+    T3: ["T1"],
+  });
+  const store = remote.store;
+  remote.commentAuthor = "owner";
+  const originalEditBody = remote.api.editBody;
+  let failing = true;
+  remote.api.editBody = async (repo: string, number: number, body: string) => {
+    if (failing && number === 44) throw Error("injected network failure");
+    return originalEditBody(repo, number, body);
+  };
+  await expect(store.supersede(41, 42)).rejects.toMatchObject({
+    code: "GITHUB_SUPERSEDE_UNCONFIRMED",
+  });
+  // Issues 41-43 were already rewritten, so both anchors sit on the new plan
+  // id while Issue 44 lags; the retry must still recognize the partial plan.
+  failing = false;
+  const result = await store.supersede(41, 42);
+  const view = await store.list();
+  expect(view.tasks).toHaveLength(4);
+  for (const item of view.tasks) {
+    expect(item.envelope.planId).toBe(result.planId);
+    expect(item.approved).toBe(true);
+    expect(item.blockedReason).toBeUndefined();
+  }
+  const dependent = view.tasks.find((item) => item.issue.number === 43);
+  if (!dependent) throw Error("Missing dependent task");
+  expect(dependent.envelope.task.spec.dependencies).toEqual(["T2"]);
 });

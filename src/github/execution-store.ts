@@ -157,6 +157,17 @@ export type SupersedeResult = {
   rewrittenIssues: number[];
 };
 
+/** One prevalidated member write: envelope rewrite, trusted approval, checkpoint migration. */
+type SupersedeAction = {
+  member: NativeTask;
+  envelope: RemoteTaskEnvelope;
+  targetHash: string;
+  isDependent: boolean;
+  needsRewrite: boolean;
+  needsApproval: boolean;
+  migrated?: ExecutionRecord;
+};
+
 /** Repoints one task's dependencies from the superseded task onto its replacement. */
 function repointDependencies(
   task: RemoteTaskEnvelope["task"],
@@ -491,10 +502,7 @@ export class GitHubExecutionStore {
       );
     const cycleId = oldTask.envelope.cycleId;
     const goal = oldTask.envelope.goal;
-    const plan =
-      oldTask.envelope.planId === newTask.envelope.planId
-        ? this.samePlanMembers(tasks, oldTask, oldNumber)
-        : this.resumePartialSupersede(tasks, oldTask, newTask);
+    const plan = this.resolveSupersedePlan(tasks, oldTask, newTask);
     const oldId = oldTask.envelope.task.id;
     const newId = newTask.envelope.task.id;
     const manifest = {
@@ -533,35 +541,51 @@ export class GitHubExecutionStore {
     );
     const dependentIssues: number[] = [];
     const rewrittenIssues: number[] = [];
+    // Whole-plan precheck: classify every member before the first write so one
+    // unverifiable checkpoint refuses the supersede with the remote untouched,
+    // and an approval lost mid-attempt is re-sent instead of deadlocking.
+    const actions: SupersedeAction[] = [];
     for (const member of plan) {
       const envelope = envelopes.get(member.envelope.task.id);
       if (!envelope) throw Error("Supersede envelope resolution failed");
       const isDependent =
         member.envelope.task.spec.dependencies.includes(oldId);
+      if (isDependent) dependentIssues.push(member.issue.number);
       const currentHash = jsonHash(member.envelope);
       const targetHash = jsonHash(envelope);
-      const changed = currentHash !== targetHash;
-      if (isDependent) dependentIssues.push(member.issue.number);
-      // A checkpoint valid against the pre-supersede envelope follows its
-      // envelope to the rewritten plan so its execution evidence stays valid.
-      const migrated =
-        member.execution &&
-        member.execution.specHash === currentHash &&
-        currentHash !== targetHash
-          ? ExecutionRecordSchema.parse({
-              ...member.execution,
-              specHash: targetHash,
-              updatedAt: new Date().toISOString(),
-            })
-          : undefined;
-      if (!changed && !migrated && member.approved) continue;
+      const needsRewrite = currentHash !== targetHash;
+      // A body already rewritten by an interrupted attempt still owes its approval.
+      const needsApproval = !needsRewrite && !member.approved;
+      const migrated = this.migrationFor(member, currentHash, targetHash);
+      if (needsRewrite || needsApproval || migrated)
+        actions.push({
+          member,
+          envelope,
+          targetHash,
+          isDependent,
+          needsRewrite,
+          needsApproval,
+          migrated,
+        });
+    }
+    for (const {
+      member,
+      envelope,
+      targetHash,
+      isDependent,
+      needsRewrite,
+      needsApproval,
+      migrated,
+    } of actions) {
       try {
-        if (changed) {
+        if (needsRewrite) {
           await this.api.editBody(
             this.repository,
             member.issue.number,
             renderRemoteTaskBody(envelope, dependencyIssues),
           );
+        }
+        if (needsRewrite || needsApproval) {
           await this.api.writeComment(
             this.repository,
             member.issue.number,
@@ -606,6 +630,75 @@ export class GitHubExecutionStore {
     return { planId, dependentIssues, rewrittenIssues };
   }
 
+  /** Re-anchors one member's checkpoint onto the rewritten plan, refusing unverifiable checkpoints. */
+  private migrationFor(
+    member: NativeTask,
+    currentHash: string,
+    targetHash: string,
+  ): ExecutionRecord | undefined {
+    const execution = member.execution;
+    if (!execution || execution.specHash === targetHash) return undefined;
+    if (
+      execution.specHash !== currentHash &&
+      // A body rewritten by an interrupted attempt hides its pre-supersede
+      // envelope; only the trusted approval history can prove the checkpoint
+      // was bound to a specification this Issue legitimately carried. Anything
+      // else is a stale checkpoint from an unknown specification.
+      (currentHash !== targetHash ||
+        !this.approvedHashes(member).has(execution.specHash))
+    )
+      throw Error(
+        `Supersede refused: Issue #${member.issue.number} has a checkpoint (phase ${execution.phase}) that matches neither its current nor its target specification; reconcile the stale checkpoint before superseding`,
+      );
+    return ExecutionRecordSchema.parse({
+      ...execution,
+      specHash: targetHash,
+      // mergeReview.specHash is a binding pointer derived from the top-level
+      // specHash; re-anchor it together or merge evidence stops verifying.
+      ...(execution.mergeReview
+        ? { mergeReview: { ...execution.mergeReview, specHash: targetHash } }
+        : {}),
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  /** Collects every envelope hash a trusted publisher has approved on one Issue. */
+  private approvedHashes(task: NativeTask): Set<string> {
+    const hashes = new Set<string>();
+    for (const comment of task.issue.comments) {
+      if (!this.publishers.has(comment.author?.login ?? "")) continue;
+      try {
+        const approval = parseRemoteTaskApproval(comment.body);
+        if (approval) hashes.add(approval.hash);
+      } catch {
+        // Unrelated or malformed prose never carried an approval.
+      }
+    }
+    return hashes;
+  }
+
+  /** Recognizes a supersede's plan members, including a partially written retry. */
+  private resolveSupersedePlan(
+    tasks: NativeTask[],
+    oldTask: NativeTask,
+    newTask: NativeTask,
+  ): NativeTask[] {
+    if (oldTask.envelope.planId !== newTask.envelope.planId)
+      return this.resumePartialSupersede(tasks, oldTask, newTask);
+    try {
+      return this.samePlanMembers(tasks, oldTask, oldTask.issue.number);
+    } catch (cause) {
+      // A retry can find the plan split across the old and new plan ids even
+      // when both anchor Issues were already rewritten; recognize that shape
+      // before refusing an incomplete plan.
+      try {
+        return this.resumePartialSupersede(tasks, oldTask, newTask);
+      } catch {
+        throw cause;
+      }
+    }
+  }
+
   /** Validates and collects every member of the superseded task's complete plan. */
   private samePlanMembers(
     tasks: NativeTask[],
@@ -639,11 +732,16 @@ export class GitHubExecutionStore {
     );
     const cycleId = oldTask.envelope.cycleId;
     const goal = oldTask.envelope.goal;
+    const anchors = [oldTask.envelope.planId, newTask.envelope.planId];
+    // With identical anchors a retry can only recognize the partially written
+    // plan by its cycle and goal; the final plan-id equality check below still
+    // rejects any member set that does not complete exactly the target plan.
+    const sameAnchors = anchors[0] === anchors[1];
     const merged = new Map<string, NativeTask>();
     for (const member of tasks.filter((item) =>
-      [oldTask.envelope.planId, newTask.envelope.planId].includes(
-        item.envelope.planId,
-      ),
+      sameAnchors
+        ? item.envelope.cycleId === cycleId && item.envelope.goal === goal
+        : anchors.includes(item.envelope.planId),
     )) {
       if (member.envelope.cycleId !== cycleId || member.envelope.goal !== goal)
         throw refusal;
