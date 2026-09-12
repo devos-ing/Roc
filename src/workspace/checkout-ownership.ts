@@ -4,6 +4,7 @@ import {
   type FileHandle,
   lstat,
   open,
+  readFile,
   realpath,
   unlink,
 } from "node:fs/promises";
@@ -16,13 +17,19 @@ export type CheckoutOwnership = {
   release(): Promise<void>;
 };
 
-type OwnerRecord = {
+export type OwnerRecord = {
   version: 1;
   runId: string;
   ownerPid: number;
   acquiredAt: string;
   ownerToken: string;
 };
+
+/** Outcome of a read-only checkout guard inspection; nothing is acquired or modified. */
+export type CheckoutOwnerRecordRead =
+  | { state: "absent" }
+  | { state: "present"; record: OwnerRecord }
+  | { state: "unreadable" };
 
 /** Creates the sanitized error used when a repository already has a checkout guard. */
 function checkoutInUseError(runId: string): AgileError {
@@ -164,4 +171,53 @@ export async function acquireCheckoutOwnership(
   }
 
   return { repoPath: canonicalRepo, lockPath, release };
+}
+
+/** Reads a repository's existing checkout guard without acquiring or changing it. */
+export async function readCheckoutOwnerRecord(
+  repoPath: string,
+): Promise<CheckoutOwnerRecordRead> {
+  const canonicalRepo = await realpath(resolve(repoPath));
+  const lockPath = `${canonicalRepo}.agile-checkout.lock`;
+  let serialized: string;
+  try {
+    serialized = await readFile(lockPath, "utf8");
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return { state: "absent" };
+    }
+    // Unreadable guards (EISDIR, EACCES, ...) still block acquisition, so they
+    // are reported as unreadable rather than mistaken for an absent guard.
+    return { state: "unreadable" };
+  }
+  try {
+    const parsed = JSON.parse(serialized) as Partial<OwnerRecord>;
+    if (
+      parsed.version === 1 &&
+      typeof parsed.runId === "string" &&
+      typeof parsed.ownerPid === "number" &&
+      Number.isInteger(parsed.ownerPid) &&
+      parsed.ownerPid > 0 &&
+      typeof parsed.acquiredAt === "string" &&
+      typeof parsed.ownerToken === "string"
+    ) {
+      return {
+        state: "present",
+        record: {
+          version: 1,
+          runId: parsed.runId,
+          ownerPid: parsed.ownerPid,
+          acquiredAt: parsed.acquiredAt,
+          ownerToken: parsed.ownerToken,
+        },
+      };
+    }
+  } catch {
+    // Malformed guards fall through as unreadable; acquisition refuses them too.
+  }
+  return { state: "unreadable" };
 }

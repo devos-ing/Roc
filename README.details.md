@@ -502,6 +502,7 @@ task trust-hooks ISSUE --phase PHASE      Approve an exact hook configuration
 task retire ISSUE --reason TEXT           Close an Issue without completing it
 scheduler run [--base-branch BRANCH] [--concurrency 1-8] [--once] [--auto-merge]
 scheduler inspect                        Read GitHub execution checkpoints
+scheduler status                        Report daemon health from the checkout lock
 tokens [--no-color]                       Show confirmed token usage
 ```
 
@@ -513,3 +514,22 @@ Run these after `bun "$ROC_CLI_ENTRY"`. Task identifiers are Issue numbers,
 [automatic merge specification](docs/specs/automatic-merge.md),
 [M4 specification](docs/specs/execution-efficiency.md) and
 [roadmap](docs/roadmap.md) for implementation scope.
+
+### Scheduler daemon status
+
+`scheduler status` reports process-level daemon health as JSON from the
+checkout ownership lock beside the project, without contacting GitHub and
+without requiring the daemon to be running:
+
+- No lock file: `{"running": false, "reason": "no-lock"}`.
+- Live owner process: `{"running": true, "pid": 1234, "runId": "…", "acquiredAt": "…"}`.
+- Owner process gone: the same fields plus `"staleLock": true` and a `hint`
+  to verify no scheduler is running before removing the guard.
+
+The exit code is `0` only while the recorded owner process is alive and `1`
+for no-lock, stale or unreadable locks, so launchd jobs, agents and CI can
+branch on it. Liveness is best-effort (signal `0` to the recorded PID), so a
+reused PID can make a stale lock look live. An unreadable lock is reported as
+`{"running": false, "reason": "unreadable-lock"}`; `scheduler run` refuses such
+repositories, so inspect the lock and follow the retained-ownership guidance
+above before deleting any guard.
