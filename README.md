@@ -109,7 +109,7 @@ Use roc-create-tasks to add team invitations. Publish approved tasks to this rep
 The skill asks questions and proposes tasks with acceptance criteria. It saves
 them to GitHub after you approve the complete plan. If the assistant cannot read your
 terminal environment, give it the absolute Roc entrypoint path.
-Install `grilling` and `unslop` in your planning assistant if missing; see
+Install `grilling` in your planning assistant if it is missing; see
 [planning skills](README.details.md#planning-skills).
 
 If you already have an approved backlog JSON file, publish it directly:

@@ -238,11 +238,10 @@ commit 和 dirty worktree 仍在舊機器，須先完成或保留它們及共享
 
 ## 規劃 skills
 
-規劃 assistant 需要 `grilling` 和 `unslop`，缺少時可安裝：
+規劃 assistant 需要 `grilling`，缺少時可安裝：
 
 ```bash
 npx skills add mattpocock/skills --skill grilling --global
-npx skills add backnotprop/pstack --skill unslop --global
 ```
 
 Roc onboarding 安裝隨附 skills，並讓你選擇可信 Pi skills。
