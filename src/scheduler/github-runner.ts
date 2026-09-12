@@ -428,6 +428,44 @@ export class GitHubTaskRunner {
     return { base: publication.commitSha, baseBranch: publication.branch };
   }
 
+  /** Chain tickets merge through the global target; other tickets verify their recorded base. */
+  private mergeTargetBase(task: NativeTask, record: ExecutionRecord): string {
+    return task.task.spec.continues ? this.input.baseBranch : record.baseBranch;
+  }
+
+  /** Requires chain publications to stay on the shared chain branch; others must own their task branch. */
+  private publicationBranchOk(
+    task: NativeTask,
+    record: ExecutionRecord,
+  ): boolean {
+    return task.task.spec.continues
+      ? record.publication?.branch === record.baseBranch
+      : record.publication?.branch === taskBranchName(task.task.id);
+  }
+
+  /** Credits a merged chain PR only when the frozen segment is part of the merged history. */
+  private async chainMergeResult(
+    commitSha: string,
+    mergeCommit: string,
+  ): Promise<MergeResult> {
+    try {
+      await this.command([
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        commitSha,
+        mergeCommit,
+      ]);
+      return { kind: "merged", mergeCommit };
+    } catch {
+      return {
+        kind: "waiting",
+        reason:
+          "Published chain segment is not an ancestor of the merged PR head; reconcile the chain branch history",
+      };
+    }
+  }
+
   /** Fetches a base containing every dependency's confirmed merge commit. */
   private async dependencyBase(
     task: NativeTask,
@@ -919,33 +957,43 @@ export class GitHubTaskRunner {
       signal.throwIfAborted();
       const record = task.execution;
       const publication = record?.publication;
+      const chain = Boolean(task.task.spec.continues);
       if (
         task.blockedReason ||
         !task.approved ||
         record?.phase !== "done" ||
         !publication?.number ||
         !publication.mergeCommit ||
-        record.baseBranch !== this.input.baseBranch ||
-        publication.branch !== taskBranchName(task.task.id)
+        (!chain && record.baseBranch !== this.input.baseBranch) ||
+        !this.publicationBranchOk(task, record)
       )
         throw Error("Missing closure evidence");
       const pr = await this.readPr(publication.number, signal);
       if (
         pr.number !== publication.number ||
         pr.state !== "MERGED" ||
-        pr.baseRefName !== record.baseBranch ||
+        pr.baseRefName !== this.mergeTargetBase(task, record) ||
         pr.headRefName !== publication.branch ||
-        pr.headRefOid !== publication.commitSha ||
+        (!chain && pr.headRefOid !== publication.commitSha) ||
         pr.mergeCommit?.oid !== publication.mergeCommit
       )
         throw Error("Merge evidence changed");
-      await this.command(["git", "fetch", "origin", record.baseBranch]);
+      if (chain && pr.mergeCommit)
+        await this.command([
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          publication.commitSha,
+          pr.mergeCommit.oid,
+        ]);
+      const targetBase = this.mergeTargetBase(task, record);
+      await this.command(["git", "fetch", "origin", targetBase]);
       await this.command([
         "git",
         "merge-base",
         "--is-ancestor",
         publication.mergeCommit,
-        `refs/remotes/origin/${record.baseBranch}`,
+        `refs/remotes/origin/${targetBase}`,
       ]);
       signal.throwIfAborted();
       await this.input.store.closeCompleted(task);
@@ -982,14 +1030,21 @@ export class GitHubTaskRunner {
         reason:
           "Interrupted base refresh intent requires reconciliation; Git will not be replayed",
       };
-    } else if (record.baseBranch !== this.input.baseBranch) {
+    } else if (
+      record.baseBranch !== this.input.baseBranch &&
+      !task.task.spec.continues
+    ) {
       result = { kind: "replan", reason: "Configured target branch changed" };
-    } else if (record.publication.branch !== taskBranchName(task.task.id)) {
+    } else if (!this.publicationBranchOk(task, record)) {
       result = {
         kind: "replan",
         reason: "Publication is not the Roc-owned task branch; replan required",
       };
-    } else if (this.input.autoMerge && fresh.issue.state === "OPEN") {
+    } else if (
+      this.input.autoMerge &&
+      fresh.issue.state === "OPEN" &&
+      !task.task.spec.continues
+    ) {
       if (!this.hasMergeReview(record)) {
         result = {
           kind: "replan",
@@ -1035,19 +1090,25 @@ export class GitHubTaskRunner {
     } else {
       // Auto-closed Issues may recover a completed merge, but never submit one.
       const pr = await this.readPr(record.publication.number, signal);
+      const chain = Boolean(task.task.spec.continues);
       if (
-        pr.baseRefName !== record.baseBranch ||
+        pr.baseRefName !== this.mergeTargetBase(task, record) ||
         pr.headRefName !== record.publication.branch ||
-        pr.headRefOid !== record.publication.commitSha ||
+        (!chain && pr.headRefOid !== record.publication.commitSha) ||
         pr.state === "CLOSED"
       )
         result = {
           kind: "replan",
           reason: "Published PR changed or closed without merge",
         };
-      else if (pr.state === "MERGED" && pr.mergeCommit)
-        result = { kind: "merged", mergeCommit: pr.mergeCommit.oid };
-      else return;
+      else if (pr.state === "MERGED" && pr.mergeCommit) {
+        result = chain
+          ? await this.chainMergeResult(
+              record.publication.commitSha,
+              pr.mergeCommit.oid,
+            )
+          : { kind: "merged", mergeCommit: pr.mergeCommit.oid };
+      } else return;
     }
     signal.throwIfAborted();
     if (result.kind === "refresh") {
@@ -1056,13 +1117,14 @@ export class GitHubTaskRunner {
     }
     if (result.kind === "merged") {
       try {
-        await this.command(["git", "fetch", "origin", record.baseBranch]);
+        const targetBase = this.mergeTargetBase(task, record);
+        await this.command(["git", "fetch", "origin", targetBase]);
         await this.command([
           "git",
           "merge-base",
           "--is-ancestor",
           result.mergeCommit,
-          `refs/remotes/origin/${record.baseBranch}`,
+          `refs/remotes/origin/${targetBase}`,
         ]);
       } catch {
         result = {
