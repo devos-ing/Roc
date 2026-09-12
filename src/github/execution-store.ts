@@ -156,6 +156,24 @@ export type SupersedeResult = {
   dependentIssues: number[];
   rewrittenIssues: number[];
 };
+
+/** Repoints one task's dependencies from the superseded task onto its replacement. */
+function repointDependencies(
+  task: RemoteTaskEnvelope["task"],
+  oldId: string,
+  newId: string,
+): RemoteTaskEnvelope["task"] {
+  if (!task.spec.dependencies.includes(oldId)) return task;
+  return {
+    ...task,
+    spec: {
+      ...task.spec,
+      dependencies: task.spec.dependencies.map((dependency) =>
+        dependency === oldId ? newId : dependency,
+      ),
+    },
+  };
+}
 const marker = "<!-- roc:execution\n";
 
 /** Creates the first remote checkpoint before any role begins. */
@@ -464,45 +482,28 @@ export class GitHubExecutionStore {
       throw Error(`Issue #${oldNumber} is not a readable Roc task Issue`);
     if (!newTask)
       throw Error(`Issue #${newNumber} is not a readable Roc task Issue`);
-    if (oldTask.envelope.planId !== newTask.envelope.planId)
-      throw Error(
-        `Cannot supersede across plans: Issue #${oldNumber} and Issue #${newNumber} belong to different plans`,
-      );
-    if (isTerminal(newTask.task.status))
-      throw Error(
-        `Replacement Issue #${newNumber} is already terminal (${newTask.task.status}); supersede with a live replacement task`,
-      );
-    const plan = tasks.filter(
-      (item) => item.envelope.planId === oldTask.envelope.planId,
-    );
-    const cycleId = oldTask.envelope.cycleId;
-    const goal = oldTask.envelope.goal;
     if (
-      remotePlanId({
-        cycleId,
-        goal,
-        tasks: plan.map((item) => item.envelope.task),
-      }) !== oldTask.envelope.planId
+      isTerminal(newTask.task.status) ||
+      (newTask.execution && isTerminal(newTask.execution.phase))
     )
       throw Error(
-        `The plan of Issue #${oldNumber} is incomplete, changed or cyclic; reconcile it before superseding`,
+        `Replacement Issue #${newNumber} is already terminal (status ${newTask.task.status}${newTask.execution ? `, execution phase ${newTask.execution.phase}` : ""}); supersede with a live replacement task`,
       );
+    const cycleId = oldTask.envelope.cycleId;
+    const goal = oldTask.envelope.goal;
+    const plan =
+      oldTask.envelope.planId === newTask.envelope.planId
+        ? this.samePlanMembers(tasks, oldTask, oldNumber)
+        : this.resumePartialSupersede(tasks, oldTask, newTask);
     const oldId = oldTask.envelope.task.id;
     const newId = newTask.envelope.task.id;
-    const rewrittenTasks = plan.map((item) => {
-      const task = item.envelope.task;
-      if (!task.spec.dependencies.includes(oldId)) return task;
-      return {
-        ...task,
-        spec: {
-          ...task.spec,
-          dependencies: task.spec.dependencies.map((dependency) =>
-            dependency === oldId ? newId : dependency,
-          ),
-        },
-      };
-    });
-    const manifest = { cycleId, goal, tasks: rewrittenTasks };
+    const manifest = {
+      cycleId,
+      goal,
+      tasks: plan.map((item) =>
+        repointDependencies(item.envelope.task, oldId, newId),
+      ),
+    };
     const byId = new Map(manifest.tasks.map((task) => [task.id, task]));
     const visiting = new Set<string>();
     const visited = new Set<string>();
@@ -537,26 +538,54 @@ export class GitHubExecutionStore {
       if (!envelope) throw Error("Supersede envelope resolution failed");
       const isDependent =
         member.envelope.task.spec.dependencies.includes(oldId);
-      const changed = jsonHash(member.envelope) !== jsonHash(envelope);
+      const currentHash = jsonHash(member.envelope);
+      const targetHash = jsonHash(envelope);
+      const changed = currentHash !== targetHash;
       if (isDependent) dependentIssues.push(member.issue.number);
-      if (!changed && member.approved) continue;
+      // A checkpoint valid against the pre-supersede envelope follows its
+      // envelope to the rewritten plan so its execution evidence stays valid.
+      const migrated =
+        member.execution &&
+        member.execution.specHash === currentHash &&
+        currentHash !== targetHash
+          ? ExecutionRecordSchema.parse({
+              ...member.execution,
+              specHash: targetHash,
+              updatedAt: new Date().toISOString(),
+            })
+          : undefined;
+      if (!changed && !migrated && member.approved) continue;
       try {
-        if (changed)
+        if (changed) {
           await this.api.editBody(
             this.repository,
             member.issue.number,
             renderRemoteTaskBody(envelope, dependencyIssues),
           );
-        await this.api.writeComment(
-          this.repository,
-          member.issue.number,
-          renderRemoteTaskApproval(envelope),
-        );
+          await this.api.writeComment(
+            this.repository,
+            member.issue.number,
+            renderRemoteTaskApproval(envelope),
+          );
+        }
+        if (migrated)
+          await this.api.writeComment(
+            this.repository,
+            member.issue.number,
+            renderExecution(migrated),
+            member.commentId,
+          );
       } catch {
         // A failed response can follow a successful remote write; confirm before failing.
       }
       const fresh = await this.get(member.issue.number);
-      if (jsonHash(fresh.envelope) !== jsonHash(envelope) || !fresh.approved)
+      if (
+        jsonHash(fresh.envelope) !== targetHash ||
+        !fresh.approved ||
+        (migrated &&
+          (!fresh.execution ||
+            jsonHash(fresh.execution) !== jsonHash(migrated)))
+      )
         throw new AgileError({
           code: "GITHUB_SUPERSEDE_UNCONFIRMED",
           category: "infra",
@@ -575,6 +604,75 @@ export class GitHubExecutionStore {
           .catch(() => undefined);
     }
     return { planId, dependentIssues, rewrittenIssues };
+  }
+
+  /** Validates and collects every member of the superseded task's complete plan. */
+  private samePlanMembers(
+    tasks: NativeTask[],
+    oldTask: NativeTask,
+    oldNumber: number,
+  ): NativeTask[] {
+    const plan = tasks.filter(
+      (item) => item.envelope.planId === oldTask.envelope.planId,
+    );
+    if (
+      remotePlanId({
+        cycleId: oldTask.envelope.cycleId,
+        goal: oldTask.envelope.goal,
+        tasks: plan.map((item) => item.envelope.task),
+      }) !== oldTask.envelope.planId
+    )
+      throw Error(
+        `The plan of Issue #${oldNumber} is incomplete, changed or cyclic; reconcile it before superseding`,
+      );
+    return plan;
+  }
+
+  /** Recognizes a partially migrated supersede so a retry finishes it instead of refusing mixed plans. */
+  private resumePartialSupersede(
+    tasks: NativeTask[],
+    oldTask: NativeTask,
+    newTask: NativeTask,
+  ): NativeTask[] {
+    const refusal = Error(
+      `Cannot supersede across plans: Issue #${oldTask.issue.number} and Issue #${newTask.issue.number} belong to different plans`,
+    );
+    const cycleId = oldTask.envelope.cycleId;
+    const goal = oldTask.envelope.goal;
+    const merged = new Map<string, NativeTask>();
+    for (const member of tasks.filter((item) =>
+      [oldTask.envelope.planId, newTask.envelope.planId].includes(
+        item.envelope.planId,
+      ),
+    )) {
+      if (member.envelope.cycleId !== cycleId || member.envelope.goal !== goal)
+        throw refusal;
+      // One task identity per Issue: an id on both sides is not a partial supersede.
+      if (merged.has(member.envelope.task.id)) throw refusal;
+      merged.set(member.envelope.task.id, member);
+    }
+    const oldId = oldTask.envelope.task.id;
+    const newId = newTask.envelope.task.id;
+    const rewritten = [...merged.values()].map((item) =>
+      repointDependencies(item.envelope.task, oldId, newId),
+    );
+    const targetPlanId = remotePlanId({ cycleId, goal, tasks: rewritten });
+    if (
+      targetPlanId !== oldTask.envelope.planId &&
+      targetPlanId !== newTask.envelope.planId
+    )
+      throw refusal;
+    const manifestTasks = new Map(rewritten.map((task) => [task.id, task]));
+    for (const member of merged.values()) {
+      const target = manifestTasks.get(member.envelope.task.id);
+      if (
+        member.envelope.planId === targetPlanId &&
+        target !== undefined &&
+        jsonHash(member.envelope.task) !== jsonHash(target)
+      )
+        throw refusal;
+    }
+    return [...merged.values()];
   }
 
   /** Repairs the readable status label from the confirmed checkpoint without replaying work. */

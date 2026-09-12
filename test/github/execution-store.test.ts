@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import {
+  ExecutionRecordSchema,
   initialExecution,
   renderExecution,
 } from "../../src/github/execution-store";
 import {
+  jsonHash,
   parseRemoteTaskEnvelope,
   remoteTaskEnvelope,
   renderRemoteTaskApproval,
@@ -210,6 +212,147 @@ test("supersede refuses a rewrite that would create a dependency cycle", async (
   const before = structuredClone(remote.issues);
   await expect(remote.store.supersede(41, 43)).rejects.toThrow(
     /cyclic or incomplete/,
+  );
+  expect(remote.issues).toEqual(before);
+});
+
+test("supersede migrates member checkpoints so done evidence survives and closed members stay done", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"], ["d.ts"]], {
+    T2: ["T1"],
+  });
+  const store = remote.store;
+  remote.commentAuthor = "owner";
+  const dead = await store.get(41);
+  const rejected = initialExecution(dead, "main", "a".repeat(40));
+  rejected.phase = "rejected";
+  remote.issues[0]!.comments.push({
+    databaseId: 50,
+    author: { login: "daemon" },
+    body: renderExecution(rejected),
+  });
+  const at = (seconds: number) =>
+    new Date(Date.parse("2026-09-09T00:00:00Z") + seconds * 1000).toISOString();
+  const finished = await store.get(43);
+  const done = ExecutionRecordSchema.parse({
+    ...initialExecution(finished, "main", "a".repeat(40)),
+    phase: "done",
+    updatedAt: at(35),
+    timeline: [
+      { phase: "claimed", at: at(0) },
+      { phase: "done", at: at(35) },
+    ],
+    attempts: [
+      {
+        descriptor: {
+          attemptId: "real-attempt",
+          taskId: "issue-43",
+          role: "implement",
+          retryIndex: 0,
+          modelProfile: "terra",
+          model: "test/model",
+          effort: "high",
+        },
+        status: "succeeded",
+        startedAt: at(5),
+        endedAt: at(20),
+        sequence: 1,
+        events: {},
+        usage: {
+          inputTokens: 10,
+          cachedInputTokens: 4,
+          outputTokens: 2,
+          reasoningOutputTokens: 1,
+        },
+        usageKnown: false,
+      },
+    ],
+    publication: {
+      number: 7,
+      branch: "agile/issue-43",
+      commitSha: "b".repeat(40),
+      mergeCommit: "c".repeat(40),
+    },
+  });
+  remote.issues[2]!.comments.push({
+    databaseId: 60,
+    author: { login: "daemon" },
+    body: renderExecution(done),
+  });
+  remote.issues[2]!.state = "CLOSED";
+  remote.issues[2]!.stateReason = "COMPLETED";
+
+  const result = await store.supersede(41, 44);
+  expect(result.dependentIssues).toEqual([42]);
+  const view = await store.list();
+  const finishedTask = view.tasks.find((item) => item.issue.number === 43);
+  const deadTask = view.tasks.find((item) => item.issue.number === 41);
+  const dependent = view.tasks.find((item) => item.issue.number === 42);
+  if (!finishedTask?.execution || !deadTask?.execution || !dependent)
+    throw Error("Missing superseded plan members");
+  expect(remote.issues[2]!.state).toBe("CLOSED");
+  expect(finishedTask.task.status).toBe("done");
+  expect(finishedTask.blockedReason).toBeUndefined();
+  expect(finishedTask.execution.specHash).toBe(jsonHash(finishedTask.envelope));
+  expect(finishedTask.execution.phase).toBe("done");
+  expect(finishedTask.execution.revision).toBe(done.revision);
+  expect(finishedTask.execution.attempts).toEqual(done.attempts);
+  expect(finishedTask.execution.publication).toEqual(done.publication);
+  expect(deadTask.execution.phase).toBe("rejected");
+  expect(deadTask.execution.specHash).toBe(jsonHash(deadTask.envelope));
+  expect(dependent.envelope.task.spec.dependencies).toEqual(["T4"]);
+});
+
+test("supersede resumes a partially migrated plan instead of refusing the mixed state", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"], ["d.ts"]], {
+    T2: ["T1"],
+  });
+  const store = remote.store;
+  remote.commentAuthor = "owner";
+  const originalEditBody = remote.api.editBody;
+  let failing = true;
+  remote.api.editBody = async (repo: string, number: number, body: string) => {
+    if (failing && number === 42) throw Error("injected network failure");
+    return originalEditBody(repo, number, body);
+  };
+  await expect(store.supersede(41, 44)).rejects.toMatchObject({
+    code: "GITHUB_SUPERSEDE_UNCONFIRMED",
+  });
+  expect((await store.get(41)).envelope.planId).not.toBe(
+    (await store.get(43)).envelope.planId,
+  );
+  failing = false;
+  const result = await store.supersede(41, 44);
+  const view = await store.list();
+  expect(view.tasks).toHaveLength(4);
+  for (const item of view.tasks) {
+    expect(item.envelope.planId).toBe(result.planId);
+    expect(item.approved).toBe(true);
+    expect(item.blockedReason).toBeUndefined();
+  }
+  const dependent = view.tasks.find((item) => item.issue.number === 42);
+  if (!dependent) throw Error("Missing dependent task");
+  expect(dependent.envelope.task.spec.dependencies).toEqual(["T4"]);
+});
+
+test("supersede refuses a replacement whose checkpoint carries terminal evidence", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"]], { T2: ["T1"] });
+  const store = remote.store;
+  remote.commentAuthor = "owner";
+  const dead = await store.get(41);
+  const stale = initialExecution(dead, "main", "a".repeat(40));
+  stale.phase = "rejected";
+  // A checkpoint left stale by an earlier plan change: the projection reads
+  // needs_replan while the execution evidence stays rejected.
+  stale.specHash = `sha256:${"f".repeat(64)}`;
+  remote.issues[0]!.comments.push({
+    databaseId: 50,
+    author: { login: "daemon" },
+    body: renderExecution(stale),
+  });
+  await store.supersede(41, 43);
+  const before = structuredClone(remote.issues);
+  await expect(store.supersede(43, 41)).rejects.toThrow(
+    /already terminal.*execution phase rejected/s,
   );
   expect(remote.issues).toEqual(before);
 });
