@@ -205,12 +205,14 @@ export class GitHubTaskRunner {
           continue;
         task = fresh;
         const chain = task.task.spec.continues
-          ? this.chainBase(task, tasks)
+          ? await this.chainBase(task, tasks, signal)
           : undefined;
-        if (task.task.spec.continues && !chain) continue;
-        const base = chain
-          ? chain.base
-          : await this.dependencyBase(task, plan.tasks, signal);
+        if (chain?.kind === "dead") continue;
+        if (task.task.spec.continues && chain?.kind !== "ready") continue;
+        const base =
+          chain?.kind === "ready"
+            ? chain.base
+            : await this.dependencyBase(task, plan.tasks, signal);
         if (!base) continue;
         const confirmed = await this.input.store.freshPlan(task, signal);
         if (confirmed.version !== plan.version) {
@@ -220,7 +222,7 @@ export class GitHubTaskRunner {
         signal.throwIfAborted();
         task.execution = initialExecution(
           task,
-          chain?.baseBranch ?? this.input.baseBranch,
+          chain?.kind === "ready" ? chain.baseBranch : this.input.baseBranch,
           base,
           this.now(),
         );
@@ -399,12 +401,17 @@ export class GitHubTaskRunner {
   }
 
   /** Resolves the frozen branch segment of the declared chain predecessor, or explains why the chain is blocked. */
-  private chainBase(
+  private async chainBase(
     task: NativeTask,
     tasks: NativeTask[],
-  ): { base: string; baseBranch: string } | undefined {
+    signal: AbortSignal,
+  ): Promise<
+    | { kind: "ready"; base: string; baseBranch: string }
+    | { kind: "blocked" }
+    | { kind: "dead" }
+  > {
     const continues = task.task.spec.continues;
-    if (!continues) return undefined;
+    if (!continues) return { kind: "blocked" };
     const predecessor = tasks.find(
       (candidate) => candidate.issue.number === continues.issue,
     );
@@ -412,9 +419,36 @@ export class GitHubTaskRunner {
       this.input.diagnostic?.(
         `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} not found`,
       );
-      return undefined;
+      return { kind: "blocked" };
     }
     const publication = predecessor.execution?.publication;
+    if (
+      predecessor.execution?.phase === "done" ||
+      predecessor.issue.state === "CLOSED"
+    ) {
+      // A merged or closed predecessor can never expose a claimable segment; persist the terminal state.
+      const record = initialExecution(
+        task,
+        publication?.branch ?? this.input.baseBranch,
+        publication?.commitSha ??
+          (
+            await this.command([
+              "git",
+              "rev-parse",
+              "--verify",
+              `refs/remotes/origin/${this.input.baseBranch}^{commit}`,
+            ])
+          ).trim(),
+      );
+      record.phase = "needs_replan";
+      record.failure =
+        "Chain predecessor already merged or closed; remove continues or rebase onto the target";
+      await this.input.store.save(task, record, signal);
+      this.input.diagnostic?.(
+        `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} is already merged or closed; marked needs_replan`,
+      );
+      return { kind: "dead" };
+    }
     if (
       predecessor.execution?.phase !== "awaiting_merge" ||
       !publication?.branch ||
@@ -423,9 +457,13 @@ export class GitHubTaskRunner {
       this.input.diagnostic?.(
         `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} has no frozen branch segment yet`,
       );
-      return undefined;
+      return { kind: "blocked" };
     }
-    return { base: publication.commitSha, baseBranch: publication.branch };
+    return {
+      kind: "ready",
+      base: publication.commitSha,
+      baseBranch: publication.branch,
+    };
   }
 
   /** Chain tickets merge through the global target; other tickets verify their recorded base. */
@@ -443,10 +481,12 @@ export class GitHubTaskRunner {
       : record.publication?.branch === taskBranchName(task.task.id);
   }
 
-  /** Credits a merged chain PR only when the frozen segment is part of the merged history. */
+  /** Credits a merged chain PR by ancestry, or under squash merges by the PR's preserved commit list. */
   private async chainMergeResult(
     commitSha: string,
     mergeCommit: string,
+    prNumber: number,
+    signal: AbortSignal,
   ): Promise<MergeResult> {
     try {
       await this.command(["git", "fetch", "origin", this.input.baseBranch]);
@@ -459,32 +499,72 @@ export class GitHubTaskRunner {
       ]);
       return { kind: "merged", mergeCommit };
     } catch {
+      // Squash merges never contain the original commits as ancestors; fall through to the commit list.
+    }
+    let commits: string[];
+    try {
+      commits = (
+        await this.command(
+          [
+            "gh",
+            "pr",
+            "view",
+            String(prNumber),
+            "--repo",
+            this.input.store.repository,
+            "--json",
+            "commits",
+            "--jq",
+            ".[].oid",
+          ],
+          signal,
+        )
+      )
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((oid) => /^[0-9a-f]{40}$/.test(oid));
+    } catch {
       return {
         kind: "waiting",
         reason:
-          "Published chain segment is not an ancestor of the merged PR head; reconcile the chain branch history",
+          "Chain segment ancestry and PR commit list are unreadable; reconcile merge evidence",
       };
     }
+    if (commits.includes(commitSha)) {
+      this.input.diagnostic?.(
+        `Chain PR #${prNumber}: segment verified via PR commit list (squash merge; ancestry unavailable)`,
+      );
+      return { kind: "merged", mergeCommit };
+    }
+    return {
+      kind: "replan",
+      reason:
+        "Chain PR merged without the segment (squash merge dropped or excluded it); explicit replan required",
+    };
   }
 
-  /** Credits a ticket continued by any successor with the chain reconciliation exemptions. */
+  /** Credits a live, approved, unblocked successor's reference with the chain reconciliation exemptions. */
   private isChainPredecessor(
     task: NativeTask,
     tasks: readonly NativeTask[],
   ): boolean {
     return tasks.some(
-      (candidate) => candidate.task.spec.continues?.issue === task.issue.number,
+      (candidate) =>
+        candidate.task.spec.continues?.issue === task.issue.number &&
+        candidate.approved &&
+        !candidate.blockedReason &&
+        candidate.task.status !== "retired",
     );
   }
 
-  /** Lists every remote task for predecessor detection, degrading to none on listing failure. */
+  /** Lists every remote task for predecessor detection, surfacing listing failure so callers skip adjudication. */
   private async chainDetectionTasks(
     signal: AbortSignal,
-  ): Promise<NativeTask[]> {
+  ): Promise<NativeTask[] | undefined> {
     try {
       return (await this.input.store.list(signal)).tasks;
     } catch {
-      return [];
+      return undefined;
     }
   }
 
@@ -979,9 +1059,10 @@ export class GitHubTaskRunner {
       signal.throwIfAborted();
       const record = task.execution;
       const publication = record?.publication;
+      const successors = await this.chainDetectionTasks(signal);
       const chain =
         Boolean(task.task.spec.continues) ||
-        this.isChainPredecessor(task, await this.chainDetectionTasks(signal));
+        (!!successors && this.isChainPredecessor(task, successors));
       if (
         task.blockedReason ||
         !task.approved ||
@@ -1002,16 +1083,19 @@ export class GitHubTaskRunner {
         pr.mergeCommit?.oid !== publication.mergeCommit
       )
         throw Error("Merge evidence changed");
-      if (chain && pr.mergeCommit)
-        await this.command([
-          "git",
-          "merge-base",
-          "--is-ancestor",
+      const targetBase = this.mergeTargetBase(task, record);
+      // Fetch before ancestry checks so a freshly merged commit resolves locally.
+      await this.command(["git", "fetch", "origin", targetBase]);
+      if (chain && pr.mergeCommit) {
+        const verified = await this.chainMergeResult(
           publication.commitSha,
           pr.mergeCommit.oid,
-        ]);
-      const targetBase = this.mergeTargetBase(task, record);
-      await this.command(["git", "fetch", "origin", targetBase]);
+          publication.number,
+          signal,
+        );
+        if (verified.kind !== "merged")
+          throw Error("Chain segment merge evidence changed");
+      }
       await this.command([
         "git",
         "merge-base",
@@ -1069,7 +1153,19 @@ export class GitHubTaskRunner {
       fresh.issue.state === "OPEN" &&
       !task.task.spec.continues
     ) {
-      if (!this.hasMergeReview(record)) {
+      const successors = await this.chainDetectionTasks(signal);
+      // Listing failure must never downgrade to "no chain predecessor" and merge over a successor.
+      if (!successors) return;
+      if (this.isChainPredecessor(task, successors)) {
+        const recovered = await this.chainRecovery(
+          task,
+          record,
+          signal,
+          successors,
+        );
+        if (!recovered) return;
+        result = recovered;
+      } else if (!this.hasMergeReview(record)) {
         result = {
           kind: "replan",
           reason:
@@ -1112,29 +1208,9 @@ export class GitHubTaskRunner {
         );
       }
     } else {
-      // Auto-closed Issues may recover a completed merge, but never submit one.
-      const pr = await this.readPr(record.publication.number, signal);
-      const chain =
-        Boolean(task.task.spec.continues) ||
-        this.isChainPredecessor(task, await this.chainDetectionTasks(signal));
-      if (
-        pr.baseRefName !== this.mergeTargetBase(task, record) ||
-        pr.headRefName !== record.publication.branch ||
-        (!chain && pr.headRefOid !== record.publication.commitSha) ||
-        pr.state === "CLOSED"
-      )
-        result = {
-          kind: "replan",
-          reason: "Published PR changed or closed without merge",
-        };
-      else if (pr.state === "MERGED" && pr.mergeCommit) {
-        result = chain
-          ? await this.chainMergeResult(
-              record.publication.commitSha,
-              pr.mergeCommit.oid,
-            )
-          : { kind: "merged", mergeCommit: pr.mergeCommit.oid };
-      } else return;
+      const recovered = await this.chainRecovery(task, record, signal);
+      if (!recovered) return;
+      result = recovered;
     }
     signal.throwIfAborted();
     if (result.kind === "refresh") {
@@ -1176,6 +1252,45 @@ export class GitHubTaskRunner {
     else delete record.failure;
     await this.checkpoint(task, record, signal);
     if (record.phase === "done") await this.repairClosure(task, signal);
+  }
+
+  /** Reads remote merge truth without submitting; auto-closed or chain-gated Issues may recover a completed merge. */
+  private async chainRecovery(
+    task: NativeTask,
+    record: ExecutionRecord,
+    signal: AbortSignal,
+    successors?: readonly NativeTask[],
+  ): Promise<MergeResult | undefined> {
+    const publication = record.publication;
+    if (!publication?.number) return undefined;
+    const pr = await this.readPr(publication.number, signal);
+    let chain = Boolean(task.task.spec.continues);
+    if (!chain) {
+      const detected = successors ?? (await this.chainDetectionTasks(signal));
+      // Listing failure skips this round's adjudication instead of dropping the exemption.
+      if (!detected) return undefined;
+      chain = this.isChainPredecessor(task, detected);
+    }
+    if (
+      pr.baseRefName !== this.mergeTargetBase(task, record) ||
+      pr.headRefName !== publication.branch ||
+      (!chain && pr.headRefOid !== publication.commitSha) ||
+      pr.state === "CLOSED"
+    )
+      return {
+        kind: "replan",
+        reason: "Published PR changed or closed without merge",
+      };
+    if (pr.state === "MERGED" && pr.mergeCommit)
+      return chain
+        ? await this.chainMergeResult(
+            publication.commitSha,
+            pr.mergeCommit.oid,
+            publication.number,
+            signal,
+          )
+        : { kind: "merged", mergeCommit: pr.mergeCommit.oid };
+    return undefined;
   }
 
   /** Persists a bounded intent before any Git mutation and a confirmed result before dispatching fresh Review. */
