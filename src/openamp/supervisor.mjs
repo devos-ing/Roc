@@ -30,6 +30,7 @@ export class AgentSupervisor {
   #completions = new Map();
   #deliveryHandler;
   #draining;
+  #admitting = Promise.resolve();
   #closing = false;
 
   /** Binds child lifecycle to one change and workspace. */
@@ -57,38 +58,44 @@ export class AgentSupervisor {
 
   /** Starts or queues one non-recursive child-agent assignment. */
   async delegate(input) {
-    if (this.#closing) throw new Error("OpenAmp supervisor is shutting down");
-    if (!["researcher", "writer", "reviewer"].includes(input.role)) {
-      throw new Error(`Unsupported agent role: ${input.role}`);
-    }
-    if (input.role === "writer" && !this.store.state.repoRoot) {
-      throw new Error("Writer agents are unavailable outside a Git repository");
-    }
-    const runId = `run-${crypto.randomUUID().slice(0, 12)}`;
-    const active = this.list().filter((candidate) =>
-      ["starting", "running", "cancelling"].includes(candidate.status),
-    ).length;
-    const run = {
-      id: runId,
-      role: input.role,
-      prompt: boundedText(input.prompt, 40_000),
-      status: active >= this.maxActive ? "queued" : "starting",
-      parentSessionId: input.parentSessionId ?? this.store.state.sessionId,
-      deliveryOnly: input.deliveryOnly === true,
-      createdAt: new Date().toISOString(),
-      startedAt: null,
-      finishedAt: null,
-      cwd: null,
-      sessionId: null,
-      model: null,
-      effort: null,
-      resultId: null,
-    };
-    await this.store.update((state) => {
-      state.runs[runId] = run;
+    const admission = this.#admitting.then(async () => {
+      if (this.#closing) throw new Error("OpenAmp supervisor is shutting down");
+      if (!["researcher", "writer", "reviewer"].includes(input.role)) {
+        throw new Error(`Unsupported agent role: ${input.role}`);
+      }
+      if (input.role === "writer" && !this.store.state.repoRoot) {
+        throw new Error(
+          "Writer agents are unavailable outside a Git repository",
+        );
+      }
+      const runId = `run-${crypto.randomUUID().slice(0, 12)}`;
+      const active = this.list().filter((candidate) =>
+        ["starting", "running", "cancelling"].includes(candidate.status),
+      ).length;
+      const run = {
+        id: runId,
+        role: input.role,
+        prompt: boundedText(input.prompt, 40_000),
+        status: active >= this.maxActive ? "queued" : "starting",
+        parentSessionId: input.parentSessionId ?? this.store.state.sessionId,
+        deliveryOnly: input.deliveryOnly === true,
+        createdAt: new Date().toISOString(),
+        startedAt: null,
+        finishedAt: null,
+        cwd: null,
+        sessionId: null,
+        model: null,
+        effort: null,
+        resultId: null,
+      };
+      await this.store.update((state) => {
+        state.runs[runId] = run;
+      });
+      if (run.status !== "queued") void this.#launch(runId);
+      return run;
     });
-    if (run.status !== "queued") void this.#launch(runId);
-    return run;
+    this.#admitting = admission.catch(() => undefined);
+    return admission;
   }
 
   /** Sends a targeted steering instruction to one active child. */

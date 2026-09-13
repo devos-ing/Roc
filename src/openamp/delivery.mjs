@@ -83,11 +83,13 @@ export class ChangeDelivery {
     this.workspace = workspace;
     this.supervisor = supervisor;
     this.validationRunner = options.validationRunner ?? defaultValidationRunner;
+    const deliveryEnvironment = { ...(options.environment ?? process.env) };
     this.commandRunner =
       options.commandRunner ??
       ((command, args, cwd) =>
         runCommand(command, args, {
           cwd,
+          env: deliveryEnvironment,
           allowFailure: true,
           timeoutMs: 60_000,
         }));
@@ -304,10 +306,14 @@ export class ChangeDelivery {
         throw new Error("Remote feature branch changed outside OpenAmp");
       }
     }
+    if ((await this.workspace.assertReady()) !== head) {
+      throw new Error("Feature head changed before publication");
+    }
     const push = await this.#run("push", "git", [
       "push",
+      `--force-with-lease=refs/heads/${state.branch}:${remoteHead ?? ""}`,
       "origin",
-      state.branch,
+      `${head}:refs/heads/${state.branch}`,
     ]);
     if (push.exitCode !== 0) {
       const reconciled = await this.#run("reconcile-push", "git", [

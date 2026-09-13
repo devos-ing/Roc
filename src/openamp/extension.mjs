@@ -30,6 +30,7 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
     name: "openamp",
     factory(pi) {
       let currentContext;
+      const pendingDeliveries = new Set();
 
       /** Refreshes the compact OpenAmp status shown by Pi's native footer. */
       function refreshStatus(context) {
@@ -52,7 +53,19 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
         const run = store.state.runs[result.runId];
         if (run.parentSessionId && run.parentSessionId !== sessionId)
           return false;
-        if (!branchContainsResult(context, result.id)) {
+        if (branchContainsResult(context, result.id)) {
+          pendingDeliveries.delete(result.id);
+          if (result.deliveredSessionId !== sessionId) {
+            await store.update((state) => {
+              state.results[result.id].deliveredSessionId = sessionId;
+            });
+          }
+          refreshStatus(context);
+          return true;
+        }
+        if (pendingDeliveries.has(result.id)) return false;
+        pendingDeliveries.add(result.id);
+        try {
           pi.sendMessage(
             {
               customType: "openamp-result",
@@ -68,12 +81,18 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
             },
             { deliverAs: "followUp", triggerTurn },
           );
+        } catch (error) {
+          pendingDeliveries.delete(result.id);
+          throw error;
         }
-        await store.update((state) => {
-          state.results[result.id].deliveredSessionId = sessionId;
-        });
+        if (branchContainsResult(context, result.id)) {
+          pendingDeliveries.delete(result.id);
+          await store.update((state) => {
+            state.results[result.id].deliveredSessionId = sessionId;
+          });
+        }
         refreshStatus(context);
-        return true;
+        return branchContainsResult(context, result.id);
       }
 
       supervisor.setDeliveryHandler(async (result) => {
@@ -82,6 +101,7 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
 
       pi.on("session_start", async (_event, context) => {
         currentContext = context;
+        pendingDeliveries.clear();
         const sessionId = context.sessionManager.getSessionId();
         await store.update((state) => {
           state.sessionId = sessionId;
@@ -98,11 +118,22 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
         ]);
         refreshStatus(context);
         for (const result of Object.values(store.state.results)) {
-          if (
-            !result.deliveredSessionId &&
-            !store.state.runs[result.runId]?.deliveryOnly
-          )
+          if (!store.state.runs[result.runId]?.deliveryOnly)
             await deliverResult(result, context, false);
+        }
+      });
+
+      pi.on("agent_end", async (_event, context) => {
+        for (const resultId of [...pendingDeliveries]) {
+          const result = store.state.results[resultId];
+          if (!result) {
+            pendingDeliveries.delete(resultId);
+            continue;
+          }
+          if (!branchContainsResult(context, resultId)) {
+            pendingDeliveries.delete(resultId);
+          }
+          await deliverResult(result, context, false);
         }
       });
 

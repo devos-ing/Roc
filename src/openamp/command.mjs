@@ -5,9 +5,20 @@ const execFileAsync = promisify(execFile);
 
 const REMOTE_MUTATION = [
   /(?:^|[\s;&|()`])git\b[^;&|\n]*\bpush(?:\s|$)/iu,
+  /(?:^|[\s;&|()`])git\b[^;&|\n]*\bsend-pack(?:\s|$)/iu,
   /(?:^|[\s;&|()`])gh\b[^;&|\n]*\bpr\s+(?:create|edit|merge|close|reopen)(?:\s|$)/iu,
   /(?:^|[\s;&|()`])gh\b[^;&|\n]*\bapi(?:\s|$)/iu,
+  /(?:^|[\s;&|()`])gh\b[^;&|\n]*\bissue\s+(?:create|edit|close|reopen|delete|transfer)(?:\s|$)/iu,
+  /(?:^|[\s;&|()`])gh\b[^;&|\n]*\brelease\s+(?:create|edit|delete|upload)(?:\s|$)/iu,
+  /(?:^|[\s;&|()`])gh\b[^;&|\n]*\brepo\s+(?:create|edit|delete|fork|archive|rename)(?:\s|$)/iu,
+  /(?:^|[\s;&|()`])gh\b[^;&|\n]*\bworkflow\s+(?:run|enable|disable)(?:\s|$)/iu,
+  /(?:^|[\s;&|()`])gh\b[^;&|\n]*\b(?:secret|variable)\s+(?:set|delete)(?:\s|$)/iu,
   /(?:^|[\s;&|()`])git\b[^;&|\n]*\bremote\s+(?:add|remove|rename|set-url)(?:\s|$)/iu,
+  /(?:^|[\s;&|()`])npm\b[^;&|\n]*\b(?:publish|unpublish|deprecate)(?:\s|$)/iu,
+  /(?:^|[\s;&|()`])npm\b[^;&|\n]*\b(?:dist-tag|access|owner|token)\s+(?:add|rm|remove|set|grant|revoke|create)(?:\s|$)/iu,
+  /(?:^|[\s;&|()`])curl\b[^;&|\n]*(?:\s-X\s*(?:POST|PUT|PATCH|DELETE)\b|--request\s+(?:POST|PUT|PATCH|DELETE)\b|(?:^|\s)(?:-d|--data(?:-[a-z-]+)?|--upload-file)(?:\s|=))/iu,
+  /(?:^|[\s;&|()`])(?:ssh|scp|sftp)\b/iu,
+  /(?:^|[\s;&|()`])rsync\b[^;&|\n]*\s[^\s;&|:]+:/iu,
 ];
 
 /** Returns a stable reason when an agent command crosses the Delivery boundary. */

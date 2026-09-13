@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runOpenAmp } from "../../src/openamp/cli.mjs";
 import { remoteMutationReason, runGit } from "../../src/openamp/command.mjs";
 import { ChangeDelivery, parseReview } from "../../src/openamp/delivery.mjs";
 import { createOpenAmpExtension } from "../../src/openamp/extension.mjs";
@@ -109,7 +110,20 @@ describe("M1 feature conversations", () => {
     expect(remoteMutationReason("git -C . push origin HEAD")).toContain(
       "only Delivery",
     );
+    for (const command of [
+      "git send-pack origin HEAD",
+      "gh issue create --title bypass",
+      "gh release create v1.0.0",
+      "npm publish",
+      "curl -X POST https://api.github.com/repos/example/example/issues",
+      "ssh github.example mutate-repository",
+    ]) {
+      expect(remoteMutationReason(command), command).toContain("only Delivery");
+    }
     expect(remoteMutationReason("git status")).toBeUndefined();
+    expect(
+      remoteMutationReason("curl https://api.github.com/rate_limit"),
+    ).toBeUndefined();
   });
 
   test("ignores ambient Git repository overrides", async () => {
@@ -123,6 +137,30 @@ describe("M1 feature conversations", () => {
       },
     });
     expect(result.stdout).toBe(source);
+  });
+
+  test("hides publication credentials from the interactive agent runtime", async () => {
+    const { source } = await fixtureRepository();
+    const originalToken = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = "delivery-only-test-token";
+    let runtimeToken;
+    class FakeInteractiveMode {
+      /** Ends the TUI immediately after observing its process environment. */
+      async run() {
+        runtimeToken = process.env.GH_TOKEN;
+      }
+    }
+    try {
+      await runOpenAmp([], {
+        cwd: source,
+        InteractiveMode: FakeInteractiveMode,
+      });
+      expect(runtimeToken).toBeUndefined();
+      expect(process.env.GH_TOKEN).toBe("delivery-only-test-token");
+    } finally {
+      if (originalToken === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = originalToken;
+    }
   });
 });
 
@@ -167,6 +205,36 @@ describe("M2 reliable delegation", () => {
     expect(delivered).toHaveLength(3);
   });
 
+  test("serializes concurrent admissions before assigning capacity", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m2-concurrent",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    const supervisor = new AgentSupervisor(store, workspace, {
+      maxActive: 2,
+      clientFactory: (options) =>
+        new FakeRpcClient(options, async () => Bun.sleep(25)),
+    });
+    const runs = await Promise.all(
+      [1, 2, 3].map((number) =>
+        supervisor
+          .delegate({
+            role: "researcher",
+            prompt: `parallel ${number}`,
+          })
+          .then((run) => ({ id: run.id, initialStatus: run.status })),
+      ),
+    );
+    const statuses = runs.map((run) => store.state.runs[run.id].status);
+    expect(
+      statuses.filter((status) => ["starting", "running"].includes(status)),
+    ).toHaveLength(2);
+    expect(statuses.filter((status) => status === "queued")).toHaveLength(1);
+    await Promise.all(runs.map((run) => supervisor.wait(run.id)));
+  });
+
   test("recovers custom results once and never routes them to another session", async () => {
     const path = join(
       await mkdtemp(join(tmpdir(), "openamp-state-")),
@@ -203,6 +271,7 @@ describe("M2 reliable delegation", () => {
     const handlers = {};
     const entries = [];
     const messages = [];
+    let persistMessages = false;
     const supervisor = {
       list: () => Object.values(state.runs),
       setDeliveryHandler: (handler) => {
@@ -217,11 +286,13 @@ describe("M2 reliable delegation", () => {
       registerCommand: () => undefined,
       sendMessage: (message) => {
         messages.push(message);
-        entries.push({
-          type: "custom_message",
-          customType: message.customType,
-          details: message.details,
-        });
+        if (persistMessages) {
+          entries.push({
+            type: "custom_message",
+            customType: message.customType,
+            details: message.details,
+          });
+        }
       },
     };
     createOpenAmpExtension(store, supervisor, {}, {}).factory(pi);
@@ -241,8 +312,12 @@ describe("M2 reliable delegation", () => {
     expect(messages).toHaveLength(0);
     context.sessionManager.getSessionId = () => "parent-one";
     await handlers.session_start({}, context);
-    await handlers.session_start({}, context);
     expect(messages).toHaveLength(1);
+    expect(store.state.results["result-one"].deliveredSessionId).toBeNull();
+    persistMessages = true;
+    await handlers.session_start({}, context);
+    await handlers.session_start({}, context);
+    expect(messages).toHaveLength(2);
     expect(store.state.results["result-one"].deliveredSessionId).toBe(
       "parent-one",
     );
@@ -331,6 +406,39 @@ describe("M3 collaborative implementation", () => {
     );
     expect(await readFile(join(secondResult.cwd, "shared.txt"), "utf8")).toBe(
       "second\n",
+    );
+  });
+
+  test("reconciles a completed cherry-pick whose state receipt was interrupted", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m3-recovery",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    const supervisor = new AgentSupervisor(store, workspace, {
+      clientFactory: (options) =>
+        new FakeRpcClient(options, async (cwd) => {
+          await writeFile(join(cwd, "recovered.txt"), "recovered\n");
+        }),
+    });
+    const run = await supervisor.delegate({ role: "writer", prompt: "write" });
+    const result = await supervisor.wait(run.id);
+    const expectedHead = await workspace.head();
+    await store.update((state) => {
+      state.integration = {
+        resultId: result.id,
+        expectedHead,
+        status: "pending",
+      };
+    });
+    await runGit(store.state.workspace, ["cherry-pick", result.commit]);
+
+    const resumed = await resumeChange(source, store.state.id);
+    expect(resumed.state.integration.status).toBe("integrated");
+    expect(resumed.state.integratedResultIds).toContain(result.id);
+    expect(resumed.state.mainHead).toBe(
+      (await runGit(store.state.workspace, ["rev-parse", "HEAD"])).stdout,
     );
   });
 });
@@ -423,6 +531,7 @@ describe("M4 reviewed PR delivery", () => {
       requirements: "Add feature one",
       validationCommands: ["npm test"],
     });
+    const firstHead = store.state.mainHead;
     expect(first.number).toBe(7);
     await writeFile(join(store.state.workspace, "feature.txt"), "two\n");
     const second = await delivery.deliver({
@@ -430,6 +539,7 @@ describe("M4 reviewed PR delivery", () => {
       requirements: "Add feature one and follow-up two",
       validationCommands: ["npm test"],
     });
+    const secondHead = store.state.mainHead;
     expect(second.number).toBe(7);
     expect(reviews).toBe(2);
     expect(
@@ -439,6 +549,23 @@ describe("M4 reviewed PR delivery", () => {
       calls.filter((call) => call[0] === "gh" && call[2] === "edit"),
     ).toHaveLength(1);
     expect(calls.some((call) => call.includes("merge"))).toBeFalse();
+    const pushes = calls.filter(
+      ([command, operation]) => command === "git" && operation === "push",
+    );
+    expect(pushes).toHaveLength(2);
+    expect(
+      pushes.map((call) =>
+        call.find((argument) => argument.endsWith(`/${store.state.branch}`)),
+      ),
+    ).toEqual([
+      `${firstHead}:refs/heads/${store.state.branch}`,
+      `${secondHead}:refs/heads/${store.state.branch}`,
+    ]);
+    expect(
+      pushes.every((call) =>
+        call.some((argument) => argument.startsWith("--force-with-lease=")),
+      ),
+    ).toBeTrue();
   });
 
   test("rejects malformed or internally contradictory review evidence", () => {

@@ -7,6 +7,7 @@ import {
   InteractiveMode,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { agentEnvironment } from "./command.mjs";
 import { ChangeDelivery } from "./delivery.mjs";
 import { createOpenAmpExtension } from "./extension.mjs";
 import { AgentSupervisor } from "./supervisor.mjs";
@@ -69,6 +70,11 @@ export async function runOpenAmp(args, options = {}) {
     supervisor,
     options.deliveryOptions,
   );
+  const childEnvironment = agentEnvironment();
+  const hiddenEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !(name in childEnvironment)),
+  );
+  for (const name of Object.keys(hiddenEnvironment)) delete process.env[name];
   const extension = createOpenAmpExtension(
     store,
     supervisor,
@@ -118,28 +124,33 @@ export async function runOpenAmp(args, options = {}) {
       diagnostics: services.diagnostics,
     };
   };
-  const runtime = await createAgentSessionRuntime(createRuntime, {
-    cwd: store.state.workspace,
-    agentDir: getAgentDir(),
-    sessionManager,
-  });
-  await store.update((state) => {
-    state.sessionId = runtime.session.sessionId;
-    state.sessionFile = runtime.session.sessionFile;
-  });
-  const Mode = options.InteractiveMode ?? InteractiveMode;
-  const mode = new Mode(runtime, {
-    migratedProviders: [],
-    initialMessage: undefined,
-    initialImages: [],
-    initialMessages: [],
-    verbose: false,
-  });
+  let runtime;
   try {
+    runtime = await createAgentSessionRuntime(createRuntime, {
+      cwd: store.state.workspace,
+      agentDir: getAgentDir(),
+      sessionManager,
+    });
+    await store.update((state) => {
+      state.sessionId = runtime.session.sessionId;
+      state.sessionFile = runtime.session.sessionFile;
+    });
+    const Mode = options.InteractiveMode ?? InteractiveMode;
+    const mode = new Mode(runtime, {
+      migratedProviders: [],
+      initialMessage: undefined,
+      initialImages: [],
+      initialMessages: [],
+      verbose: false,
+    });
     await mode.run();
   } finally {
-    await supervisor.shutdown();
-    runtime.session.dispose();
+    Object.assign(process.env, hiddenEnvironment);
+    try {
+      await supervisor.shutdown();
+    } finally {
+      runtime?.session.dispose();
+    }
   }
   return 0;
 }

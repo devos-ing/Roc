@@ -85,6 +85,80 @@ function globalStatePath(id) {
   return join(homedir(), ".openamp", "changes", `${id}.json`);
 }
 
+/** Reconciles a crash between a completed cherry-pick and its durable receipt. */
+async function reconcilePendingIntegration(state) {
+  const integration = state.integration;
+  if (!state.repoRoot || integration?.status !== "pending") return;
+  const result = state.results[integration.resultId];
+  const currentHead = (await runGit(state.workspace, ["rev-parse", "HEAD"]))
+    .stdout;
+  if (currentHead === integration.expectedHead) return;
+  const status = (await runGit(state.workspace, ["status", "--porcelain"]))
+    .stdout;
+  let reconciled = false;
+  if (status === "" && result?.commit && result?.baseCommit) {
+    const [ancestry, currentCount, resultCount, currentDiff, resultDiff] =
+      await Promise.all([
+        runGit(
+          state.workspace,
+          [
+            "merge-base",
+            "--is-ancestor",
+            integration.expectedHead,
+            currentHead,
+          ],
+          { allowFailure: true },
+        ),
+        runGit(state.workspace, [
+          "rev-list",
+          "--count",
+          `${integration.expectedHead}..${currentHead}`,
+        ]),
+        runGit(state.workspace, [
+          "rev-list",
+          "--count",
+          `${result.baseCommit}..${result.commit}`,
+        ]),
+        runGit(state.workspace, [
+          "diff",
+          "--binary",
+          integration.expectedHead,
+          currentHead,
+        ]),
+        runGit(state.workspace, [
+          "diff",
+          "--binary",
+          result.baseCommit,
+          result.commit,
+        ]),
+      ]);
+    reconciled =
+      ancestry.exitCode === 0 &&
+      currentCount.stdout === resultCount.stdout &&
+      currentDiff.stdout === resultDiff.stdout;
+  }
+  if (reconciled) {
+    state.mainHead = currentHead;
+    if (!state.integratedResultIds.includes(integration.resultId)) {
+      state.integratedResultIds.push(integration.resultId);
+    }
+    state.integration = {
+      ...integration,
+      status: "integrated",
+      head: currentHead,
+    };
+    state.review = null;
+    state.phase = "active";
+    return;
+  }
+  state.phase = "needs_attention";
+  state.integration = {
+    ...integration,
+    status: "unknown",
+    error: "Feature head changed while integration receipt was pending",
+  };
+}
+
 /** Opens an existing change after validating its durable workspace identity. */
 export async function resumeChange(cwd, id) {
   if (!CHANGE_ID.test(id)) throw new Error(`Invalid OpenAmp change ID: ${id}`);
@@ -117,6 +191,7 @@ export async function resumeChange(cwd, id) {
         `OpenAmp workspace branch changed: ${branch || "detached"}`,
       );
     }
+    await reconcilePendingIntegration(state);
   }
   for (const run of Object.values(state.runs)) {
     if (["starting", "running", "cancelling"].includes(run.status)) {
