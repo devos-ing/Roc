@@ -47,6 +47,10 @@ export type RealSchedulerRunInput = {
   concurrency?: number;
   /** Opts into strict-policy squash merge of the exact independently reviewed PR head. */
   autoMerge?: boolean;
+  /** Cancels this caller-owned scheduler without installing another process owner. */
+  signal?: AbortSignal;
+  /** Keeps scheduler diagnostics out of an interactive terminal frame. */
+  output?: { out?(text: string): void; err?(text: string): void };
 };
 
 export type SchedulerRunInput = RealSchedulerRunInput;
@@ -56,6 +60,10 @@ export type CliRuntime = {
   runScheduler(input: SchedulerRunInput): Promise<void>;
   /** Reads authoritative GitHub task checkpoints for inspection commands. */
   readTasks?(cwd: string): Promise<GitHubTaskSnapshot>;
+  /** Reads the repository and authoritative default branch for an interactive scheduler preview. */
+  schedulerMetadata?(
+    cwd: string,
+  ): Promise<{ repository: string; baseBranch: string }>;
   /** Publishes one approved manifest to the current project's GitHub repository. */
   publishGitHubTasks?(
     manifest: BacklogManifest,

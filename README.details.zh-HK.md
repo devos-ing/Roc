@@ -282,7 +282,7 @@ flowchart TD
 ## 進度、恢復及 hooks
 
 `tui` 預設開啟 Welcome，即使尚未設定 Roc 或登入 GitHub，仍會顯示待設定／連線狀態。
-`task board` 直接開啟 Tasks；兩者只供監看，不會啟動 scheduler 或更改任務。寬螢幕的
+`task board` 直接開啟 Tasks，並永遠只供監看。互動式 `tui` 會先顯示倉庫預設分支、concurrency 2 和手動合併預覽，按 `S` 才啟動本畫面擁有的一個 scheduler；再按 `S` 或退出會等待同一取消及清理程序。外部 live、stale 或 unreadable lock 只可監看，TUI 不會發停止訊號或移除它。寬螢幕的
 Tasks 左側是任務列表，右側顯示選中任務的進度詳情。按 Tab、1／2 或點擊頂部分頁切換，
 R 刷新。刷新失敗會保留上次已保存快照、上次成功讀取時間及過期／錯誤標記；讀取時間
 只是監看資料的新鮮度，不是任務活動時間。切換分頁或縮放視窗會保留選中任務及詳情；

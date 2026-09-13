@@ -110,6 +110,8 @@ Pi 沒有內建 sandbox，無人看管時應使用 OS/container 隔離。
 bun "$ROC_CLI_ENTRY" task board
 ```
 
+`task board` 只供監看。互動式 `tui` 可按 `S` 明確啟動本畫面擁有的一個 scheduler（預覽倉庫預設分支、concurrency 2、手動合併）；再按 `S` 停止，退出會等待取消及清理。外部、stale 或 unreadable lock 只可監看。
+
 看板是唯讀的。按 `Enter` 查看詳情，按 `Q` 離開。
 欄位以顏色區分進行中、待處理及已完成，排版會配合終端寬度；重新導向檔案時輸出純文字。
 詳情會顯示總耗時、attempt 時間、等待合併時間、最近動作與用量是否完整。

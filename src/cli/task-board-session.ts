@@ -26,6 +26,14 @@ export type TaskBoardSessionOptions = {
   projectSlug?: string;
   refreshIntervalMs?: number;
   initialTab?: TuiTab;
+  /** Interactive TUI-only scheduler controls; omitted by read-only boards. */
+  scheduler?: {
+    preview: string;
+    start(): Promise<void>;
+    stop(): Promise<void>;
+    /** Registers notification that scheduler dispatch has begun. */
+    onStarted?(notify: () => void): void;
+  };
 };
 
 type DetailMode = "peek" | "full" | "none";
@@ -88,8 +96,20 @@ export async function runTaskBoardSession(
   let refreshInFlight = false;
   let refreshQueued = false;
   let closed = false;
+  let admissionClosed = false;
   let interval: ReturnType<typeof setInterval> | undefined;
   let escapeTimer: ReturnType<typeof setTimeout> | undefined;
+  let schedulerState:
+    | "idle"
+    | "starting"
+    | "running"
+    | "stopping"
+    | "stopped"
+    | "failed" = "idle";
+  let schedulerError: string | undefined;
+  let schedulerRun: Promise<void> | undefined;
+  let schedulerStop: Promise<void> | undefined;
+  let schedulerStopRequested = false;
   const decoder = new TextDecoder();
 
   /** Returns cards currently available to keyboard selection. */
@@ -109,10 +129,21 @@ export async function runTaskBoardSession(
 
   /** Draws the latest successful frame or a readable recovery status after a failed read. */
   const render = (revealSelection = false) => {
+    if (closed) return;
     const width = Math.max(1, output.columns ?? 80);
     let frame: string;
     if (helpVisible) frame = renderHelp(width);
-    else if (tab === "welcome") frame = renderWelcome(width);
+    else if (tab === "welcome")
+      frame = renderWelcome(
+        width,
+        options.scheduler === undefined
+          ? undefined
+          : {
+              preview: options.scheduler.preview,
+              state: schedulerState,
+              error: schedulerError,
+            },
+      );
     else if (snapshot === undefined)
       frame = renderHelpBox(
         "Tasks",
@@ -135,12 +166,16 @@ export async function runTaskBoardSession(
         doneExpanded,
       });
     }
+    const schedulerStatus =
+      options.scheduler === undefined
+        ? "Read-only"
+        : `${options.scheduler.preview}\nScheduler: ${schedulerState}${schedulerError ? ` · Scheduler error: ${errorText(schedulerError)}` : ""}`;
     const status =
       lastError !== undefined
-        ? `${snapshot ? `STALE — saved task progress retained. Last successful read: ${lastSuccessfulReadAt === undefined ? "not recorded" : new Date(lastSuccessfulReadAt).toISOString()}` : "Setup / connection needs attention"}\nError: ${errorText(lastError)}\nR retries; this monitor never starts execution.`
+        ? `${snapshot ? `STALE — saved task progress retained. Last successful read: ${lastSuccessfulReadAt === undefined ? "not recorded" : new Date(lastSuccessfulReadAt).toISOString()}` : "Setup / connection needs attention"}\nError: ${errorText(lastError)}\n${schedulerStatus}\nR retries.`
         : snapshot
-          ? `GitHub checkpoints loaded · Last successful read: ${lastSuccessfulReadAt === undefined ? "not recorded" : new Date(lastSuccessfulReadAt).toISOString()} · Saved task progress is checkpoint data · Read-only`
-          : "Checking settings and GitHub connection… · Read-only";
+          ? `GitHub checkpoints loaded · Last successful read: ${lastSuccessfulReadAt === undefined ? "not recorded" : new Date(lastSuccessfulReadAt).toISOString()} · Saved task progress is checkpoint data · ${schedulerStatus}`
+          : `Checking settings and GitHub connection… · ${schedulerStatus}`;
     const panes =
       !helpVisible &&
       tab === "tasks" &&
@@ -230,6 +265,74 @@ export async function runTaskBoardSession(
     render(true);
   };
 
+  /** Starts exactly one scheduler owned by this interactive session. */
+  const startScheduler = () => {
+    if (
+      admissionClosed ||
+      !options.scheduler ||
+      schedulerRun ||
+      schedulerState === "stopping" ||
+      schedulerState === "failed"
+    )
+      return;
+    schedulerState = "starting";
+    schedulerError = undefined;
+    render();
+    schedulerRun = options.scheduler
+      .start()
+      .then(
+        () => {
+          if (schedulerState !== "stopping") schedulerState = "stopped";
+        },
+        (error) => {
+          schedulerState = "failed";
+          schedulerError = errorText(error);
+        },
+      )
+      .finally(() => {
+        schedulerRun = undefined;
+        try {
+          render();
+        } catch (error) {
+          finish(error);
+        }
+      });
+    options.scheduler.onStarted?.(() => {
+      schedulerState = "running";
+      try {
+        render();
+      } catch (error) {
+        finish(error);
+      }
+    });
+  };
+
+  /** Stops only this session's scheduler and waits for its existing cleanup. */
+  const stopScheduler = async () => {
+    if (!options.scheduler) return;
+    if (!schedulerRun) {
+      if (schedulerState === "failed") throw new Error(schedulerError);
+      return;
+    }
+    const run = schedulerRun;
+    if (!schedulerStop) {
+      schedulerStopRequested = true;
+      schedulerState = "stopping";
+      render();
+      schedulerStop = options.scheduler.stop().finally(() => {
+        schedulerStop = undefined;
+      });
+    }
+    await schedulerStop;
+    await run.catch((error) => {
+      if (!schedulerStopRequested) throw error;
+    });
+    if (schedulerState === "failed") throw new Error(schedulerError);
+    schedulerState = "stopped";
+    schedulerStopRequested = false;
+    render();
+  };
+
   /** Applies one supported task-board action without changing task or scheduler state. */
   const act = (
     action:
@@ -241,10 +344,21 @@ export async function runTaskBoardSession(
       | "refresh"
       | "help"
       | "escape"
+      | "start"
+      | "stop"
       | "quit",
   ) => {
     if (action === "quit") {
-      finish();
+      admissionClosed = true;
+      void stopScheduler().then(() => finish(), finish);
+      return;
+    }
+    if (action === "start") {
+      startScheduler();
+      return;
+    }
+    if (action === "stop") {
+      void stopScheduler().catch(finish);
       return;
     }
     if (tab !== "tasks" && !["refresh", "help", "escape"].includes(action))
@@ -403,6 +517,8 @@ export async function runTaskBoardSession(
       else if (key === "k" || key === "K") act("previous");
       else if (key === "d" || key === "D") act("done");
       else if (key === "r" || key === "R") act("refresh");
+      else if (key === "s" || key === "S")
+        schedulerRun ? act("stop") : act("start");
       else if (key === "?") act("help");
       else if (key === "q" || key === "Q") act("quit");
     }
@@ -440,17 +556,25 @@ export async function runTaskBoardSession(
   const stopped = new Promise<void>((resolve, reject) => {
     finish = (error?: unknown) => {
       if (closed) return;
+      admissionClosed = true;
       closed = true;
-      if (interval !== undefined) clearInterval(interval);
-      if (escapeTimer !== undefined) clearTimeout(escapeTimer);
-      input.off("data", onData);
-      input.off("error", onInputError);
-      input.off("end", onInputEnd);
-      input.off("close", onInputClose);
-      output.off("resize", onResize);
-      output.off("close", onOutputClose);
-      process.off("SIGINT", onSignal);
-      error === undefined ? resolve() : reject(error);
+      /** Settles the terminal session after owned scheduler cleanup finishes. */
+      const settle = (cleanupError?: unknown) => {
+        if (interval !== undefined) clearInterval(interval);
+        if (escapeTimer !== undefined) clearTimeout(escapeTimer);
+        input.off("data", onData);
+        input.off("error", onInputError);
+        input.off("end", onInputEnd);
+        input.off("close", onInputClose);
+        output.off("resize", onResize);
+        output.off("close", onOutputClose);
+        process.off("SIGINT", onSignal);
+        process.off("SIGTERM", onSignal);
+        process.off("SIGHUP", onSignal);
+        const outcome = error ?? cleanupError;
+        outcome === undefined ? resolve() : reject(outcome);
+      };
+      void stopScheduler().then(() => settle(), settle);
     };
   });
 
@@ -464,8 +588,8 @@ export async function runTaskBoardSession(
   const onOutputError = (error: Error) => finish(error);
   /** Treats terminal output closing as a normal session exit. */
   const onOutputClose = () => finish();
-  /** Treats process Ctrl-C consistently with the raw Ctrl-C byte. */
-  const onSignal = () => finish();
+  /** Routes process termination and terminal hangup signals through owned session cleanup. */
+  const onSignal = () => act("quit");
 
   /** Performs one restoration write without preventing the remaining terminal cleanup. */
   const restore = async (operation: (callback: () => void) => void) => {
@@ -492,6 +616,8 @@ export async function runTaskBoardSession(
     output.on("resize", onResize);
     output.on("close", onOutputClose);
     process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+    process.once("SIGHUP", onSignal);
     interval = setInterval(requestRefresh, options.refreshIntervalMs ?? 30_000);
     try {
       render();
