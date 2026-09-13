@@ -29,6 +29,19 @@ test("the GitHub board keeps awaiting-merge work in progress and uses Issue iden
   expect(board.columns.inProgress.map((item) => item.id)).toEqual(["issue-41"]);
   expect(board.columns.done).toEqual([]);
   expect(board.tasks[0]?.rawStatus).toBe("awaiting_merge");
+  expect(board.tasks[0]?.progress).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ label: "Publish PR", status: "Not recorded" }),
+      expect.objectContaining({
+        label: "Waiting merge",
+        status: "Awaiting merge",
+      }),
+      expect.objectContaining({
+        label: "Confirm complete",
+        status: "Not confirmed",
+      }),
+    ]),
+  );
 });
 
 test("the GitHub board keeps failed evidence from a current rejected Review", async () => {

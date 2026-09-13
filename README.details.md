@@ -394,17 +394,25 @@ Use `roc-create-tasks` in your coding assistant to create and approve tasks.
 
 `tui` opens Welcome with setup/connection status, even before Roc settings or
 GitHub login are available. `task board` opens Tasks directly. Both are read-only:
-neither starts a scheduler or changes tasks. Switch pages with Tab, 1/2, or a
-mouse click on the top tabs. R refreshes; failed reads keep the last snapshot
-marked stale. Selection and details survive page switches and resizing. Narrow
-terminals stack the board; use PgUp/PgDn to scroll long pages/details while the
-tabs stay visible. Piped `task board` output remains a plain snapshot.
+neither starts a scheduler or changes tasks. On a wide terminal, Tasks shows a
+left task list and the selected task's progress detail on the right. Switch pages
+with Tab, 1/2, or a mouse click on the top tabs. R refreshes; failed reads keep
+the last saved snapshot, its last successful read time, and a stale/error marker.
+That read time is monitor freshness, not task activity time. Selection and details
+survive page switches and resizing. Narrow terminals use a list and full-page
+detail; use PgUp/PgDn to scroll long pages/details while the tabs stay visible.
+Piped `task board` output remains a plain snapshot.
 
-`task board` reads GitHub checkpoints every 30 seconds and shows persisted
-status, attempts, models, usage and PR links. Use `--all` for other cycles and
-`--history` to include retired Issues. Press Enter for details and Q to quit.
-Current tool activity appears in the daemon terminal; the remote board does not
-stream every tool event.
+`task board` reads GitHub checkpoints every 30 seconds and shows the six saved
+stages (Scout, Implement, independent Review, PR publication, merge waiting and
+confirmed completion), dependencies, acceptance evidence, failures, Issue and PR
+links. An open PR remains waiting for merge; only a verified `done` checkpoint is
+complete. Missing evidence or failure reasons are stated as not recorded. Recovery
+guidance is diagnostic only: use `scheduler inspect` or the execution host's
+`.agile/runtime/agile.log`; the monitor has no recovery button. Use `--all` for
+other cycles and `--history` to include retired Issues. Press Enter for details
+and Q to quit. Current tool activity appears in the daemon terminal; the remote
+board does not stream every tool event.
 
 `tokens` reports confirmed usage and marks incomplete totals. A crash can lose
 usage that never reached a checkpoint. Token ceilings are planning estimates,

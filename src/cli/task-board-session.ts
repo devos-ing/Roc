@@ -3,8 +3,10 @@ import { renderHelpBox } from "./help-box";
 import type { TaskBoardSnapshot } from "./task-board-model";
 import {
   renderTaskBoard,
+  renderTaskBoardPanes,
   taskBoardHitTest,
   taskBoardSelectionRows,
+  taskBoardUsesWidePanes,
 } from "./task-board-renderer";
 import {
   renderTuiFrame,
@@ -81,6 +83,7 @@ export async function runTaskBoardSession(
   let doneExpanded = false;
   let helpVisible = false;
   let lastError: string | undefined;
+  let lastSuccessfulReadAt: number | undefined;
   let inputBuffer = "";
   let refreshInFlight = false;
   let refreshQueued = false;
@@ -89,10 +92,17 @@ export async function runTaskBoardSession(
   let escapeTimer: ReturnType<typeof setTimeout> | undefined;
   const decoder = new TextDecoder();
 
-  /** Keeps the selected identity when possible and otherwise selects the first task. */
+  /** Returns cards currently available to keyboard selection. */
+  const visibleTasks = () =>
+    snapshot?.tasks.filter(
+      (task) => snapshot?.history || doneExpanded || task.column !== "done",
+    ) ?? [];
+
+  /** Keeps selection on a visible task, falling back to the first visible card. */
   const normalizeSelection = () => {
-    if (snapshot?.tasks.some((task) => task.id === selectedTaskId)) return;
-    selectedTaskId = snapshot?.tasks.at(0)?.id;
+    const tasks = visibleTasks();
+    if (tasks.some((task) => task.id === selectedTaskId)) return;
+    selectedTaskId = tasks[0]?.id;
     if (detailMode !== "none" && selectedTaskId === undefined)
       detailMode = "none";
   };
@@ -109,33 +119,54 @@ export async function runTaskBoardSession(
         "Data unavailable. Refresh with R after setup.",
         width,
       );
+    else if (detailMode !== "full" && taskBoardUsesWidePanes(width)) frame = "";
     else {
       frame = renderTaskBoard(snapshot, {
         width,
         isTTY: output.isTTY,
         projectSlug: options.projectSlug,
+        ...(lastSuccessfulReadAt === undefined
+          ? {}
+          : { now: lastSuccessfulReadAt }),
         selectedTaskId,
         ...(detailMode === "none"
-          ? { detailMode: "none" as const }
+          ? { detailMode }
           : { detailMode, detailTaskId: selectedTaskId }),
         doneExpanded,
       });
     }
     const status =
       lastError !== undefined
-        ? `${snapshot ? "STALE — last successful snapshot retained" : "Setup / connection needs attention"}\nError: ${errorText(lastError)}\nR retries; this monitor never starts execution.`
+        ? `${snapshot ? `STALE — saved task progress retained. Last successful read: ${lastSuccessfulReadAt === undefined ? "not recorded" : new Date(lastSuccessfulReadAt).toISOString()}` : "Setup / connection needs attention"}\nError: ${errorText(lastError)}\nR retries; this monitor never starts execution.`
         : snapshot
-          ? "GitHub checkpoints loaded · Read-only"
+          ? `GitHub checkpoints loaded · Last successful read: ${lastSuccessfulReadAt === undefined ? "not recorded" : new Date(lastSuccessfulReadAt).toISOString()} · Saved task progress is checkpoint data · Read-only`
           : "Checking settings and GitHub connection… · Read-only";
+    const panes =
+      !helpVisible &&
+      tab === "tasks" &&
+      snapshot !== undefined &&
+      detailMode !== "full"
+        ? renderTaskBoardPanes(snapshot, {
+            width,
+            isTTY: output.isTTY,
+            selectedTaskId,
+            detailMode,
+            doneExpanded,
+            projectSlug: options.projectSlug,
+            ...(lastSuccessfulReadAt === undefined
+              ? {}
+              : { now: lastSuccessfulReadAt }),
+          })
+        : undefined;
     const viewport = renderTuiFrame({
       tab,
-      body: frame,
+      body: panes?.list ?? frame,
       status,
       width,
       rows: Math.max(1, output.rows ?? 40),
       scroll: scrolls[tab],
       revealRows:
-        revealSelection && tab === "tasks" && detailMode === "none" && snapshot
+        revealSelection && tab === "tasks" && detailMode !== "full" && snapshot
           ? taskBoardSelectionRows(snapshot, {
               width,
               selectedTaskId,
@@ -143,6 +174,9 @@ export async function runTaskBoardSession(
               doneExpanded,
             })
           : undefined,
+      ...(panes === undefined
+        ? {}
+        : { pinnedDetail: { body: panes.detail, listWidth: panes.listWidth } }),
     });
     bodyOffset = viewport.bodyOffset;
     bodyRows = viewport.bodyRows;
@@ -156,13 +190,14 @@ export async function runTaskBoardSession(
       const next = await options.read();
       if (closed) return;
       snapshot = next;
+      lastSuccessfulReadAt = Date.now();
       normalizeSelection();
       lastError = undefined;
     } catch (error) {
       if (closed) return;
       lastError = errorText(error);
     }
-    render();
+    render(true);
   };
 
   /** Requests a serialized refresh and preserves one request that arrives during a read. */
@@ -185,10 +220,7 @@ export async function runTaskBoardSession(
 
   /** Selects the next visible card in the requested direction. */
   const moveSelection = (offset: number) => {
-    const tasks =
-      snapshot?.tasks.filter(
-        (task) => doneExpanded || task.column !== "done",
-      ) ?? [];
+    const tasks = visibleTasks();
     if (tasks.length === 0) return;
     const current = tasks.findIndex((task) => task.id === selectedTaskId);
     selectedTaskId =
@@ -234,27 +266,27 @@ export async function runTaskBoardSession(
       if (!helpVisible && detailMode === "none") return;
       helpVisible = false;
       detailMode = "none";
-      scrolls[tab] = 0;
-      render();
+      render(true);
       return;
     }
     if (action === "done") {
       doneExpanded = !doneExpanded;
-      render();
+      normalizeSelection();
+      render(true);
       return;
     }
     if (selectedTaskId === undefined) return;
     helpVisible = false;
     detailMode = action === "peek" ? "peek" : "full";
-    scrolls.tasks = 0;
-    render();
+    if (detailMode === "full") scrolls.tasks = 0;
+    render(detailMode !== "full");
   };
 
   /** Changes only the page, retaining task identity, detail mode and viewport. */
   const switchTab = (next: TuiTab) => {
     tab = next;
     helpVisible = false;
-    render();
+    render(next === "tasks");
   };
 
   /** Handles a decoded mouse-reporting click if it lands on a board control. */
@@ -276,7 +308,11 @@ export async function runTaskBoardSession(
       y > bodyOffset + bodyRows
     )
       return;
-    if (detailMode === "peek" && (output.columns ?? 80) < 88) return;
+    if (
+      detailMode === "peek" &&
+      !taskBoardUsesWidePanes(Math.max(1, output.columns ?? 80))
+    )
+      return;
     const hit = taskBoardHitTest(
       snapshot,
       { x, y: y - bodyOffset + scrolls.tasks },
@@ -392,7 +428,7 @@ export async function runTaskBoardSession(
   /** Re-renders at the current width while retaining the existing selected identity. */
   const onResize = () => {
     try {
-      render();
+      render(true);
     } catch (error) {
       finish(error);
     }
@@ -456,7 +492,7 @@ export async function runTaskBoardSession(
     output.on("resize", onResize);
     output.on("close", onOutputClose);
     process.once("SIGINT", onSignal);
-    interval = setInterval(requestRefresh, options.refreshIntervalMs ?? 1_000);
+    interval = setInterval(requestRefresh, options.refreshIntervalMs ?? 30_000);
     try {
       render();
       requestRefresh();

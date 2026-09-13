@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import { renderHelpBox } from "./help-box";
+import { padToVisibleWidth } from "./task-board-renderer";
 
 /** Extend this list when additional read-only pages are available. */
 export const tuiTabs = [
@@ -46,6 +47,7 @@ export function renderTuiFrame(options: {
   rows: number;
   scroll: number;
   revealRows?: { start: number; end: number };
+  pinnedDetail?: { body: string; listWidth: number };
 }) {
   const { width, rows } = options;
   /** Strips terminal controls and clips the footer to the available width. */
@@ -65,6 +67,7 @@ export function renderTuiFrame(options: {
   header.push(...notice.slice(0, Math.max(0, rows - 5)), "");
   const available = Math.max(1, rows - header.length - 1);
   const lines = options.body.split("\n");
+  const detailLines = options.pinnedDetail?.body.split("\n");
   let scroll = Math.min(
     Math.max(0, options.scroll),
     Math.max(0, lines.length - available),
@@ -80,7 +83,24 @@ export function renderTuiFrame(options: {
     `${width < 65 ? "Tab/1/2 · R · Q · ? · PgUp/PgDn" : "Tab/1/2 pages · R refresh · Q quit · ? help · PgUp/PgDn scroll"} (${scroll + 1}-${Math.min(lines.length, scroll + available)}/${lines.length})`,
   );
   return {
-    text: [...header, ...lines.slice(scroll, scroll + available), footer]
+    text: [
+      ...header,
+      ...Array.from(
+        {
+          length:
+            options.pinnedDetail === undefined
+              ? Math.min(available, Math.max(0, lines.length - scroll))
+              : available,
+        },
+        (_, index) => {
+          const line = lines[scroll + index] ?? "";
+          return options.pinnedDetail === undefined
+            ? line
+            : `${padToVisibleWidth(line, options.pinnedDetail.listWidth)} │ ${detailLines?.[index] ?? ""}`;
+        },
+      ),
+      footer,
+    ]
       .slice(0, rows)
       .join("\n"),
     bodyOffset: header.length,

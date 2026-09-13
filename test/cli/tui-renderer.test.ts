@@ -31,6 +31,26 @@ test("reveals only out-of-view cards without undoing manual paging", () => {
   expect(below.text).toContain("row 60\nrow 61\nrow 62\nrow 63");
 });
 
+test("keeps pinned detail visible even after a short task list ends", () => {
+  const frame = renderTuiFrame({
+    tab: "tasks",
+    width: 120,
+    rows: 16,
+    scroll: 0,
+    body: "one task",
+    status: "Read-only",
+    pinnedDetail: {
+      body: "Task one\nProgress\nConfirm complete",
+      listWidth: 40,
+    },
+  });
+  const lines = stripVTControlCharacters(frame.text).split("\n");
+  expect(lines.length).toBeLessThanOrEqual(16);
+  expect(frame.text).toContain("Task one");
+  expect(frame.text).toContain("Progress");
+  expect(frame.text).toContain("Confirm complete");
+});
+
 test("shared tabs and bordered Welcome fit narrow and short viewports", () => {
   for (const width of [1, 10, 20, 40, 80]) {
     for (const rows of [1, 6, 24]) {

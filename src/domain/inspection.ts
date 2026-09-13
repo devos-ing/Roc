@@ -136,6 +136,7 @@ export type InspectionModelDecision = z.infer<
   typeof InspectionModelDecisionSchema
 >;
 export type InspectionRole = z.infer<typeof InspectionRoleSchema>;
+/** Describes one persisted harness attempt for the inspection read model. */
 export type InspectionAttempt = z.infer<typeof InspectionAttemptSchema>;
 export type InspectionTask = z.infer<typeof InspectionTaskSchema>;
 export type InspectionScheduler = z.infer<typeof InspectionSchedulerSchema>;

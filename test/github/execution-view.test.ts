@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { buildTaskBoardSnapshot } from "../../src/cli/task-board-model";
+import { renderTaskBoard } from "../../src/cli/task-board-renderer";
 import {
   ExecutionRecordSchema,
   initialExecution,
@@ -28,8 +30,8 @@ test("inspection freezes completed timing, separates merge waiting and preserves
           attemptId: "real-attempt",
           taskId: "issue-41",
           role: "implement",
-          retryIndex: 0,
-          modelProfile: "terra",
+          retryIndex: 0 as const,
+          modelProfile: "terra" as const,
           model: "test/model",
           effort: "high",
         },
@@ -77,4 +79,133 @@ test("inspection freezes completed timing, separates merge waiting and preserves
   expect(
     githubTaskSnapshot([task]).inspection.tasks[0]?.timing,
   ).toBeUndefined();
+});
+
+test("projects saved rejected Review findings into the monitor failure reason", async () => {
+  const remote = memoryGitHub();
+  const task = await remote.store().get(41);
+  const startedAt = "2026-09-09T00:00:00.000Z";
+  task.execution = ExecutionRecordSchema.parse({
+    ...initialExecution(task, "main", "a".repeat(40)),
+    phase: "rejected",
+    attempts: [
+      {
+        descriptor: {
+          attemptId: "rejected-review",
+          taskId: "issue-41",
+          role: "review",
+          retryIndex: 0,
+          modelProfile: "terra",
+          model: "test/model",
+          effort: "high",
+        },
+        status: "succeeded",
+        startedAt,
+        endedAt: startedAt,
+        sequence: 1,
+        events: {},
+        usage: {
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+        usageKnown: true,
+        output: {
+          kind: "review",
+          decision: "rejected",
+          findings: ["missing regression"],
+          remainingGaps: ["repair the monitor"],
+        },
+      },
+    ],
+  });
+  task.task.status = "rejected";
+  task.execution.failure = "Review rejected";
+  const inspected = githubTaskSnapshot([task]).inspection.tasks[0];
+  expect(inspected?.attempts[0]).toMatchObject({
+    reviewDecision: "rejected",
+    failure: "missing regression; repair the monitor",
+  });
+  expect(inspected?.failure).toContain(
+    "missing regression; repair the monitor",
+  );
+
+  task.execution.failure = undefined;
+  task.task.status = "implementing";
+  expect(
+    githubTaskSnapshot([task]).inspection.tasks[0]?.failure,
+  ).toBeUndefined();
+});
+
+test("renders current rejected Review findings for needs_replan and suppresses superseded Reviews", async () => {
+  const remote = memoryGitHub();
+  const task = await remote.store().get(41);
+  const at = "2026-09-09T00:00:00.000Z";
+  const review = (
+    id: string,
+    decision: "accepted" | "rejected",
+    status: "succeeded" | "running" = "succeeded",
+  ) => ({
+    descriptor: {
+      attemptId: id,
+      taskId: "issue-41",
+      role: "review" as const,
+      retryIndex: 0 as const,
+      modelProfile: "terra" as const,
+      model: "test/model",
+      effort: "high" as const,
+    },
+    status,
+    startedAt: at,
+    ...(status === "succeeded"
+      ? {
+          endedAt: at,
+          output: {
+            kind: "review" as const,
+            decision,
+            findings: ["rebase finding"],
+            remainingGaps: ["repair it"],
+          },
+        }
+      : {}),
+    sequence: 1,
+    events: {},
+    usage: {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+    },
+    usageKnown: true,
+  });
+  task.execution = ExecutionRecordSchema.parse({
+    ...initialExecution(task, "main", "a".repeat(40)),
+    phase: "needs_replan",
+    attempts: [review("rejected", "rejected")],
+  });
+  task.task.status = "needs_replan";
+  const snapshot = githubTaskSnapshot([task]);
+  const board = buildTaskBoardSnapshot({
+    tasks: snapshot.tasks,
+    inspection: snapshot.inspection,
+    currentCycleId: task.task.cycleId,
+  });
+  expect(
+    renderTaskBoard(board, {
+      width: 80,
+      detailTaskId: task.task.id,
+      detailMode: "full",
+      color: false,
+    }),
+  ).toContain("rebase finding");
+  task.execution.attempts.push(review("accepted", "accepted"));
+  expect(
+    githubTaskSnapshot([task]).inspection.tasks[0]?.failure ?? "",
+  ).not.toContain("rebase finding");
+  task.execution.attempts.pop();
+  task.execution.attempts.push(review("pending", "rejected", "running"));
+  expect(
+    githubTaskSnapshot([task]).inspection.tasks[0]?.failure ?? "",
+  ).not.toContain("rebase finding");
 });
