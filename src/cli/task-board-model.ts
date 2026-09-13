@@ -21,6 +21,13 @@ export type TaskBoardActiveState = {
   retryCount?: number;
 };
 
+export type TaskBoardStage = {
+  label: string;
+  status: string;
+  tone: "muted" | "active" | "attention" | "error" | "done";
+  retryIndex?: number;
+};
+
 export type TaskBoardTask = {
   id: string;
   issueUrl?: string;
@@ -41,6 +48,7 @@ export type TaskBoardTask = {
   attempts: InspectionAttempt[];
   modelDecisions: InspectionModelDecision[];
   roles: InspectionRole[];
+  progress?: TaskBoardStage[];
   tokenTarget: number;
   tokenTotals: TokenTotals;
   retirementReason?: string | null;
@@ -94,6 +102,116 @@ function boardColumn(status: TaskStatus): TaskBoardColumn {
   return "ready";
 }
 
+/** Projects checkpoint attempts and receipts into the six read-only workflow stages. */
+function progressStages(input: {
+  attempts: InspectionAttempt[];
+  skipScout: boolean;
+  rawStatus: TaskStatus;
+  pullRequestUrl?: string;
+}): TaskBoardStage[] {
+  /** Finds the newest persisted attempt for one workflow role. */
+  const latest = (role: InspectionAttempt["role"]) =>
+    input.attempts.filter((attempt) => attempt.role === role).at(-1);
+  /** Maps one persisted role attempt to its visible workflow stage. */
+  const attemptStage = (
+    label: string,
+    attempt: InspectionAttempt | undefined,
+  ) => {
+    if (!attempt)
+      return { label, status: "Not recorded", tone: "muted" as const };
+    if (attempt.status === "running")
+      return {
+        label,
+        status: "Running",
+        tone: "active" as const,
+        retryIndex: attempt.retryIndex,
+      };
+    if (
+      attempt.status === "failed_infra" ||
+      attempt.reviewDecision === "rejected"
+    )
+      return {
+        label,
+        status: attempt.reviewDecision === "rejected" ? "Rejected" : "Failed",
+        tone: "error" as const,
+        retryIndex: attempt.retryIndex,
+      };
+    if (attempt.status === "blocked_policy")
+      return {
+        label,
+        status: "Blocked",
+        tone: "attention" as const,
+        retryIndex: attempt.retryIndex,
+      };
+    if (attempt.role === "review" && attempt.reviewDecision === undefined)
+      return {
+        label,
+        status: "Evidence unavailable",
+        tone: "muted" as const,
+        retryIndex: attempt.retryIndex,
+      };
+    return {
+      label,
+      status: attempt.reviewDecision === "accepted" ? "Accepted" : "Completed",
+      tone: "done" as const,
+      retryIndex: attempt.retryIndex,
+    };
+  };
+  const scout =
+    input.skipScout && !latest("scout")
+      ? {
+          label: "Scout",
+          status: "Skipped by approved ticket",
+          tone: "muted" as const,
+        }
+      : attemptStage("Scout", latest("scout"));
+  const implement = attemptStage("Implement", latest("implement"));
+  const review = attemptStage("Independent Review", latest("review"));
+  const hasPr = input.pullRequestUrl !== undefined;
+  return [
+    scout,
+    implement,
+    review,
+    hasPr
+      ? { label: "Publish PR", status: "Published", tone: "done" as const }
+      : input.rawStatus === "publishing"
+        ? { label: "Publish PR", status: "Publishing", tone: "active" as const }
+        : {
+            label: "Publish PR",
+            status: "Not recorded",
+            tone: "muted" as const,
+          },
+    input.rawStatus === "done"
+      ? {
+          label: "Waiting merge",
+          status: "Merge verified",
+          tone: "done" as const,
+        }
+      : hasPr || input.rawStatus === "awaiting_merge"
+        ? {
+            label: "Waiting merge",
+            status: "Awaiting merge",
+            tone: "attention" as const,
+          }
+        : {
+            label: "Waiting merge",
+            status: "Not recorded",
+            tone: "muted" as const,
+          },
+    input.rawStatus === "done"
+      ? {
+          label: "Confirm complete",
+          status: "Confirmed complete",
+          tone: "done" as const,
+        }
+      : {
+          label: "Confirm complete",
+          status: "Not confirmed",
+          tone: "muted" as const,
+        },
+  ];
+}
+
 /** Compares task board entries by priority and then task identifier. */
 function compareTasks(left: TaskBoardTask, right: TaskBoardTask): number {
   return (
@@ -145,6 +263,12 @@ export function buildTaskBoardSnapshot(
       usageIncomplete: inspected.usageIncomplete,
       modelDecisions: inspected.modelDecisions,
       roles: inspected.roles,
+      progress: progressStages({
+        attempts: inspected.attempts,
+        skipScout: task.spec.skipScout === true,
+        rawStatus: task.status,
+        pullRequestUrl: inspected.pullRequestUrl,
+      }),
       tokenTarget: inspected.tokenTarget,
       tokenTotals: inspected.actual,
       retirementReason: task.retirementReason,

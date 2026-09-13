@@ -184,7 +184,7 @@ test("refreshes serialized snapshots and supports keyboard navigation, detail mo
   expect(frame(output)).toContain("Task second");
   input.emit("data", "\u001B");
   await Bun.sleep(25);
-  expect(frame(output)).not.toContain("Task second");
+  expect(frame(output)).toContain("Task second");
   input.emit("data", "\r");
   expect(frame(output)).toContain("Task second");
   input.emit("data", "\u001B");
@@ -217,7 +217,7 @@ test("opens clicked cards as full details, toggles Done by mouse, and retains se
     .split("\n")
     .findIndex((line) => line.startsWith("Roc"));
   input.emit("data", `\u001B[<0;1;${7 + offset}M`);
-  expect(frame(output)).not.toContain("Task first");
+  expect(frame(output)).toContain("Task first");
   input.emit("data", `\u001B[<0;1;${8 + offset}M`);
   expect(frame(output)).toContain("Task second");
   input.emit("data", "\u001B");
@@ -227,7 +227,7 @@ test("opens clicked cards as full details, toggles Done by mouse, and retains se
   expect(stripVTControlCharacters(frame(output))).toContain("▌   second");
   output.columns = 120;
   output.emit("resize");
-  input.emit("data", `\u001B[<0;91;${3 + offset}M`);
+  input.emit("data", `\u001B[<0;1;${3 + offset}M`);
   expect(frame(output)).toContain("finished work");
   input.emit("data", "\u0003");
   await running;
@@ -285,6 +285,99 @@ test.each([120, 80, 40])(
     expectRestored(input, output);
   },
 );
+
+test("reveals the selected task after returning from Welcome at a narrower size", async () => {
+  const input = new Input();
+  const output = new Output();
+  output.columns = 120;
+  output.rows = 30;
+  const tasks = Array.from({ length: 20 }, (_, index) =>
+    task({ id: `return-${index + 1}` }),
+  );
+  const snapshot = {
+    ...board(),
+    tasks,
+    columns: { ready: tasks, inProgress: [], attention: [], done: [] },
+  };
+  const running = runTaskBoardSession({
+    input: input as never,
+    output: output as never,
+    read: () => snapshot,
+  });
+  try {
+    await waitFor(() => frame(output).includes("Ready · 20"));
+    input.emit("data", "j".repeat(19));
+    input.emit("data", "1");
+    output.columns = 40;
+    output.rows = 24;
+    output.emit("resize");
+    input.emit("data", "2");
+    expect(stripVTControlCharacters(frame(output))).toContain("return-20 work");
+  } finally {
+    input.emit("data", "q");
+    await running;
+  }
+});
+
+test("history keeps Done selectable while ordinary boards hide it", async () => {
+  const input = new Input();
+  const output = new Output();
+  const done = task({ id: "history-done", rawStatus: "done", column: "done" });
+  const snapshot = {
+    ...board(),
+    history: true,
+    tasks: [done],
+    columns: { ready: [], inProgress: [], attention: [], done: [done] },
+  };
+  const running = runTaskBoardSession({
+    input: input as never,
+    output: output as never,
+    read: () => snapshot,
+  });
+  try {
+    await waitFor(() => frame(output).includes("history-done"));
+    input.emit("data", "\rR");
+    await waitFor(() => frame(output).includes("Task history-done"));
+  } finally {
+    input.emit("data", "q");
+    await running;
+  }
+});
+
+test("pins selected details while scrolling a twenty-task wide list", async () => {
+  const input = new Input();
+  const output = new Output();
+  output.columns = 120;
+  output.rows = 30;
+  const tasks = Array.from({ length: 20 }, (_, index) =>
+    task({ id: `wide-${index + 1}` }),
+  );
+  const snapshot = {
+    ...board(),
+    tasks,
+    columns: { ready: tasks, inProgress: [], attention: [], done: [] },
+  };
+  const running = runTaskBoardSession({
+    input: input as never,
+    output: output as never,
+    read: () => snapshot,
+  });
+  try {
+    await waitFor(() => frame(output).includes("Ready · 20"));
+    input.emit("data", "j".repeat(19));
+    const selected = stripVTControlCharacters(frame(output));
+    expect(selected).toContain("wide-20 work");
+    expect(selected).toContain("Task wide-20");
+    input.emit("data", "\r");
+    input.emit("data", "\u001B");
+    await Bun.sleep(25);
+    expect(stripVTControlCharacters(frame(output))).toContain("wide-20 work");
+  } finally {
+    input.emit("data", "q");
+    await running;
+  }
+  expectRestored(input, output);
+});
 
 test.each([40, 80, 120])(
   "selects across populated columns and clicks scrolled cards at %i columns",
@@ -367,6 +460,8 @@ test("keeps the last valid frame on a transient read failure and retries on dema
   await waitFor(() => frame(output).includes("temporary read failure"));
   const errorFrame = frame(output);
   expect(errorFrame).toContain("STALE");
+  expect(errorFrame).toContain("Last successful read:");
+  expect(errorFrame).toContain("saved task progress retained");
   expect(stripVTControlCharacters(errorFrame)).toContain(
     "Error: temporary read failure",
   );

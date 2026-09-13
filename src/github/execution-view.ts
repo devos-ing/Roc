@@ -124,6 +124,24 @@ function acceptanceChecklist(task: NativeTask) {
   );
 }
 
+/** Returns findings only when the latest saved Review remains the current rejection. */
+function rejectedReviewFailure(task: NativeTask): string | undefined {
+  if (!["rejected", "needs_replan"].includes(task.task.status))
+    return undefined;
+  const review = task.execution?.attempts.findLast(
+    (attempt) => attempt.descriptor.role === "review",
+  );
+  if (
+    review?.output?.kind !== "review" ||
+    review.output.decision !== "rejected"
+  )
+    return undefined;
+  const reason = [...review.output.findings, ...review.output.remainingGaps]
+    .join("; ")
+    .trim();
+  return reason || "Review rejected without a recorded finding";
+}
+
 /** Adapts remote checkpoints to the existing read-only task board and token views. */
 export function githubTaskSnapshot(
   native: NativeTask[],
@@ -157,7 +175,17 @@ export function githubTaskSnapshot(
       usageKnown: attempt.usageKnown,
       ...(attempt.activity ? { activity: attempt.activity } : {}),
       ...(attempt.endedAt ? { endedAt: attempt.endedAt } : {}),
-      ...(attempt.failure ? { failure: attempt.failure } : {}),
+      ...(attempt.failure
+        ? { failure: attempt.failure }
+        : attempt.output?.kind === "review" &&
+            attempt.output.decision === "rejected"
+          ? {
+              failure:
+                [...attempt.output.findings, ...attempt.output.remainingGaps]
+                  .join("; ")
+                  .trim() || "Review rejected without a recorded finding",
+            }
+          : {}),
       ...(attempt.output?.kind === "review"
         ? { reviewDecision: attempt.output.decision }
         : {}),
@@ -171,7 +199,12 @@ export function githubTaskSnapshot(
       issueUrl: item.issue.url,
       pullRequestUrl: item.execution?.publication?.url,
       acceptanceChecklist: acceptanceChecklist(item),
-      failure: item.blockedReason ?? item.execution?.failure,
+      failure:
+        item.blockedReason ??
+        ([item.execution?.failure, rejectedReviewFailure(item)]
+          .filter(Boolean)
+          .join("\n") ||
+          undefined),
       status: item.task.status,
       timing: executionTiming(item, now),
       usageIncomplete: (item.execution?.attempts ?? []).some(

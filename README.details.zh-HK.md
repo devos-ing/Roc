@@ -282,14 +282,20 @@ flowchart TD
 ## 進度、恢復及 hooks
 
 `tui` 預設開啟 Welcome，即使尚未設定 Roc 或登入 GitHub，仍會顯示待設定／連線狀態。
-`task board` 直接開啟 Tasks；兩者只供監看，不會啟動 scheduler 或更改任務。
-按 Tab、1／2 或點擊頂部分頁切換，R 刷新。刷新失敗會保留上次資料並標示過期。
-切換分頁或縮放視窗會保留選中任務及詳情；窄視窗採用直向布局，
-PgUp／PgDn 可捲動長頁及詳情而保留頂部分頁。非 TTY 的 `task board` 仍輸出純文字快照。
+`task board` 直接開啟 Tasks；兩者只供監看，不會啟動 scheduler 或更改任務。寬螢幕的
+Tasks 左側是任務列表，右側顯示選中任務的進度詳情。按 Tab、1／2 或點擊頂部分頁切換，
+R 刷新。刷新失敗會保留上次已保存快照、上次成功讀取時間及過期／錯誤標記；讀取時間
+只是監看資料的新鮮度，不是任務活動時間。切換分頁或縮放視窗會保留選中任務及詳情；
+窄視窗使用列表和全頁詳情，PgUp／PgDn 可捲動長頁及詳情而保留頂部分頁。非 TTY 的
+`task board` 仍輸出純文字快照。
 
-`task board` 每 30 秒讀取 GitHub checkpoints，顯示狀態、attempt、模型、用量及 PR。
-按 Enter 查看詳情，Q 離開；`--all` 包含其他週期，`--history` 包含已退役 Issue。
-即時工具動作在 daemon terminal 顯示，看板不會串流每個工具事件。
+`task board` 每 30 秒讀取 GitHub checkpoints，顯示六個已保存階段（Scout、Implement、
+獨立 Review、發佈 PR、等待合併、確認完成）、依賴、驗收證據、失敗原因、Issue 及 PR。
+PR 已開啟只代表等待合併；只有已驗證的 `done` checkpoint 才是完成。缺少證據或失敗原因
+會明示未記錄。恢復指引只供診斷：在執行主機使用 `scheduler inspect` 或查看
+`.agile/runtime/agile.log`；監看器沒有恢復按鈕。按 Enter 查看詳情，Q 離開；`--all`
+包含其他週期，`--history` 包含已退役 Issue。即時工具動作在 daemon terminal 顯示，看板
+不會串流每個工具事件。
 
 `tokens` 只計算已確認用量，缺少 receipt 時標示總數不完整。
 Token ceiling 是規劃估算，不會強制中止 agent；Scout 也沒有額外 bytes 硬上限。
