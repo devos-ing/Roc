@@ -242,6 +242,95 @@ test("task cleanup --all also removes rejected, failed_infra and retired worktre
   }
 });
 
+test("shared chain cleanup retains the root worktree until every successor is eligible", async () => {
+  const f = await createFixture();
+  try {
+    const chainPath = await f.prepare("A");
+    const root = storedTask("A", "done");
+    const successor = {
+      ...storedTask("B", "awaiting_merge"),
+      spec: { ...root.spec, continues: { task: "A" } },
+    };
+    const run = await runCleanup(f.root, [root, successor], ["--all"], {
+      async readTasks() {
+        return {
+          ...githubTaskSnapshot([]),
+          tasks: [root, successor],
+          chainMembers: new Map([["A", ["A", "B"]]]),
+          incompleteChainWorktrees: new Set(),
+        };
+      },
+    });
+    expect(run.code).toBe(0);
+    expect(run.plan?.removed).toEqual([]);
+    expect(run.plan?.kept).toContainEqual({
+      task: "A",
+      path: chainPath,
+      reason: "Shared feature chain retains worktree: task B is awaiting_merge",
+    });
+    expect(await exists(chainPath)).toBe(true);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("cleanup fails closed when authoritative chain membership is incomplete", async () => {
+  const f = await createFixture();
+  try {
+    const path = await f.prepare("issue-41");
+    const task = storedTask("issue-41", "done");
+    const run = await runCleanup(f.root, [task], [], {
+      async readTasks() {
+        return {
+          ...githubTaskSnapshot([]),
+          tasks: [task],
+          incompleteChainWorktrees: new Set(["issue-41"]),
+        };
+      },
+    });
+    expect(run.plan?.removed).toEqual([]);
+    expect(run.plan?.kept).toContainEqual({
+      task: "issue-41",
+      path,
+      reason:
+        "Shared feature chain membership is incomplete; worktree is retained",
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("incomplete chain evidence retains only its related workspace", async () => {
+  const f = await createFixture();
+  try {
+    const incompletePath = await f.prepare("issue-41");
+    const unrelatedPath = await f.prepare("issue-99");
+    const incomplete = storedTask("issue-41", "done");
+    const unrelated = storedTask("issue-99", "done");
+    const run = await runCleanup(f.root, [incomplete, unrelated], [], {
+      async readTasks() {
+        return {
+          ...githubTaskSnapshot([]),
+          tasks: [incomplete, unrelated],
+          incompleteChainWorktrees: new Set(["issue-41"]),
+        };
+      },
+    });
+    expect(run.plan?.removed).toContainEqual({
+      task: "issue-99",
+      path: unrelatedPath,
+    });
+    expect(run.plan?.kept).toContainEqual({
+      task: "issue-41",
+      path: incompletePath,
+      reason:
+        "Shared feature chain membership is incomplete; worktree is retained",
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("task cleanup skips dirty worktrees and keeps unknown tasks and non-worktree entries", async () => {
   const f = await createFixture();
   try {

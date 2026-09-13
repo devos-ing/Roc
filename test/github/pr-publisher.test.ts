@@ -133,6 +133,59 @@ test("reconciles an existing merged pull request without a push", async () => {
   );
 });
 
+test("a successor never creates or accepts a pull request when the root PR is missing or mismatched", async () => {
+  for (const existing of [undefined, 8]) {
+    const commands: string[][] = [];
+    const publisher = new GitHubPullRequestPublisher(
+      "main",
+      branches([]),
+      runner(commands, [
+        { stdout: JSON.stringify({ nameWithOwner: "agile-agents/roc" }) },
+        {
+          stdout: JSON.stringify(
+            existing === undefined
+              ? []
+              : [
+                  {
+                    number: existing,
+                    url: `https://example.test/pull/${existing}`,
+                    state: "OPEN",
+                    headRepositoryOwner: { login: "agile-agents" },
+                  },
+                ],
+          ),
+        },
+      ]),
+    );
+    await expect(
+      publisher.publish({
+        ...input,
+        chain: {
+          rootTitle: "Feature root",
+          expectedPullRequestNumber: 7,
+          segments: [
+            {
+              taskId: "A",
+              issueNumber: 41,
+              commitSha: "a".repeat(40),
+              reviewed: true,
+            },
+            {
+              taskId: "B",
+              issueNumber: 42,
+              commitSha: input.publication.commitSha,
+              reviewed: true,
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow("#7 is missing or mismatched");
+    expect(commands).toHaveLength(2);
+    expect(commands.flat()).not.toContain("push");
+    expect(commands.flat()).not.toContain("create");
+  }
+});
+
 test("create and edit bodies reference only canonical managed Issue IDs without closing keywords", async () => {
   for (const id of [
     "issue-41",
@@ -208,6 +261,66 @@ test("updates an open pull request instead of creating a second one", async () =
     expect.stringContaining("## Validation"),
   ]);
   expect(commands.flat()).not.toContain("create");
+});
+
+test("keeps the root title and cumulative reviewed segment evidence on a shared chain PR", async () => {
+  const commands: string[][] = [];
+  const publisher = new GitHubPullRequestPublisher(
+    "main",
+    branches([]),
+    runner(commands, [
+      { stdout: JSON.stringify({ nameWithOwner: "agile-agents/roc" }) },
+      {
+        stdout: JSON.stringify([
+          {
+            number: 8,
+            url: "https://example.test/pull/8",
+            state: "OPEN",
+            headRepositoryOwner: { login: "agile-agents" },
+          },
+        ]),
+      },
+      {},
+      {},
+    ]),
+  );
+  await publisher.publish({
+    ...input,
+    task: { ...task, id: "B", title: "Second segment" },
+    publication: { ...input.publication, taskId: "B" },
+    chain: {
+      rootTitle: "Feature root",
+      segments: [
+        {
+          taskId: "A",
+          issueNumber: 41,
+          commitSha: "a".repeat(40),
+          reviewed: true,
+        },
+        {
+          taskId: "B",
+          issueNumber: 42,
+          commitSha: "b".repeat(40),
+          reviewed: true,
+        },
+        {
+          taskId: "C",
+          issueNumber: 43,
+          reviewed: false,
+        },
+      ],
+    },
+  });
+  const edit = commands.at(-1)!;
+  expect(edit[edit.indexOf("--title") + 1]).toBe("Feature root");
+  const body = edit[edit.indexOf("--body") + 1]!;
+  expect(body).toContain(
+    "A (#41): `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` · Review accepted",
+  );
+  expect(body).toContain(
+    "B (#42): `bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb` · Review accepted",
+  );
+  expect(body).toContain("C (#43): commit pending · Review pending");
 });
 
 test("renders only complete current Review evidence as checked acceptance rows", async () => {

@@ -7,7 +7,10 @@ import type { StoredTask } from "../domain/schemas";
 import type { ImplementOutput, ReviewOutput } from "../harness/contracts";
 import { AgileError } from "../runtime/errors";
 import { gitPathResolutionEnvironment } from "../workspace/git-environment";
-import type { TaskBranchManager } from "../workspace/task-branch";
+import {
+  type TaskBranchManager,
+  taskBranchName,
+} from "../workspace/task-branch";
 
 export type TaskPublicationRecord = {
   taskId: string;
@@ -49,6 +52,16 @@ export type PublishTaskInput = {
   acceptance?: {
     review: ReviewOutput;
     binding: AcceptanceChecklistBinding;
+  };
+  chain?: {
+    rootTitle: string;
+    expectedPullRequestNumber?: number;
+    segments: Array<{
+      taskId: string;
+      issueNumber: number;
+      commitSha?: string;
+      reviewed: boolean;
+    }>;
   };
 };
 
@@ -314,6 +327,7 @@ function checklistLines(input: PublishTaskInput): string[] {
 
 /** Renders durable implementation and bound Review evidence as the pull-request body. */
 function pullRequestBody(input: PublishTaskInput): string {
+  const chain = input.chain;
   const lines = [
     "## Task",
     input.task.title,
@@ -334,6 +348,16 @@ function pullRequestBody(input: PublishTaskInput): string {
       ? ["- None reported"]
       : input.implementation.limitations.map((item) => `- ${item}`)),
     "",
+    ...(chain
+      ? [
+          "## Shared feature chain",
+          ...chain.segments.map(
+            (segment) =>
+              `- ${segment.taskId} (#${segment.issueNumber}): ${segment.commitSha ? `\`${segment.commitSha}\`` : "commit pending"} · Review ${segment.reviewed ? "accepted" : "pending"}`,
+          ),
+          "",
+        ]
+      : []),
     ...checklistLines(input),
   ];
   return lines.join("\n");
@@ -404,6 +428,9 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
     const workspace = await this.branches.prepare(
       input.task.id,
       input.task.baseCommit,
+      input.publication.branch !== taskBranchName(input.task.id)
+        ? input.publication.branch
+        : undefined,
     );
     if (workspace.branch !== input.publication.branch) {
       throw new GitHubPublicationError(
@@ -424,6 +451,14 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
       baseBranch,
       owner,
     );
+    if (
+      input.chain?.expectedPullRequestNumber !== undefined &&
+      existing?.number !== input.chain.expectedPullRequestNumber
+    ) {
+      throw new GitHubPublicationError(
+        `Shared chain pull request #${input.chain.expectedPullRequestNumber} is missing or mismatched for ${workspace.branch}`,
+      );
+    }
     if (existing?.state === "MERGED") return existing;
     if (existing?.state === "CLOSED") {
       throw new GitHubPublicationError(
@@ -452,7 +487,7 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
           "edit",
           String(existing.number),
           "--title",
-          input.task.title,
+          input.chain?.rootTitle ?? input.task.title,
           "--body",
           pullRequestBody(input),
         ],
@@ -472,7 +507,7 @@ export class GitHubPullRequestPublisher implements TaskPublisher {
         "--head",
         workspace.branch,
         "--title",
-        input.task.title,
+        input.chain?.rootTitle ?? input.task.title,
         "--body",
         pullRequestBody(input),
       ],

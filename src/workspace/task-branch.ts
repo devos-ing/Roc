@@ -22,7 +22,16 @@ export type TaskBranchRefresh = {
 export type TaskBranchManager = {
   /** Rebases a retained trusted patch and lease-pushes only its owned task branch. */
   refresh(taskId: string, input: TaskBranchRefresh): Promise<string>;
-  prepare(taskId: string, baseCommit?: string): Promise<TaskWorkspace>;
+  /**
+   * Creates or validates the retained worktree for the task. The optional
+   * branch is a chain override: the ticket continues work on its predecessor's
+   * branch instead of its own deterministic task branch.
+   */
+  prepare(
+    taskId: string,
+    baseCommit?: string,
+    branch?: string,
+  ): Promise<TaskWorkspace>;
   /** Restores an approved source commit as uncommitted task work when the branch is untouched. */
   restoreChanges(
     taskId: string,
@@ -151,7 +160,12 @@ async function registeredWorktrees(git: SimpleGit): Promise<Set<string>> {
 export async function cleanupTaskWorktrees(
   repoPath: string,
   taskStatuses: ReadonlyMap<string, TaskStatus>,
-  options: { dryRun?: boolean; all?: boolean } = {},
+  options: {
+    dryRun?: boolean;
+    all?: boolean;
+    chainMembers?: ReadonlyMap<string, readonly string[]>;
+    incompleteChainWorktrees?: ReadonlySet<string>;
+  } = {},
 ): Promise<TaskWorktreeCleanupResult> {
   const canonicalRepo = await realpath(resolve(repoPath));
   const sourceGit = gitAt(canonicalRepo);
@@ -182,23 +196,43 @@ export async function cleanupTaskWorktrees(
       keep("Entry is not a task worktree directory");
       continue;
     }
+    if (options.incompleteChainWorktrees?.has(name)) {
+      keep(
+        "Shared feature chain membership is incomplete; worktree is retained",
+      );
+      continue;
+    }
     if (!worktrees.has(path)) {
       keep("Directory is not a registered Git worktree of this checkout");
       continue;
     }
-    const status = taskStatuses.get(name);
-    if (status === undefined) {
+    const members = options.chainMembers?.get(name) ?? [name];
+    const statuses = members.map((member) => taskStatuses.get(member));
+    if (statuses.some((status) => status === undefined)) {
       keep("Task has no GitHub checkpoint in this repository");
       continue;
     }
-    const removable =
-      status === "done" ||
-      (options.all === true && OTHER_TERMINAL_TASK_STATUSES.includes(status));
+    const unfinishedIndex = statuses.findIndex((status) => {
+      return (
+        status !== "done" &&
+        (status === undefined ||
+          !(
+            options.all === true &&
+            OTHER_TERMINAL_TASK_STATUSES.includes(status)
+          ))
+      );
+    });
+    const removable = unfinishedIndex < 0;
     if (!removable) {
+      const unfinished = members[unfinishedIndex] ?? "unknown";
+      const status = statuses[unfinishedIndex];
       keep(
-        OTHER_TERMINAL_TASK_STATUSES.includes(status)
-          ? `Task status is ${status}; rerun with --all to remove its worktree`
-          : `Task status is ${status}; worktrees of unfinished tasks are retained`,
+        members.length > 1
+          ? `Shared feature chain retains worktree: task ${unfinished} is ${status}`
+          : status !== undefined &&
+              OTHER_TERMINAL_TASK_STATUSES.includes(status)
+            ? `Task status is ${status}; rerun with --all to remove its worktree`
+            : `Task status is ${status}; worktrees of unfinished tasks are retained`,
       );
       continue;
     }
@@ -303,7 +337,7 @@ function finalMessage(taskId: string): string {
   return `agile(${taskId}): implement ticket`;
 }
 
-/** Creates one native Git worktree per task without sharing working directories. */
+/** Creates native Git worktrees, reusing an explicitly validated root branch for continuation members. */
 export async function createTaskBranchManager(
   repoPath: string,
   baseRef: string,
@@ -326,6 +360,7 @@ export async function createTaskBranchManager(
   function manager(
     taskId: string,
     persistedBase?: string,
+    branchOverride?: string,
   ): Promise<TaskBranchManager> {
     const safeId = safeTaskPathComponent(taskId);
     const base = persistedBase ?? defaultBase;
@@ -342,6 +377,7 @@ export async function createTaskBranchManager(
       root,
       safeId,
       base,
+      branchOverride,
     );
     managers.set(safeId, { base, value });
     return value;
@@ -363,8 +399,8 @@ export async function createTaskBranchManager(
       return head;
     },
     /** Creates or validates the retained worktree for the task. */
-    async prepare(id, base) {
-      return (await manager(id, base)).prepare(id, base);
+    async prepare(id, base, branch) {
+      return (await manager(id, base, branch)).prepare(id, base);
     },
     /** Restores only the approved source changes into this task's worktree. */
     async restoreChanges(id, source, base) {
@@ -389,16 +425,20 @@ export async function createTaskBranchManager(
   };
 }
 
-/** Attaches a task branch to its own directory and verifies shared Git ownership. */
+/** Attaches a task to its own branch directory or a validated continuation root directory. */
 async function createWorktreeManager(
   canonicalRepo: string,
   sourceGit: SimpleGit,
   root: string,
   taskId: string,
   baseCommit: string,
+  branchOverride?: string,
 ): Promise<TaskBranchManager> {
-  const checkoutPath = resolve(root, taskId);
-  const branch = taskBranchName(taskId);
+  const worktreeDir = branchOverride
+    ? branchOverride.replace(/^agile\//, "")
+    : taskId;
+  const checkoutPath = resolve(root, worktreeDir);
+  const branch = branchOverride ?? taskBranchName(taskId);
   const kind = await pathKind(checkoutPath);
   if (kind === "other")
     throw new Error("Task worktree path is not a real directory");
@@ -452,7 +492,7 @@ async function createWorktreeManager(
     return {
       taskId: safeTaskId,
       path: checkoutPath,
-      branch: taskBranchName(safeTaskId),
+      branch,
       baseCommit: taskBaseCommit,
     };
   }

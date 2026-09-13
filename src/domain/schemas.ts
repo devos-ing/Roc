@@ -42,6 +42,14 @@ export const TaskHookSchema = z
 
 export const TaskHookPhaseSchema = z.enum(["prehook", "posthook"]);
 
+/** Locates a predecessor by its immutable task ID within the same plan. */
+export const ContinuesSchema = z.union([
+  z.object({ task: NonEmpty }).strict(),
+  // Keep already-published trial envelopes readable so recovery can retain their
+  // work and direct an explicit replan instead of silently changing their hash.
+  z.object({ issue: z.number().int().positive() }).strict(),
+]);
+
 export const TicketSpecSchema = z
   .object({
     problem: NonEmpty,
@@ -51,6 +59,7 @@ export const TicketSpecSchema = z
     acceptanceCriteria: z.array(NonEmpty).min(1),
     validation: z.array(NonEmpty).min(1),
     dependencies: z.array(NonEmpty),
+    continues: ContinuesSchema.optional(),
     risk: z.enum(["low", "medium", "high"]),
     skipScout: z.boolean().optional(),
     contextCandidates: z.array(ContextRefSchema),
@@ -168,6 +177,7 @@ export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 export type TicketSpec = z.infer<typeof TicketSpecSchema>;
 export type TaskHook = z.infer<typeof TaskHookSchema>;
 export type TaskHookPhase = z.infer<typeof TaskHookPhaseSchema>;
+export type Continues = z.infer<typeof ContinuesSchema>;
 export type AgileCyclePlan = z.infer<typeof AgileCyclePlanSchema>;
 export type TaskCreate = z.infer<typeof TaskCreateSchema>;
 export type BacklogManifest = z.infer<typeof BacklogManifestSchema>;

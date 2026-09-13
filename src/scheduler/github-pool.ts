@@ -119,7 +119,7 @@ export class GitHubTaskPool {
               !selected.has(candidate.task.id) &&
               !this.workers.has(candidate.task.id) &&
               [...this.workers.values()].every((worker) =>
-                canRunTogether(worker.task, candidate),
+                canRunTogether(worker.task, candidate, tasks),
               ),
           );
           let task: NativeTask | undefined;

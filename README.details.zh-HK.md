@@ -304,6 +304,15 @@ Daemon 先驗證完整計劃、依賴關係及精確批准。依賴任務的 PR 
 且 head 與保存的 implementation commit 一致。Roc fetch 目標 branch，核對
 merge commit 後才固定新任務的 base。
 
+同一份計劃中的線性功能鏈以不可變的 local task ID 宣告 `continues`
+（`{ "task": "A" }`），一般已合併前置條件仍放在 `dependencies`。Roc
+在任何 GitHub 寫入前驗證引用、單一 successor 線性限制與完整圖。鏈共用 root
+worktree、branch 和累積 PR，每次只執行一張 ticket，並要求 predecessor 對完全相同
+spec、base、head 的獨立 Review 已接受。PR 保留每張 Issue、segment SHA 和 Review
+結果，base 一直是設定的 target branch。中斷或無法驗證時保留工作並要求重新規劃；
+cleanup 會等到所有成員都符合條件且共用 worktree 乾淨。舊的
+`{ "issue": N }` continues 記錄只用來顯示 replan，不會被改寫或執行。
+
 預設由 Scout 閱讀程式，Implement 修改，harness 建立單一可信 commit，再由獨立 Pi session
 Review。接受後執行可信 posthook，再發佈 PR。開啟 PR 是 `awaiting_merge`，
 確認合併才是 `done`。拒絕的任務保留 `rejected`，由規劃流程處理後續。

@@ -52,6 +52,8 @@ function renderAcceptanceChecklist(
 async function removeTaskWorktrees(
   repoPath: string,
   taskStatuses: ReadonlyMap<string, TaskStatus>,
+  chainMembers: ReadonlyMap<string, readonly string[]>,
+  incompleteChainWorktrees: ReadonlySet<string>,
   all: boolean,
 ): Promise<TaskWorktreeCleanupResult> {
   const ownership = await acquireCheckoutOwnership(repoPath, randomUUID());
@@ -59,6 +61,8 @@ async function removeTaskWorktrees(
     return await cleanupTaskWorktrees(repoPath, taskStatuses, {
       dryRun: false,
       all,
+      chainMembers,
+      incompleteChainWorktrees,
     });
   } finally {
     await ownership.release();
@@ -212,16 +216,22 @@ export function registerTaskCommands(
         const taskStatuses = new Map(
           snapshot.tasks.map((task) => [task.id, task.status] as const),
         );
+        const chainMembers = snapshot.chainMembers;
+        const incompleteChainWorktrees = snapshot.incompleteChainWorktrees;
         const result =
           options.dryRun === true
             ? // Dry-run stays strictly read-only and never touches the guard.
               await cleanupTaskWorktrees(root, taskStatuses, {
                 dryRun: true,
                 all: options.all === true,
+                chainMembers,
+                incompleteChainWorktrees,
               })
             : await removeTaskWorktrees(
                 root,
                 taskStatuses,
+                chainMembers,
+                incompleteChainWorktrees,
                 options.all === true,
               );
         context.io.out(

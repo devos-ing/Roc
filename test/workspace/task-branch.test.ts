@@ -432,6 +432,22 @@ test("requires Review to inspect the exact clean implementation commit", async (
   }
 });
 
+test("continuation members resolve the same native worktree and branch", async () => {
+  const root = await createRepository();
+  try {
+    const manager = await createTaskBranchManager(root, "HEAD");
+    const first = await manager.prepare("A");
+    const second = await manager.prepare("B", first.baseCommit, first.branch);
+    const third = await manager.prepare("C", second.baseCommit, second.branch);
+    expect(second.path).toBe(first.path);
+    expect(third.path).toBe(first.path);
+    expect(second.branch).toBe(first.branch);
+    expect(third.branch).toBe(first.branch);
+  } finally {
+    await removeRepository(root);
+  }
+});
+
 test("rejects reuse of a task branch with a different base identity", async () => {
   const root = await createRepository();
   try {
