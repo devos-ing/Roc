@@ -144,6 +144,28 @@ export class GitHubTaskRunner {
           (task.execution?.phase === "reviewing" &&
             task.execution.refreshes?.length))
       ) {
+        const chainTasks = await this.chainDetectionTasks(signal);
+        const unstartedSuccessor = chainTasks?.some(
+          (candidate) =>
+            candidate.task.spec.continues &&
+            "task" in candidate.task.spec.continues &&
+            candidate.envelope.planId === task.envelope.planId &&
+            candidate.task.spec.continues.task === task.envelope.task.id &&
+            candidate.approved &&
+            !candidate.blockedReason &&
+            !candidate.execution,
+        );
+        if (unstartedSuccessor && task.execution?.publication?.number) {
+          try {
+            const pr = await this.readPr(
+              task.execution.publication.number,
+              signal,
+            );
+            if (pr.state === "OPEN") continue;
+          } catch {
+            // Reconcile through the normal wait path when remote merge state is unreadable.
+          }
+        }
         await this.coordinate(task, signal);
         continue;
       }
@@ -206,38 +228,80 @@ export class GitHubTaskRunner {
         task = fresh;
         const continues = task.task.spec.continues;
         const chain = continues
-          ? await this.chainBase(task, tasks, signal)
+          ? await this.chainBase(task, plan.tasks, signal)
           : undefined;
         if (chain?.kind === "dead") continue;
         if (continues && chain?.kind !== "ready") continue;
+        if (
+          chain?.kind === "ready" &&
+          !(await this.chainDependencies(task, plan.tasks, chain, signal))
+        )
+          continue;
         const base =
           chain?.kind === "ready"
             ? chain.base
             : await this.dependencyBase(task, plan.tasks, signal);
         if (!base) continue;
+        if (chain?.kind === "ready") {
+          const workspace = await this.input.branches.prepare(
+            task.task.id,
+            chain.base,
+            chain.baseBranch,
+          );
+          const [status, head] = await Promise.all([
+            this.input.branches.status(task.task.id, chain.base),
+            this.input.command.run({
+              command: ["git", "rev-parse", "HEAD"],
+              cwd: workspace.path,
+              signal,
+            }),
+          ]);
+          if (
+            status !== "" ||
+            head.exitCode !== 0 ||
+            head.stdout.trim() !== chain.base
+          ) {
+            const record = initialExecution(
+              task,
+              chain.baseBranch,
+              chain.base,
+              this.now(),
+            );
+            record.phase = "needs_replan";
+            record.failure =
+              "Shared chain workspace is dirty or no longer at the trusted predecessor commit";
+            await this.input.store.save(task, record, signal);
+            continue;
+          }
+        }
         const confirmed = await this.input.store.freshPlan(task, signal);
         if (confirmed.version !== plan.version) {
           this.admissionChanged = true;
           return undefined;
         }
-        if (chain?.kind === "ready" && continues) {
+        if (chain?.kind === "ready" && continues && "task" in continues) {
           // The saved claim must still rest on the predecessor evidence chainBase observed.
           let predecessor: NativeTask | undefined;
           try {
-            predecessor = await this.input.store.get(continues.issue, signal);
+            predecessor = await this.input.store.get(
+              chain.observed.issueNumber,
+              signal,
+            );
           } catch {
             predecessor = undefined;
           }
           const evidence = predecessor?.execution?.publication;
           if (
             !predecessor ||
+            predecessor.envelope.planId !== task.envelope.planId ||
+            predecessor.envelope.task.id !== chain.observed.taskId ||
             predecessor.execution?.phase !== chain.observed.phase ||
             predecessor.issue.state !== chain.observed.issueState ||
             evidence?.branch !== chain.observed.branch ||
             evidence?.commitSha !== chain.observed.commitSha
           ) {
             this.input.diagnostic?.(
-              `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} changed while claiming; selection restarts`,
+              `Issue #${task.issue.number}: chain predecessor task ${continues.task} changed while claiming; selection restarts`,
             );
             this.admissionChanged = true;
             return undefined;
@@ -424,7 +488,106 @@ export class GitHubTaskRunner {
     return this.input.now?.() ?? new Date().toISOString();
   }
 
-  /** Resolves the frozen branch segment of the declared chain predecessor, or explains why the chain is blocked. */
+  /** Returns the validated root-to-task lineage for one same-plan local continuation chain. */
+  private chainLineage(
+    task: NativeTask,
+    tasks: readonly NativeTask[],
+  ): NativeTask[] | undefined {
+    const byId = new Map(
+      tasks
+        .filter(
+          (candidate) => candidate.envelope.planId === task.envelope.planId,
+        )
+        .map((candidate) => [candidate.envelope.task.id, candidate]),
+    );
+    const lineage: NativeTask[] = [];
+    const seen = new Set<string>();
+    let current: NativeTask | undefined = task;
+    while (current) {
+      const id = current.envelope.task.id;
+      if (seen.has(id)) return undefined;
+      seen.add(id);
+      lineage.unshift(current);
+      const continues = current.envelope.task.spec.continues;
+      if (!continues) return lineage;
+      if (!("task" in continues)) return undefined;
+      current = byId.get(continues.task);
+    }
+    return undefined;
+  }
+
+  /** Returns every ordered member of the validated linear continuation chain containing a task. */
+  private chainMembers(
+    task: NativeTask,
+    tasks: readonly NativeTask[],
+  ): NativeTask[] | undefined {
+    const lineage = this.chainLineage(task, tasks);
+    const root = lineage?.[0];
+    if (!root) return undefined;
+    const successors = new Map<string, NativeTask>();
+    for (const candidate of tasks) {
+      if (candidate.envelope.planId !== task.envelope.planId) continue;
+      const continues = candidate.envelope.task.spec.continues;
+      if (!continues) continue;
+      if (!("task" in continues) || successors.has(continues.task))
+        return undefined;
+      successors.set(continues.task, candidate);
+    }
+    const chain: NativeTask[] = [];
+    const seen = new Set<string>();
+    let current: NativeTask | undefined = root;
+    while (current) {
+      const id = current.envelope.task.id;
+      if (seen.has(id)) return undefined;
+      seen.add(id);
+      chain.push(current);
+      current = successors.get(id);
+    }
+    return chain.some(
+      (candidate) => candidate.envelope.task.id === task.envelope.task.id,
+    )
+      ? chain
+      : undefined;
+  }
+
+  /** Persists a confirmed continuation conflict while retaining its shared workspace for replan. */
+  private async markChainReplan(
+    task: NativeTask,
+    baseBranch: string,
+    baseCommit: string,
+    failure: string,
+    signal: AbortSignal,
+  ): Promise<{ kind: "dead" }> {
+    const record = initialExecution(task, baseBranch, baseCommit, this.now());
+    record.phase = "needs_replan";
+    record.failure = failure;
+    await this.input.store.save(task, record, signal);
+    this.input.diagnostic?.(`Issue #${task.issue.number}: ${failure}`);
+    return { kind: "dead" };
+  }
+
+  /** Resolves a real retained segment or fetched target commit for a replan checkpoint. */
+  private async chainFallbackBase(
+    primary?: ExecutionRecord,
+    secondary?: ExecutionRecord,
+  ): Promise<string> {
+    const recorded =
+      primary?.publication?.commitSha ??
+      primary?.baseCommit ??
+      secondary?.publication?.commitSha ??
+      secondary?.baseCommit;
+    if (recorded) return recorded;
+    return (
+      await this.command([
+        "git",
+        "rev-parse",
+        "--verify",
+        `refs/remotes/origin/${this.input.baseBranch}^{commit}`,
+      ])
+    ).trim();
+  }
+
+  /** Resolves the trusted local predecessor segment, or preserves the chain while it waits. */
   private async chainBase(
     task: NativeTask,
     tasks: NativeTask[],
@@ -435,6 +598,8 @@ export class GitHubTaskRunner {
         base: string;
         baseBranch: string;
         observed: {
+          issueNumber: number;
+          taskId: string;
           phase: ExecutionRecord["phase"];
           issueState: string;
           branch: string;
@@ -446,15 +611,48 @@ export class GitHubTaskRunner {
   > {
     const continues = task.task.spec.continues;
     if (!continues) return { kind: "blocked" };
+    if (!("task" in continues)) {
+      this.input.diagnostic?.(
+        `Issue #${task.issue.number}: legacy continues.issue requires an explicit replan`,
+      );
+      return { kind: "dead" };
+    }
+    const lineage = this.chainLineage(task, tasks);
+    const plannedPredecessor = lineage?.at(-2);
+    const plannedRoot = lineage?.[0];
+    if (!plannedPredecessor) {
+      this.input.diagnostic?.(
+        `Issue #${task.issue.number}: chain predecessor task ${continues.task} not found`,
+      );
+      return { kind: "blocked" };
+    }
     // The listing snapshot may predate the predecessor's latest transition; only a fresh read may authorize a claim.
     let predecessor: NativeTask;
     try {
-      predecessor = await this.input.store.get(continues.issue, signal);
+      predecessor = await this.input.store.get(
+        plannedPredecessor.issue.number,
+        signal,
+      );
     } catch {
       this.input.diagnostic?.(
-        `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} not found`,
+        `Issue #${task.issue.number}: chain predecessor task ${continues.task} not found`,
       );
       return { kind: "blocked" };
+    }
+    if (
+      predecessor.envelope.planId !== task.envelope.planId ||
+      predecessor.envelope.task.id !== continues.task
+    ) {
+      return this.markChainReplan(
+        task,
+        predecessor.execution?.publication?.branch ?? this.input.baseBranch,
+        await this.chainFallbackBase(
+          predecessor.execution,
+          plannedPredecessor.execution,
+        ),
+        "Chain predecessor identity changed; retain work and replan the chain",
+        signal,
+      );
     }
     const predecessorRecord = predecessor.execution;
     const publication = predecessorRecord?.publication;
@@ -463,43 +661,116 @@ export class GitHubTaskRunner {
       predecessor.issue.state === "CLOSED"
     ) {
       // A merged or closed predecessor can never expose a claimable segment; persist the terminal state.
-      const record = initialExecution(
-        task,
-        publication?.branch ?? this.input.baseBranch,
+      const baseCommit =
         publication?.commitSha ??
-          (
-            await this.command([
-              "git",
-              "rev-parse",
-              "--verify",
-              `refs/remotes/origin/${this.input.baseBranch}^{commit}`,
-            ])
-          ).trim(),
+        predecessorRecord?.baseCommit ??
+        (
+          await this.command([
+            "git",
+            "rev-parse",
+            "--verify",
+            `refs/remotes/origin/${this.input.baseBranch}^{commit}`,
+          ])
+        ).trim();
+      return this.markChainReplan(
+        task,
+        publication?.branch ??
+          predecessorRecord?.baseBranch ??
+          this.input.baseBranch,
+        baseCommit,
+        "Chain predecessor already merged or closed; retain work and replan the chain",
+        signal,
       );
-      record.phase = "needs_replan";
-      record.failure =
-        "Chain predecessor already merged or closed; remove continues or rebase onto the target";
-      await this.input.store.save(task, record, signal);
-      this.input.diagnostic?.(
-        `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} is already merged or closed; marked needs_replan`,
-      );
-      return { kind: "dead" };
     }
     const predecessorPhase = predecessorRecord?.phase;
     if (
-      predecessorPhase !== "awaiting_merge" ||
-      !publication?.branch ||
-      !publication.commitSha
+      !predecessor.approved ||
+      predecessor.blockedReason ||
+      ["needs_input", "needs_replan", "rejected", "retired"].includes(
+        predecessorPhase ?? "needs_input",
+      )
     ) {
+      return this.markChainReplan(
+        task,
+        publication?.branch ??
+          predecessorRecord?.baseBranch ??
+          this.input.baseBranch,
+        await this.chainFallbackBase(
+          predecessorRecord,
+          plannedPredecessor.execution,
+        ),
+        `Chain predecessor task ${continues.task} lost trusted authority; retain work and replan the chain`,
+        signal,
+      );
+    }
+    if (predecessorPhase !== "awaiting_merge") {
       this.input.diagnostic?.(
-        `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} has no frozen branch segment yet`,
+        `Issue #${task.issue.number}: chain predecessor task ${continues.task} has not reached an independently reviewed segment yet`,
       );
       return { kind: "blocked" };
     }
+    if (
+      !predecessorRecord ||
+      !publication?.branch ||
+      !publication.commitSha ||
+      !publication.number ||
+      !this.hasMergeReview(predecessorRecord)
+    )
+      return this.markChainReplan(
+        task,
+        publication?.branch ??
+          predecessorRecord?.baseBranch ??
+          this.input.baseBranch,
+        publication?.commitSha ??
+          (await this.chainFallbackBase(
+            predecessorRecord,
+            plannedPredecessor.execution,
+          )),
+        `Chain predecessor task ${continues.task} has corrupt or mismatched Review publication evidence; retain work and replan the chain`,
+        signal,
+      );
+    if (!plannedRoot)
+      return this.markChainReplan(
+        task,
+        publication.branch,
+        publication.commitSha,
+        "Continuation root identity is unavailable; retain work and replan the chain",
+        signal,
+      );
+    let root = predecessor;
+    if (plannedRoot.issue.number !== predecessor.issue.number) {
+      try {
+        root = await this.input.store.get(plannedRoot.issue.number, signal);
+      } catch {
+        return { kind: "blocked" };
+      }
+    }
+    const rootRecord = root.execution;
+    const rootPublication = rootRecord?.publication;
+    if (
+      root.envelope.planId !== task.envelope.planId ||
+      root.envelope.task.id !== plannedRoot.envelope.task.id ||
+      !root.approved ||
+      root.blockedReason ||
+      rootRecord?.baseBranch !== this.input.baseBranch ||
+      (rootRecord !== undefined &&
+        !this.publicationBranchOk(root, rootRecord)) ||
+      rootPublication?.branch !== publication.branch ||
+      rootPublication.number !== publication.number
+    )
+      return this.markChainReplan(
+        task,
+        publication.branch,
+        publication.commitSha,
+        "Continuation root branch, target, or pull request identity changed; retain work and replan the chain",
+        signal,
+      );
     // Succession must stay linear: sibling successors share one predecessor worktree and would overwrite each other's segments.
     const successor = tasks.find(
       (candidate) =>
-        candidate.task.spec.continues?.issue === continues.issue &&
+        candidate.task.spec.continues !== undefined &&
+        "task" in candidate.task.spec.continues &&
+        candidate.task.spec.continues.task === continues.task &&
         candidate.task.id !== task.task.id &&
         candidate.execution &&
         !["done", "rejected", "needs_replan"].includes(
@@ -507,24 +778,21 @@ export class GitHubTaskRunner {
         ),
     );
     if (successor) {
-      const record = initialExecution(
+      return this.markChainReplan(
         task,
         publication.branch,
         publication.commitSha,
+        `Chain predecessor task ${continues.task} already continued by issue #${successor.issue.number}; retain work and replan against the latest segment`,
+        signal,
       );
-      record.phase = "needs_replan";
-      record.failure = `Chain predecessor issue #${continues.issue} already continued by issue #${successor.issue.number}; point continues at the latest segment or rebase`;
-      await this.input.store.save(task, record, signal);
-      this.input.diagnostic?.(
-        `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} is already continued by issue #${successor.issue.number}; marked needs_replan`,
-      );
-      return { kind: "dead" };
     }
     return {
       kind: "ready",
       base: publication.commitSha,
       baseBranch: publication.branch,
       observed: {
+        issueNumber: predecessor.issue.number,
+        taskId: predecessor.envelope.task.id,
         phase: predecessorPhase,
         issueState: predecessor.issue.state,
         branch: publication.branch,
@@ -548,22 +816,65 @@ export class GitHubTaskRunner {
       : record.publication?.branch === taskBranchName(task.task.id);
   }
 
+  /** Revalidates the chain root's frozen branch, pull request, and configured merge target. */
+  private async chainIdentity(
+    task: NativeTask,
+    record: ExecutionRecord,
+    signal: AbortSignal,
+  ): Promise<"ready" | "waiting" | "conflict"> {
+    if (!task.task.spec.continues) return "ready";
+    let tasks: NativeTask[];
+    try {
+      tasks = (await this.input.store.freshPlan(task, signal)).tasks;
+    } catch {
+      return "waiting";
+    }
+    const lineage = this.chainLineage(
+      tasks.find((candidate) => candidate.issue.number === task.issue.number) ??
+        task,
+      tasks,
+    );
+    const root = lineage?.[0];
+    const rootRecord = root?.execution;
+    const rootPublication = rootRecord?.publication;
+    if (
+      !root ||
+      !rootRecord ||
+      !rootPublication?.branch ||
+      !rootPublication.number
+    )
+      return "conflict";
+    if (
+      root.envelope.planId !== task.envelope.planId ||
+      rootRecord.baseBranch !== this.input.baseBranch ||
+      !this.publicationBranchOk(root, rootRecord) ||
+      rootPublication.branch !== record.baseBranch ||
+      (record.publication?.branch !== undefined &&
+        record.publication.branch !== rootPublication.branch) ||
+      (record.publication?.number !== undefined &&
+        record.publication.number !== rootPublication.number)
+    )
+      return "conflict";
+    return "ready";
+  }
+
   /** Credits a merged chain PR by ancestry, or under squash merges by the PR's preserved commit list. */
   private async chainMergeResult(
-    commitSha: string,
+    commitShas: readonly string[],
     mergeCommit: string,
     prNumber: number,
     signal: AbortSignal,
   ): Promise<MergeResult> {
     try {
       await this.command(["git", "fetch", "origin", this.input.baseBranch]);
-      await this.command([
-        "git",
-        "merge-base",
-        "--is-ancestor",
-        commitSha,
-        mergeCommit,
-      ]);
+      for (const commitSha of commitShas)
+        await this.command([
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          commitSha,
+          mergeCommit,
+        ]);
       return { kind: "merged", mergeCommit };
     } catch {
       // Squash merges never contain the original commits as ancestors; fall through to the commit list.
@@ -597,7 +908,7 @@ export class GitHubTaskRunner {
           "Chain segment ancestry and PR commit list are unreadable; reconcile merge evidence",
       };
     }
-    if (commits.includes(commitSha)) {
+    if (commitShas.every((commitSha) => commits.includes(commitSha))) {
       this.input.diagnostic?.(
         `Chain PR #${prNumber}: segment verified via PR commit list (squash merge; ancestry unavailable)`,
       );
@@ -610,17 +921,80 @@ export class GitHubTaskRunner {
     };
   }
 
-  /** Credits a live, approved, unblocked successor's reference with the chain reconciliation exemptions. */
+  /** Verifies every planned segment and the final reviewed head before any chain member completes. */
+  private async chainCompletionResult(
+    task: NativeTask,
+    record: ExecutionRecord,
+    pr: z.infer<typeof PrSchema>,
+    tasks: readonly NativeTask[],
+    signal: AbortSignal,
+  ): Promise<MergeResult> {
+    const publication = record.publication;
+    if (!publication?.number || !pr.mergeCommit)
+      return {
+        kind: "replan",
+        reason: "Shared chain PR has incomplete merge evidence",
+      };
+    const members = this.chainMembers(task, tasks);
+    const memberRecords = members?.map((member) =>
+      member.issue.number === task.issue.number ? record : member.execution,
+    );
+    const completeReviewedChain =
+      members &&
+      memberRecords &&
+      members.length > 1 &&
+      memberRecords.every((memberRecord) => {
+        return (
+          memberRecord !== undefined &&
+          ["awaiting_merge", "done"].includes(memberRecord.phase) &&
+          this.hasMergeReview(memberRecord) &&
+          memberRecord.publication?.number === publication.number &&
+          memberRecord.publication?.branch === publication.branch
+        );
+      });
+    if (!completeReviewedChain)
+      return {
+        kind: "replan",
+        reason:
+          "Shared chain PR merged before every planned segment had exact accepted Review and publication evidence",
+      };
+    const terminalRecord = memberRecords.at(-1);
+    if (terminalRecord?.publication?.commitSha !== pr.headRefOid)
+      return {
+        kind: "replan",
+        reason:
+          "Shared chain PR head does not match the final reviewed segment; explicit replan required",
+      };
+    const memberCommits = memberRecords.flatMap((memberRecord) =>
+      memberRecord?.publication?.commitSha
+        ? [memberRecord.publication.commitSha]
+        : [],
+    );
+    if (memberCommits.length !== members.length)
+      return {
+        kind: "replan",
+        reason:
+          "Shared chain PR merged without complete segment commit evidence",
+      };
+    return this.chainMergeResult(
+      memberCommits,
+      pr.mergeCommit.oid,
+      publication.number,
+      signal,
+    );
+  }
+
+  /** Detects a same-plan structural successor so mutable task state cannot release a chain root for standalone merge. */
   private isChainPredecessor(
     task: NativeTask,
     tasks: readonly NativeTask[],
   ): boolean {
     return tasks.some(
       (candidate) =>
-        candidate.task.spec.continues?.issue === task.issue.number &&
-        candidate.approved &&
-        !candidate.blockedReason &&
-        candidate.task.status !== "retired",
+        candidate.task.spec.continues &&
+        "task" in candidate.task.spec.continues &&
+        candidate.envelope.planId === task.envelope.planId &&
+        candidate.task.spec.continues.task === task.envelope.task.id,
     );
   }
 
@@ -689,6 +1063,104 @@ export class GitHubTaskRunner {
     return base;
   }
 
+  /** Builds cumulative, immutable chain evidence for the single shared pull request. */
+  private async chainPublication(
+    task: NativeTask,
+    record: ExecutionRecord,
+    signal: AbortSignal,
+  ): Promise<
+    | {
+        rootTitle: string;
+        expectedPullRequestNumber?: number;
+        segments: Array<{
+          taskId: string;
+          issueNumber: number;
+          commitSha?: string;
+          reviewed: boolean;
+        }>;
+      }
+    | undefined
+  > {
+    const { tasks } = await this.input.store.freshPlan(task, signal);
+    const freshTask =
+      tasks.find((candidate) => candidate.issue.number === task.issue.number) ??
+      task;
+    const chain = this.chainMembers(freshTask, tasks);
+    const root = chain?.[0];
+    if (!root) throw Error("Continuation chain is unavailable or invalid");
+    if (chain.length === 1) return undefined;
+    const rootExecution =
+      root.issue.number === task.issue.number ? record : root.execution;
+    return {
+      rootTitle: root.task.title,
+      ...(rootExecution?.publication?.number
+        ? { expectedPullRequestNumber: rootExecution.publication.number }
+        : {}),
+      segments: chain.map((segment) => {
+        const execution =
+          segment.envelope.task.id === task.envelope.task.id
+            ? record
+            : segment.execution;
+        const publication = execution?.publication;
+        return {
+          taskId: segment.envelope.task.id,
+          issueNumber: segment.issue.number,
+          ...(publication?.commitSha
+            ? { commitSha: publication.commitSha }
+            : {}),
+          reviewed: execution ? this.hasMergeReview(execution) : false,
+        };
+      }),
+    };
+  }
+
+  /** Waits for external dependencies or records replan when they are absent from the trusted chain base. */
+  private async chainDependencies(
+    task: NativeTask,
+    tasks: NativeTask[],
+    chain: { base: string; baseBranch: string },
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    for (const dependencyId of task.task.spec.dependencies) {
+      const dependency = tasks.find(
+        (candidate) => candidate.envelope.task.id === dependencyId,
+      );
+      const mergeCommit = dependency?.execution?.publication?.mergeCommit;
+      if (
+        dependency?.execution?.phase !== "done" ||
+        !dependency.approved ||
+        dependency.blockedReason ||
+        !mergeCommit
+      )
+        return false;
+      try {
+        await this.command([
+          "git",
+          "merge-base",
+          "--is-ancestor",
+          mergeCommit,
+          chain.base,
+        ]);
+      } catch {
+        const record = initialExecution(
+          task,
+          chain.baseBranch,
+          chain.base,
+          this.now(),
+        );
+        record.phase = "needs_replan";
+        record.failure =
+          "External dependency merged after the trusted chain base; retain work and replan";
+        await this.input.store.save(task, record, signal);
+        this.input.diagnostic?.(
+          `Issue #${task.issue.number}: external dependency ${dependencyId} is absent from the trusted chain base; marked needs_replan`,
+        );
+        return false;
+      }
+    }
+    return true;
+  }
+
   /** Runs the remaining roles and publication for a task with a pinned base. */
   private async runTask(task: NativeTask, signal: AbortSignal): Promise<void> {
     const record = task.execution;
@@ -699,6 +1171,15 @@ export class GitHubTaskRunner {
     ) {
       record.phase = "needs_replan";
       record.failure = "Configured target branch changed";
+      await this.checkpoint(task, record, signal);
+      return;
+    }
+    const chainIdentity = await this.chainIdentity(task, record, signal);
+    if (chainIdentity === "waiting") return;
+    if (chainIdentity === "conflict") {
+      record.phase = "needs_replan";
+      record.failure =
+        "Continuation root branch, target, or pull request identity changed; retain work and replan the chain";
       await this.checkpoint(task, record, signal);
       return;
     }
@@ -749,6 +1230,7 @@ export class GitHubTaskRunner {
     )
       return;
     const acceptance = this.publicationAcceptance(record);
+    const chain = await this.chainPublication(task, record, signal);
     const pr = await this.input.publisher.publish({
       task: {
         ...task.task,
@@ -765,8 +1247,16 @@ export class GitHubTaskRunner {
         status: "pending",
       },
       ...(acceptance === undefined ? {} : { acceptance }),
+      ...(chain === undefined ? {} : { chain }),
     });
     signal.throwIfAborted();
+    if (
+      chain?.expectedPullRequestNumber !== undefined &&
+      pr.number !== chain.expectedPullRequestNumber
+    )
+      throw Error(
+        `Shared chain publisher returned pull request #${pr.number}; expected #${chain.expectedPullRequestNumber}`,
+      );
     record.publication.number = pr.number;
     record.publication.url = pr.url;
     record.phase = "awaiting_merge";
@@ -1155,10 +1645,12 @@ export class GitHubTaskRunner {
       // Fetch before ancestry checks so a freshly merged commit resolves locally.
       await this.command(["git", "fetch", "origin", targetBase]);
       if (chain && pr.mergeCommit) {
-        const verified = await this.chainMergeResult(
-          publication.commitSha,
-          pr.mergeCommit.oid,
-          publication.number,
+        if (!successors) throw Error("Chain membership is unavailable");
+        const verified = await this.chainCompletionResult(
+          task,
+          record,
+          pr,
+          successors,
           signal,
         );
         if (verified.kind !== "merged")
@@ -1200,7 +1692,15 @@ export class GitHubTaskRunner {
       return;
     if (!fresh.approved || fresh.blockedReason) return;
     let result: MergeResult;
-    if (record.refreshes?.some((refresh) => !refresh.result)) {
+    const chainIdentity = await this.chainIdentity(task, record, signal);
+    if (chainIdentity === "waiting") return;
+    if (chainIdentity === "conflict") {
+      result = {
+        kind: "replan",
+        reason:
+          "Continuation root branch, target, or pull request identity changed; retain work and replan the chain",
+      };
+    } else if (record.refreshes?.some((refresh) => !refresh.result)) {
       result = {
         kind: "replan",
         reason:
@@ -1333,31 +1833,42 @@ export class GitHubTaskRunner {
     if (!publication?.number) return undefined;
     const pr = await this.readPr(publication.number, signal);
     let chain = Boolean(task.task.spec.continues);
+    let chainTasks = successors ?? (await this.chainDetectionTasks(signal));
+    if (chain && !chainTasks) return undefined;
     if (!chain) {
-      const detected = successors ?? (await this.chainDetectionTasks(signal));
+      const detected = chainTasks;
       // Listing failure skips this round's adjudication instead of dropping the exemption.
       if (!detected) return undefined;
+      chainTasks = detected;
       chain = this.isChainPredecessor(task, detected);
     }
+    const terminalChainSegment =
+      chain &&
+      !!chainTasks &&
+      !chainTasks.some(
+        (candidate) =>
+          candidate.envelope.planId === task.envelope.planId &&
+          candidate.task.spec.continues &&
+          "task" in candidate.task.spec.continues &&
+          candidate.task.spec.continues.task === task.envelope.task.id,
+      );
     if (
       pr.baseRefName !== this.mergeTargetBase(task, record) ||
       pr.headRefName !== publication.branch ||
       (!chain && pr.headRefOid !== publication.commitSha) ||
+      (terminalChainSegment && pr.headRefOid !== publication.commitSha) ||
       pr.state === "CLOSED"
     )
       return {
         kind: "replan",
         reason: "Published PR changed or closed without merge",
       };
-    if (pr.state === "MERGED" && pr.mergeCommit)
-      return chain
-        ? await this.chainMergeResult(
-            publication.commitSha,
-            pr.mergeCommit.oid,
-            publication.number,
-            signal,
-          )
-        : { kind: "merged", mergeCommit: pr.mergeCommit.oid };
+    if (pr.state === "MERGED" && pr.mergeCommit) {
+      if (chain) {
+        if (!chainTasks) return undefined;
+        return this.chainCompletionResult(task, record, pr, chainTasks, signal);
+      } else return { kind: "merged", mergeCommit: pr.mergeCommit.oid };
+    }
     return undefined;
   }
 

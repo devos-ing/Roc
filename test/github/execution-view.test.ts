@@ -7,6 +7,7 @@ import {
 } from "../../src/github/execution-store";
 import { githubTaskSnapshot } from "../../src/github/execution-view";
 import { memoryGitHub } from "../helpers/github-native";
+import { memoryPlan } from "../helpers/github-plan";
 
 test("inspection freezes completed timing, separates merge waiting and preserves incomplete usage", async () => {
   const remote = memoryGitHub();
@@ -208,4 +209,24 @@ test("renders current rejected Review findings for needs_replan and suppresses s
   expect(
     githubTaskSnapshot([task]).inspection.tasks[0]?.failure ?? "",
   ).not.toContain("rebase finding");
+});
+
+test("cleanup membership maps same-plan local chain IDs onto runtime Issue worktree owners", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"]]);
+  const { tasks } = await remote.store.list();
+  const first = tasks[0];
+  const second = tasks[1];
+  if (!first || !second) throw Error("Missing plan fixture tasks");
+  first.envelope.task.id = "A";
+  second.envelope.task.id = "B";
+  second.envelope.task.spec.continues = { task: "A" };
+  const snapshot = githubTaskSnapshot([first, second]);
+  expect(first.task.id).toBe("issue-41");
+  expect(second.task.id).toBe("issue-42");
+  expect(snapshot.incompleteChainWorktrees.size).toBe(0);
+  expect(snapshot.chainMembers.get("issue-41")).toEqual([
+    "issue-41",
+    "issue-42",
+  ]);
+  expect(snapshot.tasks[1]?.spec.continues).toEqual({ task: "issue-41" });
 });

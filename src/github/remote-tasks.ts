@@ -42,6 +42,62 @@ export type PublishedRemoteTask = {
   envelopeHash: string;
 };
 
+/** Validates local references, linear continuation shape, and the combined plan graph. */
+export function validateTaskGraph(manifestInput: BacklogManifest): void {
+  const manifest = BacklogManifestSchema.parse(manifestInput);
+  const byId = new Map(manifest.tasks.map((task) => [task.id, task]));
+  const successors = new Set<string>();
+  for (const task of manifest.tasks) {
+    const continues = task.spec.continues;
+    if (!continues) continue;
+    if (!("task" in continues))
+      throw Error(
+        `Task ${task.id} uses legacy continues.issue; retain its work and replan with continues.task`,
+      );
+    if (continues.task === task.id || !byId.has(continues.task))
+      throw Error(
+        `Task ${task.id} has an unknown or self-referencing continuation`,
+      );
+    if (task.spec.dependencies.includes(continues.task))
+      throw Error(
+        `Task ${task.id} duplicates its continuation predecessor in dependencies`,
+      );
+    const ancestors = new Set<string>();
+    let ancestor = continues.task;
+    while (ancestor) {
+      if (ancestors.has(ancestor)) break;
+      ancestors.add(ancestor);
+      const predecessor = byId.get(ancestor)?.spec.continues;
+      ancestor = predecessor && "task" in predecessor ? predecessor.task : "";
+    }
+    if (task.spec.dependencies.some((dependency) => ancestors.has(dependency)))
+      throw Error(
+        `Task ${task.id} cannot depend on a task in its continuation chain`,
+      );
+    if (successors.has(continues.task))
+      throw Error(
+        `Task ${continues.task} has more than one continuation successor`,
+      );
+    successors.add(continues.task);
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  /** Walks dependency and continuation edges to reject every cycle before publication. */
+  function visit(id: string): void {
+    if (visited.has(id)) return;
+    const task = byId.get(id);
+    if (!task || visiting.has(id))
+      throw Error("Task plan graph is incomplete or cyclic");
+    visiting.add(id);
+    for (const dependency of task.spec.dependencies) visit(dependency);
+    const continues = task.spec.continues;
+    if (continues && "task" in continues) visit(continues.task);
+    visiting.delete(id);
+    visited.add(id);
+  }
+  for (const task of manifest.tasks) visit(task.id);
+}
+
 /** Writes a multiline GitHub body to a private temporary file for argv-only use. */
 export async function withGitHubBodyFile<T>(
   body: string,
@@ -95,6 +151,7 @@ export function jsonHash(value: unknown): string {
 /** Builds the stable plan identity from the complete validated manifest. */
 export function remotePlanId(manifest: BacklogManifest): string {
   const parsed = BacklogManifestSchema.parse(manifest);
+  validateTaskGraph(parsed);
   return jsonHash({
     ...parsed,
     tasks: [...parsed.tasks].sort((left, right) =>
@@ -109,6 +166,7 @@ export function remoteTaskEnvelope(
   taskId: string,
 ): RemoteTaskEnvelope {
   const parsed = BacklogManifestSchema.parse(manifest);
+  validateTaskGraph(parsed);
   const task = parsed.tasks.find((candidate) => candidate.id === taskId);
   if (task === undefined)
     throw new Error(`Task not found in manifest: ${taskId}`);
@@ -141,6 +199,12 @@ export function renderRemoteTaskBody(
     const issue = dependencyIssues.get(id);
     return issue === undefined ? id : `${id} (#${issue})`;
   });
+  const continues = task.spec.continues;
+  const continuation = !continues
+    ? "- None"
+    : "task" in continues
+      ? `- ${continues.task}${dependencyIssues.has(continues.task) ? ` (#${dependencyIssues.get(continues.task)})` : ""}`
+      : `- Legacy Issue #${continues.issue}; retain existing work and replan with a local task ID`;
   const readable = [
     `# ${task.id} — ${task.title}`,
     `Plan: ${envelope.planId}\nCycle: ${envelope.cycleId}\nPriority: ${task.priority}\nRisk: ${task.spec.risk}\nToken ceiling: ${task.spec.tokenCeiling}`,
@@ -160,6 +224,8 @@ export function renderRemoteTaskBody(
     bullets(task.spec.validation),
     "## Dependencies",
     bullets(dependencies),
+    "## Continues",
+    continuation,
   ]
     .map(escapeEnvelopeMarkers)
     .join("\n\n");
@@ -224,6 +290,8 @@ export class GitHubTaskPublisher {
     manifestInput: BacklogManifest,
   ): Promise<PublishedRemoteTask[]> {
     const manifest = BacklogManifestSchema.parse(manifestInput);
+    // Validate the complete immutable plan before labels or any GitHub write.
+    validateTaskGraph(manifest);
     const repository = await this.repository();
     await this.ensureLabels(repository);
     let issues = await this.listIssues(repository);

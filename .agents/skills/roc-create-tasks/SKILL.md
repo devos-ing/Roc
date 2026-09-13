@@ -34,6 +34,21 @@ shared understanding. Then split the work into small, independently reviewable
 Roc tasks for the Scout -> Implement -> Review loop. Give every task explicit
 dependencies by task ID.
 
+For one same-plan, same-repository linear feature chain, use `continues` with a
+local task ID instead of repeating the predecessor in `dependencies`:
+
+```json
+{ "continues": { "task": "feature-01" }, "dependencies": [] }
+```
+
+The predecessor must be a task in this manifest. A task may have one successor;
+chains cannot branch, cycle, reorder, or cross plans. Keep ordinary external
+dependencies in `dependencies`. Show the complete chain order, shared PR group,
+and external dependencies in the preview. After approval the task IDs and
+envelopes remain immutable: Issue links are display-only and must never replace
+`continues.task`. Existing `{ "issue": N }` trial records require explicit
+replanning; preserve their worktree and evidence without rewriting them.
+
 Use the Roc entrypoint supplied by the user for every command below. When
 `ROC_CLI_ENTRY` is set, replace `npx roc-it@latest` with
 `bun "$ROC_CLI_ENTRY"`. This keeps source-checkout workflows on the same version
@@ -96,7 +111,9 @@ npx roc-it@latest task publish-github FILE
 ```
 
 Replace `FILE` with the new manifest path. Report the published Issue URLs.
-The execution host reads the Issues directly and creates a worktree per Issue.
+The execution host reads the Issues directly. Independent tasks receive their
+own worktrees; each approved continuation chain uses its root worktree, branch,
+and one cumulative PR in sequence.
 
 ## Execution handoff
 

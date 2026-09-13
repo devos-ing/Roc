@@ -9,6 +9,7 @@ import {
   remotePlanId,
   remoteTaskEnvelope,
   renderRemoteTaskBody,
+  validateTaskGraph,
 } from "../../src/github/remote-tasks";
 
 const manifest: BacklogManifest = {
@@ -81,6 +82,66 @@ test("round-trips a complete stable remote task envelope", () => {
   );
   expect(envelope.task.spec.dependencies).toEqual(["REMOTE-A"]);
   expect(jsonHash(envelope)).toMatch(/^sha256:[0-9a-f]{64}$/);
+});
+
+test("validates local continuation references before any GitHub write", async () => {
+  const input = structuredClone(manifest);
+  input.tasks[1]!.spec.continues = { task: "REMOTE-A" };
+  input.tasks[1]!.spec.dependencies = [];
+  expect(() => validateTaskGraph(input)).not.toThrow();
+  const invalid = structuredClone(input);
+  invalid.tasks[1]!.spec.continues = { task: "MISSING" };
+  const commands: string[][] = [];
+  const runner: GitHubCommandRunner = {
+    async run({ command }) {
+      commands.push(command);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  };
+  await expect(
+    new GitHubTaskPublisher("/repo", runner).publish(invalid),
+  ).rejects.toThrow("unknown or self-referencing continuation");
+  expect(commands).toEqual([]);
+});
+
+test("rejects forked local continuation chains before any GitHub write", async () => {
+  const input = structuredClone(manifest);
+  const predecessor = input.tasks[0];
+  const successor = input.tasks[1];
+  if (!predecessor || !successor) throw Error("Missing task fixtures");
+  successor.spec.continues = { task: predecessor.id };
+  successor.spec.dependencies = [];
+  input.tasks.push({
+    ...structuredClone(successor),
+    id: "REMOTE-C",
+  });
+  const commands: string[][] = [];
+  const runner: GitHubCommandRunner = {
+    async run({ command }) {
+      commands.push(command);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  };
+  await expect(
+    new GitHubTaskPublisher("/repo", runner).publish(input),
+  ).rejects.toThrow("more than one continuation successor");
+  expect(commands).toEqual([]);
+});
+
+test("rejects legacy issue continuations before publication while preserving their envelope data", async () => {
+  const legacy = structuredClone(manifest);
+  legacy.tasks[1]!.spec.continues = { issue: 41 };
+  const commands: string[][] = [];
+  const runner: GitHubCommandRunner = {
+    async run({ command }) {
+      commands.push(command);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  };
+  await expect(
+    new GitHubTaskPublisher("/repo", runner).publish(legacy),
+  ).rejects.toThrow("legacy continues.issue");
+  expect(commands).toEqual([]);
 });
 
 test("round-trips task prose containing the envelope delimiters", () => {

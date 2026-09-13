@@ -160,7 +160,12 @@ async function registeredWorktrees(git: SimpleGit): Promise<Set<string>> {
 export async function cleanupTaskWorktrees(
   repoPath: string,
   taskStatuses: ReadonlyMap<string, TaskStatus>,
-  options: { dryRun?: boolean; all?: boolean } = {},
+  options: {
+    dryRun?: boolean;
+    all?: boolean;
+    chainMembers?: ReadonlyMap<string, readonly string[]>;
+    incompleteChainWorktrees?: ReadonlySet<string>;
+  } = {},
 ): Promise<TaskWorktreeCleanupResult> {
   const canonicalRepo = await realpath(resolve(repoPath));
   const sourceGit = gitAt(canonicalRepo);
@@ -191,23 +196,43 @@ export async function cleanupTaskWorktrees(
       keep("Entry is not a task worktree directory");
       continue;
     }
+    if (options.incompleteChainWorktrees?.has(name)) {
+      keep(
+        "Shared feature chain membership is incomplete; worktree is retained",
+      );
+      continue;
+    }
     if (!worktrees.has(path)) {
       keep("Directory is not a registered Git worktree of this checkout");
       continue;
     }
-    const status = taskStatuses.get(name);
-    if (status === undefined) {
+    const members = options.chainMembers?.get(name) ?? [name];
+    const statuses = members.map((member) => taskStatuses.get(member));
+    if (statuses.some((status) => status === undefined)) {
       keep("Task has no GitHub checkpoint in this repository");
       continue;
     }
-    const removable =
-      status === "done" ||
-      (options.all === true && OTHER_TERMINAL_TASK_STATUSES.includes(status));
+    const unfinishedIndex = statuses.findIndex((status) => {
+      return (
+        status !== "done" &&
+        (status === undefined ||
+          !(
+            options.all === true &&
+            OTHER_TERMINAL_TASK_STATUSES.includes(status)
+          ))
+      );
+    });
+    const removable = unfinishedIndex < 0;
     if (!removable) {
+      const unfinished = members[unfinishedIndex] ?? "unknown";
+      const status = statuses[unfinishedIndex];
       keep(
-        OTHER_TERMINAL_TASK_STATUSES.includes(status)
-          ? `Task status is ${status}; rerun with --all to remove its worktree`
-          : `Task status is ${status}; worktrees of unfinished tasks are retained`,
+        members.length > 1
+          ? `Shared feature chain retains worktree: task ${unfinished} is ${status}`
+          : status !== undefined &&
+              OTHER_TERMINAL_TASK_STATUSES.includes(status)
+            ? `Task status is ${status}; rerun with --all to remove its worktree`
+            : `Task status is ${status}; worktrees of unfinished tasks are retained`,
       );
       continue;
     }
@@ -312,7 +337,7 @@ function finalMessage(taskId: string): string {
   return `agile(${taskId}): implement ticket`;
 }
 
-/** Creates one native Git worktree per task without sharing working directories. */
+/** Creates native Git worktrees, reusing an explicitly validated root branch for continuation members. */
 export async function createTaskBranchManager(
   repoPath: string,
   baseRef: string,
@@ -400,7 +425,7 @@ export async function createTaskBranchManager(
   };
 }
 
-/** Attaches a task branch to its own directory and verifies shared Git ownership. */
+/** Attaches a task to its own branch directory or a validated continuation root directory. */
 async function createWorktreeManager(
   canonicalRepo: string,
   sourceGit: SimpleGit,

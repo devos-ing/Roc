@@ -68,3 +68,19 @@ reason or required operator action. A task is confirmed `done` only after its
 intended PR is confirmed merged into the selected target branch and the scheduler
 has verified the merge commit is present in the fetched target. Until that
 checkpoint is confirmed, report the actual waiting or blocked state, not success.
+
+### Shared feature chains
+
+For an approved linear `continues.task` chain, execute only one member at a
+time. The successor starts only after its predecessor has an accepted independent
+Review bound to the exact spec, base, and head. It reuses the root worktree,
+branch, and PR; the PR base remains the selected target branch. Preserve dirty
+interrupted work and stop with `needs_replan` on identity, ownership, head, or
+external-dependency ancestry conflicts. Do not reset, rebase, create another
+worktree, or run a successor while a chain member is active.
+
+The shared PR retains each Issue, reviewed segment SHA, and Review result. A
+normal or squash merge completes the chain only after every segment is verified.
+Unreadable merge evidence waits; a premature close, missing segment, or partial
+checkpoint requires reconciliation or replan. Cleanup retains the root
+worktree until every member is eligible, clean, and no longer owned.

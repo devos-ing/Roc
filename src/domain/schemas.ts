@@ -42,12 +42,13 @@ export const TaskHookSchema = z
 
 export const TaskHookPhaseSchema = z.enum(["prehook", "posthook"]);
 
-/** Locates the predecessor whose branch this task continues on (issue-scoped, globally unique). */
-export const ContinuesSchema = z
-  .object({
-    issue: z.number().int().positive(),
-  })
-  .strict();
+/** Locates a predecessor by its immutable task ID within the same plan. */
+export const ContinuesSchema = z.union([
+  z.object({ task: NonEmpty }).strict(),
+  // Keep already-published trial envelopes readable so recovery can retain their
+  // work and direct an explicit replan instead of silently changing their hash.
+  z.object({ issue: z.number().int().positive() }).strict(),
+]);
 
 export const TicketSpecSchema = z
   .object({
@@ -72,13 +73,6 @@ export const TicketSpecSchema = z
   })
   .strict()
   .superRefine((spec, context) => {
-    if (spec.continues && spec.dependencies.length > 0)
-      context.addIssue({
-        code: "custom",
-        path: ["continues"],
-        message:
-          "Chained tasks must not declare completion dependencies; use continues only",
-      });
     if (!spec.skipScout) return;
     const files = spec.scope.every(
       (path) =>

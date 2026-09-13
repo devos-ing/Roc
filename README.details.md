@@ -457,6 +457,18 @@ It checks exact trusted approval at role boundaries. Dependencies require a PR
 merged into the intended target with the recorded implementation head. Roc
 fetches that target, verifies its merge commits and pins the new task's base.
 
+For a declared same-plan linear feature chain, `continues` uses the immutable
+local task ID (`{ "task": "A" }`), while `dependencies` remains for ordinary
+merged prerequisites. Roc validates references, one-successor linearity, and
+the combined graph before writing GitHub. The chain shares its root worktree,
+branch, and cumulative PR, and runs one member at a time after an exact accepted
+Review of the predecessor. The PR retains every Issue, segment SHA, and Review
+result; its base remains the configured target branch. An interrupted or
+unverifiable chain preserves work and requires replan. Cleanup waits for all
+members to be eligible and the shared worktree to be clean. Legacy
+`{ "issue": N }` continuation records are recognized only to report replan;
+they are never rewritten or executed.
+
 Roc saves the attempt descriptor before starting Pi. By default Scout inspects, Implement
 writes, and the harness creates a single trusted commit. Review uses a separate
 Pi session and checks that exact clean commit. Accepted work runs its trusted

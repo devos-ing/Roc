@@ -20,6 +20,7 @@ import {
   parseRemoteTaskEnvelope,
   type RemoteTaskEnvelope,
   remotePlanId,
+  validateTaskGraph,
 } from "./remote-tasks";
 
 const Sha = z.string().regex(/^[0-9a-f]{40}$/);
@@ -285,32 +286,20 @@ export class GitHubExecutionStore {
           )
         )
           throw Error("Plan changed");
-        const visiting = new Set<string>();
-        const visited = new Set<string>();
-        const byId = new Map(
-          group.map((task) => [task.envelope.task.id, task]),
-        );
-        /** Verifies that every dependency exists and the plan contains no cycle. */
-        function visit(id: string): void {
-          if (visited.has(id)) return;
-          const task = byId.get(id);
-          if (!task || visiting.has(id))
-            throw Error("Invalid dependency graph");
-          visiting.add(id);
-          for (const dependency of task.envelope.task.spec.dependencies)
-            visit(dependency);
-          visiting.delete(id);
-          visited.add(id);
-        }
-        for (const task of group) visit(task.envelope.task.id);
+        validateTaskGraph(manifest);
         this.planIssues.set(
           first.envelope.planId,
           group.map((task) => task.issue.number),
         );
-      } catch {
+      } catch (error) {
+        const legacy =
+          error instanceof Error &&
+          error.message.includes("legacy continues.issue");
         for (const task of group) {
-          task.blockedReason = "Remote plan is incomplete, changed or cyclic";
-          task.task.status = "needs_input";
+          task.blockedReason = legacy
+            ? "Remote plan uses legacy continues.issue; retain work and replan with continues.task"
+            : "Remote plan is incomplete, changed or cyclic";
+          task.task.status = legacy ? "needs_replan" : "needs_input";
         }
       }
     }
