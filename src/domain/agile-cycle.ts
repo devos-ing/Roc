@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { AgentRoleSchema, ReasoningEffortSchema } from "../harness/contracts";
-import { ModelProfileSchema } from "./schemas";
 import { SkillSettingsSchema } from "./skill-allowlist";
 
 const dayMilliseconds = 86_400_000;
@@ -26,6 +25,24 @@ const LocalDateSchema = z
     return date.toISOString().slice(0, 10) === value;
   }, "Invalid calendar date");
 
+const ModelIdentifierSchema = z.string().regex(/^[^\s/]+\/[^\s]+$/u);
+
+const ModelSettingsSchema = z
+  .object({
+    luna: ModelIdentifierSchema.optional(),
+    terra: ModelIdentifierSchema.optional(),
+    sol: ModelIdentifierSchema.optional(),
+    allowlist: z
+      .array(ModelIdentifierSchema)
+      .min(1)
+      .refine((models) => new Set(models).size === models.length, {
+        message: "Model allowlist entries must be unique",
+      })
+      .optional(),
+    implementPrimaryEffort: z.enum(["medium", "high"]).optional(),
+  })
+  .strict();
+
 export const AgileCycleSettingSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("daily") }).strict(),
   z.object({ type: z.literal("weekly") }).strict(),
@@ -43,15 +60,14 @@ export const RocSettingsSchema = z
     cycle: AgileCycleSettingSchema,
     skills: SkillSettingsSchema.optional(),
     execution: z.object({ allowUnsandboxed: z.boolean() }).strict().optional(),
-    models: z
-      .partialRecord(ModelProfileSchema, z.string().regex(/^[^\s/]+\/[^\s]+$/u))
-      .optional(),
+    models: ModelSettingsSchema.optional(),
     efforts: z.partialRecord(AgentRoleSchema, ReasoningEffortSchema).optional(),
   })
   .strict();
 
 export type AgileCycleSetting = z.infer<typeof AgileCycleSettingSchema>;
 export type RocSettings = z.infer<typeof RocSettingsSchema>;
+export type ModelSettings = z.infer<typeof ModelSettingsSchema>;
 export type ActiveAgileCycle = {
   id: string;
   startDate: string;

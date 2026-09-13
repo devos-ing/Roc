@@ -355,6 +355,38 @@ test("reasoning-disabled models publish no efforts and null levels are excluded"
   }
 });
 
+test("rejects a Kimi primary at medium before a role client or prompt starts", async () => {
+  const previous = process.env.ROC_ALLOW_UNSANDBOXED;
+  const kimi = {
+    id: "k3",
+    provider: "kimi-coding",
+    name: "Kimi K3",
+    reasoning: true,
+    thinkingLevelMap: { medium: null, high: "high" },
+  };
+  const probe = new ScriptedProbeClient([kimi], kimi);
+  let attempts = 0;
+  try {
+    process.env.ROC_ALLOW_UNSANDBOXED = "1";
+    await expect(
+      buildPiBackendFactory({
+        allowUnsandboxed: true,
+        models: { terra: "kimi-coding/k3" },
+        startProbeClient: async () => probe,
+        startAttemptClient: async () => {
+          attempts += 1;
+          return new RecordedPiClient();
+        },
+      })({ branches: memoryBranches() }),
+    ).rejects.toMatchObject({ code: "PI_MODEL_MAPPING_INVALID" });
+    expect(attempts).toBe(0);
+    expect(probe.closeCount).toBe(1);
+  } finally {
+    if (previous === undefined) delete process.env.ROC_ALLOW_UNSANDBOXED;
+    else process.env.ROC_ALLOW_UNSANDBOXED = previous;
+  }
+});
+
 test("effort maps distinguish absent keys from explicit nulls", async () => {
   const previous = process.env.ROC_ALLOW_UNSANDBOXED;
   const models = [
@@ -414,32 +446,103 @@ test("effort maps distinguish absent keys from explicit nulls", async () => {
 
 test("the factory drives a scripted scout-implement-review task to done", async () => {
   const previous = process.env.ROC_ALLOW_UNSANDBOXED;
-  const probe = new ScriptedProbeClient(probeModels, probeDefaultModel);
+  const routes = [
+    { provider: "openai-codex", id: "gpt-5.6-luna" },
+    { provider: "kimi-coding", id: "k3" },
+    { provider: "openai-codex", id: "gpt-5.6-sol" },
+  ] as const;
+  const probe = new ScriptedProbeClient(
+    [
+      {
+        ...routes[0],
+        name: "Codex Luna",
+        reasoning: true,
+        thinkingLevelMap: { medium: "medium", high: "high" },
+      },
+      {
+        ...routes[1],
+        name: "Kimi K3",
+        reasoning: true,
+        thinkingLevelMap: { medium: null, high: "high" },
+      },
+      {
+        ...routes[2],
+        name: "Codex Sol",
+        reasoning: true,
+        thinkingLevelMap: { medium: "medium", high: "high" },
+      },
+    ],
+    { ...routes[0], name: "Codex Luna", reasoning: true },
+  );
   const clients: RecordedPiClient[] = [];
   try {
     process.env.ROC_ALLOW_UNSANDBOXED = "1";
     const factory = buildPiBackendFactory({
       startProbeClient: async () => probe,
+      models: {
+        luna: "openai-codex/gpt-5.6-luna",
+        terra: "kimi-coding/k3",
+        sol: "openai-codex/gpt-5.6-sol",
+        allowlist: [
+          "openai-codex/gpt-5.6-luna",
+          "kimi-coding/k3",
+          "openai-codex/gpt-5.6-sol",
+        ],
+        implementPrimaryEffort: "high",
+      },
       startAttemptClient: async () => {
-        const client = new RecordedPiClient();
+        const client = new RecordedPiClient([], {
+          model: routes[clients.length],
+        });
         clients.push(client);
         return client;
       },
     });
     const runtime = await factory({ branches: memoryBranches() });
     try {
-      // Every advisor profile routes through the attributed default model.
+      // The exact routed profiles retain a selected Kimi implementer and a
+      // separate Codex Review session under one immutable policy snapshot.
       expect(runtime.modelMapping).toEqual({
-        luna: "anthropic/claude-sonnet-4-6",
-        terra: "anthropic/claude-sonnet-4-6",
-        sol: "anthropic/claude-sonnet-4-6",
+        luna: "openai-codex/gpt-5.6-luna",
+        terra: "kimi-coding/k3",
+        sol: "openai-codex/gpt-5.6-sol",
+      });
+      expect(runtime.modelRoutingPolicy).toEqual({
+        allowlist: [
+          "openai-codex/gpt-5.6-luna",
+          "kimi-coding/k3",
+          "openai-codex/gpt-5.6-sol",
+        ],
+        implementPrimaryEffort: "high",
       });
 
-      const scoutStart = await runtime.harness.step(makeScoutRequest());
+      const scoutRequest = {
+        ...makeScoutRequest(),
+        attempt: {
+          ...makeScoutRequest().attempt,
+          model: "openai-codex/gpt-5.6-luna",
+        },
+      };
+      const implementRequest = {
+        ...makeImplementRequest(),
+        attempt: {
+          ...makeImplementRequest().attempt,
+          model: "kimi-coding/k3",
+        },
+      };
+      const reviewRequest = {
+        ...makeReviewRequest({ commitSha: "b".repeat(40) }),
+        attempt: {
+          ...makeReviewRequest({ commitSha: "b".repeat(40) }).attempt,
+          model: "openai-codex/gpt-5.6-sol",
+        },
+      };
+
+      const scoutStart = await runtime.harness.step(scoutRequest);
       if (scoutStart.kind !== "event") throw new Error("unreachable");
       clientAt(clients, 0).enqueue(messageEnd(), { type: "agent_settled" });
       const scout = await collect(runtime.harness, {
-        ...makeScoutRequest(),
+        ...scoutRequest,
         backendCursor: scoutStart.nextCursor,
       });
       expect(scout.events.at(-1)?.type).toBe("attempt.completed");
@@ -447,7 +550,7 @@ test("the factory drives a scripted scout-implement-review task to done", async 
       // Implement hands its structured output to the trusted harness, which
       // owns the sole implementation commit.
       const commitSha = "b".repeat(40);
-      const implementStart = await runtime.harness.step(makeImplementRequest());
+      const implementStart = await runtime.harness.step(implementRequest);
       if (implementStart.kind !== "event") throw new Error("unreachable");
       clientAt(clients, 1).enqueue(
         messageEnd({
@@ -461,7 +564,7 @@ test("the factory drives a scripted scout-implement-review task to done", async 
         { type: "agent_settled" },
       );
       const implement = await collect(runtime.harness, {
-        ...makeImplementRequest(),
+        ...implementRequest,
         backendCursor: implementStart.nextCursor,
       });
       const implementOutput = implement.events.find(
@@ -477,9 +580,7 @@ test("the factory drives a scripted scout-implement-review task to done", async 
 
       // Review runs detached in its own child process and accepts the
       // untouched workspace, finishing the task.
-      const reviewStart = await runtime.harness.step(
-        makeReviewRequest({ commitSha }),
-      );
+      const reviewStart = await runtime.harness.step(reviewRequest);
       if (reviewStart.kind !== "event") throw new Error("unreachable");
       clientAt(clients, 2).enqueue(
         messageEnd({
@@ -493,18 +594,21 @@ test("the factory drives a scripted scout-implement-review task to done", async 
         { type: "agent_settled" },
       );
       const review = await collect(runtime.harness, {
-        ...makeReviewRequest({ commitSha }),
+        ...reviewRequest,
         backendCursor: reviewStart.nextCursor,
       });
       expect(review.events.at(-1)?.type).toBe("attempt.completed");
 
-      // One detached child process per role attempt, all routed to the
-      // attributed default model.
+      // One detached child process per role attempt uses the exact model for
+      // that role, while the Review remains a distinct Codex session.
       expect(clients).toHaveLength(3);
-      for (const client of clients) {
+      for (const [index, client] of clients.entries()) {
         expect(client.requests).toContainEqual({
           command: "set_model",
-          params: { provider: "anthropic", modelId: "claude-sonnet-4-6" },
+          params: {
+            provider: routes[index]?.provider,
+            modelId: routes[index]?.id,
+          },
         });
       }
 

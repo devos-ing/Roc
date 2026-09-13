@@ -36,6 +36,7 @@ const publicFieldNames = new Set([
   "scout",
   "implement",
   "review",
+  "implementPrimaryEffort",
 ]);
 const repairGuidance =
   "Back up this file, then repair it manually using the supported settings format in README.details.md (Progress and recovery) and retry; onboarding reads the same file and cannot repair it.";

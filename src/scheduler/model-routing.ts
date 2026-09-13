@@ -12,6 +12,10 @@ export type CatalogModel = Readonly<{
 export type ModelMapping = Readonly<Partial<Record<ModelProfile, string>>>;
 /** Per-role configured efforts from Roc settings; unset roles keep defaults. */
 export type RoleEfforts = Readonly<Partial<Record<AgentRole, ReasoningEffort>>>;
+export type ModelRoutingPolicy = Readonly<{
+  allowlist?: readonly string[];
+  implementPrimaryEffort?: "medium" | "high";
+}>;
 export type AdvisorInput = {
   role: AgentRole;
   risk: "low" | "medium" | "high";
@@ -29,6 +33,7 @@ export type Route = {
 export type ModelAdvisor = { decide(input: AdvisorInput): Route | undefined };
 export type AdvisorOptions = Readonly<{
   efforts?: RoleEfforts;
+  policy?: ModelRoutingPolicy;
   /** Receives one bounded message per role when its configured effort is unsupported. */
   onDiagnostic?: (message: string) => void;
 }>;
@@ -36,7 +41,7 @@ export type AdvisorOptions = Readonly<{
 const profileOrder: ModelProfile[] = ["luna", "terra", "sol"];
 
 /** Selects the baseline model profile for an agent role. */
-function baselineProfile(role: AdvisorInput["role"]): ModelProfile {
+function baselineProfile(role: AgentRole): ModelProfile {
   return role === "scout" ? "luna" : role === "implement" ? "terra" : "sol";
 }
 
@@ -86,20 +91,28 @@ function routeRationale(
   ];
 }
 
-/** Explains how the effective effort relates to the configured one. */
-function effortRationale(
-  configured: ReasoningEffort | undefined,
-  applied: ReasoningEffort,
-): string[] {
-  if (configured === undefined) return [];
-  if (configured === applied) return [`effort ${applied} (configured)`];
+/** Returns the legacy default effort for a role without an explicit override. */
+function defaultEffort(role: AgentRole): ReasoningEffort {
+  return role === "implement" ? "medium" : "high";
+}
+
+/** Explains how a configured or primary effort produced the selected route. */
+function effortRationale(input: {
+  configured?: ReasoningEffort;
+  applied: ReasoningEffort;
+  primary: boolean;
+}): string[] {
+  if (input.primary) return [`effort ${input.applied} (primary configured)`];
+  if (input.configured === undefined) return [];
+  if (input.configured === input.applied)
+    return [`effort ${input.applied} (configured)`];
   return [
-    `configured effort ${configured} unsupported`,
-    `effort ${applied} (default)`,
+    `configured effort ${input.configured} unsupported`,
+    `effort ${input.applied} (default)`,
   ];
 }
 
-/** Creates a model advisor from a stable catalog snapshot and optional mappings. */
+/** Creates a model advisor from stable catalog, mapping, effort, and admission snapshots. */
 export function createModelAdvisor(
   catalog: readonly CatalogModel[],
   mapping: ModelMapping = {},
@@ -111,6 +124,23 @@ export function createModelAdvisor(
   }));
   const mappingSnapshot: ModelMapping = { ...mapping };
   const effortsSnapshot: RoleEfforts = { ...(options.efforts ?? {}) };
+  const allowlistSnapshot =
+    options.policy?.allowlist === undefined
+      ? undefined
+      : new Set(options.policy.allowlist);
+  const policySnapshot =
+    options.policy === undefined
+      ? undefined
+      : {
+          ...(allowlistSnapshot === undefined
+            ? {}
+            : { allowlist: [...allowlistSnapshot] }),
+          ...(options.policy.implementPrimaryEffort === undefined
+            ? {}
+            : {
+                implementPrimaryEffort: options.policy.implementPrimaryEffort,
+              }),
+        };
   const reportedRoles = new Set<AgentRole>();
   /** Reports an unsupported configured effort once per role, never failing the run. */
   const reportUnsupported = (
@@ -127,45 +157,78 @@ export function createModelAdvisor(
   /** Finds the configured or inferred catalog model supporting a profile and effort. */
   const modelForProfile = (
     profile: ModelProfile,
-    effort: Route["effort"],
+    effort: ReasoningEffort,
   ): string | undefined => {
     const mapped = mappingSnapshot[profile];
     if (mapped !== undefined) {
       return catalogSnapshot.find(
         (model) =>
           model.id === mapped &&
+          (allowlistSnapshot === undefined ||
+            allowlistSnapshot.has(model.id)) &&
           model.supportedReasoningEfforts.includes(effort),
       )?.id;
     }
     return catalogSnapshot.find(
       (model) =>
         profileForModel(model.id) === profile &&
+        (allowlistSnapshot === undefined || allowlistSnapshot.has(model.id)) &&
         model.supportedReasoningEfforts.includes(effort),
     )?.id;
   };
+  /** Finds every allowed profile choice for one shared per-role effort. */
+  const choicesFor = (
+    profiles: readonly ModelProfile[],
+    effort: ReasoningEffort,
+  ): Array<{ profile: ModelProfile; model: string }> =>
+    profiles.flatMap((profile) => {
+      const model = modelForProfile(profile, effort);
+      return model === undefined ? [] : [{ profile, model }];
+    });
 
   return {
     /** Chooses the first compatible routed model and records its fallbacks and rationale. */
     decide(input) {
-      const defaultEffort: ReasoningEffort =
-        input.role === "implement" ? "medium" : "high";
+      const profiles = routeProfiles(input);
       const configured = effortsSnapshot[input.role];
+      const defaultForRole = defaultEffort(input.role);
+      const strictPrimary =
+        policySnapshot !== undefined &&
+        input.role === "implement" &&
+        profiles[0] === "terra";
+      if (strictPrimary) {
+        const effort =
+          policySnapshot.implementPrimaryEffort ?? configured ?? defaultForRole;
+        const model = modelForProfile("terra", effort);
+        if (model === undefined) return undefined;
+        return {
+          profile: "terra",
+          model,
+          effort,
+          fallbacks: [],
+          rationale: [
+            ...routeRationale(input, "terra"),
+            ...effortRationale({
+              configured,
+              applied: effort,
+              primary: policySnapshot.implementPrimaryEffort !== undefined,
+            }),
+          ],
+        };
+      }
+
       const candidates: ReasoningEffort[] =
-        configured !== undefined && configured !== defaultEffort
-          ? [configured, defaultEffort]
-          : [defaultEffort];
+        configured !== undefined && configured !== defaultForRole
+          ? [configured, defaultForRole]
+          : [defaultForRole];
       for (const effort of candidates) {
-        const choices = routeProfiles(input).flatMap((profile) => {
-          const model = modelForProfile(profile, effort);
-          return model === undefined ? [] : [{ profile, model }];
-        });
+        const choices = choicesFor(profiles, effort);
         const choice = choices[0];
         if (choice === undefined) {
-          if (effort !== defaultEffort)
-            reportUnsupported(input.role, effort, defaultEffort);
+          if (effort !== defaultForRole)
+            reportUnsupported(input.role, effort, defaultForRole);
           continue;
         }
-
         return {
           profile: choice.profile,
           model: choice.model,
@@ -173,7 +236,7 @@ export function createModelAdvisor(
           fallbacks: choices.slice(1).map((fallback) => fallback.model),
           rationale: [
             ...routeRationale(input, choice.profile),
-            ...effortRationale(configured, effort),
+            ...effortRationale({ configured, applied: effort, primary: false }),
           ],
         };
       }

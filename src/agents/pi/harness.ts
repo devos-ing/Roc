@@ -225,12 +225,17 @@ export function createPiHarness(input: {
   branches: TaskBranchManager;
   startClient?: (cwd: string) => Promise<PiClientApi>;
   now?: () => string;
+  allowedModels?: readonly string[];
 }): AgentHarness {
   /** Starts one Pi child process rooted at the given working directory. */
   const startClient =
     input.startClient ?? ((cwd: string) => PiClient.start({ cwd }));
   /** Returns the current timestamp through the injected or system clock. */
   const now = input.now ?? (() => new Date().toISOString());
+  const allowedModels =
+    input.allowedModels === undefined
+      ? undefined
+      : new Set(input.allowedModels);
   const activeAttempts = new Map<string, ActiveAttempt>();
   const terminalAttempts = new Set<string>();
   const terminalCleanup = new Map<string, Promise<void>>();
@@ -444,6 +449,24 @@ export function createPiHarness(input: {
     }
   }
 
+  /** Blocks a new model turn when its persisted exact model is no longer allowed. */
+  function assertModelAllowed(request: SupportedRequest): void {
+    if (
+      allowedModels !== undefined &&
+      !allowedModels.has(request.attempt.model)
+    ) {
+      throw new AgileError({
+        code: "model_not_allowed",
+        category: "policy",
+        retryable: false,
+        component: "pi-harness",
+        message: "The Pi attempt model is not admitted by this scheduler run",
+        taskId: request.attempt.taskId,
+        attemptId: request.attempt.attemptId,
+      });
+    }
+  }
+
   /** Starts or resumes role execution and emits the attempt-started delivery. */
   async function dispatch(request: SupportedRequest): Promise<HarnessDelivery> {
     const existing = activeAttempts.get(request.attempt.attemptId);
@@ -478,6 +501,8 @@ export function createPiHarness(input: {
         baseCommit: existing.baseCommit,
       });
     }
+
+    assertModelAllowed(request);
 
     const workspace = await input.branches.prepare(
       request.attempt.taskId,
@@ -1107,6 +1132,7 @@ export function createPiHarness(input: {
       activeAttempts.set(recovered.attemptId, recovered);
       return completedDelivery(cursor, recovered);
     }
+    assertModelAllowed(request);
     // The Pi session file and entry anchor are durable on disk, but v1 has
     // no reattach path: the child process is gone and Roc does not yet
     // resume an in-flight prompt from get_entries. The attempt is retried
@@ -1128,6 +1154,7 @@ export function createPiHarness(input: {
         supportedRequest(request);
         if (request.backendCursor === undefined) {
           if (request.mode === "reconcile") {
+            assertModelAllowed(request);
             terminalAttempts.add(request.attempt.attemptId);
             const unavailableCursor: PiBackendCursor = {
               version: 1,

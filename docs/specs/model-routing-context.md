@@ -1,49 +1,45 @@
-# Model routing and Scout handoffs
+# Pi model routing and recovery
 
-Approved by the user's request to implement the model-routing-context plan on
-2026-09-08. Updated on the user's subsequent request to remove the Scout byte
-limit. This specification covers Pi profile configuration and concise Scout
-handoffs. The latest user request sets new Scout/Review attempts to GPT-6 Astra
-with high reasoning and Implement to GPT-6 Astra with medium reasoning, chosen
-from the requested medium-or-low range. Cost improvements require separate live evidence.
+Roc uses Pi for every agent role. M1 lets an operator select exact Pi models
+without adding another runtime, a learned router, automatic provider switching,
+price lookup, billing storage, or provider qualification.
 
-1. Global Roc settings accept optional `models.luna`, `models.terra`, and
-   `models.sol`, each an exact `provider/modelId`. Omitted profiles use the Pi
-   probe default. Onboarding preserves these mappings.
-2. Explicit mappings must resolve in the catalog and support `high`. Invalid
-   mappings fail startup with a sanitized error before any role prompt. An
-   explicit mapping cannot fall back to a similarly named catalog entry.
-3. Low- and medium-risk tasks retain Scout/Luna, Implement/Terra, Review/Sol
-   baselines and existing retry escalation. High-risk roles and retries use
-   Sol. New Scout/Review attempts use `high`; new Implement attempts use
-   `medium`, including high-risk tasks and retries. A model must advertise that
-   exact effort or routing returns `needs_replan`. Existing descriptors, including
-   historical `high` and `xhigh` Implement attempts, keep their recorded effort.
-4. Each attempt persists and confirms its actual provider/model and effort.
-   Existing attempts recover using their persisted descriptor. Review remains
-   an independent session checking the trusted implementation commit.
-5. New Pi Scout outputs retain the existing capsule fields and structural
-   validation. There is no capsule byte limit or truncation. Valid large
-   capsules follow the normal usage, output, and completion delivery sequence.
-6. Historical capsules remain readable by role-input and event recovery paths.
-   Persisted `outputDelivered` cursors still complete without regenerating a
-   capsule. Interrupted turns without persisted output retain existing retry
-   behavior.
-7. Prompts keep handoffs focused on source locations, tests, and unresolved
-   risks. Implement and Review inspect current source rather than trusting
-   summaries or line numbers as proof.
+`models` is optional and preserves legacy behavior when omitted. Its profile
+fields (`luna`, `terra`, `sol`) and `allowlist` entries are exact
+`provider/modelId` strings. `allowlist`, when present, is nonempty and unique;
+it governs every effective mapping, new route, and resumed turn. The optional
+`implementPrimaryEffort` is `medium` or `high`, defaulting to `medium`.
+The optional top-level `efforts` object sets `medium`, `high`, or `xhigh` per
+role and keeps the established role defaults when omitted. Onboarding preserves
+both objects.
 
-Validation uses the existing Pi vertical fixture, backend and advisor tests,
-settings/onboarding integration, large-capsule delivery and recovery tests, and
-the full repository check. Live comparisons use fixed fixture commits and
-independent acceptance tests with stubbed PR publication. Record all failures,
-retries, model identities, usage, elapsed time, and capsule sizes. Subscription
-token counts or Pi catalog estimates are not actual billed cost.
+The scheduler snapshots policy when it starts. Scout always uses Luna at high;
+primary Implement uses Terra at the configured primary effort; a retained Terra
+retry keeps that effort. High-risk and escalated Implement use Sol at medium.
+Independent Review uses Sol at high. A selected Terra that cannot meet its
+configured effort stops before a prompt; it does not silently become Sol.
 
-The initial experiment compared unchanged routing, a cheaper Scout alone,
-and that same routing with bounded handoffs. Those results remain historical
-evidence; the byte limit was subsequently removed. A separate user request
-selected GPT-6 Astra for new Codex setups and the user's Roc profiles. Existing
-explicit model selections remain supported. No worker agents, bulk-read hooks,
-new database schema, public benchmark CLI, automatic model selection, or price
-service.
+`models.implementPrimaryEffort` has precedence over `efforts.implement` only
+for primary Terra work and a retained Terra retry. High-risk and escalated Sol
+Implement applies `efforts.implement` when configured, otherwise medium. When
+the new model policy is absent, configured role efforts retain their upstream
+fallback and normal profile-advancement behavior.
+
+Pi startup admits each effective mapping against the discovered catalog and the
+allowlist. Luna requires high; Terra requires the primary effort; Sol requires
+both medium and high. A default fills only an omitted mapping, so an unrelated
+default does not reject a fully explicit configuration. Pi reasserts and reads
+back exact model and thinking level before sending a role prompt.
+
+Attempts retain their recorded exact model, effort, cursor, and work. A new or
+unfinished recovered attempt whose recorded model is no longer allowed emits a
+policy block and reaches `needs_replan`; it is never substituted with today’s
+Terra mapping. Reconciliation that only delivers an already-recorded result or
+cleans up remains available. Review remains a separate session against the sole
+trusted implementation commit.
+
+Repository tests use scripted catalogs and clients only. Pi catalog metadata
+and `get_state` prove the requested/read-back identifier and configured
+thinking level, not provider account access, immutable server-side identity, or
+actual provider compute. Live qualification and cost measurement require a
+separate approved activation step.

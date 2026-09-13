@@ -2,6 +2,7 @@ import type { AgentHarness } from "../harness/contracts";
 import type {
   CatalogModel,
   ModelMapping,
+  ModelRoutingPolicy,
   RoleEfforts,
 } from "../scheduler/model-routing";
 import type { TaskBranchManager } from "../workspace/task-branch";
@@ -22,6 +23,8 @@ export type BackendRuntime = {
   readonly modelMapping?: ModelMapping;
   /** Per-role reasoning effort overrides from Roc settings; unset roles keep defaults. */
   readonly efforts?: RoleEfforts;
+  /** Immutable model admission and primary-effort policy for this scheduler run. */
+  readonly modelRoutingPolicy?: ModelRoutingPolicy;
   readonly harness: AgentHarness;
   /** Releases owned resources idempotently, rejecting if child exit or cleanup cannot be confirmed. */
   close(): Promise<void>;
