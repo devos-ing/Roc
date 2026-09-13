@@ -58,8 +58,8 @@
       "lane": "publication",
       "col": 4,
       "type": "security",
-      "label": "整體驗證",
-      "sublabel": "檢查最終版本"
+      "label": "驗證與獨立審查",
+      "sublabel": "固定最終 head"
     },
     {
       "id": "publish",
@@ -127,7 +127,7 @@
     {
       "dot": "emerald",
       "title": "交付預設",
-      "items": ["完成後自動建立 PR；使用者決定合併"]
+      "items": ["驗證及獨立審查後自動建立 PR；使用者決定合併"]
     },
     {
       "dot": "amber",

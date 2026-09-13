@@ -19,13 +19,13 @@
     {
       "diagram_type": "workflow",
       "output": "delivery-workflow.html",
-      "specification_sha256": "1bac5a3d3c9f3100e7ccf9a3e2852315c8d33ba2c40abed1c21d9680e05b94a8",
-      "specification_bytes": 2878,
-      "artifact_sha256": "6c7ade67081e213f3b82b3cf4590c180d60bc6990282c7373851e47d8e8d6d63",
-      "artifact_bytes": 708137,
+      "specification_sha256": "dd502537d2adb5b8a8833653749ee2a1c0af065ab2dd849d2051e36c1fea2257",
+      "specification_bytes": 2901,
+      "artifact_sha256": "c751734e79f1c96a69730f3e4cada4d2709585c585482a1d1f689aa3861063ec",
+      "artifact_bytes": 708184,
       "validation": "9/9 showcase, 0 errors, 0 warnings",
       "visual_review": "passed",
-      "correction_rounds": 2,
+      "correction_rounds": 3,
       "containment": "1440x900, 1600x1000, 1920x1080, 2048x1320 passed",
       "visual_evidence": "delivery-workflow.visual-check.json"
     }

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 const projectRoot = resolve(import.meta.dir, "..");
@@ -15,52 +16,77 @@ type PackageManifest = {
   engines?: Record<string, string>;
   publishConfig?: Record<string, string>;
   scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
 };
 
 type PackResult = {
+  filename: string;
   files: Array<{ path: string }>;
 };
 
 const stableVersionPattern = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 
+/** Returns a package-test environment without inherited Git repository overrides. */
+function packageEnvironment(extra: Record<string, string> = {}) {
+  const environment: Record<string, string | undefined> = {
+    ...process.env,
+    ...extra,
+  };
+  for (const name of ["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"]) {
+    delete environment[name];
+  }
+  return environment;
+}
+
+/** Reads the package manifest from the repository root. */
 async function readManifest(): Promise<PackageManifest> {
   const text = await readFile(resolve(projectRoot, "package.json"), "utf8");
   return JSON.parse(text) as PackageManifest;
 }
 
-test("package metadata exposes roc-it as a public Bun CLI", async () => {
+/** Runs one subprocess and returns its complete output. */
+async function run(command: string[], cwd: string) {
+  const child = Bun.spawn(command, {
+    cwd,
+    env: packageEnvironment(),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
+test("package metadata exposes only the public Node OpenAmp CLI", async () => {
   const manifest = await readManifest();
 
-  expect(manifest.name).toBe("roc-it");
+  expect(manifest.name).toBe("openamp");
   expect(manifest.version).toMatch(stableVersionPattern);
   expect(manifest.private).toBeUndefined();
   expect(manifest.license).toBe("Apache-2.0");
-  expect(manifest.bin).toEqual({
-    "roc-it": "./src/cli/main.ts",
-    agile: "./src/cli/main.ts",
-  });
+  expect(manifest.bin).toEqual({ openamp: "./src/openamp/main.mjs" });
   expect(manifest.files).toEqual([
-    "src",
-    "skills",
+    "src/openamp",
     "README.md",
     "README.zh-HK.md",
-    "README.details.md",
-    "README.details.zh-HK.md",
     "LICENSE",
   ]);
-  expect(manifest.engines).toEqual({ bun: ">=1.3.0", node: ">=22.19.0" });
+  expect(manifest.engines).toEqual({ node: ">=22.19.0" });
   expect(manifest.publishConfig).toEqual({ access: "public" });
-  expect(manifest.scripts?.dev).toBe("bun src/cli/main.ts");
+  expect(manifest.scripts?.dev).toBe("node src/openamp/main.mjs");
   expect(manifest.scripts?.prepublishOnly).toBe("bun run check");
+  expect(manifest.dependencies).toEqual({
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    typebox: "1.1.38",
+  });
 });
 
-test("a representative next stable version satisfies the package boundary", () => {
-  expect("0.0.3").toMatch(stableVersionPattern);
-});
-
-test("Roc development PR review helpers pass their Python suites", async () => {
+test("OpenAmp development PR review helpers pass their Python suites", async () => {
   for (const script of ["test_evidence.py", "test_ledger.py"]) {
-    const child = Bun.spawn(
+    const result = await run(
       [
         "python3",
         "-B",
@@ -73,130 +99,72 @@ test("Roc development PR review helpers pass their Python suites", async () => {
           script,
         ),
       ],
-      { cwd: projectRoot, stdout: "pipe", stderr: "pipe" },
+      projectRoot,
+    );
+    expect(
+      result.exitCode,
+      `${script}\n${result.stdout}\n${result.stderr}`,
+    ).toBe(0);
+  }
+});
+
+test("npm archive installs a working Node CLI without Roc runtime paths", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "openamp-pack-"));
+  try {
+    const npmCache = resolve(root, "npm-cache");
+    const archiveDirectory = resolve(root, "archive");
+    const installDirectory = resolve(root, "install");
+    await Promise.all([
+      mkdir(npmCache, { recursive: true }),
+      mkdir(archiveDirectory, { recursive: true }),
+      mkdir(installDirectory, { recursive: true }),
+    ]);
+    const child = Bun.spawn(
+      [
+        "npm",
+        "pack",
+        "--json",
+        "--ignore-scripts",
+        "--pack-destination",
+        archiveDirectory,
+      ],
+      {
+        cwd: projectRoot,
+        env: packageEnvironment({ npm_config_cache: npmCache }),
+        stdout: "pipe",
+        stderr: "pipe",
+      },
     );
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    expect(exitCode, `${script}\n${stdout}\n${stderr}`).toBe(0);
+    expect(exitCode, stderr).toBe(0);
+    const result = (JSON.parse(stdout) as PackResult[])[0];
+    if (!result) throw new Error("npm pack returned no archive");
+    const paths = result.files.map((file) => file.path).sort();
+    expect(paths).toContain("src/openamp/main.mjs");
+    expect(paths).not.toContain("src/cli/main.ts");
+    expect(paths.some((path) => path.startsWith("src/scheduler/"))).toBeFalse();
+    expect(paths.some((path) => path.startsWith("skills/"))).toBeFalse();
+    expect(paths.some((path) => path.includes("README.details"))).toBeFalse();
+
+    const archive = resolve(archiveDirectory, result.filename);
+    const installed = await run(
+      ["npm", "install", "--ignore-scripts", "--no-audit", archive],
+      installDirectory,
+    );
+    expect(installed.exitCode, installed.stderr).toBe(0);
+    const help = await run(
+      [resolve(installDirectory, "node_modules/.bin/openamp"), "--help"],
+      installDirectory,
+    );
+    expect(help.exitCode, help.stderr).toBe(0);
+    expect(help.stdout).toContain(
+      "OpenAmp - interactive Pi agent collaboration",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
-});
-
-test("roc-create-tasks stays GitHub-only through a persistent merge handoff", async () => {
-  const [local, shipped] = await Promise.all([
-    readFile(
-      resolve(projectRoot, ".agents/skills/roc-create-tasks/SKILL.md"),
-      "utf8",
-    ),
-    readFile(resolve(projectRoot, "skills/roc-create-tasks/SKILL.md"), "utf8"),
-  ]);
-
-  expect(local).toBe(shipped);
-  const prose = shipped.replace(/\s+/g, " ");
-  expect(prose).not.toMatch(/\btask\s+import\b|\*\*Local queue/i);
-  for (const requirement of [
-    "the user explicitly invoked `roc-create-tasks`",
-    "Use the installed `grilling` skill for requirement discovery",
-    "approval of the complete task set and repository",
-    "Write and publish exactly the approved manifest",
-    "GitHub Issues are the only execution destination",
-    "npx roc-it@latest task publish-github FILE",
-    'bun "$ROC_CLI_ENTRY"',
-    "Respect the user's chosen merge mode and existing execution consent",
-    "Task-plan approval is not permission to start execution or enable automatic merge",
-    "Reuse prior consent for this execution",
-    "If execution consent is missing, ask before starting",
-    "manual merge is the default",
-    "Never enable `--auto-merge` without that choice",
-    "confirm its repository, base branch, and merge mode",
-    "Keep one daemon per repository",
-    "Reuse an existing daemon when its configuration matches",
-    "Never implicitly start a duplicate daemon or restart one to change its mode",
-    "without `--auto-merge`",
-    "`--once` processes one eligible task and exits",
-    "readable classic branch protection",
-    "at least one required status check",
-    "strict up-to-date checks",
-    "administrator enforcement",
-    "Human reviews remain required when configured",
-    "Never bypass or silently modify repository protection",
-    "PR creation does not establish completion",
-    "An open PR stays `awaiting_merge`",
-    "visible wait reasons",
-    "npx roc-it@latest scheduler inspect",
-    "confirmed `done` only after",
-    "PR is confirmed merged into the selected target branch",
-    "verified the merge commit is present in the fetched target",
-  ]) {
-    expect(prose).toContain(requirement);
-  }
-
-  const schedulerCommands = shipped.match(
-    /^npx roc-it@latest scheduler run .+$/gm,
-  );
-  expect(schedulerCommands).toEqual([
-    "npx roc-it@latest scheduler run --base-branch SELECTED_BASE --concurrency 1 --auto-merge",
-  ]);
-  expect(schedulerCommands?.join("\n")).not.toContain("--once");
-});
-
-test("npm archive contains only runtime files", async () => {
-  const npmCache = resolve(projectRoot, ".tmp-agile-tests", "npm-cache");
-  await mkdir(npmCache, { recursive: true });
-  const child = Bun.spawn(
-    ["npm", "pack", "--dry-run", "--json", "--ignore-scripts"],
-    {
-      cwd: projectRoot,
-      env: { ...process.env, npm_config_cache: npmCache },
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-
-  if (exitCode !== 0) {
-    throw new Error(`npm pack failed: ${stderr}`);
-  }
-
-  const output = JSON.parse(stdout) as
-    | PackResult[]
-    | Record<string, PackResult>;
-  const results = Array.isArray(output) ? output : Object.values(output);
-  expect(results).toHaveLength(1);
-
-  const paths = results[0]!.files.map((file) => file.path).sort();
-  const allowedRootFiles = new Set([
-    "LICENSE",
-    "README.md",
-    "README.zh-HK.md",
-    "README.details.md",
-    "README.details.zh-HK.md",
-    "package.json",
-  ]);
-  const unexpected = paths.filter(
-    (path) =>
-      !allowedRootFiles.has(path) &&
-      !path.startsWith("src/") &&
-      !path.startsWith("skills/"),
-  );
-
-  expect(unexpected).toEqual([]);
-  expect(paths).toContain("LICENSE");
-  expect(paths).toContain("README.md");
-  expect(paths).toContain("README.zh-HK.md");
-  expect(paths).toContain("README.details.md");
-  expect(paths).toContain("README.details.zh-HK.md");
-  expect(paths).not.toContain("CONTRIBUTING.md");
-  expect(paths).toContain("package.json");
-  expect(paths).toContain("src/cli/main.ts");
-  expect(paths).toContain("skills/roc-create-tasks/SKILL.md");
-  expect(paths.some((path) => path.includes("pr-review-to-closure"))).toBe(
-    false,
-  );
-});
+}, 60_000);

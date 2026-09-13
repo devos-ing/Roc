@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[setup] Checking required development tools"
+for tool in bun node git gh python3; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "[setup] Missing required tool: $tool" >&2
+    exit 1
+  fi
+done
+
+echo "[setup] Installing locked Bun dependencies"
+time bun install --frozen-lockfile
+
+echo "[setup] Complete"

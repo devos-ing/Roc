@@ -3,11 +3,11 @@
   "ok": true,
   "command": "visual-check",
   "status": "pass",
-  "visualReview": "pending",
+  "visualReview": "passed",
   "artifact": {
-    "path": "/Users/roy/Documents/ChatGPT/agile-agents/docs/design/openamp-cli/delivery-workflow.html",
-    "sha256": "6c7ade67081e213f3b82b3cf4590c180d60bc6990282c7373851e47d8e8d6d63",
-    "bytes": 708137
+    "path": "docs/design/openamp-cli/delivery-workflow.html",
+    "sha256": "c751734e79f1c96a69730f3e4cada4d2709585c585482a1d1f689aa3861063ec",
+    "bytes": 708184
   },
   "state": {
     "detail": "read",
@@ -15,7 +15,7 @@
   },
   "chrome": {
     "status": "available",
-    "executable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    "executable": "agent-browser Chromium in Amp orb"
   },
   "diagnostics": [],
   "containment": {

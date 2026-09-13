@@ -110,12 +110,12 @@ test("release workflow keeps the stable-tag, immutable-action, and ordered-relea
 
   const packing = stepRun(steps, "Pack tagged source");
   expect(packing).toContain(
-    'if type == "array" then .[0] else .["roc-it"] end',
+    'if type == "array" then .[0] else .["openamp"] end',
   );
 
   const registry = stepRun(steps, "Check npm publication state");
   expect(registry).toContain(
-    'if published_integrity="$(npm view "roc-it@$VERSION" dist.integrity 2>"$error_file")"; then',
+    'if published_integrity="$(npm view "openamp@$VERSION" dist.integrity 2>"$error_file")"; then',
   );
   expect(registry).toContain('echo "publish=false" >> "$GITHUB_OUTPUT"');
   const integrityMismatch = registry.indexOf(
@@ -155,12 +155,11 @@ test("release workflow keeps the stable-tag, immutable-action, and ordered-relea
   expect(release).toContain('gh release create "$GITHUB_REF_NAME"');
 });
 
-test("README links to the detailed agile Scout, Implement, Review guide", async () => {
+test("README and architecture describe the interactive OpenAmp boundary", async () => {
   const overview = await readProjectFile("README.md");
-  expect(overview).toContain("[detailed guide](README.details.md)");
-  const readme = await readProjectFile("README.details.md");
-  const start = readme.indexOf("## How it works");
-  const end = readme.indexOf("## Commands", start);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
+  expect(overview).toContain("Independent read-only review is mandatory");
+  expect(overview).toContain("it never calls merge");
+  const architecture = await readProjectFile("docs/architecture.md");
+  expect(architecture).toContain("Pi native TUI");
+  expect(architecture).toContain("It has no merge operation");
 });

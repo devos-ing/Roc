@@ -1,10 +1,12 @@
-# OpenAmp 計畫交接
+# OpenAmp 實作交接
 
-這個分支保存 Roc 轉向 OpenAmp 的產品計畫、架構圖與圖表驗證證據。尚未實作 OpenAmp，沒有新的 CLI 執行入口。
+這個分支包含 Roc 轉向 OpenAmp 的產品計畫、架構圖、Node production runtime 與 M0–M5 本機驗證證據。公開 CLI 執行入口是 `openamp`。
 
 ## 從這裡開始
 
 - [完整計畫](../2026-09-13-openamp-cli-plan.md) 是目前的規劃依據。
+- [M0 技術可行性結果](m0-feasibility.md) 記錄已驗證能力、`RpcClient` 限制及保留風險。
+- [M1–M5 里程碑證據](milestone-evidence.md) 記錄實作、測試與尚待外部授權的驗收。
 - [初步方向](../2026-09-13-openamp-cli-direction.md) 保留早期討論，衝突時以完整計畫為準。
 - [架構圖](architecture.html) 與 [交付流程圖](delivery-workflow.html) 是可在本機瀏覽器開啟的獨立 HTML。GitHub 會顯示原始碼，可下載後開啟。
 - [圖表驗證紀錄](diagram-validation.json) 包含規格與 HTML 的 SHA-256、檢查範圍及截圖證據。
@@ -20,23 +22,23 @@
 - 完成修改後自動建立 GitHub PR，合併由使用者決定。
 - 先完成計畫與圖，再開始實作。
 
-交付前是否必須由獨立 agent 審查仍未確認。計畫建議只在最終交付時強制審查。Node.js、Pi 原生 TUI、兩個子 agent 的並行上限及專用功能 worktree 都是待原型驗證的建議，不是已完成的功能。
+所有修改型 PR 及其更新在交付前都必須由獨立 agent 審查固定的最終版本；新 commit、base 或需求變更必須重新驗證及審查。一般 agent 工具不得發布或合併，遠端發布只由 Delivery 執行，合併只由使用者決定。Node.js、Pi 原生 TUI、最多兩個子 agent、專用功能／writer worktrees、循序整合及自動 PR reconciliation 均已實作並通過可重現測試。
 
-## 下一步與完成條件
+## 目前狀態與外部驗收
 
-先審閱完整計畫並收斂審查政策。使用者同意開始實作後，從 M0 的 Pi TUI、extension、RPC、取消及恢復原型開始。M0 有驗證結果後才進入 M1。
+M0–M5 的 repository 內實作已完成。package archive 只包含 OpenAmp runtime；Roc daemon、queue、舊 CLI 與 onboarding skill 不會發布。舊 source、tests 和操作文件仍留在 repository／`docs/legacy`，供既有工作的回復與遷移參考。
 
-里程碑順序為 M0 可行性 → M1 單 agent CLI → M2 可靠委派 → M3 協同實作 → M4 自動 PR → M5 替代 Roc。每個里程碑的驗收、停止條件與程式碼責任見完整計畫第 8–11 節。
+尚未執行真實 macOS terminal、付費模型供應商或 GitHub mutation acceptance，也沒有發布 npm package。這些是發布前外部驗收，不可由本機替身結果代替；選定測試 repository 並取得 push／PR 授權後才可執行。
 
 ## 分支與證據範圍
 
-分支為 `codex/openamp-cli-plan`，從已提交的 `0469ef7156021e722e710f3db3266a5a372526ad` 建立。只提交本次 OpenAmp 文件與圖表，沒有帶入原工作目錄內其他未提交的功能、ObservationPack、套件或設定修改。
+分支為 `codex/openamp-cli-plan`，實作基準為已提交的規劃版本 `d0e69c7fa529bcf3c5f0f46629daf1df54a06351`。OpenAmp 建立專用 worktree，來源工作目錄的未提交修改不會被帶入功能 branch。
 
 部分初始調查來自當時尚未提交的本機檔案。完整計畫已標記這項限制。開始實作前，以實際分支中的 package manifest、lockfile、Pi exports 與程式碼重新確認重用項目。
 
 Pi SDK 文件隨安裝的固定版本套件提供，位於 `node_modules/@earendil-works/pi-coding-agent/docs/`。既有「同一功能共用 worktree」需求已摘要在完整計畫第 6 節，原始的另一項工作計畫不屬於此分支。
 
-圖表通過 9/9 showcase 結構檢查及四種桌面尺寸檢查。截圖已檢視；此證據不代表 OpenAmp runtime 通過測試，也不代表 Amp 內部架構已被驗證。圖的固定操作介面使用英文。
+圖表通過 9/9 showcase 結構檢查及四種桌面尺寸檢查。圖表證據與 runtime 測試是兩組獨立證據；兩者都不代表 Amp 的非公開內部架構已被驗證。
 
 ## 架構預覽
 

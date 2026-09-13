@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           pack_json="$(npm pack --json --ignore-scripts)"
-          package_json="$(jq -c 'if type == "array" then .[0] else .["roc-it"] end' <<<"$pack_json")"
+          package_json="$(jq -c 'if type == "array" then .[0] else .["openamp"] end' <<<"$pack_json")"
           archive="$(jq -r '.filename' <<<"$package_json")"
           integrity="$(jq -r '.integrity' <<<"$package_json")"
           if [[ ! -f "$archive" || "$integrity" != sha512-* ]]; then
@@ -85,9 +85,9 @@ jobs:
           set -euo pipefail
           error_file="$(mktemp)"
           trap 'rm -f "$error_file"' EXIT
-          if published_integrity="$(npm view "roc-it@$VERSION" dist.integrity 2>"$error_file")"; then
+          if published_integrity="$(npm view "openamp@$VERSION" dist.integrity 2>"$error_file")"; then
             if [[ "$published_integrity" != "$EXPECTED_INTEGRITY" ]]; then
-              echo "roc-it@$VERSION exists with different bytes" >&2
+              echo "openamp@$VERSION exists with different bytes" >&2
               exit 1
             fi
             echo "publish=false" >> "$GITHUB_OUTPUT"
@@ -112,9 +112,9 @@ jobs:
           error_file="$(mktemp)"
           trap 'rm -f "$error_file"' EXIT
           for attempt in {1..12}; do
-            if published_integrity="$(npm view "roc-it@$VERSION" dist.integrity 2>"$error_file")"; then
+            if published_integrity="$(npm view "openamp@$VERSION" dist.integrity 2>"$error_file")"; then
               if [[ "$published_integrity" != "$EXPECTED_INTEGRITY" ]]; then
-                echo "Published roc-it@$VERSION does not match the tagged archive" >&2
+                echo "Published openamp@$VERSION does not match the tagged archive" >&2
                 exit 1
               fi
               exit 0
@@ -127,7 +127,7 @@ jobs:
               sleep 5
             fi
           done
-          echo "roc-it@$VERSION did not become visible in the npm registry" >&2
+          echo "openamp@$VERSION did not become visible in the npm registry" >&2
           cat "$error_file" >&2
           exit 1
 
