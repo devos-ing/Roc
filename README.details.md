@@ -393,7 +393,7 @@ Use `roc-create-tasks` in your coding assistant to create and approve tasks.
 ## The task board
 
 `tui` opens Welcome with setup/connection status, even before Roc settings or
-GitHub login are available. `task board` opens Tasks directly. Both are read-only:
+GitHub login are available. `task board` opens Tasks directly and remains read-only. Interactive `tui` can explicitly start one scheduler it owns after showing the repository/default-branch, concurrency 2, and manual-merge preview; `S` stops it and quit waits for the same cancellation and cleanup. External live, stale, and unreadable locks are monitor-only and are never signalled or removed by TUI. The board itself remains checkpoint-only:
 neither starts a scheduler or changes tasks. On a wide terminal, Tasks shows a
 left task list and the selected task's progress detail on the right. Switch pages
 with Tab, 1/2, or a mouse click on the top tabs. R refreshes; failed reads keep

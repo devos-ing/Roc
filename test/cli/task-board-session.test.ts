@@ -1,17 +1,23 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { runCli } from "../../src/cli/run";
+import { runBackendSession } from "../../src/cli/runtime";
 import type {
   TaskBoardSnapshot,
   TaskBoardTask,
 } from "../../src/cli/task-board-model";
 import { runTaskBoardSession } from "../../src/cli/task-board-session";
+import type { CliRuntime, SchedulerRunInput } from "../../src/cli/types";
 import { githubTaskSnapshot } from "../../src/github/execution-view";
+import { BunGitHubCommandRunner } from "../../src/github/pr-publisher";
+import { createFakeHarness } from "../../src/harness/fake";
 import { saveRocSettings } from "../../src/settings";
+import { git } from "../helpers/git";
+import { memoryPlan } from "../helpers/github-plan";
 
 const tokens = {
   inputTokens: 0,
@@ -133,8 +139,11 @@ class Output extends EventEmitter {
 }
 
 /** Waits for a deterministic test-visible state without relying on arbitrary long delays. */
-async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 500;
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 500,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;
     await Bun.sleep(1);
@@ -726,3 +735,761 @@ test("CLI entries are read only, Welcome survives absent settings and rejected G
     await rm(root, { recursive: true, force: true });
   }
 });
+
+/** Holds owned work pending so tests can observe cancellation and terminal restoration ordering. */
+function controlledSchedulerSession(
+  read: () => TaskBoardSnapshot = () => board(),
+) {
+  const input = new Input();
+  const output = new Output();
+  const calls = { starts: 0, stops: 0 };
+  let work: Promise<void> | undefined;
+  let resolveWork: () => void = () => {};
+  let rejectWork: (error: Error) => void = () => {};
+  let notifyStart: () => void = () => {};
+  const session = runTaskBoardSession({
+    input: input as never,
+    output: output as never,
+    read,
+    scheduler: {
+      preview: "acme/test → main · concurrency 2 · manual merge",
+      start() {
+        calls.starts++;
+        work = new Promise<void>((resolve, reject) => {
+          resolveWork = resolve;
+          rejectWork = reject;
+        });
+        return work;
+      },
+      async stop() {
+        calls.stops++;
+        await work;
+      },
+      onStarted(notify) {
+        notifyStart = notify;
+      },
+    },
+  });
+  const outcome = session.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  return {
+    input,
+    output,
+    calls,
+    outcome,
+    release: () => resolveWork(),
+    reject: (error: Error) => rejectWork(error),
+    notifyStarted: () => notifyStart(),
+  };
+}
+
+test.each([
+  "q",
+  "ctrl-c",
+  "sigterm",
+  "sighup",
+  "input-end",
+  "input-close",
+  "input-error",
+  "output-close",
+  "output-error",
+  "render-error",
+])(
+  "owned scheduler cleanup precedes terminal restoration on %s",
+  async (event) => {
+    const hangupListeners = process.listenerCount("SIGHUP");
+    const fixture = controlledSchedulerSession();
+    const { input, output, calls } = fixture;
+    await waitFor(() => frame(output).includes("first work"));
+    input.emit("data", "s");
+    await waitFor(() => calls.starts === 1);
+    const failure = new Error(`terminal ${event}`);
+    if (event === "q") input.emit("data", "q");
+    else if (event === "ctrl-c") input.emit("data", "\u0003");
+    else if (event === "sigterm") process.emit("SIGTERM");
+    else if (event === "sighup") process.emit("SIGHUP");
+    else if (event === "input-end") input.emit("end");
+    else if (event === "input-close") input.emit("close");
+    else if (event === "input-error") input.emit("error", failure);
+    else if (event === "output-close") output.emit("close");
+    else if (event === "output-error") output.emit("error", failure);
+    else {
+      output.failFrame = true;
+      output.emit("resize");
+    }
+    await Bun.sleep(1);
+    const beforeSettlement = {
+      stops: calls.stops,
+      restored: input.rawModes.includes(false),
+    };
+    output.failFrame = false;
+    fixture.release();
+    const outcome = await fixture.outcome;
+    await Bun.sleep(1);
+    expect(beforeSettlement).toEqual({ stops: 1, restored: false });
+    if (event.endsWith("error")) expect(outcome).toBeInstanceOf(Error);
+    else expect(outcome).toBeUndefined();
+    expectRestored(input, output);
+    expect(process.listenerCount("SIGHUP")).toBe(hangupListeners);
+    const restoredAt = output.writes.indexOf("\u001B[?1049l");
+    expect(
+      output.writes
+        .slice(restoredAt + 1)
+        .some((write) => write.startsWith("\u001B[2J")),
+    ).toBe(false);
+  },
+);
+
+test("quit closes scheduler admission before parsing a following Start key", async () => {
+  const fixture = controlledSchedulerSession();
+  await waitFor(() => frame(fixture.output).includes("first work"));
+  fixture.input.emit("data", "qs");
+  await Bun.sleep(1);
+  fixture.release();
+  expect(await fixture.outcome).toBeUndefined();
+  expect(fixture.calls.starts).toBe(0);
+  expectRestored(fixture.input, fixture.output);
+});
+
+test("successful Stop stays in the monitor and permits a later explicit Start", async () => {
+  const fixture = controlledSchedulerSession();
+  await waitFor(() => frame(fixture.output).includes("first work"));
+  fixture.input.emit("data", "s");
+  await waitFor(() => fixture.calls.starts === 1);
+  fixture.input.emit("data", "s");
+  await waitFor(() => fixture.calls.stops === 1);
+  fixture.release();
+  await Bun.sleep(2);
+  const stoppedFrame = frame(fixture.output);
+  const restoredWhileMonitoring = fixture.input.rawModes.includes(false);
+  fixture.input.emit("data", "s");
+  await Bun.sleep(1);
+  const restartCount = fixture.calls.starts;
+  fixture.input.emit("data", "q");
+  fixture.release();
+  const outcome = await fixture.outcome;
+  expect(stoppedFrame).toContain("Scheduler: stopped");
+  expect(restoredWhileMonitoring).toBe(false);
+  expect(restartCount).toBe(2);
+  expect(outcome).toBeUndefined();
+  expectRestored(fixture.input, fixture.output);
+});
+
+test("cleanup uncertainty remains a failing outcome after scheduler settlement", async () => {
+  const fixture = controlledSchedulerSession();
+  await waitFor(() => frame(fixture.output).includes("first work"));
+  fixture.input.emit("data", "s");
+  await waitFor(() => fixture.calls.starts === 1);
+  fixture.reject(new Error("SCHEDULER_CHECKOUT_RETAINED: cleanup unconfirmed"));
+  await Bun.sleep(2);
+  fixture.input.emit("data", "q");
+  expect(await fixture.outcome).toBeInstanceOf(Error);
+  expectRestored(fixture.input, fixture.output);
+});
+
+test("Tasks keeps an unexpected scheduler exit and its error visible", async () => {
+  const fixture = controlledSchedulerSession();
+  await waitFor(() => frame(fixture.output).includes("first work"));
+  fixture.input.emit("data", "s2");
+  await waitFor(() => fixture.calls.starts === 1);
+  fixture.reject(new Error("scheduler exited unexpectedly"));
+  await waitFor(() =>
+    frame(fixture.output).includes(
+      "Scheduler error: scheduler exited unexpectedly",
+    ),
+  );
+  fixture.input.emit("data", "q");
+  expect(await fixture.outcome).toBeInstanceOf(Error);
+  expectRestored(fixture.input, fixture.output);
+});
+
+test.each(["initial", "stale"])(
+  "Tasks preserves scheduler failures alongside %s checkpoint read failures",
+  async (mode) => {
+    let failedRead = mode === "initial";
+    const fixture = controlledSchedulerSession(() => {
+      if (failedRead) throw new Error("checkpoint connection unavailable");
+      return board();
+    });
+    try {
+      await waitFor(() =>
+        frame(fixture.output).includes(
+          failedRead ? "checkpoint connection unavailable" : "first work",
+        ),
+      );
+      fixture.input.emit("data", "s");
+      await waitFor(() => fixture.calls.starts === 1);
+      failedRead = true;
+      fixture.input.emit("data", "r");
+      await waitFor(() =>
+        frame(fixture.output).includes("checkpoint connection unavailable"),
+      );
+      fixture.reject(new Error("scheduler cleanup unconfirmed"));
+      await Bun.sleep(5);
+      const displayed = stripVTControlCharacters(frame(fixture.output));
+      expect(displayed).toContain("checkpoint connection unavailable");
+      expect(displayed).toContain("Scheduler: failed");
+      expect(displayed).toContain("scheduler cleanup unconfirmed");
+      if (mode === "stale") expect(displayed).toContain("first work");
+    } finally {
+      fixture.input.emit("data", "q");
+      fixture.release();
+      expect(await fixture.outcome).toBeInstanceOf(Error);
+      expectRestored(fixture.input, fixture.output);
+    }
+  },
+);
+
+test.each(["started", "settled"])(
+  "an asynchronous scheduler %s render failure closes the session safely",
+  async (phase) => {
+    const fixture = controlledSchedulerSession();
+    let completed = false;
+    void fixture.outcome.then(() => {
+      completed = true;
+    });
+    await waitFor(() => frame(fixture.output).includes("first work"));
+    fixture.input.emit("data", "s");
+    await waitFor(() => fixture.calls.starts === 1);
+    fixture.output.failFrame = true;
+    let escaped: unknown;
+    if (phase === "started") {
+      try {
+        fixture.notifyStarted();
+      } catch (error) {
+        escaped = error;
+      }
+      await Bun.sleep(1);
+    }
+    fixture.release();
+    await Bun.sleep(5);
+    const closedWithoutAnotherKey = completed;
+    fixture.output.failFrame = false;
+    fixture.input.emit("data", "q");
+    const outcome = await fixture.outcome;
+    expect(escaped).toBeUndefined();
+    expect(closedWithoutAnotherKey).toBe(true);
+    expect(outcome).toBeInstanceOf(Error);
+    expectRestored(fixture.input, fixture.output);
+  },
+);
+
+/** Runs the real TUI command with local settings and an observable, held scheduler boundary. */
+async function controlledTuiCommand() {
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), "roc-tui-control-")),
+  );
+  await saveRocSettings(
+    { cycle: { type: "weekly" }, execution: { allowUnsandboxed: true } },
+    root,
+  );
+  const input = new Input();
+  const output = new Output();
+  const errors: string[] = [];
+  const calls = { metadata: 0, runs: [] as SchedulerRunInput[] };
+  let resolveRun: () => void = () => {};
+  let rejectRun: (error: Error) => void = () => {};
+  const runtime: CliRuntime = {
+    projectRoot: root,
+    homeRoot: root,
+    async schedulerMetadata() {
+      calls.metadata++;
+      return { repository: "acme/test", baseBranch: "trunk" };
+    },
+    async readTasks() {
+      return githubTaskSnapshot([]);
+    },
+    runScheduler(options) {
+      calls.runs.push(options);
+      return new Promise<void>((resolve, reject) => {
+        resolveRun = resolve;
+        rejectRun = reject;
+      });
+    },
+  };
+  const outcome = runCli(
+    ["tui"],
+    {
+      input: input as never,
+      output: output as never,
+      out: () => {},
+      err: (text) => errors.push(text),
+    },
+    runtime,
+  );
+  return {
+    root,
+    input,
+    output,
+    runtime,
+    calls,
+    errors,
+    outcome,
+    release: () => resolveRun(),
+    reject: (error: Error) => rejectRun(error),
+    async dispose() {
+      input.emit("data", "q");
+      resolveRun();
+      await outcome;
+      await rm(root, { recursive: true, force: true });
+      await rm(`${root}.agile-checkout.lock`, { force: true });
+    },
+  };
+}
+
+test("TUI previews real metadata before Start and pins that branch at dispatch", async () => {
+  const fixture = await controlledTuiCommand();
+  try {
+    await waitFor(() => frame(fixture.output).includes("acme/test"));
+    expect(frame(fixture.output)).toContain("trunk");
+    expect(frame(fixture.output)).not.toContain("repository target branch");
+    expect(fixture.calls.runs).toHaveLength(0);
+    fixture.input.emit("data", "s");
+    await waitFor(() => fixture.calls.runs.length === 1);
+    expect(fixture.calls.metadata).toBeGreaterThanOrEqual(2);
+    expect(fixture.calls.runs[0]).toMatchObject({
+      repoPath: fixture.root,
+      baseBranch: "trunk",
+      concurrency: 2,
+      autoMerge: false,
+    });
+    fixture.input.emit("data", "q");
+    await waitFor(() => fixture.calls.runs[0]?.signal?.aborted === true);
+    expect(fixture.input.rawModes).toEqual([true]);
+    fixture.release();
+    expect(await fixture.outcome).toBe(0);
+    expectRestored(fixture.input, fixture.output);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("TUI cancels pending readiness before invoking the scheduler", async () => {
+  const fixture = await controlledTuiCommand();
+  let releaseMetadata: () => void = () => {};
+  const pendingMetadata = new Promise<void>((resolve) => {
+    releaseMetadata = resolve;
+  });
+  let waiting = false;
+  try {
+    await waitFor(() => frame(fixture.output).includes("acme/test"));
+    fixture.runtime.schedulerMetadata = async () => {
+      waiting = true;
+      await pendingMetadata;
+      return { repository: "acme/test", baseBranch: "trunk" };
+    };
+    fixture.input.emit("data", "s");
+    await waitFor(() => waiting);
+    const whileWaiting = frame(fixture.output);
+    fixture.input.emit("data", "q");
+    releaseMetadata();
+    await Bun.sleep(5);
+    fixture.release();
+    expect(await fixture.outcome).toBe(0);
+    expect(fixture.calls.runs).toHaveLength(0);
+    expect(whileWaiting).toContain("Scheduler: starting");
+    expect(whileWaiting).not.toContain("Scheduler: running");
+    expect(fixture.errors).toEqual([]);
+    expectRestored(fixture.input, fixture.output);
+  } finally {
+    releaseMetadata();
+    await fixture.dispose();
+  }
+});
+
+test("TUI reports unconfirmed cleanup as a nonzero command result", async () => {
+  const fixture = await controlledTuiCommand();
+  try {
+    await waitFor(() => frame(fixture.output).includes("acme/test"));
+    fixture.input.emit("data", "s");
+    await waitFor(() => fixture.calls.runs.length === 1);
+    fixture.reject(
+      new Error("SCHEDULER_CHECKOUT_RETAINED: cleanup unconfirmed"),
+    );
+    await Bun.sleep(2);
+    fixture.input.emit("data", "q");
+    expect(await fixture.outcome).toBe(1);
+    expect(fixture.errors.join("\n")).toContain("SCHEDULER_CHECKOUT_RETAINED");
+    expectRestored(fixture.input, fixture.output);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("a cancelled restart cannot erase an unconfirmed scheduler cleanup failure", async () => {
+  const fixture = await controlledTuiCommand();
+  try {
+    await waitFor(() => frame(fixture.output).includes("acme/test"));
+    fixture.input.emit("data", "s");
+    await waitFor(() => fixture.calls.runs.length === 1);
+    fixture.reject(
+      new Error("SCHEDULER_CHECKOUT_RETAINED: cleanup unconfirmed"),
+    );
+    await waitFor(() => frame(fixture.output).includes("Scheduler: failed"));
+    fixture.input.emit("data", "sq");
+    expect(await fixture.outcome).toBe(1);
+    expect(fixture.calls.runs).toHaveLength(1);
+    expect(fixture.errors.join("\n")).toContain("SCHEDULER_CHECKOUT_RETAINED");
+    expect(frame(fixture.output)).not.toContain("Scheduler: stopped");
+    expectRestored(fixture.input, fixture.output);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test.each(["welcome", "tasks"])(
+  "TUI displays the captured startup target before dispatch from %s",
+  async (tab) => {
+    const fixture = await controlledTuiCommand();
+    let previewAtDispatch = "";
+    try {
+      await waitFor(() => frame(fixture.output).includes("acme/test"));
+      expect(frame(fixture.output)).toContain("trunk");
+      if (tab === "tasks") fixture.input.emit("data", "2");
+      fixture.runtime.schedulerMetadata = async () => ({
+        repository: "acme/test",
+        baseBranch: "release-target",
+      });
+      const dispatch = fixture.runtime.runScheduler;
+      fixture.runtime.runScheduler = (options) => {
+        previewAtDispatch = frame(fixture.output);
+        return dispatch(options);
+      };
+      fixture.input.emit("data", "s");
+      await waitFor(() => fixture.calls.runs.length === 1);
+      expect(fixture.calls.runs[0]?.baseBranch).toBe("release-target");
+      expect(previewAtDispatch).toContain("acme/test");
+      expect(previewAtDispatch).toContain("release-target");
+      expect(previewAtDispatch).toContain("concurrency 2");
+      expect(previewAtDispatch).toContain("manual merge");
+    } finally {
+      await fixture.dispose();
+    }
+  },
+);
+
+test("TUI refresh cannot replace the displayed target of an active owned run", async () => {
+  const fixture = await controlledTuiCommand();
+  try {
+    await waitFor(() => frame(fixture.output).includes("acme/test"));
+    fixture.input.emit("data", "s");
+    await waitFor(() => fixture.calls.runs.length === 1);
+    let refreshed = false;
+    fixture.runtime.schedulerMetadata = async () => {
+      refreshed = true;
+      return { repository: "acme/test", baseBranch: "next-default" };
+    };
+    fixture.input.emit("data", "r");
+    await waitFor(() => refreshed);
+    await Bun.sleep(10);
+    expect(fixture.calls.runs[0]?.baseBranch).toBe("trunk");
+    expect(frame(fixture.output)).toContain("trunk");
+    expect(frame(fixture.output)).not.toContain("next-default");
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("a failed startup preview cannot dispatch work after terminal shutdown begins", async () => {
+  const fixture = await controlledTuiCommand();
+  try {
+    await waitFor(() => frame(fixture.output).includes("acme/test"));
+    fixture.runtime.schedulerMetadata = async () => {
+      fixture.output.failFrame = true;
+      return { repository: "acme/test", baseBranch: "trunk" };
+    };
+    fixture.input.emit("data", "s");
+    await Bun.sleep(10);
+    fixture.output.failFrame = false;
+    fixture.release();
+    fixture.input.emit("data", "q");
+    expect(await fixture.outcome).toBe(1);
+    expect(fixture.calls.runs).toHaveLength(0);
+    expectRestored(fixture.input, fixture.output);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test.each(["live", "stale", "unreadable"])(
+  "TUI refresh displays an external %s guard and cannot start or remove it",
+  async (state) => {
+    const fixture = await controlledTuiCommand();
+    try {
+      await waitFor(() => frame(fixture.output).includes("guard absent"));
+      let pid = process.pid;
+      if (state === "stale") {
+        const exited = Bun.spawn([process.execPath, "-e", "process.exit(0)"]);
+        pid = exited.pid;
+        await exited.exited;
+      }
+      const source =
+        state === "unreadable"
+          ? "not an ownership record"
+          : JSON.stringify({
+              version: 1,
+              ownerPid: pid,
+              runId: "external-fixture",
+              ownerToken: "fixture-token",
+              acquiredAt: "2026-09-13T00:00:00.000Z",
+            });
+      const lock = `${fixture.root}.agile-checkout.lock`;
+      await writeFile(lock, source);
+      fixture.input.emit("data", "r");
+      await waitFor(() => frame(fixture.output).includes(`guard ${state}`));
+      fixture.input.emit("data", "s");
+      await Bun.sleep(20);
+      fixture.input.emit("data", "q");
+      await fixture.outcome;
+      expect(fixture.calls.runs).toHaveLength(0);
+      expect(await Bun.file(lock).text()).toBe(source);
+      expectRestored(fixture.input, fixture.output);
+    } finally {
+      await fixture.dispose();
+    }
+  },
+);
+
+test("TUI runs the real backend through review and publication before awaiting manual merge", async () => {
+  const fixture = await controlledTuiCommand();
+  const remote = memoryPlan([["answer.ts"]]);
+  const real = new BunGitHubCommandRunner();
+  let launches = 0;
+  let activity = "";
+  let schedulerFailure: unknown;
+  let implementationHead = "";
+  let dispatched: SchedulerRunInput | undefined;
+  let fake: ReturnType<typeof createFakeHarness> | undefined;
+  try {
+    await git(["init"], fixture.root);
+    await git(["config", "user.name", "Test"], fixture.root);
+    await git(["config", "user.email", "test@example.test"], fixture.root);
+    await writeFile(join(fixture.root, "README.md"), "fixture\n");
+    await git(["add", "."], fixture.root);
+    await git(["commit", "-m", "seed"], fixture.root);
+    await git(["update-ref", "refs/remotes/origin/main", "HEAD"], fixture.root);
+    fixture.runtime.schedulerMetadata = async () => ({
+      repository: "acme/test",
+      baseBranch: "main",
+    });
+    fixture.runtime.readTasks = async () => {
+      const { tasks, diagnostics } = await remote.store.list();
+      return githubTaskSnapshot(tasks, diagnostics);
+    };
+    fixture.runtime.runScheduler = async (input) => {
+      launches++;
+      dispatched = input;
+      try {
+        await runBackendSession(
+          async ({ branches }) => {
+            const at = new Date().toISOString();
+            const scripted = createFakeHarness({
+              attempts: (["scout", "review"] as const).map((role) => ({
+                taskId: "issue-41",
+                role,
+                retryIndex: 0,
+                expect: {
+                  model: role === "scout" ? "luna" : "sol",
+                  effort: "high",
+                },
+                deliveries: [
+                  {
+                    nextCursor: "output",
+                    event: {
+                      type: "attempt.output",
+                      eventId: `${role}-output`,
+                      attemptId: "fixture",
+                      sequence: 1,
+                      occurredAt: at,
+                      output:
+                        role === "scout"
+                          ? {
+                              kind: "scout",
+                              summary: "Inspect answer",
+                              files: ["answer.ts"],
+                              tests: [],
+                              risks: [],
+                            }
+                          : {
+                              kind: "review",
+                              decision: "accepted",
+                              findings: [],
+                              remainingGaps: [],
+                            },
+                    },
+                  },
+                  {
+                    nextCursor: "complete",
+                    event: {
+                      type: "attempt.completed",
+                      eventId: `${role}-complete`,
+                      attemptId: "fixture",
+                      sequence: 2,
+                      occurredAt: at,
+                    },
+                  },
+                ],
+              })),
+            });
+            fake = scripted;
+            return {
+              catalog: ["luna", "terra", "sol"].map((id) => ({
+                id,
+                supportedReasoningEfforts: ["medium", "high"],
+              })),
+              harness: {
+                async step(request) {
+                  if (request.attempt.role !== "implement")
+                    return scripted.harness.step(request);
+                  if (request.backendCursor === undefined) {
+                    const taskId = request.attempt.taskId;
+                    const workspace = await branches.prepare(taskId);
+                    await writeFile(
+                      join(workspace.path, "answer.ts"),
+                      "export const answer = 42;\n",
+                    );
+                    const commitSha = await branches.commitChanges(taskId);
+                    implementationHead = commitSha;
+                    return {
+                      kind: "event" as const,
+                      nextCursor: "output",
+                      event: {
+                        type: "attempt.output" as const,
+                        eventId: "implement-output",
+                        attemptId: request.attempt.attemptId,
+                        sequence: 1,
+                        occurredAt: at,
+                        output: {
+                          kind: "implement" as const,
+                          commitSha,
+                          validation: ["fixture"],
+                          risks: [],
+                          limitations: [],
+                        },
+                      },
+                    };
+                  }
+                  return {
+                    kind: "event" as const,
+                    nextCursor: "complete",
+                    event: {
+                      type: "attempt.completed" as const,
+                      eventId: "implement-complete",
+                      attemptId: request.attempt.attemptId,
+                      sequence: 2,
+                      occurredAt: at,
+                    },
+                  };
+                },
+                async cancel(attemptId) {
+                  await scripted.harness.cancel(attemptId);
+                },
+              },
+              async close() {},
+            };
+          },
+          input,
+          "tui-real-happy",
+          {
+            store: remote.store,
+            command: {
+              async run(command) {
+                if (command.command[0] === "gh") {
+                  const stdout =
+                    command.command[1] === "pr"
+                      ? JSON.stringify({
+                          number: 99,
+                          state: "OPEN",
+                          baseRefName: "main",
+                          headRefName: "agile/issue-41",
+                          headRefOid: implementationHead,
+                          mergeCommit: null,
+                        })
+                      : '{"nameWithOwner":"acme/test"}';
+                  return { exitCode: 0, stdout, stderr: "" };
+                }
+                if (command.command[1] === "fetch")
+                  return { exitCode: 0, stdout: "", stderr: "" };
+                return real.run(command);
+              },
+            },
+            publisherFactory: (branches) => ({
+              baseBranch: "main",
+              async publish(published) {
+                await branches.assertReviewReady(
+                  published.task.id,
+                  published.publication.commitSha,
+                  published.task.baseCommit,
+                );
+                return {
+                  number: 99,
+                  url: "https://github.com/acme/test/pull/99",
+                  state: "OPEN" as const,
+                };
+              },
+            }),
+            onActivity: (_taskId, summary) => {
+              activity = summary;
+            },
+          },
+        );
+      } catch (error) {
+        schedulerFailure = error;
+        throw error;
+      }
+    };
+    await waitFor(() => frame(fixture.output).includes("acme/test"));
+    fixture.input.emit("data", "s");
+    await waitFor(
+      () =>
+        activity.includes("awaiting_merge") ||
+        frame(fixture.output).includes("Scheduler: failed"),
+      5_000,
+    );
+    expect(schedulerFailure).toBeUndefined();
+    expect(activity).toContain("awaiting_merge");
+    fake?.assertComplete();
+    const completed = await remote.store.get(41);
+    expect(
+      completed.execution?.attempts.map(({ descriptor }) => ({
+        role: descriptor.role,
+        model: descriptor.model,
+        effort: descriptor.effort,
+      })),
+    ).toEqual([
+      { role: "scout", model: "luna", effort: "high" },
+      { role: "implement", model: "terra", effort: "medium" },
+      { role: "review", model: "sol", effort: "high" },
+    ]);
+    expect(completed.execution?.phase).toBe("awaiting_merge");
+    expect(completed.execution?.publication?.url).toBe(
+      "https://github.com/acme/test/pull/99",
+    );
+    expect(dispatched).toMatchObject({
+      repoPath: fixture.root,
+      baseBranch: "main",
+      concurrency: 2,
+      autoMerge: false,
+    });
+    fixture.input.emit("data", "2r");
+    await waitFor(
+      () => frame(fixture.output).includes("awaiting_merge"),
+      5_000,
+    );
+    fixture.input.emit("data", "s");
+    await waitFor(
+      () => frame(fixture.output).includes("Scheduler: stopped"),
+      5_000,
+    );
+    expect(launches).toBe(1);
+    expect(fixture.input.rawModes).toEqual([true]);
+  } finally {
+    fixture.input.emit("data", "q");
+    expect(await fixture.outcome).toBe(0);
+    expectRestored(fixture.input, fixture.output);
+    await rm(fixture.root, { recursive: true, force: true });
+    await rm(`${fixture.root}.agile-checkout.lock`, { force: true });
+  }
+}, 15_000);

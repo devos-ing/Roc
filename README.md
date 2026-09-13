@@ -147,7 +147,7 @@ In another terminal, set the same `ROC_CLI_ENTRY`, enter the same project, and r
 bun "$ROC_CLI_ENTRY" task board
 ```
 
-The board is read-only. Press `Enter` for details or `Q` to quit.
+`task board` is read-only. Interactive `tui` opens the same monitor and can start one scheduler owned by that screen: review the repository/default-branch, concurrency 2, and manual-merge preview, then press `S` to Start and `S` again to Stop. Quit waits for its cancellation and cleanup; external, stale, and unreadable locks remain monitor-only.
 Colored columns show progress, attention, and completed work; the layout adapts
 to your terminal width. Redirected output stays plain.
 Details include elapsed time, attempt time, merge waiting, recent activity and incomplete usage.
