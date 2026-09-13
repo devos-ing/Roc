@@ -3,7 +3,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runOpenAmp } from "../../src/openamp/cli.mjs";
-import { remoteMutationReason, runGit } from "../../src/openamp/command.mjs";
+import {
+  agentEnvironment,
+  remoteMutationReason,
+  runGit,
+} from "../../src/openamp/command.mjs";
 import { ChangeDelivery, parseReview } from "../../src/openamp/delivery.mjs";
 import { createOpenAmpExtension } from "../../src/openamp/extension.mjs";
 import { ChangeStore } from "../../src/openamp/state.mjs";
@@ -117,6 +121,11 @@ describe("M1 feature conversations", () => {
       "npm publish",
       "curl -X POST https://api.github.com/repos/example/example/issues",
       "ssh github.example mutate-repository",
+      "/usr/bin/git push origin HEAD",
+      "gh issue comment 1 --body bypass",
+      "gh release delete-asset v1 artifact --yes",
+      "pnpm publish",
+      "curl -T artifact https://uploads.example.test",
     ]) {
       expect(remoteMutationReason(command), command).toContain("only Delivery");
     }
@@ -142,12 +151,15 @@ describe("M1 feature conversations", () => {
   test("hides publication credentials from the interactive agent runtime", async () => {
     const { source } = await fixtureRepository();
     const originalToken = process.env.GH_TOKEN;
+    const originalHome = process.env.HOME;
+    const originalSshAgent = process.env.SSH_AUTH_SOCK;
     process.env.GH_TOKEN = "delivery-only-test-token";
-    let runtimeToken;
+    process.env.SSH_AUTH_SOCK = "/delivery-only/ssh-agent.sock";
+    let runtimeEnvironment;
     class FakeInteractiveMode {
       /** Ends the TUI immediately after observing its process environment. */
       async run() {
-        runtimeToken = process.env.GH_TOKEN;
+        runtimeEnvironment = { ...process.env };
       }
     }
     try {
@@ -155,12 +167,42 @@ describe("M1 feature conversations", () => {
         cwd: source,
         InteractiveMode: FakeInteractiveMode,
       });
-      expect(runtimeToken).toBeUndefined();
+      expect(runtimeEnvironment.GH_TOKEN).toBeUndefined();
+      expect(runtimeEnvironment.SSH_AUTH_SOCK).toBeUndefined();
+      expect(runtimeEnvironment.HOME).not.toBe(originalHome);
+      expect(runtimeEnvironment.GIT_CONFIG_GLOBAL).toBe("/dev/null");
       expect(process.env.GH_TOKEN).toBe("delivery-only-test-token");
+      expect(process.env.SSH_AUTH_SOCK).toBe("/delivery-only/ssh-agent.sock");
+      expect(process.env.HOME).toBe(originalHome);
     } finally {
       if (originalToken === undefined) delete process.env.GH_TOKEN;
       else process.env.GH_TOKEN = originalToken;
+      if (originalSshAgent === undefined) delete process.env.SSH_AUTH_SOCK;
+      else process.env.SSH_AUTH_SOCK = originalSshAgent;
     }
+  });
+
+  test("builds a child environment without normal publication stores", () => {
+    const environment = agentEnvironment(
+      {
+        HOME: "/real-home",
+        GH_TOKEN: "github-token",
+        NPM_TOKEN: "npm-token",
+        SSH_AUTH_SOCK: "/ssh-agent.sock",
+      },
+      "/isolated-home",
+    );
+    expect(environment).toMatchObject({
+      HOME: "/isolated-home",
+      XDG_CONFIG_HOME: "/isolated-home",
+      GNUPGHOME: "/isolated-home",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_TERMINAL_PROMPT: "0",
+    });
+    expect(environment.GH_TOKEN).toBeUndefined();
+    expect(environment.NPM_TOKEN).toBeUndefined();
+    expect(environment.SSH_AUTH_SOCK).toBeUndefined();
   });
 });
 

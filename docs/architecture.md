@@ -46,8 +46,10 @@ web service, or merge worker.
 The source checkout is never used as the feature workspace, so its dirty files
 are neither moved nor committed. Writer agents receive separate Git worktrees.
 Research and Review agents receive only Pi read/search tools. Main and writer
-bash calls pass a boundary that rejects ordinary remote mutation commands, and
-common token environment variables are removed from child processes.
+bash calls pass a boundary that rejects ordinary remote mutation commands.
+While agents run, their shell environment uses an isolated temporary home,
+ignores normal Git configuration, and omits GitHub, npm, askpass, and SSH-agent
+credentials; Delivery retains a separate captured publication environment.
 
 These controls prevent accidental publication through supported product paths;
 they are not an OS sandbox against malicious same-user code. Delivery is the

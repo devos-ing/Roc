@@ -153,7 +153,7 @@ Pi 的排隊訊息不一定已寫入 session，不能把 `sendMessage` 回傳當
 
 讀取型子 agent 僅啟用必要讀取與搜尋工具。不能用角色 prompt 宣稱只讀，也不能把任意 shell 視為只讀。寫入者仍可執行專案工具；Pi 沒有 OS sandbox，工作目錄分離不等於權限隔離。
 
-主 agent 與子 agent 的一般工具不能擁有發布或合併介面。OpenAmp 提供的 command boundary 必須拒絕 `git push`、`gh pr create`、`gh pr merge` 及其他遠端修改命令；Delivery 使用分開的受控 command runner，並盡可能不把發布憑證傳入 agent process。相同 OS 使用者仍可能讀到既有憑證，因此這只能防止產品正常工具路徑意外越權，不宣稱為惡意程式碼的安全 sandbox。M0 先驗證 Pi 能否提供這個工具邊界；M3 再以實際 writer 驗證。若無法可靠維持「只有 Delivery 可發布、只有使用者可合併」，停止 M4 並先修訂執行隔離方案。
+主 agent 與子 agent 的一般工具不能擁有發布或合併介面。OpenAmp 提供的 command boundary 必須拒絕 `git push`、所有 `gh`、package publish、authenticated upload 及其他普通遠端修改命令。Agent shell 使用臨時隔離 HOME，忽略一般 Git 設定，且不接收 GitHub、npm、askpass 或 SSH-agent 憑證；Delivery 使用啟動時另外捕捉的受控 command environment。相同 OS 使用者的惡意程式碼仍可能刻意尋找原始憑證或另寫網路 client，因此這只能防止產品正常工具路徑意外越權，不宣稱為安全 sandbox。M0 先驗證 Pi 能否提供這個工具邊界；M3 再以實際 writer 驗證。若無法可靠維持「只有 Delivery 可發布、只有使用者可合併」，停止 M4 並先修訂執行隔離方案。
 
 ## 7. 自動 PR 的交付契約
 

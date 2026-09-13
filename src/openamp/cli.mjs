@@ -1,3 +1,5 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   createAgentSessionFromServices,
@@ -70,11 +72,23 @@ export async function runOpenAmp(args, options = {}) {
     supervisor,
     options.deliveryOptions,
   );
-  const childEnvironment = agentEnvironment();
-  const hiddenEnvironment = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => !(name in childEnvironment)),
-  );
-  for (const name of Object.keys(hiddenEnvironment)) delete process.env[name];
+  const agentDir = getAgentDir();
+  const isolatedHome = await mkdtemp(join(tmpdir(), "openamp-agent-home-"));
+  const originalEnvironment = { ...process.env };
+  const childEnvironment = agentEnvironment(process.env, isolatedHome);
+  const changedEnvironmentNames = new Set([
+    ...Object.keys(process.env),
+    ...Object.keys(childEnvironment),
+  ]);
+  for (const name of changedEnvironmentNames) {
+    if (process.env[name] === childEnvironment[name]) {
+      changedEnvironmentNames.delete(name);
+    } else if (childEnvironment[name] === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = childEnvironment[name];
+    }
+  }
   const extension = createOpenAmpExtension(
     store,
     supervisor,
@@ -95,7 +109,7 @@ export async function runOpenAmp(args, options = {}) {
   }) => {
     const services = await createAgentSessionServices({
       cwd: runtimeCwd,
-      agentDir: getAgentDir(),
+      agentDir,
       resourceLoaderOptions: {
         noExtensions: true,
         extensionFactories: [extension],
@@ -128,7 +142,7 @@ export async function runOpenAmp(args, options = {}) {
   try {
     runtime = await createAgentSessionRuntime(createRuntime, {
       cwd: store.state.workspace,
-      agentDir: getAgentDir(),
+      agentDir,
       sessionManager,
     });
     await store.update((state) => {
@@ -145,11 +159,15 @@ export async function runOpenAmp(args, options = {}) {
     });
     await mode.run();
   } finally {
-    Object.assign(process.env, hiddenEnvironment);
     try {
       await supervisor.shutdown();
     } finally {
       runtime?.session.dispose();
+      for (const name of changedEnvironmentNames) {
+        if (originalEnvironment[name] === undefined) delete process.env[name];
+        else process.env[name] = originalEnvironment[name];
+      }
+      await rm(isolatedHome, { recursive: true, force: true });
     }
   }
   return 0;

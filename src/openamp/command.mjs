@@ -3,22 +3,32 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+const COMMAND = String.raw`(?:^|[\s;&|()\x60])(?:[^\s;&|()\x60]+/)?`;
 const REMOTE_MUTATION = [
-  /(?:^|[\s;&|()`])git\b[^;&|\n]*\bpush(?:\s|$)/iu,
-  /(?:^|[\s;&|()`])git\b[^;&|\n]*\bsend-pack(?:\s|$)/iu,
-  /(?:^|[\s;&|()`])gh\b[^;&|\n]*\bpr\s+(?:create|edit|merge|close|reopen)(?:\s|$)/iu,
-  /(?:^|[\s;&|()`])gh\b[^;&|\n]*\bapi(?:\s|$)/iu,
-  /(?:^|[\s;&|()`])gh\b[^;&|\n]*\bissue\s+(?:create|edit|close|reopen|delete|transfer)(?:\s|$)/iu,
-  /(?:^|[\s;&|()`])gh\b[^;&|\n]*\brelease\s+(?:create|edit|delete|upload)(?:\s|$)/iu,
-  /(?:^|[\s;&|()`])gh\b[^;&|\n]*\brepo\s+(?:create|edit|delete|fork|archive|rename)(?:\s|$)/iu,
-  /(?:^|[\s;&|()`])gh\b[^;&|\n]*\bworkflow\s+(?:run|enable|disable)(?:\s|$)/iu,
-  /(?:^|[\s;&|()`])gh\b[^;&|\n]*\b(?:secret|variable)\s+(?:set|delete)(?:\s|$)/iu,
-  /(?:^|[\s;&|()`])git\b[^;&|\n]*\bremote\s+(?:add|remove|rename|set-url)(?:\s|$)/iu,
-  /(?:^|[\s;&|()`])npm\b[^;&|\n]*\b(?:publish|unpublish|deprecate)(?:\s|$)/iu,
-  /(?:^|[\s;&|()`])npm\b[^;&|\n]*\b(?:dist-tag|access|owner|token)\s+(?:add|rm|remove|set|grant|revoke|create)(?:\s|$)/iu,
-  /(?:^|[\s;&|()`])curl\b[^;&|\n]*(?:\s-X\s*(?:POST|PUT|PATCH|DELETE)\b|--request\s+(?:POST|PUT|PATCH|DELETE)\b|(?:^|\s)(?:-d|--data(?:-[a-z-]+)?|--upload-file)(?:\s|=))/iu,
-  /(?:^|[\s;&|()`])(?:ssh|scp|sftp)\b/iu,
-  /(?:^|[\s;&|()`])rsync\b[^;&|\n]*\s[^\s;&|:]+:/iu,
+  new RegExp(`${COMMAND}git\\b[^;&|\\n]*\\b(?:push|send-pack)(?:\\s|$)`, "iu"),
+  new RegExp(
+    `${COMMAND}git\\b[^;&|\\n]*\\bremote\\s+(?:add|remove|rename|set-url)(?:\\s|$)`,
+    "iu",
+  ),
+  new RegExp(`${COMMAND}gh\\b`, "iu"),
+  new RegExp(
+    `${COMMAND}(?:npm|pnpm|yarn|bun)\\b[^;&|\\n]*\\b(?:publish|unpublish|deprecate)(?:\\s|$)`,
+    "iu",
+  ),
+  new RegExp(
+    `${COMMAND}(?:npm|pnpm|yarn|bun)\\b[^;&|\\n]*\\b(?:dist-tag|access|owner|token)\\s+(?:add|rm|remove|set|grant|revoke|create)(?:\\s|$)`,
+    "iu",
+  ),
+  new RegExp(
+    `${COMMAND}curl\\b[^;&|\\n]*(?:\\s-X\\s*(?:POST|PUT|PATCH|DELETE)\\b|--request(?:=|\\s)+(?:POST|PUT|PATCH|DELETE)\\b|(?:^|\\s)(?:(?:-d|-F|-T)(?:\\s|=|[^\\s])|(?:--data(?:-[a-z-]+)?|--form|--json|--upload-file)(?:\\s|=)))`,
+    "iu",
+  ),
+  new RegExp(
+    `${COMMAND}wget\\b[^;&|\\n]*(?:--post-data|--post-file|--method(?:=|\\s)+(?:POST|PUT|PATCH|DELETE)|--body-data|--body-file)(?:=|\\s)`,
+    "iu",
+  ),
+  new RegExp(`${COMMAND}(?:ssh|scp|sftp)\\b`, "iu"),
+  new RegExp(`${COMMAND}rsync\\b[^;&|\\n]*\\s[^\\s;&|:]+:`, "iu"),
 ];
 
 /** Returns a stable reason when an agent command crosses the Delivery boundary. */
@@ -28,13 +38,28 @@ export function remoteMutationReason(command) {
     : undefined;
 }
 
-/** Returns an environment without common GitHub credentials or interactive Git prompts. */
-export function agentEnvironment(environment = process.env) {
-  const result = { ...environment, GIT_TERMINAL_PROMPT: "0" };
+/** Returns an environment isolated from normal publication credential stores. */
+export function agentEnvironment(environment = process.env, isolatedHome) {
+  const result = {
+    ...environment,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+  if (isolatedHome) {
+    result.HOME = isolatedHome;
+    result.XDG_CONFIG_HOME = isolatedHome;
+    result.GNUPGHOME = isolatedHome;
+  }
   for (const name of [
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GIT_ASKPASS",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "NODE_AUTH_TOKEN",
+    "NPM_TOKEN",
+    "SSH_AUTH_SOCK",
     "SSH_ASKPASS",
   ]) {
     delete result[name];
