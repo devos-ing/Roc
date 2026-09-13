@@ -33,37 +33,37 @@ const REMOTE_MUTATION = [
 
 /** Returns a stable reason when an agent command crosses the Delivery boundary. */
 export function remoteMutationReason(command) {
-  return REMOTE_MUTATION.some((pattern) => pattern.test(command))
+  const inspectable = command
+    .replace(/\\\r?\n/gu, "")
+    .replace(/\\([^\r\n])/gu, "$1")
+    .replace(/["']/gu, "");
+  return REMOTE_MUTATION.some((pattern) => pattern.test(inspectable))
     ? "OpenAmp agents cannot mutate Git or GitHub remotes; only Delivery can publish and only the user can merge"
     : undefined;
 }
 
 /** Returns an environment isolated from normal publication credential stores. */
 export function agentEnvironment(environment = process.env, isolatedHome) {
-  const result = {
-    ...environment,
+  const result = { ...environment };
+  for (const name of Object.keys(result)) {
+    if (
+      /^(?:GH|GITHUB|GITLAB|NPM|SSH|GCM)_/u.test(name) ||
+      /^GIT_(?:CONFIG_|ASKPASS|SSH|CREDENTIAL)/u.test(name)
+    ) {
+      delete result[name];
+    }
+  }
+  Object.assign(result, {
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
-  };
+  });
   if (isolatedHome) {
     result.HOME = isolatedHome;
     result.XDG_CONFIG_HOME = isolatedHome;
     result.GNUPGHOME = isolatedHome;
   }
-  for (const name of [
-    "GH_TOKEN",
-    "GITHUB_TOKEN",
-    "GIT_ASKPASS",
-    "GIT_SSH",
-    "GIT_SSH_COMMAND",
-    "NODE_AUTH_TOKEN",
-    "NPM_TOKEN",
-    "SSH_AUTH_SOCK",
-    "SSH_ASKPASS",
-  ]) {
-    delete result[name];
-  }
+  delete result.NODE_AUTH_TOKEN;
   return result;
 }
 

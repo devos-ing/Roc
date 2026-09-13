@@ -61,7 +61,8 @@ It never calls merge or enables auto-merge.
 ## Recovery
 
 Each change has a stable ID, branch, workspace, Pi session file, run/result map,
-integration record, Review binding, publication record, and command ledger.
+input generation, integration record, Review binding, publication record, and
+command ledger. New user input invalidates an in-flight ready/review binding.
 Startup verifies repository/workspace identity. Unconfirmed live child states
 become `interrupted` and are not blindly replayed. A result is persisted before
 its stable ID is inserted into the parent Pi session; recovery scans session

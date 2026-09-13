@@ -151,6 +151,15 @@ export class ChangeDelivery {
     return path;
   }
 
+  /** Rejects delivery when newer user input has invalidated the requirements. */
+  #assertRequirementsCurrent(inputGeneration) {
+    if ((this.store.state.inputGeneration ?? 0) !== inputGeneration) {
+      throw new Error(
+        "New user input invalidated the delivery requirements; process it before retrying",
+      );
+    }
+  }
+
   /** Verifies, independently reviews, and creates or updates exactly one pull request. */
   async deliver(input) {
     if (!this.store.state.repoRoot || !this.store.state.baseBranch) {
@@ -166,6 +175,9 @@ export class ChangeDelivery {
     if (active.length > 0)
       throw new Error("Delivery waits for all child agents to settle");
 
+    const inputGeneration =
+      input.inputGeneration ?? this.store.state.inputGeneration ?? 0;
+    this.#assertRequirementsCurrent(inputGeneration);
     const head = await this.workspace.checkpoint(
       `openamp(${this.store.state.id}): complete requested change`,
     );
@@ -215,6 +227,7 @@ export class ChangeDelivery {
     if ((await this.workspace.assertReady()) !== head) {
       throw new Error("Validation changed the feature workspace or head");
     }
+    this.#assertRequirementsCurrent(inputGeneration);
 
     const specHash = requirementHash(requirements);
     const reviewBundle = await this.#writeReviewBundle(
@@ -237,10 +250,17 @@ export class ChangeDelivery {
       this.store.state.sessionId,
     );
     const review = parseReview(reviewResult.summary);
+    this.#assertRequirementsCurrent(inputGeneration);
     if (review.decision !== "accepted") {
       await this.store.update((state) => {
         state.phase = "review_rejected";
-        state.review = { head, base, specHash, ...review };
+        state.review = {
+          head,
+          base,
+          specHash,
+          inputGeneration,
+          ...review,
+        };
       });
       throw new Error("Independent review rejected the current change");
     }
@@ -249,7 +269,7 @@ export class ChangeDelivery {
     }
     await this.store.update((state) => {
       state.validation = { head, commands: validation };
-      state.review = { head, base, specHash, ...review };
+      state.review = { head, base, specHash, inputGeneration, ...review };
       state.phase = "ready_to_publish";
       state.publication = {
         status: "pending",
@@ -259,6 +279,7 @@ export class ChangeDelivery {
         baseCommit: base,
         head,
         specHash,
+        inputGeneration,
         pullRequestNumber: state.publication?.pullRequestNumber ?? null,
         pullRequestUrl: state.publication?.pullRequestUrl ?? null,
       };
@@ -269,6 +290,7 @@ export class ChangeDelivery {
       review,
       head,
       base,
+      inputGeneration,
     );
     await this.store.update((state) => {
       state.phase = "pr_open";
@@ -352,8 +374,9 @@ export class ChangeDelivery {
   }
 
   /** Pushes the exact reviewed branch then creates or updates and re-reads its PR. */
-  async #publish(input, review, head, base) {
+  async #publish(input, review, head, base, inputGeneration) {
     const state = this.store.state;
+    this.#assertRequirementsCurrent(inputGeneration);
     const remoteBase = await this.#readRemoteBranch(
       "read-publication-base",
       state.baseBranch,
@@ -420,6 +443,7 @@ export class ChangeDelivery {
         "Remote base branch changed before PR publication; independent review is invalid",
       );
     }
+    this.#assertRequirementsCurrent(inputGeneration);
     const body = pullRequestBody(input, review, head, state.id);
     const mutation = existing
       ? [

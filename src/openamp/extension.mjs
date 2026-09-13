@@ -103,9 +103,19 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
         currentContext = context;
         pendingDeliveries.clear();
         const sessionId = context.sessionManager.getSessionId();
+        const persistedUserInputs = context.sessionManager
+          .getBranch()
+          .filter(
+            (entry) =>
+              entry.type === "message" && entry.message?.role === "user",
+          ).length;
         await store.update((state) => {
           state.sessionId = sessionId;
           state.sessionFile = context.sessionManager.getSessionFile();
+          state.inputGeneration = Math.max(
+            state.inputGeneration ?? 0,
+            persistedUserInputs,
+          );
         });
         context.ui.setTitle(`OpenAmp · ${store.state.id}`);
         context.ui.setWidget("openamp-change", [
@@ -164,6 +174,14 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
           "When the requested modifying work is complete, call deliver_change with exact current requirements and validation commands. Delivery requires independent review and opens or updates the PR; only the user merges.",
         ].join("\n"),
       }));
+
+      pi.on("input", async (event) => {
+        if (event.source === "extension") return undefined;
+        await store.update((state) => {
+          state.inputGeneration = (state.inputGeneration ?? 0) + 1;
+        });
+        return undefined;
+      });
 
       pi.on("tool_call", (event) => {
         if (event.toolName !== "bash") return undefined;
@@ -267,6 +285,7 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
             title: parameters.title,
             requirements: parameters.requirements,
             validationCommands: parameters.validation_commands,
+            inputGeneration: store.state.inputGeneration ?? 0,
           });
           refreshStatus(currentContext);
           return {

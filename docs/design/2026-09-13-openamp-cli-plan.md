@@ -163,7 +163,7 @@ Pi 的排隊訊息不一定已寫入 session，不能把 `sendMessage` 回傳當
 
 每個修改型 PR 及其後續更新都必須由沒有參與該版本實作的另一個 Pi session，透過 OpenAmp 產生的完整 immutable diff bundle 唯讀檢查固定的最終 head、遠端 base 和目前需求版本。接受條件是明確 `accepted` 且沒有 blocking finding；非阻擋 finding 保留在交付證據及 PR 說明。審查不能修改實作。任何新 commit、需求變更或遠端 base 變更都使舊審查失效；Delivery 在審查前及發布前重驗遠端 base，修正後必須重新驗證並審查新的 head。審查無法完成或仍有 blocking finding 時，變更不是 ready，不自動建立或更新 PR。
 
-主 agent 宣告 ready 時必須列出需求、完成證據與未解決事項。Supervisor 確認沒有尚未處理的使用者輸入、未整合的選定結果或活躍寫入者，再啟動交付。發布前收到新要求會使舊 ready 宣告失效。已送到 GitHub 的請求則先查證結果，不回滾或隱藏已建立的 PR；新要求另列為待完成工作。
+主 agent 宣告 ready 時必須列出需求、完成證據與未解決事項。Supervisor 以 durable input generation 確認沒有尚未處理的使用者輸入、未整合的選定結果或活躍寫入者，再啟動交付；validation、Review 及發布前都重驗該 generation。發布前收到新要求會使舊 ready 宣告失效。已送到 GitHub 的請求則先查證結果，不回滾或隱藏已建立的 PR；新要求另列為待完成工作。
 
 建立 PR 是這個產品的預設行為，啟動時可見。第一版不推送 base branch、不呼叫 merge API，也不啟用 auto-merge。一般查詢與未完成工作不觸發 PR。
 

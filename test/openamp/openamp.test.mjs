@@ -126,6 +126,10 @@ describe("M1 feature conversations", () => {
       "gh release delete-asset v1 artifact --yes",
       "pnpm publish",
       "curl -T artifact https://uploads.example.test",
+      "'git' push origin HEAD",
+      "'gh' pr merge 1",
+      "'pnpm' publish",
+      "git \\\npush origin HEAD",
     ]) {
       expect(remoteMutationReason(command), command).toContain("only Delivery");
     }
@@ -187,6 +191,9 @@ describe("M1 feature conversations", () => {
       {
         HOME: "/real-home",
         GH_TOKEN: "github-token",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "credential.helper",
+        GIT_CONFIG_VALUE_0: "malicious-helper",
         NPM_TOKEN: "npm-token",
         SSH_AUTH_SOCK: "/ssh-agent.sock",
       },
@@ -201,6 +208,9 @@ describe("M1 feature conversations", () => {
       GIT_TERMINAL_PROMPT: "0",
     });
     expect(environment.GH_TOKEN).toBeUndefined();
+    expect(environment.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(environment.GIT_CONFIG_KEY_0).toBeUndefined();
+    expect(environment.GIT_CONFIG_VALUE_0).toBeUndefined();
     expect(environment.NPM_TOKEN).toBeUndefined();
     expect(environment.SSH_AUTH_SOCK).toBeUndefined();
   });
@@ -311,7 +321,9 @@ describe("M2 reliable delegation", () => {
     };
     const store = new ChangeStore(path, state);
     const handlers = {};
-    const entries = [];
+    const entries = [
+      { type: "message", message: { role: "user", content: "request" } },
+    ];
     const messages = [];
     let persistMessages = false;
     const supervisor = {
@@ -352,6 +364,10 @@ describe("M2 reliable delegation", () => {
     };
     await handlers.session_start({}, context);
     expect(messages).toHaveLength(0);
+    expect(store.state.inputGeneration).toBe(1);
+    await handlers.input({ source: "interactive" });
+    await handlers.input({ source: "extension" });
+    expect(store.state.inputGeneration).toBe(2);
     context.sessionManager.getSessionId = () => "parent-one";
     await handlers.session_start({}, context);
     expect(messages).toHaveLength(1);
@@ -774,5 +790,59 @@ describe("M4 reviewed PR delivery", () => {
       }),
     ).rejects.toThrow("Remote base branch changed after review");
     expect(mutations).toBe(0);
+  });
+
+  test("invalidates an accepted review when new user input arrives", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m4-new-input",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    await writeFile(join(store.state.workspace, "feature.txt"), "feature\n");
+    let publicationCommands = 0;
+    const delivery = new ChangeDelivery(
+      store,
+      workspace,
+      {
+        list: () => [],
+        review: async () => {
+          await store.update((state) => {
+            state.inputGeneration += 1;
+          });
+          return {
+            summary: JSON.stringify({
+              decision: "accepted",
+              findings: [],
+              summary: "stale",
+            }),
+          };
+        },
+      },
+      {
+        validationRunner: async () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+        commandRunner: async () => {
+          publicationCommands += 1;
+          return {
+            exitCode: 0,
+            stdout: `${store.state.baseCommit}\trefs/heads/${store.state.baseBranch}`,
+            stderr: "",
+          };
+        },
+      },
+    );
+    await expect(
+      delivery.deliver({
+        title: "Stale requirements",
+        requirements: "Original requirements",
+        validationCommands: ["npm test"],
+        inputGeneration: 0,
+      }),
+    ).rejects.toThrow("New user input invalidated");
+    expect(publicationCommands).toBe(1);
   });
 });

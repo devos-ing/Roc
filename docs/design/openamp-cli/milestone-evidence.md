@@ -13,10 +13,10 @@ M1–M5 的 repository 內 production implementation 和可重現 acceptance 已
 | M1 | `openamp`／`--resume` 啟動 Pi 原生 TUI；功能 branch 與 worktree 專用且可恢復；來源 checkout 的 dirty file 保持原狀；正常 agent command boundary 阻止 remote mutation，agent shell 使用隔離 HOME 且不接收一般 publication credentials。 |
 | M2 | Supervisor 最多啟動兩個獨立 Pi RPC child，其餘 durable queue；支援指定 run 的 steering／取消；result 先落盤，只交付原 parent session 一次；重啟不盲目重播未確認 process。 |
 | M3 | writer 使用獨立 branch/worktree，OpenAmp 驗證實際 commit、base、history、diff 及 clean state；結果逐一整合；衝突保留兩邊 worktree 與 refs，不 reset 工作。 |
-| M4 | Delivery 在 validation 後提供完整 immutable diff bundle 給獨立 read-only Review，綁定 head/remote base/requirements hash，發布前重驗 remote base；記錄 publication intent 與 command ledger；lost push/PR response 先查 remote；追問更新同一 PR；無 merge operation。 |
+| M4 | Delivery 在 validation 後提供完整 immutable diff bundle 給獨立 read-only Review，綁定 head/remote base/requirements hash/input generation，發布前重驗 remote base 與新輸入；記錄 publication intent 與 command ledger；lost push/PR response 先查 remote；追問更新同一 PR；無 merge operation。 |
 | M5 | package/bin/README/architecture/release workflow 已切換至 OpenAmp；Roc onboarding skill 已移除；npm archive 不含 Roc CLI、scheduler、daemon 或 skills，安裝後由 Node 成功執行 `openamp --help`。 |
 
-核心故障案例在 `test/openamp/openamp.test.mjs`：publication command／credential boundary、兩個 writer 的循序整合與衝突保留、並行第三個 child 排隊、未確認 result message 的恢復、錯誤 session 不接收結果、cherry-pick receipt 遺失、矛盾 Review JSON 拒絕、Review rejected 零發布、固定 reviewed SHA push，以及 push／PR response 遺失後不重複建立 PR。
+核心故障案例在 `test/openamp/openamp.test.mjs`：publication command／credential boundary、兩個 writer 的循序整合與衝突保留、並行第三個 child 排隊、未確認 result message 的恢復、錯誤 session 不接收結果、cherry-pick receipt 遺失、矛盾 Review JSON 拒絕、Review rejected 零發布、固定 reviewed SHA push、remote base／新輸入使 review 失效，以及 push／PR response 遺失後不重複建立 PR。
 
 ## 驗證命令
 
