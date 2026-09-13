@@ -161,7 +161,7 @@ Pi 的排隊訊息不一定已寫入 session，不能把 `sendMessage` 回傳當
 
 完成流程為：整合全部選定結果，形成最終本地 commit，執行功能整體驗證，以獨立 agent 審查該版本，保存發布意圖，再 push 功能分支及建立或更新 PR。驗證及審查後 workspace 必須仍對應該 commit；測試產生的新修改不能暗中夾帶發布。交付使用確定性程式檢查身分與遠端結果，不能只靠「請幫我開 PR」的 prompt。
 
-每個修改型 PR 及其後續更新都必須由沒有參與該版本實作的另一個 Pi session，唯讀檢查固定的最終 head、base 和目前需求版本。接受條件是明確 `accepted` 且沒有 blocking finding；非阻擋 finding 保留在交付證據及 PR 說明。審查不能修改實作。任何新 commit、需求變更或 base 變更都使舊審查失效；修正後必須重新驗證並審查新的 head。審查無法完成或仍有 blocking finding 時，變更不是 ready，不自動建立或更新 PR。
+每個修改型 PR 及其後續更新都必須由沒有參與該版本實作的另一個 Pi session，透過 OpenAmp 產生的完整 immutable diff bundle 唯讀檢查固定的最終 head、遠端 base 和目前需求版本。接受條件是明確 `accepted` 且沒有 blocking finding；非阻擋 finding 保留在交付證據及 PR 說明。審查不能修改實作。任何新 commit、需求變更或遠端 base 變更都使舊審查失效；Delivery 在審查前及發布前重驗遠端 base，修正後必須重新驗證並審查新的 head。審查無法完成或仍有 blocking finding 時，變更不是 ready，不自動建立或更新 PR。
 
 主 agent 宣告 ready 時必須列出需求、完成證據與未解決事項。Supervisor 確認沒有尚未處理的使用者輸入、未整合的選定結果或活躍寫入者，再啟動交付。發布前收到新要求會使舊 ready 宣告失效。已送到 GitHub 的請求則先查證結果，不回滾或隱藏已建立的 PR；新要求另列為待完成工作。
 

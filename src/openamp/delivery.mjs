@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { remoteMutationReason, runCommand, runGit } from "./command.mjs";
 
 /** Hashes the exact current requirements bound to independent review. */
@@ -95,6 +97,60 @@ export class ChangeDelivery {
         }));
   }
 
+  /** Reads one exact remote branch head through the controlled Delivery runner. */
+  async #readRemoteBranch(action, branch) {
+    const result = await this.#run(action, "git", [
+      "ls-remote",
+      "origin",
+      `refs/heads/${branch}`,
+    ]);
+    const head = result.stdout.split(/\s/u)[0];
+    if (result.exitCode !== 0 || !/^[0-9a-f]{40}$/u.test(head)) {
+      throw new Error(`Cannot read remote branch: ${branch}`);
+    }
+    return head;
+  }
+
+  /** Writes the immutable review metadata and complete base-to-head patch for read-only agents. */
+  async #writeReviewBundle(base, head, requirements, specHash) {
+    const history = await runGit(this.store.state.workspace, [
+      "log",
+      "--format=%H %s",
+      `${base}..${head}`,
+    ]);
+    const diff = await runGit(
+      this.store.state.workspace,
+      ["diff", "--no-ext-diff", "--binary", "--find-renames", base, head],
+      { maxBuffer: 64 * 1024 * 1024 },
+    );
+    const directory = join(dirname(this.store.path), "reviews");
+    const path = join(
+      directory,
+      `${this.store.state.id}-${head}-${specHash}.patch`,
+    );
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(
+      path,
+      [
+        `Base commit: ${base}`,
+        `Final head: ${head}`,
+        `Requirements SHA-256: ${specHash}`,
+        "",
+        "Requirements:",
+        requirements,
+        "",
+        "Commits:",
+        history.stdout,
+        "",
+        "Complete binary diff:",
+        diff.stdout,
+        "",
+      ].join("\n"),
+      { encoding: "utf8", mode: 0o600 },
+    );
+    return path;
+  }
+
   /** Verifies, independently reviews, and creates or updates exactly one pull request. */
   async deliver(input) {
     if (!this.store.state.repoRoot || !this.store.state.baseBranch) {
@@ -116,6 +172,16 @@ export class ChangeDelivery {
     if (head === this.store.state.baseCommit) {
       throw new Error(
         "Delivery requires a change relative to the selected base",
+      );
+    }
+    const base = this.store.state.baseCommit;
+    const remoteBase = await this.#readRemoteBranch(
+      "read-review-base",
+      this.store.state.baseBranch,
+    );
+    if (remoteBase !== base) {
+      throw new Error(
+        "Remote base branch changed; update the change before independent review",
       );
     }
     const requirements = input.requirements.trim();
@@ -151,15 +217,21 @@ export class ChangeDelivery {
     }
 
     const specHash = requirementHash(requirements);
+    const reviewBundle = await this.#writeReviewBundle(
+      base,
+      head,
+      requirements,
+      specHash,
+    );
     const reviewResult = await this.supervisor.review(
       [
         "Independently review the exact current change. Do not modify files.",
-        `Base commit: ${this.store.state.baseCommit}`,
+        `Base commit: ${base}`,
         `Final head: ${head}`,
         `Requirements SHA-256: ${specHash}`,
         "Requirements:",
         requirements,
-        "Inspect the complete base..head diff and relevant tests.",
+        `Read the immutable review bundle at ${reviewBundle}; it contains the commit list and complete binary base..head diff. Inspect relevant source and tests as needed.`,
         'Return only JSON: {"decision":"accepted|rejected","findings":[{"severity":"blocking|nonblocking","message":"..."}],"summary":"..."}',
       ].join("\n"),
       this.store.state.sessionId,
@@ -168,7 +240,7 @@ export class ChangeDelivery {
     if (review.decision !== "accepted") {
       await this.store.update((state) => {
         state.phase = "review_rejected";
-        state.review = { head, base: state.baseCommit, specHash, ...review };
+        state.review = { head, base, specHash, ...review };
       });
       throw new Error("Independent review rejected the current change");
     }
@@ -177,13 +249,14 @@ export class ChangeDelivery {
     }
     await this.store.update((state) => {
       state.validation = { head, commands: validation };
-      state.review = { head, base: state.baseCommit, specHash, ...review };
+      state.review = { head, base, specHash, ...review };
       state.phase = "ready_to_publish";
       state.publication = {
         status: "pending",
         repository: state.repoRoot,
         branch: state.branch,
         baseBranch: state.baseBranch,
+        baseCommit: base,
         head,
         specHash,
         pullRequestNumber: state.publication?.pullRequestNumber ?? null,
@@ -195,6 +268,7 @@ export class ChangeDelivery {
       { ...input, requirements },
       review,
       head,
+      base,
     );
     await this.store.update((state) => {
       state.phase = "pr_open";
@@ -278,8 +352,17 @@ export class ChangeDelivery {
   }
 
   /** Pushes the exact reviewed branch then creates or updates and re-reads its PR. */
-  async #publish(input, review, head) {
+  async #publish(input, review, head, base) {
     const state = this.store.state;
+    const remoteBase = await this.#readRemoteBranch(
+      "read-publication-base",
+      state.baseBranch,
+    );
+    if (remoteBase !== base) {
+      throw new Error(
+        "Remote base branch changed after review; independent review is invalid",
+      );
+    }
     const auth = await this.#run("auth", "gh", ["auth", "status"]);
     if (auth.exitCode !== 0) throw new Error("GitHub CLI is not authenticated");
     const existing = await this.#findPullRequest();
@@ -328,6 +411,15 @@ export class ChangeDelivery {
       }
     }
 
+    const finalBase = await this.#readRemoteBranch(
+      "confirm-publication-base",
+      state.baseBranch,
+    );
+    if (finalBase !== base) {
+      throw new Error(
+        "Remote base branch changed before PR publication; independent review is invalid",
+      );
+    }
     const body = pullRequestBody(input, review, head, state.id);
     const mutation = existing
       ? [

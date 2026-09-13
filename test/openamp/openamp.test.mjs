@@ -496,10 +496,12 @@ describe("M4 reviewed PR delivery", () => {
     await writeFile(join(store.state.workspace, "feature.txt"), "one\n");
     await workspace.checkpoint();
     let reviews = 0;
+    let reviewPrompt;
     const supervisor = {
       list: () => [],
-      review: async () => {
+      review: async (prompt) => {
         reviews += 1;
+        reviewPrompt = prompt;
         return {
           summary: JSON.stringify({
             decision: "accepted",
@@ -510,6 +512,7 @@ describe("M4 reviewed PR delivery", () => {
       },
     };
     let remoteHead = null;
+    const remoteBase = store.state.baseCommit;
     let pullRequest = null;
     const calls = [];
     const commandRunner = async (command, args) => {
@@ -529,11 +532,15 @@ describe("M4 reviewed PR delivery", () => {
         };
       }
       if (command === "git" && args[0] === "ls-remote") {
+        const ref = args.at(-1);
         return {
           exitCode: 0,
-          stdout: remoteHead
-            ? `${remoteHead}\trefs/heads/${store.state.branch}`
-            : "",
+          stdout:
+            ref === `refs/heads/${store.state.baseBranch}`
+              ? `${remoteBase}\t${ref}`
+              : remoteHead
+                ? `${remoteHead}\trefs/heads/${store.state.branch}`
+                : "",
         };
       }
       if (command === "git" && args[0] === "push") {
@@ -584,6 +591,14 @@ describe("M4 reviewed PR delivery", () => {
     const secondHead = store.state.mainHead;
     expect(second.number).toBe(7);
     expect(reviews).toBe(2);
+    const bundlePath = reviewPrompt.match(
+      /immutable review bundle at (.*); it contains/u,
+    )?.[1];
+    expect(bundlePath).toBeTruthy();
+    const bundle = await readFile(bundlePath, "utf8");
+    expect(bundle).toContain(`Base commit: ${store.state.baseCommit}`);
+    expect(bundle).toContain(`Final head: ${secondHead}`);
+    expect(bundle).toContain("diff --git a/feature.txt b/feature.txt");
     expect(
       calls.filter((call) => call[0] === "gh" && call[2] === "create"),
     ).toHaveLength(1);
@@ -651,7 +666,10 @@ describe("M4 reviewed PR delivery", () => {
         }),
         commandRunner: async () => {
           publicationCommands += 1;
-          return { exitCode: 0, stdout: "" };
+          return {
+            exitCode: 0,
+            stdout: `${store.state.baseCommit}\trefs/heads/${store.state.baseBranch}`,
+          };
         },
       },
     );
@@ -662,7 +680,99 @@ describe("M4 reviewed PR delivery", () => {
         validationCommands: ["npm test"],
       }),
     ).rejects.toThrow("rejected");
-    expect(publicationCommands).toBe(0);
+    expect(publicationCommands).toBe(1);
     expect(store.state.phase).toBe("review_rejected");
+  });
+
+  test("invalidates review when the remote base branch changes", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m4-base-moved",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    await writeFile(join(store.state.workspace, "feature.txt"), "feature\n");
+    let reviewCalls = 0;
+    const delivery = new ChangeDelivery(
+      store,
+      workspace,
+      {
+        list: () => [],
+        review: async () => {
+          reviewCalls += 1;
+          throw new Error("review must not run");
+        },
+      },
+      {
+        commandRunner: async () => ({
+          exitCode: 0,
+          stdout: `${"f".repeat(40)}\trefs/heads/main`,
+          stderr: "",
+        }),
+      },
+    );
+    await expect(
+      delivery.deliver({
+        title: "Stale base",
+        requirements: "Review only the current base",
+        validationCommands: ["npm test"],
+      }),
+    ).rejects.toThrow("Remote base branch changed");
+    expect(reviewCalls).toBe(0);
+  });
+
+  test("invalidates an accepted review when the remote base moves afterward", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m4-base-race",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    await writeFile(join(store.state.workspace, "feature.txt"), "feature\n");
+    let remoteBase = store.state.baseCommit;
+    let mutations = 0;
+    const delivery = new ChangeDelivery(
+      store,
+      workspace,
+      {
+        list: () => [],
+        review: async () => {
+          remoteBase = "e".repeat(40);
+          return {
+            summary: JSON.stringify({
+              decision: "accepted",
+              findings: [],
+              summary: "correct",
+            }),
+          };
+        },
+      },
+      {
+        validationRunner: async () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+        commandRunner: async (command, args) => {
+          if (command === "git" && args[0] === "ls-remote") {
+            return {
+              exitCode: 0,
+              stdout: `${remoteBase}\t${args.at(-1)}`,
+              stderr: "",
+            };
+          }
+          mutations += 1;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    );
+    await expect(
+      delivery.deliver({
+        title: "Racing base",
+        requirements: "Publish only against the reviewed base",
+        validationCommands: ["npm test"],
+      }),
+    ).rejects.toThrow("Remote base branch changed after review");
+    expect(mutations).toBe(0);
   });
 });
