@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "OpenAmp 委派實作至 PR：提案",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 528]
+  },
+  "lanes": [
+    {
+      "id": "execution",
+      "label": "需求與實作"
+    },
+    {
+      "id": "publication",
+      "label": "驗證與發布"
+    },
+    {
+      "id": "outcome",
+      "label": "結果與決策"
+    }
+  ],
+  "mainPath": [
+    "request",
+    "delegate",
+    "implement",
+    "validate",
+    "publish",
+    "merge"
+  ],
+  "nodes": [
+    {
+      "id": "request",
+      "lane": "execution",
+      "col": 0,
+      "type": "frontend",
+      "label": "交代需求",
+      "sublabel": "持續對話"
+    },
+    {
+      "id": "delegate",
+      "lane": "execution",
+      "col": 2,
+      "type": "backend",
+      "label": "主 agent 委派",
+      "sublabel": "固定範圍與基準"
+    },
+    {
+      "id": "implement",
+      "lane": "execution",
+      "col": 4,
+      "type": "backend",
+      "label": "實作與整合",
+      "sublabel": "子結果逐一合入"
+    },
+    {
+      "id": "validate",
+      "lane": "publication",
+      "col": 4,
+      "type": "security",
+      "label": "整體驗證",
+      "sublabel": "檢查最終版本"
+    },
+    {
+      "id": "publish",
+      "lane": "publication",
+      "col": 5,
+      "type": "cloud",
+      "label": "建立 GitHub PR",
+      "sublabel": "核對遠端 head"
+    },
+    {
+      "id": "blocked",
+      "lane": "outcome",
+      "col": 4,
+      "type": "security",
+      "label": "保留工作",
+      "sublabel": "顯示失敗原因"
+    },
+    {
+      "id": "merge",
+      "lane": "outcome",
+      "col": 5,
+      "type": "external",
+      "label": "決定是否合併",
+      "sublabel": "PR 已建立 ≠ 已合併"
+    }
+  ],
+  "edges": [
+    {
+      "from": "request",
+      "to": "delegate",
+      "role": "main"
+    },
+    {
+      "from": "delegate",
+      "to": "implement",
+      "role": "main"
+    },
+    {
+      "from": "implement",
+      "to": "validate",
+      "role": "main"
+    },
+    {
+      "from": "validate",
+      "to": "publish",
+      "label": "通過",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "from": "validate",
+      "to": "blocked",
+      "label": "未通過",
+      "role": "error",
+      "variant": "security"
+    },
+    {
+      "from": "publish",
+      "to": "merge",
+      "label": "PR 連結",
+      "role": "main"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "交付預設",
+      "items": ["完成後自動建立 PR；使用者決定合併"]
+    },
+    {
+      "dot": "amber",
+      "title": "無法確認時",
+      "items": ["保留 worktree；未知發布結果先查證"]
+    },
+    {
+      "dot": "cyan",
+      "title": "委派按需要",
+      "items": ["子 agent 寫入各自 worktree，主流程循序整合"]
+    }
+  ]
+}

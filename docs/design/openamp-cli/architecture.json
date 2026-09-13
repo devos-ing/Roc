@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "OpenAmp CLI 架構提案",
+    "quality_profile": "showcase",
+    "viewBox": [1240, 690]
+  },
+  "components": [
+    {
+      "id": "terminal",
+      "type": "frontend",
+      "label": "互動 CLI",
+      "sublabel": "Pi 終端介面",
+      "pos": [45, 140],
+      "size": [190, 82]
+    },
+    {
+      "id": "primary",
+      "type": "backend",
+      "label": "Pi 主 agent",
+      "sublabel": "持續對話與工具",
+      "pos": [355, 140],
+      "size": [190, 82]
+    },
+    {
+      "id": "supervisor",
+      "type": "backend",
+      "label": "本地 supervisor",
+      "sublabel": "委派、取消與結果交付",
+      "pos": [665, 140],
+      "size": [205, 82]
+    },
+    {
+      "id": "children",
+      "type": "backend",
+      "label": "Pi 子 agents",
+      "sublabel": "各自的 RPC process",
+      "pos": [995, 140],
+      "size": [205, 82]
+    },
+    {
+      "id": "sessions",
+      "type": "database",
+      "label": "Pi sessions",
+      "sublabel": "對話、事件與 context",
+      "pos": [355, 450],
+      "size": [190, 82]
+    },
+    {
+      "id": "records",
+      "type": "database",
+      "label": "協作紀錄",
+      "sublabel": "關係、結果與恢復狀態",
+      "pos": [665, 450],
+      "size": [205, 82]
+    },
+    {
+      "id": "workspaces",
+      "type": "backend",
+      "label": "Git worktrees",
+      "sublabel": "寫入者分開，循序整合",
+      "pos": [995, 450],
+      "size": [205, 82]
+    }
+  ],
+  "connections": [
+    {
+      "id": "dialogue",
+      "from": "terminal",
+      "to": "primary",
+      "label": "對話",
+      "variant": "emphasis"
+    },
+    {
+      "id": "delegate",
+      "from": "primary",
+      "to": "supervisor",
+      "label": "委派工具",
+      "variant": "emphasis"
+    },
+    {
+      "id": "rpc",
+      "from": "supervisor",
+      "to": "children",
+      "label": "JSONL RPC",
+      "variant": "emphasis"
+    },
+    {
+      "id": "history",
+      "from": "primary",
+      "to": "sessions",
+      "label": "儲存與恢復",
+      "labelDy": 124
+    },
+    {
+      "id": "receipt",
+      "from": "supervisor",
+      "to": "records",
+      "label": "持久化紀錄",
+      "labelDy": 124
+    },
+    {
+      "id": "checkout",
+      "from": "children",
+      "to": "workspaces",
+      "label": "指定 cwd",
+      "labelDy": 124
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Pi 提供",
+      "items": ["模型與工具執行、對話儲存及 compaction"]
+    },
+    {
+      "dot": "emerald",
+      "title": "OpenAmp 管理",
+      "items": ["子 agent 生命週期、修改整合及 PR 交付"]
+    },
+    {
+      "dot": "amber",
+      "title": "第一版限制",
+      "items": ["本機運行；退出停止工作；worktree 不是 sandbox"]
+    }
+  ]
+}
