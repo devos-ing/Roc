@@ -177,9 +177,8 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
 
       pi.on("input", async (event) => {
         if (event.source === "extension") return undefined;
-        await store.update((state) => {
-          state.inputGeneration = (state.inputGeneration ?? 0) + 1;
-        });
+        store.state.inputGeneration = (store.state.inputGeneration ?? 0) + 1;
+        await store.update(() => undefined);
         return undefined;
       });
 

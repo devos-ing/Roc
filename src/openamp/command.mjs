@@ -47,8 +47,9 @@ export function agentEnvironment(environment = process.env, isolatedHome) {
   const result = { ...environment };
   for (const name of Object.keys(result)) {
     if (
-      /^(?:GH|GITHUB|GITLAB|NPM|SSH|GCM)_/u.test(name) ||
-      /^GIT_(?:CONFIG_|ASKPASS|SSH|CREDENTIAL)/u.test(name)
+      /^(?:GH|GITHUB|GITLAB|NPM|SSH|GCM)_/iu.test(name) ||
+      /^GIT_(?:CONFIG_|ASKPASS|SSH|CREDENTIAL)/iu.test(name) ||
+      /^NODE_AUTH_TOKEN$/iu.test(name)
     ) {
       delete result[name];
     }
@@ -63,7 +64,6 @@ export function agentEnvironment(environment = process.env, isolatedHome) {
     result.XDG_CONFIG_HOME = isolatedHome;
     result.GNUPGHOME = isolatedHome;
   }
-  delete result.NODE_AUTH_TOKEN;
   return result;
 }
 

@@ -305,7 +305,7 @@ export class ChangeDelivery {
   }
 
   /** Records and runs a controlled Delivery command without exposing a merge operation. */
-  async #run(action, command, args) {
+  async #run(action, command, args, inputGeneration) {
     if (
       command === "gh" &&
       args[0] === "pr" &&
@@ -325,6 +325,20 @@ export class ChangeDelivery {
         status: "pending",
       });
     });
+    if (inputGeneration !== undefined) {
+      try {
+        this.#assertRequirementsCurrent(inputGeneration);
+      } catch (error) {
+        await this.store.update((state) => {
+          const entry = state.commandLedger.find(
+            (item) => item.id === ledgerId,
+          );
+          entry.status = "cancelled";
+          entry.finishedAt = new Date().toISOString();
+        });
+        throw error;
+      }
+    }
     const result = await this.commandRunner(
       command,
       args,
@@ -415,12 +429,18 @@ export class ChangeDelivery {
     if ((await this.workspace.assertReady()) !== head) {
       throw new Error("Feature head changed before publication");
     }
-    const push = await this.#run("push", "git", [
+    this.#assertRequirementsCurrent(inputGeneration);
+    const push = await this.#run(
       "push",
-      `--force-with-lease=refs/heads/${state.branch}:${remoteHead ?? ""}`,
-      "origin",
-      `${head}:refs/heads/${state.branch}`,
-    ]);
+      "git",
+      [
+        "push",
+        `--force-with-lease=refs/heads/${state.branch}:${remoteHead ?? ""}`,
+        "origin",
+        `${head}:refs/heads/${state.branch}`,
+      ],
+      inputGeneration,
+    );
     if (push.exitCode !== 0) {
       const reconciled = await this.#run("reconcile-push", "git", [
         "ls-remote",
@@ -471,6 +491,7 @@ export class ChangeDelivery {
       existing ? "update-pr" : "create-pr",
       "gh",
       mutation,
+      inputGeneration,
     );
     const finalPullRequest = await this.#findPullRequest();
     if (

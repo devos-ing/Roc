@@ -195,6 +195,9 @@ describe("M1 feature conversations", () => {
         GIT_CONFIG_KEY_0: "credential.helper",
         GIT_CONFIG_VALUE_0: "malicious-helper",
         NPM_TOKEN: "npm-token",
+        npm_config_userconfig: "/credentialed/npmrc",
+        "npm_config_//registry.npmjs.org/:_authToken": "registry-token",
+        node_auth_token: "node-token",
         SSH_AUTH_SOCK: "/ssh-agent.sock",
       },
       "/isolated-home",
@@ -212,6 +215,11 @@ describe("M1 feature conversations", () => {
     expect(environment.GIT_CONFIG_KEY_0).toBeUndefined();
     expect(environment.GIT_CONFIG_VALUE_0).toBeUndefined();
     expect(environment.NPM_TOKEN).toBeUndefined();
+    expect(environment.npm_config_userconfig).toBeUndefined();
+    expect(
+      environment["npm_config_//registry.npmjs.org/:_authToken"],
+    ).toBeUndefined();
+    expect(environment.node_auth_token).toBeUndefined();
     expect(environment.SSH_AUTH_SOCK).toBeUndefined();
   });
 });
@@ -365,7 +373,9 @@ describe("M2 reliable delegation", () => {
     await handlers.session_start({}, context);
     expect(messages).toHaveLength(0);
     expect(store.state.inputGeneration).toBe(1);
-    await handlers.input({ source: "interactive" });
+    const persistedInput = handlers.input({ source: "interactive" });
+    expect(store.state.inputGeneration).toBe(2);
+    await persistedInput;
     await handlers.input({ source: "extension" });
     expect(store.state.inputGeneration).toBe(2);
     context.sessionManager.getSessionId = () => "parent-one";
@@ -844,5 +854,79 @@ describe("M4 reviewed PR delivery", () => {
       }),
     ).rejects.toThrow("New user input invalidated");
     expect(publicationCommands).toBe(1);
+  });
+
+  test("stops before push when new input arrives during publication lookup", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m4-publication-input-race",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    await writeFile(join(store.state.workspace, "feature.txt"), "feature\n");
+    const mutations = [];
+    const delivery = new ChangeDelivery(
+      store,
+      workspace,
+      {
+        list: () => [],
+        review: async () => ({
+          summary: JSON.stringify({
+            decision: "accepted",
+            findings: [],
+            summary: "correct",
+          }),
+        }),
+      },
+      {
+        validationRunner: async () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+        commandRunner: async (command, args) => {
+          if (command === "git" && args[0] === "push") {
+            mutations.push([command, ...args]);
+          }
+          if (command === "gh" && args[0] === "auth") {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (command === "gh" && args[0] === "pr") {
+            return { exitCode: 0, stdout: "[]", stderr: "" };
+          }
+          if (command === "gh" && args[0] === "repo") {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({ owner: { login: "owner" } }),
+              stderr: "",
+            };
+          }
+          if (command === "git" && args[0] === "ls-remote") {
+            const ref = args.at(-1);
+            if (ref === `refs/heads/${store.state.branch}`) {
+              await store.update((state) => {
+                state.inputGeneration += 1;
+              });
+              return { exitCode: 0, stdout: "", stderr: "" };
+            }
+            return {
+              exitCode: 0,
+              stdout: `${store.state.baseCommit}\t${ref}`,
+              stderr: "",
+            };
+          }
+          throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+        },
+      },
+    );
+    await expect(
+      delivery.deliver({
+        title: "Stale during publication",
+        requirements: "Publish only the current requirements",
+        validationCommands: ["npm test"],
+        inputGeneration: 0,
+      }),
+    ).rejects.toThrow("New user input invalidated");
+    expect(mutations).toHaveLength(0);
   });
 });
