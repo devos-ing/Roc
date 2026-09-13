@@ -204,11 +204,12 @@ export class GitHubTaskRunner {
         )
           continue;
         task = fresh;
-        const chain = task.task.spec.continues
+        const continues = task.task.spec.continues;
+        const chain = continues
           ? await this.chainBase(task, tasks, signal)
           : undefined;
         if (chain?.kind === "dead") continue;
-        if (task.task.spec.continues && chain?.kind !== "ready") continue;
+        if (continues && chain?.kind !== "ready") continue;
         const base =
           chain?.kind === "ready"
             ? chain.base
@@ -218,6 +219,29 @@ export class GitHubTaskRunner {
         if (confirmed.version !== plan.version) {
           this.admissionChanged = true;
           return undefined;
+        }
+        if (chain?.kind === "ready" && continues) {
+          // The saved claim must still rest on the predecessor evidence chainBase observed.
+          let predecessor: NativeTask | undefined;
+          try {
+            predecessor = await this.input.store.get(continues.issue, signal);
+          } catch {
+            predecessor = undefined;
+          }
+          const evidence = predecessor?.execution?.publication;
+          if (
+            !predecessor ||
+            predecessor.execution?.phase !== chain.observed.phase ||
+            predecessor.issue.state !== chain.observed.issueState ||
+            evidence?.branch !== chain.observed.branch ||
+            evidence?.commitSha !== chain.observed.commitSha
+          ) {
+            this.input.diagnostic?.(
+              `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} changed while claiming; selection restarts`,
+            );
+            this.admissionChanged = true;
+            return undefined;
+          }
         }
         signal.throwIfAborted();
         task.execution = initialExecution(
@@ -406,24 +430,36 @@ export class GitHubTaskRunner {
     tasks: NativeTask[],
     signal: AbortSignal,
   ): Promise<
-    | { kind: "ready"; base: string; baseBranch: string }
+    | {
+        kind: "ready";
+        base: string;
+        baseBranch: string;
+        observed: {
+          phase: ExecutionRecord["phase"];
+          issueState: string;
+          branch: string;
+          commitSha: string;
+        };
+      }
     | { kind: "blocked" }
     | { kind: "dead" }
   > {
     const continues = task.task.spec.continues;
     if (!continues) return { kind: "blocked" };
-    const predecessor = tasks.find(
-      (candidate) => candidate.issue.number === continues.issue,
-    );
-    if (!predecessor) {
+    // The listing snapshot may predate the predecessor's latest transition; only a fresh read may authorize a claim.
+    let predecessor: NativeTask;
+    try {
+      predecessor = await this.input.store.get(continues.issue, signal);
+    } catch {
       this.input.diagnostic?.(
         `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} not found`,
       );
       return { kind: "blocked" };
     }
-    const publication = predecessor.execution?.publication;
+    const predecessorRecord = predecessor.execution;
+    const publication = predecessorRecord?.publication;
     if (
-      predecessor.execution?.phase === "done" ||
+      predecessorRecord?.phase === "done" ||
       predecessor.issue.state === "CLOSED"
     ) {
       // A merged or closed predecessor can never expose a claimable segment; persist the terminal state.
@@ -449,8 +485,9 @@ export class GitHubTaskRunner {
       );
       return { kind: "dead" };
     }
+    const predecessorPhase = predecessorRecord?.phase;
     if (
-      predecessor.execution?.phase !== "awaiting_merge" ||
+      predecessorPhase !== "awaiting_merge" ||
       !publication?.branch ||
       !publication.commitSha
     ) {
@@ -459,10 +496,40 @@ export class GitHubTaskRunner {
       );
       return { kind: "blocked" };
     }
+    // Succession must stay linear: sibling successors share one predecessor worktree and would overwrite each other's segments.
+    const successor = tasks.find(
+      (candidate) =>
+        candidate.task.spec.continues?.issue === continues.issue &&
+        candidate.task.id !== task.task.id &&
+        candidate.execution &&
+        !["done", "rejected", "needs_replan"].includes(
+          candidate.execution.phase,
+        ),
+    );
+    if (successor) {
+      const record = initialExecution(
+        task,
+        publication.branch,
+        publication.commitSha,
+      );
+      record.phase = "needs_replan";
+      record.failure = `Chain predecessor issue #${continues.issue} already continued by issue #${successor.issue.number}; point continues at the latest segment or rebase`;
+      await this.input.store.save(task, record, signal);
+      this.input.diagnostic?.(
+        `Issue #${task.issue.number}: chain predecessor issue #${continues.issue} is already continued by issue #${successor.issue.number}; marked needs_replan`,
+      );
+      return { kind: "dead" };
+    }
     return {
       kind: "ready",
       base: publication.commitSha,
       baseBranch: publication.branch,
+      observed: {
+        phase: predecessorPhase,
+        issueState: predecessor.issue.state,
+        branch: publication.branch,
+        commitSha: publication.commitSha,
+      },
     };
   }
 
@@ -515,7 +582,7 @@ export class GitHubTaskRunner {
             "--json",
             "commits",
             "--jq",
-            ".[].oid",
+            ".commits[].oid",
           ],
           signal,
         )
@@ -692,7 +759,8 @@ export class GitHubTaskRunner {
       publication: {
         taskId: task.task.id,
         branch: record.publication.branch,
-        baseBranch: record.baseBranch,
+        // Chain branches merge into the global target; a chain PR must not target its own shared branch.
+        baseBranch: this.mergeTargetBase(task, record),
         commitSha: record.publication.commitSha,
         status: "pending",
       },
@@ -1523,7 +1591,8 @@ export class GitHubTaskRunner {
       publication: {
         taskId: task.task.id,
         branch: publication.branch,
-        baseBranch: record.baseBranch,
+        // Chain branches merge into the global target; a chain PR must not target its own shared branch.
+        baseBranch: this.mergeTargetBase(task, record),
         commitSha: publication.commitSha,
         status: "pending",
       },

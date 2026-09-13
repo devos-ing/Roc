@@ -29,3 +29,20 @@ test("parallel admission accepts disjoint paths and serializes overlaps, ambiguo
   expect(canRunTogether(left, right)).toBe(false);
   expect(canRunTogether(left, left)).toBe(false);
 });
+
+test("parallel admission serializes sibling successors of one chain predecessor", async () => {
+  const task = await memoryGitHub().store().get(41);
+  const left = structuredClone(task);
+  const right = structuredClone(task);
+  right.task.id = "issue-42";
+  left.task.spec.scope = ["src/auth/"];
+  right.task.spec.scope = ["src/billing.ts"];
+  left.task.spec.continues = { issue: 41 };
+  right.task.spec.continues = { issue: 41 };
+  // Disjoint paths do not matter: both siblings would share the predecessor worktree.
+  expect(canRunTogether(left, right)).toBe(false);
+  right.task.spec.continues = { issue: 40 };
+  expect(canRunTogether(left, right)).toBe(true);
+  delete right.task.spec.continues;
+  expect(canRunTogether(left, right)).toBe(true);
+});

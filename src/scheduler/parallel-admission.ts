@@ -22,6 +22,12 @@ function paths(task: NativeTask): string[] | undefined {
 /** Allows concurrent work only when both approved scopes name distinct paths without hooks. */
 export function canRunTogether(left: NativeTask, right: NativeTask): boolean {
   if (left.task.id === right.task.id) return false;
+  // Sibling successors of one predecessor resolve to the same shared worktree and branch, so they must serialize.
+  if (
+    left.task.spec.continues?.issue !== undefined &&
+    left.task.spec.continues.issue === right.task.spec.continues?.issue
+  )
+    return false;
   const a = paths(left);
   const b = paths(right);
   return (

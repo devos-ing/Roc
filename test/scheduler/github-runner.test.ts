@@ -631,6 +631,7 @@ function chainFixture(continues: { issue: number }) {
       return structuredClone([remote.issue, chain]);
     },
     async get(_repo: string, number: number) {
+      if (number !== 41 && number !== 42) throw Error("Not Found");
       return structuredClone(number === 41 ? remote.issue : chain);
     },
     async getMany(repo: string, numbers: readonly number[]) {
@@ -667,7 +668,7 @@ function chainFixture(continues: { issue: number }) {
     new Set(["owner"]),
     api,
   );
-  return { remote, store, chain };
+  return { remote, store, chain, api };
 }
 
 /** Constructs a claim-only runner whose unexpected execution boundaries fail the test. */
@@ -720,6 +721,84 @@ test("a chain ticket claims onto the frozen predecessor branch segment while the
   expect(diagnostics).toEqual([]);
 });
 
+test("a chain claim is abandoned when its predecessor merges between validation and the checkpoint save", async () => {
+  const { remote, store, api } = chainFixture({ issue: 41 });
+  const chainBranch = "agile/issue-1";
+  await seed(remote, (record) => {
+    record.phase = "awaiting_merge";
+    record.publication = { branch: chainBranch, commitSha: base };
+  });
+  const mergePredecessor = async () => {
+    const current = await remote.store().get(41);
+    const record = current.execution;
+    if (!record?.publication || !current.commentId)
+      throw Error("Missing seeded predecessor");
+    record.phase = "done";
+    record.publication.number = 7;
+    record.publication.mergeCommit = base;
+    await remote.api.writeComment(
+      "acme/test",
+      41,
+      renderExecution(record),
+      current.commentId,
+    );
+    remote.issue.state = "CLOSED";
+  };
+  // The fifth predecessor read is the pre-save revalidation after both fresh plans.
+  let predecessorReads = 0;
+  const directGet = api.get.bind(api);
+  api.get = async (repo: string, number: number) => {
+    if (number === 41 && ++predecessorReads === 5) await mergePredecessor();
+    return directGet(repo, number);
+  };
+  const diagnostics: string[] = [];
+  const run = chainRunner(store, diagnostics);
+  const { tasks } = await store.list();
+  expect(
+    await run.claimNext(tasks, new AbortController().signal),
+  ).toBeUndefined();
+  expect(run.admissionChanged).toBe(true);
+  expect((await store.get(42)).execution).toBeUndefined();
+  expect(diagnostics.join()).toContain("changed while claiming");
+});
+
+test("chain predecessor state follows the fresh issue read, not the stale listing snapshot", async () => {
+  const { remote, store, chain, api } = chainFixture({ issue: 41 });
+  const chainBranch = "agile/issue-1";
+  await seed(remote, (record) => {
+    record.phase = "awaiting_merge";
+    record.publication = { branch: chainBranch, commitSha: base };
+  });
+  const staleListing = structuredClone([remote.issue, chain]);
+  const current = await remote.store().get(41);
+  const record = current.execution;
+  if (!record?.publication || !current.commentId)
+    throw Error("Missing seeded predecessor");
+  record.phase = "done";
+  record.publication.number = 7;
+  record.publication.mergeCommit = base;
+  await remote.api.writeComment(
+    "acme/test",
+    41,
+    renderExecution(record),
+    current.commentId,
+  );
+  remote.issue.state = "CLOSED";
+  api.read = async () => structuredClone(staleListing);
+  const diagnostics: string[] = [];
+  const run = chainRunner(store, diagnostics);
+  const { tasks } = await store.list();
+  expect(
+    await run.claimNext(tasks, new AbortController().signal),
+  ).toBeUndefined();
+  expect((await store.get(42)).execution).toMatchObject({
+    phase: "needs_replan",
+    baseBranch: chainBranch,
+    failure: expect.stringContaining("already merged"),
+  });
+  expect(diagnostics.join()).toContain("already merged or closed");
+});
+
 test("a chain ticket whose predecessor is already merged to done is durably marked needs_replan", async () => {
   const { remote, store } = chainFixture({ issue: 41 });
   await seed(remote, (record) => {
@@ -769,8 +848,8 @@ test("a chain ticket stays unclaimed when its declared predecessor issue does no
   expect(diagnostics.join()).toContain("chain predecessor issue #99 not found");
 });
 
-/** Builds a three-issue chain plan: normal T1 on #41, chain tickets T2 on #42 and T3 on #43. */
-function chainPairFixture() {
+/** Builds a three-issue chain plan: T1 on #41, T2 on #42 continuing #41, T3 on #43 continuing the given issue. */
+function chainPairFixture(secondContinues = 42) {
   const remote = memoryGitHub();
   const first = manifest.tasks[0];
   if (!first) throw Error("Missing task fixture");
@@ -779,7 +858,11 @@ function chainPairFixture() {
     tasks: [
       first,
       { ...first, id: "T2", spec: { ...first.spec, continues: { issue: 41 } } },
-      { ...first, id: "T3", spec: { ...first.spec, continues: { issue: 42 } } },
+      {
+        ...first,
+        id: "T3",
+        spec: { ...first.spec, continues: { issue: secondContinues } },
+      },
     ],
   };
   const issueFor = (
@@ -980,6 +1063,58 @@ test("a merged chain branch credits every awaiting chain ticket with the same me
   expect(await run.runOnce(new AbortController().signal)).toBe(false);
 });
 
+test("a chain ticket is durably replanned when its predecessor already has an active sibling successor", async () => {
+  for (const phase of ["awaiting_merge", "failed_infra"] as const) {
+    const { remote, store, predecessor } = chainPairFixture(41);
+    const chainBranch = "agile/issue-1";
+    await seed(remote, (record) => {
+      record.phase = "awaiting_merge";
+      record.publication = { branch: chainBranch, commitSha: base };
+    });
+    await seedChainTicket(store, predecessor, chainBranch, base, (record) => {
+      record.phase = phase;
+    });
+    const diagnostics: string[] = [];
+    const run = chainRunner(store, diagnostics);
+    const { tasks } = await store.list();
+    expect(
+      await run.claimNext(tasks, new AbortController().signal),
+    ).toBeUndefined();
+    expect((await store.get(43)).execution).toMatchObject({
+      phase: "needs_replan",
+      baseBranch: chainBranch,
+      baseCommit: base,
+      failure: expect.stringContaining("already continued by issue #42"),
+    });
+    expect(diagnostics.join()).toContain("already continued by issue #42");
+  }
+});
+
+test("a chain ticket may continue its predecessor once every sibling successor reached a terminal phase", async () => {
+  for (const phase of ["rejected", "needs_replan"] as const) {
+    const { remote, store, predecessor } = chainPairFixture(41);
+    const chainBranch = "agile/issue-1";
+    await seed(remote, (record) => {
+      record.phase = "awaiting_merge";
+      record.publication = { branch: chainBranch, commitSha: base };
+    });
+    await seedChainTicket(store, predecessor, chainBranch, base, (record) => {
+      record.phase = phase;
+    });
+    const diagnostics: string[] = [];
+    const run = chainRunner(store, diagnostics);
+    const { tasks } = await store.list();
+    const claimed = await run.claimNext(tasks, new AbortController().signal);
+    expect(claimed?.issue.number).toBe(43);
+    expect((await store.get(43)).execution).toMatchObject({
+      phase: "claimed",
+      baseBranch: chainBranch,
+      baseCommit: base,
+    });
+    expect(diagnostics).toEqual([]);
+  }
+});
+
 test("a merged chain PR that dropped its segment leaves an explicit replan instead of waiting forever", async () => {
   const { remote, store, chain } = chainFixture({ issue: 41 });
   const chainBranch = "agile/issue-1";
@@ -1024,6 +1159,13 @@ test("a merged chain PR that dropped its segment leaves an explicit replan inste
     command: {
       async run({ command }) {
         commands.push(command);
+        const jq = command.indexOf("--jq");
+        if (command[0] === "gh" && jq >= 0) {
+          // gh applies the jq expression to the full --json payload and prints one value per line.
+          return command[jq + 1] === ".commits[].oid"
+            ? { exitCode: 0, stderr: "", stdout: `${"f".repeat(40)}\n` }
+            : { exitCode: 1, stderr: "expression error", stdout: "" };
+        }
         return {
           exitCode:
             command[1] === "merge-base" && command[3] === segment ? 1 : 0,
@@ -1071,7 +1213,7 @@ test("a merged chain PR that dropped its segment leaves an explicit replan inste
     "--json",
     "commits",
     "--jq",
-    ".[].oid",
+    ".commits[].oid",
   ]);
 });
 
@@ -1120,22 +1262,33 @@ test("a squash-merged chain PR verifies its segment via the PR commit list and c
     command: {
       async run({ command }) {
         commands.push(command);
+        const jq = command.indexOf("--jq");
+        if (command[0] === "gh" && jq >= 0) {
+          // gh evaluates the expression against the full {"commits":[...]} payload
+          // and fails on expressions that do not match that shape.
+          const commits = [{ oid: "f".repeat(40) }, { oid: segment }];
+          return command[jq + 1] === ".commits[].oid"
+            ? {
+                exitCode: 0,
+                stderr: "",
+                stdout: `${commits.map((item) => item.oid).join("\n")}\n`,
+              }
+            : { exitCode: 1, stderr: "expression error", stdout: "" };
+        }
         return {
           exitCode:
             command[1] === "merge-base" && command[3] === segment ? 1 : 0,
           stderr: "",
           stdout:
             command[0] === "gh"
-              ? command.includes("--jq")
-                ? `${segment}\n`
-                : JSON.stringify({
-                    number: 7,
-                    state: "MERGED",
-                    baseRefName: "main",
-                    headRefName: chainBranch,
-                    headRefOid: "e".repeat(40),
-                    mergeCommit: { oid: merged },
-                  })
+              ? JSON.stringify({
+                  number: 7,
+                  state: "MERGED",
+                  baseRefName: "main",
+                  headRefName: chainBranch,
+                  headRefOid: "e".repeat(40),
+                  mergeCommit: { oid: merged },
+                })
               : "",
         };
       },
@@ -1161,6 +1314,125 @@ test("a squash-merged chain PR verifies its segment via the PR commit list and c
     "segment verified via PR commit list (squash merge; ancestry unavailable)",
   );
   expect(chain.state).toBe("CLOSED");
+});
+
+test("a chain ticket publishes its shared branch PR against the global target base", async () => {
+  const { remote, store, chain } = chainFixture({ issue: 41 });
+  const chainBranch = "agile/issue-1";
+  const implementationCommit = "d".repeat(40);
+  await seed(remote, (record) => {
+    record.phase = "awaiting_merge";
+    record.publication = { branch: chainBranch, commitSha: base };
+  });
+  const reviewed = await store.get(42);
+  const record = initialExecution(reviewed, chainBranch, base);
+  record.phase = "reviewing";
+  for (const output of [
+    {
+      kind: "scout" as const,
+      summary: "Inspect",
+      files: ["answer.ts"],
+      tests: ["bun test"],
+      risks: [],
+    },
+    {
+      kind: "implement" as const,
+      commitSha: implementationCommit,
+      validation: ["bun test"],
+      risks: [],
+      limitations: [],
+    },
+    {
+      kind: "review" as const,
+      decision: "accepted" as const,
+      findings: [],
+      remainingGaps: [],
+    },
+  ])
+    record.attempts.push({
+      descriptor: {
+        attemptId: `${output.kind}-attempt`,
+        taskId: "issue-42",
+        role: output.kind,
+        retryIndex: 0,
+        model,
+        modelProfile: "terra",
+        effort: "high",
+      },
+      status: "succeeded",
+      startedAt: time,
+      endedAt: time,
+      sequence: 1,
+      events: {},
+      output,
+      usage: { ...zeroUsage },
+      usageKnown: true,
+    });
+  record.mergeReview = {
+    specHash: record.specHash,
+    headSha: implementationCommit,
+    baseSha: base,
+    reviewAttemptId: "review-attempt",
+  };
+  chain.comments.push({
+    databaseId: 4,
+    author: { login: "daemon" },
+    body: renderExecution(record),
+  });
+  const chainBranches: TaskBranchManager = {
+    ...branches,
+    async prepare(taskId) {
+      return {
+        taskId,
+        path: "/fixture",
+        branch: chainBranch,
+        baseCommit: base,
+      };
+    },
+  };
+  const publications: Parameters<TaskPublisher["publish"]>[0][] = [];
+  const run = new GitHubTaskRunner({
+    store,
+    branches: chainBranches,
+    advisor: createModelAdvisor([]),
+    harness: {
+      async step() {
+        throw Error("Unexpected agent work");
+      },
+      async cancel() {},
+    },
+    publisher: {
+      baseBranch: "main",
+      async publish(input) {
+        publications.push(structuredClone(input));
+        return {
+          number: 8,
+          url: "https://github.com/acme/test/pull/8",
+          state: "OPEN",
+        };
+      },
+    },
+    command: {
+      async run() {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    },
+    cwd: "/fixture",
+    baseBranch: "main",
+  });
+  expect(await run.runOnce(new AbortController().signal)).toBe(true);
+  expect(publications).toHaveLength(1);
+  // The shared chain branch is the PR head, never its own base.
+  expect(publications[0]?.publication).toMatchObject({
+    branch: chainBranch,
+    baseBranch: "main",
+    commitSha: implementationCommit,
+  });
+  expect((await store.get(42)).execution).toMatchObject({
+    phase: "awaiting_merge",
+    baseBranch: chainBranch,
+    publication: { number: 8, branch: chainBranch },
+  });
 });
 
 test("an auto-merge predecessor recovers read-only while its chain successor keeps the PR open", async () => {
