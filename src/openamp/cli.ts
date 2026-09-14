@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { isCancel, multiselect } from "@clack/prompts";
 import {
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
@@ -15,12 +16,20 @@ import {
 import { agentEnvironment } from "./command.js";
 import { ChangeDelivery, type DeliveryOptions } from "./delivery.js";
 import { createOpenAmpExtension } from "./extension.js";
+import {
+  createOpenAmpObservationPackExtension,
+  OBSERVATION_PACK_TOOL,
+  validateObservationPackRuntime,
+} from "./observation-pack.js";
+import type { ChangeStore } from "./state.js";
 import { AgentSupervisor, type SupervisorOptions } from "./supervisor.js";
 import { ChangeWorkspace, createChange, resumeChange } from "./workspace.js";
 
 interface ParsedArguments {
   resume?: string;
   base?: string;
+  plugins: boolean;
+  observationPack?: boolean;
   help: boolean;
 }
 
@@ -35,16 +44,23 @@ export interface RunOpenAmpOptions {
   supervisorOptions?: SupervisorOptions;
   deliveryOptions?: DeliveryOptions;
   InteractiveMode?: InteractiveModeConstructor;
+  selectPlugins?: (
+    initialObservationPack: boolean,
+  ) => Promise<boolean | undefined>;
 }
 
 /** Parses OpenAmp's intentionally small process-level CLI surface. */
 export function parseArguments(args: string[]): ParsedArguments {
-  const options: ParsedArguments = { help: false };
+  const options: ParsedArguments = { help: false, plugins: false };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--help" || argument === "-h") options.help = true;
     else if (argument === "--resume") options.resume = args[++index];
     else if (argument === "--base") options.base = args[++index];
+    else if (argument === "--plugins") options.plugins = true;
+    else if (argument === "--observation-pack") options.observationPack = true;
+    else if (argument === "--no-observation-pack")
+      options.observationPack = false;
     else throw new Error(`Unknown OpenAmp option: ${argument}`);
   }
   if (args.at(-1) === "--resume" || args.at(-1) === "--base") {
@@ -52,6 +68,11 @@ export function parseArguments(args: string[]): ParsedArguments {
   }
   if (options.resume && options.base) {
     throw new Error("--base cannot change an existing --resume change");
+  }
+  if (options.plugins && options.observationPack !== undefined) {
+    throw new Error(
+      "--plugins cannot be combined with an ObservationPack flag",
+    );
   }
   return options;
 }
@@ -62,12 +83,53 @@ export function helpText(): string {
     "OpenAmp - interactive Pi agent collaboration",
     "",
     "Usage:",
-    "  openamp [--base <ref>]",
-    "  openamp --resume <change-id>",
+    "  openamp [--base <ref>] [--observation-pack|--no-observation-pack]",
+    "  openamp --resume <change-id> [--plugins]",
     "",
     "OpenAmp creates a dedicated feature worktree, keeps Pi sessions durable,",
     "delegates through /agents, and opens reviewed pull requests without merging.",
   ].join("\n");
+}
+
+/** Presents the native checkbox list that selects optional OpenAmp plugins. */
+async function selectPlugins(
+  initialObservationPack: boolean,
+): Promise<boolean | undefined> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return initialObservationPack;
+  }
+  const selected = await multiselect({
+    message: "Plugins",
+    options: [
+      {
+        value: OBSERVATION_PACK_TOOL,
+        label: "ObservationPack",
+        hint: "keep large tool results reachable with obs_recall",
+      },
+    ],
+    initialValues: initialObservationPack ? [OBSERVATION_PACK_TOOL] : [],
+    required: false,
+  });
+  if (isCancel(selected)) return undefined;
+  return selected.includes(OBSERVATION_PACK_TOOL);
+}
+
+/** Returns the explicit main-session tool allowlist for an optional plugin choice. */
+export function mainSessionTools(observationPack: boolean): string[] {
+  return [
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "bash",
+    "edit",
+    "write",
+    "delegate",
+    "agent_status",
+    "integrate_result",
+    "deliver_change",
+    ...(observationPack ? [OBSERVATION_PACK_TOOL] : []),
+  ];
 }
 
 /** Starts or resumes one OpenAmp native Pi TUI session. */
@@ -81,9 +143,38 @@ export async function runOpenAmp(
     return 0;
   }
   const cwd = options.cwd ?? process.cwd();
-  const store = parsed.resume
-    ? await resumeChange(cwd, parsed.resume)
-    : await createChange(cwd, { base: parsed.base });
+  let store: ChangeStore;
+  if (parsed.resume) {
+    store = await resumeChange(cwd, parsed.resume);
+    const selection =
+      parsed.observationPack ??
+      (parsed.plugins
+        ? await (options.selectPlugins ?? selectPlugins)(
+            store.state.observationPack === true,
+          )
+        : undefined);
+    if (parsed.plugins && selection === undefined) {
+      throw new Error("OpenAmp plugin selection cancelled");
+    }
+    if (selection !== undefined) {
+      await store.update((state) => {
+        state.observationPack = selection;
+      });
+    }
+  } else {
+    const selection =
+      parsed.observationPack ??
+      (await (options.selectPlugins ?? selectPlugins)(false));
+    if (selection === undefined) {
+      throw new Error("OpenAmp plugin selection cancelled");
+    }
+    store = await createChange(cwd, {
+      base: parsed.base,
+      observationPack: selection,
+    });
+  }
+  const observationPack = store.state.observationPack === true;
+  if (observationPack) await validateObservationPackRuntime();
   const workspace = new ChangeWorkspace(store);
   const supervisor = new AgentSupervisor(
     store,
@@ -136,7 +227,12 @@ export async function runOpenAmp(
       agentDir,
       resourceLoaderOptions: {
         noExtensions: true,
-        extensionFactories: [extension],
+        extensionFactories: [
+          extension,
+          ...(observationPack
+            ? [await createOpenAmpObservationPackExtension()]
+            : []),
+        ],
       },
     });
     return {
@@ -144,19 +240,7 @@ export async function runOpenAmp(
         services,
         sessionManager: manager,
         sessionStartEvent,
-        tools: [
-          "read",
-          "grep",
-          "find",
-          "ls",
-          "bash",
-          "edit",
-          "write",
-          "delegate",
-          "agent_status",
-          "integrate_result",
-          "deliver_change",
-        ],
+        tools: mainSessionTools(observationPack),
       })),
       services,
       diagnostics: services.diagnostics,

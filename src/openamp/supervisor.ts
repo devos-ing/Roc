@@ -5,6 +5,10 @@ import {
   type RpcSessionState,
 } from "@earendil-works/pi-coding-agent";
 import { agentEnvironment } from "./command.js";
+import {
+  OBSERVATION_PACK_TOOL,
+  validateObservationPackRuntime,
+} from "./observation-pack.js";
 import type {
   AgentResult,
   AgentRole,
@@ -16,6 +20,9 @@ import type { AgentWorkspace, ChangeWorkspace } from "./workspace.js";
 
 const BOUNDARY_EXTENSION = fileURLToPath(
   new URL("./boundary.js", import.meta.url),
+);
+const OBSERVATION_PACK_EXTENSION = fileURLToPath(
+  new URL("./observation-pack-extension.js", import.meta.url),
 );
 const RPC_ENTRY = fileURLToPath(
   import.meta.resolve("@earendil-works/pi-coding-agent/rpc-entry"),
@@ -60,10 +67,33 @@ function boundedText(value: unknown, limit = 20_000): string {
 }
 
 /** Converts one agent role into its least-privilege Pi tool allowlist. */
-function toolsForRole(role: AgentRole): string {
-  return role === "writer"
-    ? "read,grep,find,ls,bash,edit,write"
-    : "read,grep,find,ls";
+export function toolsForRole(role: AgentRole, observationPack = false): string {
+  const tools =
+    role === "writer"
+      ? ["read", "grep", "find", "ls", "bash", "edit", "write"]
+      : ["read", "grep", "find", "ls"];
+  return [...tools, ...(observationPack ? [OBSERVATION_PACK_TOOL] : [])].join(
+    ",",
+  );
+}
+
+/** Builds one child RPC startup argv with the selected plugin and role boundaries. */
+export function childArgsForRole(
+  role: AgentRole,
+  observationPack: boolean,
+  sessionDirectory: string,
+): string[] {
+  return [
+    "--no-extensions",
+    "--extension",
+    BOUNDARY_EXTENSION,
+    ...(observationPack ? ["--extension", OBSERVATION_PACK_EXTENSION] : []),
+    "--tools",
+    toolsForRole(role, observationPack),
+    "--session-dir",
+    sessionDirectory,
+    "--approve",
+  ];
 }
 
 /** Coordinates bounded Pi child processes and durable result ownership. */
@@ -303,19 +333,16 @@ export class AgentSupervisor {
           ? await this.workspace.createAgentWorkspace(runId)
           : { path: this.store.state.workspace };
       if (this.store.state.runs[runId]?.status === "cancelled") return;
+      const observationPack = this.store.state.observationPack === true;
+      if (observationPack) await validateObservationPackRuntime();
       client = this.clientFactory({
         cwd: agentWorkspace.path,
         env: agentEnvironment(),
-        args: [
-          "--no-extensions",
-          "--extension",
-          BOUNDARY_EXTENSION,
-          "--tools",
-          toolsForRole(run.role),
-          "--session-dir",
+        args: childArgsForRole(
+          run.role,
+          observationPack,
           `${this.store.state.commonDir ?? this.store.path}.sessions`,
-          "--approve",
-        ],
+        ),
       });
       this.#clients.set(runId, client);
       await client.start();

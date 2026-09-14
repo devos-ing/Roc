@@ -1,0 +1,280 @@
+diff --git a/src/sol-pi/extensions/observation-pack/index.ts b/src/sol-pi/extensions/observation-pack/index.ts
+index 4ce29a2..eb34549 100644
+--- a/src/sol-pi/extensions/observation-pack/index.ts
++++ b/src/sol-pi/extensions/observation-pack/index.ts
+@@ -77,7 +77,7 @@ export function createObservationPackExtension(): ExtensionFactory {
+ 				const offset = params.offset ?? 0;
+ 				let chunk: RecallChunk;
+ 				try {
+-					chunk = await readRecallChunk(observationPath(runtimeRoot(ctx), params.id), offset, RECALL_LIMITS);
++					chunk = await readRecallChunk(observationPath(runtimeRoot(ctx), params.id), params.id, offset, RECALL_LIMITS);
+ 				} catch (error) {
+ 					if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+ 						throw new Error(`Unknown observation id: ${params.id}`);
+diff --git a/src/sol-pi/extensions/observation-pack/observation.ts b/src/sol-pi/extensions/observation-pack/observation.ts
+index 42a08c6..4161892 100644
+--- a/src/sol-pi/extensions/observation-pack/observation.ts
++++ b/src/sol-pi/extensions/observation-pack/observation.ts
+@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
+ import { constants } from "node:fs";
+ import { type FileHandle, lstat, mkdir, open } from "node:fs/promises";
+ import { dirname, join } from "node:path";
++import { StringDecoder } from "node:string_decoder";
+ import type { AgentMessage } from "@earendil-works/pi-agent-core";
+ import type { TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
+ 
+@@ -20,6 +21,9 @@ const CHARS_PER_TOKEN = 4;
+ const OBSERVATION_ID_PATTERN = /^obs_[a-f0-9]{24}$/u;
+ const READ_OBJECT_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
+ const CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
++const INTEGRITY_BUFFER_BYTES = 64 * 1024;
++const LEDGER_READ_BUFFER_BYTES = 64 * 1024;
++const MAX_LEDGER_RECORD_BYTES = 64 * 1024;
+ 
+ /**
+  * Receipts from the evidence-preserving reducer are already a reduction of a
+@@ -155,6 +159,120 @@ export async function ensureStored(observation: Observation): Promise<void> {
+ 	}
+ }
+ 
++/** Returns the session-local ledger that authoritatively binds observation ids to content hashes. */
++function ledgerPath(observationPath: string): string {
++	return join(dirname(dirname(observationPath)), "ledger.jsonl");
++}
++
++/** Extracts one requested observation hash from a validated ledger record. */
++function recordLedgerHash(line: string, id: string, contentHash: string | undefined): string | undefined {
++	let entry: unknown;
++	try {
++		entry = JSON.parse(line);
++	} catch {
++		throw new Error("Stored observation ledger record is malformed");
++	}
++	if (
++		typeof entry !== "object" ||
++		entry === null ||
++		(entry as { event?: unknown }).event !== "full" ||
++		(entry as { id?: unknown }).id !== id
++	) {
++		return contentHash;
++	}
++	const candidate = (entry as { contentHash?: unknown }).contentHash;
++	if (typeof candidate !== "string" || !/^[a-f0-9]{64}$/u.test(candidate)) {
++		throw new Error(`Stored observation ledger hash is malformed for ${id}`);
++	}
++	if (contentHash !== undefined && contentHash !== candidate) {
++		throw new Error(`Stored observation ledger hash conflicts for ${id}`);
++	}
++	return candidate;
++}
++
++/** Reads the ledger digest for the requested observation id and rejects missing, malformed, or conflicting records. */
++async function readLedgerContentHash(observationPath: string, id: string): Promise<string> {
++	const path = ledgerPath(observationPath);
++	let handle: FileHandle;
++	try {
++		handle = await open(path, READ_OBJECT_FLAGS);
++	} catch (error) {
++		if (error instanceof Error && "code" in error && error.code === "ENOENT") {
++			throw Object.assign(new Error("Stored observation ledger is missing"), { code: "ENOENT" });
++		}
++		throw error;
++	}
++	try {
++		const stats = await handle.stat();
++		if (!stats.isFile()) throw new Error("Stored observation ledger is not a regular file");
++		const decoder = new StringDecoder("utf8");
++		const buffer = Buffer.alloc(LEDGER_READ_BUFFER_BYTES);
++		let position = 0;
++		let pending = "";
++		let contentHash: string | undefined;
++		/** Consumes complete bounded JSONL records accumulated from one or more read chunks. */
++		const consumeCompleteRecords = (): void => {
++			let newline = pending.indexOf("\n");
++			while (newline >= 0) {
++				const line = pending.slice(0, newline);
++				pending = pending.slice(newline + 1);
++				if (Buffer.byteLength(line, "utf8") > MAX_LEDGER_RECORD_BYTES) {
++					throw new Error("Stored observation ledger record exceeds limit");
++				}
++				if (line) contentHash = recordLedgerHash(line, id, contentHash);
++				newline = pending.indexOf("\n");
++			}
++		};
++		while (position < stats.size) {
++			const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, stats.size - position), position);
++			if (bytesRead === 0) throw new Error("Stored observation ledger changed while reading");
++			position += bytesRead;
++			pending += decoder.write(buffer.subarray(0, bytesRead));
++			consumeCompleteRecords();
++			if (Buffer.byteLength(pending, "utf8") > MAX_LEDGER_RECORD_BYTES) {
++				throw new Error("Stored observation ledger record exceeds limit");
++			}
++		}
++		pending += decoder.end();
++		consumeCompleteRecords();
++		if (Buffer.byteLength(pending, "utf8") > MAX_LEDGER_RECORD_BYTES) {
++			throw new Error("Stored observation ledger record exceeds limit");
++		}
++		if (pending) contentHash = recordLedgerHash(pending, id, contentHash);
++		if (contentHash === undefined) throw new Error(`Stored observation ledger hash is missing for ${id}`);
++		return contentHash;
++	} finally {
++		await handle.close();
++	}
++}
++
++/** Hashes every stored byte while retaining only the requested page, so returned bytes are integrity-verified. */
++async function verifyAndReadObservationPage(
++	handle: FileHandle,
++	size: number,
++	expectedHash: string,
++	offset: number,
++	pageBytes: number,
++): Promise<Buffer> {
++	const digest = createHash("sha256");
++	const buffer = Buffer.alloc(INTEGRITY_BUFFER_BYTES);
++	const page = Buffer.alloc(pageBytes);
++	let position = 0;
++	while (position < size) {
++		const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, size - position), position);
++		if (bytesRead === 0) throw new Error("Stored observation changed while verifying integrity");
++		digest.update(buffer.subarray(0, bytesRead));
++		const pageStart = Math.max(offset, position);
++		const pageEnd = Math.min(offset + pageBytes, position + bytesRead);
++		if (pageEnd > pageStart) {
++			buffer.copy(page, pageStart - offset, pageStart - position, pageEnd - position);
++		}
++		position += bytesRead;
++	}
++	if (digest.digest("hex") !== expectedHash) throw new Error("Stored observation content hash mismatch");
++	return page;
++}
++
+ function completeLineExcerpt(text: string, budgetBytes: number, fromEnd: boolean): string {
+ 	const lines = text.split(/(?<=\n)/);
+ 	const selected: string[] = [];
+@@ -212,19 +330,25 @@ function trimUtf8End(buffer: Buffer, limit: number): number {
+ 
+ export async function readRecallChunk(
+ 	path: string,
++	id: string,
+ 	offset: number,
+ 	limits: { readonly maxBytes: number; readonly maxLines: number },
+ ): Promise<RecallChunk> {
++	const expectedHash = await readLedgerContentHash(path, id);
+ 	const handle = await open(path, READ_OBJECT_FLAGS);
+ 	try {
+ 		const fileStats = await handle.stat();
+ 		if (!fileStats.isFile()) throw new Error("Stored observation is not a regular file");
+ 		if (offset > fileStats.size) throw new Error(`Offset ${offset} exceeds observation size ${fileStats.size}`);
+-
+ 		const available = Math.max(0, fileStats.size - offset);
+-		const buffer = Buffer.alloc(Math.min(available, limits.maxBytes + 4));
+-		const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+-		let end = Math.min(bytesRead, limits.maxBytes);
++		const buffer = await verifyAndReadObservationPage(
++			handle,
++			fileStats.size,
++			expectedHash,
++			offset,
++			Math.min(available, limits.maxBytes + 4),
++		);
++		let end = Math.min(buffer.length, limits.maxBytes);
+ 		let newlineCount = 0;
+ 
+ 		for (let index = 0; index < end; index += 1) {
+diff --git a/tests/observation-pack.test.ts b/tests/observation-pack.test.ts
+index 2f15723..88c1e85 100644
+--- a/tests/observation-pack.test.ts
++++ b/tests/observation-pack.test.ts
+@@ -3,7 +3,7 @@
+  * SPDX-License-Identifier: MIT
+  */
+ import { createHash } from "node:crypto";
+-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
++import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import type { AgentMessage } from "@earendil-works/pi-agent-core";
+@@ -72,6 +72,10 @@ function observationObjectsDirectory(sessionDir: string): string {
+ 	return join(sessionDir, "sol-pi", SESSION_ID, "observation-pack", "objects");
+ }
+ 
++function observationLedgerPath(sessionDir: string): string {
++	return join(sessionDir, "sol-pi", SESSION_ID, "observation-pack", "ledger.jsonl");
++}
++
+ async function project(pi: FakePi, message: ToolResultMessage, sessionDir: string, count: number): Promise<string[]> {
+ 	const projected: string[] = [];
+ 	for (let index = 0; index < count; index += 1) {
+@@ -258,6 +262,69 @@ describe("observation pack", () => {
+ 		).rejects.toMatchObject({ code: "ELOOP" });
+ 	});
+ 
++	it("fails recall closed after same-size archive corruption", async () => {
++		const sessionDir = await sessionRoot();
++		const body = `stored\n${repeatPastThreshold("observation bytes\n")}`;
++		const message = toolResult(body);
++		const id = observationId(message);
++		const pi = observationPackPi();
++		await project(pi, message, sessionDir, 3);
++		await writeFile(observationPath(sessionDir, id), "x".repeat(Buffer.byteLength(body, "utf8")));
++
++		await expect(
++			pi.tool("obs_recall").execute("recall-1", { id, offset: 0 }, undefined, undefined, fakeContext(sessionDir)),
++		).rejects.toThrow("Stored observation content hash mismatch");
++	});
++
++	it("fails recall closed when another observation replaces the requested archive", async () => {
++		const sessionDir = await sessionRoot();
++		const first = toolResult(`first\n${repeatPastThreshold("a")}`, { toolCallId: "first" });
++		const second = toolResult(`second\n${repeatPastThreshold("b")}`, { toolCallId: "second" });
++		const firstId = observationId(first);
++		const secondId = observationId(second);
++		const pi = observationPackPi();
++		await project(pi, first, sessionDir, 3);
++		await project(pi, second, sessionDir, 3);
++		await writeFile(observationPath(sessionDir, firstId), await readFile(observationPath(sessionDir, secondId)));
++
++		await expect(
++			pi.tool("obs_recall").execute("recall-1", { id: firstId, offset: 0 }, undefined, undefined, fakeContext(sessionDir)),
++		).rejects.toThrow("Stored observation content hash mismatch");
++	});
++
++	it("rejects an oversized malformed ledger record without unbounded buffering", async () => {
++		const sessionDir = await sessionRoot();
++		const body = `stored\n${repeatPastThreshold("observation bytes\n")}`;
++		const message = toolResult(body);
++		const id = observationId(message);
++		const pi = observationPackPi();
++		await project(pi, message, sessionDir, 3);
++		await appendFile(observationLedgerPath(sessionDir), "x".repeat(64 * 1024 + 1));
++
++		await expect(
++			pi.tool("obs_recall").execute("recall-1", { id, offset: 0 }, undefined, undefined, fakeContext(sessionDir)),
++		).rejects.toThrow("Stored observation ledger record exceeds limit");
++	});
++
++	it("recalls through a near-limit valid ledger record split across read chunks", async () => {
++		const sessionDir = await sessionRoot();
++		const body = `stored\n${repeatPastThreshold("observation bytes\n")}`;
++		const message = toolResult(body);
++		const id = observationId(message);
++		const pi = observationPackPi();
++		await project(pi, message, sessionDir, 3);
++		const padding = "x".repeat(64 * 1024 - 128);
++		const record = `${JSON.stringify({ event: "unrelated", padding })}\n`;
++		expect(Buffer.byteLength(record, "utf8")).toBeLessThan(64 * 1024);
++		expect(Buffer.byteLength(await readFile(observationLedgerPath(sessionDir)), "utf8") + Buffer.byteLength(record, "utf8")).toBeGreaterThan(64 * 1024);
++		await appendFile(observationLedgerPath(sessionDir), record);
++
++		const result = await pi
++			.tool("obs_recall")
++			.execute("recall-1", { id, offset: 0 }, undefined, undefined, fakeContext(sessionDir));
++		expect(result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n")).toContain("stored");
++	});
++
+ 	it("returns the exact original bytes across paged recall", async () => {
+ 		const sessionDir = await sessionRoot();
+ 		const body = `utf8: luna ☾\n${"0123456789abcdef\n".repeat(1_200)}final line`;
