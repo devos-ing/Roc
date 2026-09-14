@@ -5,6 +5,7 @@
 ## 從這裡開始
 
 - [完整計畫](../2026-09-13-openamp-cli-plan.md) 是目前的規劃依據。
+- [Oracle 實作計畫](oracle-plan.md) 定義隨選高推理第二意見、雙模型路由，以及它與強制 Delivery Review 的邊界。
 - [M0 技術可行性結果](m0-feasibility.md) 記錄已驗證能力、`RpcClient` 限制及保留風險。
 - [M1–M5 里程碑證據](milestone-evidence.md) 記錄實作、測試與尚待外部授權的驗收。
 - [初步方向](../2026-09-13-openamp-cli-direction.md) 保留早期討論，衝突時以完整計畫為準。
