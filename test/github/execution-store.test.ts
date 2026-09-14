@@ -2,17 +2,63 @@ import { expect, test } from "bun:test";
 import {
   ExecutionRecordSchema,
   initialExecution,
+  type NativeTask,
   renderExecution,
 } from "../../src/github/execution-store";
 import {
   jsonHash,
   parseRemoteTaskEnvelope,
+  type RemoteTaskEnvelope,
   remoteTaskEnvelope,
   renderRemoteTaskApproval,
   renderRemoteTaskBody,
 } from "../../src/github/remote-tasks";
 import { manifest, memoryGitHub } from "../helpers/github-native";
 import { memoryPlan } from "../helpers/github-plan";
+
+/** Republishes a complete approved revision of one in-memory plan, keeping earlier approvals and checkpoints. */
+function republishPlan(
+  remote: ReturnType<typeof memoryPlan>,
+  revise: (tasks: RemoteTaskEnvelope["task"][]) => RemoteTaskEnvelope["task"][],
+): void {
+  const published = remote.issues.map((issue) =>
+    parseRemoteTaskEnvelope(issue.body),
+  );
+  const first = published[0];
+  if (!first) throw Error("Missing published plan");
+  const plan = {
+    cycleId: first.cycleId,
+    goal: first.goal,
+    tasks: revise(published.map((envelope) => envelope.task)),
+  };
+  for (const issue of remote.issues) {
+    const envelope = remoteTaskEnvelope(
+      plan,
+      parseRemoteTaskEnvelope(issue.body).task.id,
+    );
+    issue.body = renderRemoteTaskBody(envelope);
+    issue.comments.push({
+      databaseId:
+        Math.max(...issue.comments.map((comment) => comment.databaseId)) + 1,
+      author: { login: "owner" },
+      body: renderRemoteTaskApproval(envelope),
+    });
+  }
+}
+
+/** Builds the finished checkpoint a member publishes before a later plan revision. */
+function doneExecution(task: NativeTask, issueNumber: number) {
+  return ExecutionRecordSchema.parse({
+    ...initialExecution(task, "main", "a".repeat(40)),
+    phase: "done",
+    publication: {
+      number: 7,
+      branch: `agile/issue-${issueNumber}`,
+      commitSha: "b".repeat(40),
+      mergeCommit: "c".repeat(40),
+    },
+  });
+}
 
 test("closure requires unchanged approved confirmed done evidence and preserves its checkpoint", async () => {
   for (const fault of [
@@ -549,4 +595,266 @@ test("supersede resumes a retry whose anchors were both rewritten before the int
   const dependent = view.tasks.find((item) => item.issue.number === 43);
   if (!dependent) throw Error("Missing dependent task");
   expect(dependent.envelope.task.spec.dependencies).toEqual(["T2"]);
+});
+
+test("supersede keeps a finished member stale when an approved revision changed its requirement", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"], ["d.ts"]]);
+  const store = remote.store;
+  remote.commentAuthor = "owner";
+  remote.issues[2]!.comments.push({
+    databaseId: 60,
+    author: { login: "daemon" },
+    body: renderExecution(doneExecution(await store.get(43), 43)),
+  });
+  remote.issues[2]!.state = "CLOSED";
+  remote.issues[2]!.stateReason = "COMPLETED";
+  // A complete approved revision changes T3's scope while its earlier approvals
+  // and its finished checkpoint stay on the Issue, so that checkpoint is bound
+  // to a specification this supersede never replaced.
+  republishPlan(remote, (tasks) =>
+    tasks.map((task) =>
+      task.id === "T3"
+        ? { ...task, spec: { ...task.spec, scope: ["entirely-new.ts"] } }
+        : task,
+    ),
+  );
+  const before = structuredClone(remote.issues);
+  await expect(store.supersede(41, 42)).rejects.toThrow(
+    /reconcile the stale checkpoint/,
+  );
+  const view = await store.list();
+  const member = view.tasks.find((item) => item.issue.number === 43);
+  if (!member) throw Error("Missing revised member");
+  // The unrelated revision is not this supersede's provenance: the checkpoint
+  // stays stale, so the member stays retired instead of returning to done.
+  expect(member.blockedReason).toBe(
+    "Approved specification changed; execution requires replan",
+  );
+  expect(member.task.status).toBe("retired");
+  expect(remote.issues).toEqual(before);
+});
+
+test("supersede keeps a dependent needing replan instead of resurrecting its done evidence", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"]], { T2: ["T1"] });
+  const store = remote.store;
+  remote.commentAuthor = "owner";
+  await store.supersede(41, 43);
+  remote.issues[1]!.comments.push({
+    databaseId: 80,
+    author: { login: "daemon" },
+    body: renderExecution(doneExecution(await store.get(42), 42)),
+  });
+  // A complete approved revision changes the dependent's requirement, so its
+  // finished checkpoint no longer authorizes the Issue it was written for.
+  republishPlan(remote, (tasks) =>
+    tasks.map((task) =>
+      task.id === "T2"
+        ? { ...task, spec: { ...task.spec, desiredOutcome: "Return 99" } }
+        : task,
+    ),
+  );
+  const stale = (await store.list()).tasks.find(
+    (item) => item.issue.number === 42,
+  );
+  if (!stale) throw Error("Missing revised dependent");
+  expect(stale.task.status).toBe("needs_replan");
+  const before = structuredClone(remote.issues);
+  // Replaying the supersede must not rebind the stale checkpoint onto the
+  // revised plan, and must not close the Issue it no longer describes.
+  await expect(store.supersede(41, 43)).rejects.toThrow(
+    /reconcile the stale checkpoint/,
+  );
+  expect(remote.issues).toEqual(before);
+  const view = await store.list();
+  const dependent = view.tasks.find((item) => item.issue.number === 42);
+  if (!dependent) throw Error("Missing dependent task");
+  expect(dependent.blockedReason).toBe(
+    "Approved specification changed; execution requires replan",
+  );
+  expect(dependent.task.status).toBe("needs_replan");
+  await expect(store.closeCompleted(dependent)).rejects.toThrow(
+    /closure authority changed/,
+  );
+  expect(remote.issues[1]!.state).toBe("OPEN");
+});
+
+test("supersede refuses to launder merge review evidence already invalid against its own checkpoint", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"]], { T2: ["T1"] });
+  const store = remote.store;
+  remote.commentAuthor = "owner";
+  const dead = await store.get(41);
+  const rejected = initialExecution(dead, "main", "a".repeat(40));
+  rejected.phase = "rejected";
+  remote.issues[0]!.comments.push({
+    databaseId: 50,
+    author: { login: "daemon" },
+    body: renderExecution(rejected),
+  });
+  const dependent = await store.get(42);
+  const merging = ExecutionRecordSchema.parse({
+    ...initialExecution(dependent, "main", "a".repeat(40)),
+    phase: "awaiting_merge",
+    publication: {
+      number: 7,
+      branch: "agile/issue-42",
+      commitSha: "b".repeat(40),
+    },
+    // The binding pointer was broken before this supersede: repairing it while
+    // re-anchoring the plan would resurrect merge evidence that must stay refused.
+    mergeReview: {
+      specHash: `sha256:${"0".repeat(64)}`,
+      headSha: "b".repeat(40),
+      baseSha: "a".repeat(40),
+      reviewAttemptId: "review-1",
+    },
+  });
+  remote.issues[1]!.comments.push({
+    databaseId: 51,
+    author: { login: "daemon" },
+    body: renderExecution(merging),
+  });
+  const before = structuredClone(remote.issues);
+  await expect(store.supersede(41, 43)).rejects.toThrow(
+    /merge review evidence/,
+  );
+  expect(remote.issues).toEqual(before);
+});
+
+test("supersede rereads a checkpoint advanced mid-attempt and never overwrites its newer evidence", async () => {
+  /** Runs one supersede whose replacement checkpoint the daemon advances during the first body rewrite. */
+  async function supersedeAdvancing(
+    advance: (planned: ReturnType<typeof initialExecution>) => unknown,
+  ) {
+    const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"]], { T2: ["T1"] });
+    const store = remote.store;
+    remote.commentAuthor = "owner";
+    const planned = initialExecution(
+      await store.get(43),
+      "main",
+      "a".repeat(40),
+    );
+    planned.phase = "implementing";
+    remote.issues[2]!.comments.push({
+      databaseId: 60,
+      author: { login: "daemon" },
+      body: renderExecution(planned),
+    });
+    const originalWriteComment = remote.api.writeComment;
+    const checkpoints: string[] = [];
+    let advanced = false;
+    remote.api.writeComment = async (
+      repo: string,
+      number: number,
+      body: string,
+      id?: number,
+    ) => {
+      if (id !== undefined && number === 43) checkpoints.push(body);
+      if (!advanced && number === 41 && id === undefined) {
+        advanced = true;
+        const comment = remote.issues[2]!.comments.find(
+          (item) => item.databaseId === 60,
+        );
+        if (!comment) throw Error("Missing replacement checkpoint");
+        comment.body = renderExecution(
+          ExecutionRecordSchema.parse(advance(planned)),
+        );
+      }
+      return originalWriteComment(repo, number, body, id);
+    };
+    const outcome = await store.supersede(41, 43).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    return { remote, store, checkpoints, outcome };
+  }
+
+  const running = await supersedeAdvancing((planned) => ({
+    ...planned,
+    revision: planned.revision + 1,
+    phase: "rejected",
+    failure: "Injected concurrent rejection",
+  }));
+  expect(running.outcome).toBeUndefined();
+  const rejected = (await running.store.list()).tasks.find(
+    (item) => item.issue.number === 43,
+  );
+  if (!rejected?.execution) throw Error("Missing replacement task");
+  // The newer revision keeps its phase and failure evidence; only the binding moves.
+  expect(rejected.execution.revision).toBe(1);
+  expect(rejected.execution.phase).toBe("rejected");
+  expect(rejected.execution.failure).toBe("Injected concurrent rejection");
+  expect(rejected.execution.specHash).toBe(jsonHash(rejected.envelope));
+  expect(rejected.blockedReason).toBeUndefined();
+  expect(
+    running.checkpoints.some((body) => body.includes('"implementing"')),
+  ).toBe(false);
+
+  // A checkpoint that moved to an unrelated specification is refused instead of
+  // being overwritten, and never surfaces as a retryable interrupted attempt.
+  const foreign = await supersedeAdvancing((planned) => ({
+    ...planned,
+    revision: planned.revision + 1,
+    phase: "rejected",
+    specHash: `sha256:${"9".repeat(64)}`,
+  }));
+  expect(foreign.outcome).toBeInstanceOf(Error);
+  expect((foreign.outcome as { code?: string }).code).toBeUndefined();
+  expect(String(foreign.outcome)).toMatch(
+    /Supersede refused:.*different specification/s,
+  );
+  expect(
+    foreign.remote.issues[2]!.comments.find(
+      (comment) => comment.databaseId === 60,
+    )?.body,
+  ).toContain("9".repeat(64));
+});
+
+test("supersede resumes a migration interrupted after every body was rewritten", async () => {
+  const remote = memoryPlan([["a.ts"], ["b.ts"], ["c.ts"]], { T2: ["T1"] });
+  const store = remote.store;
+  remote.commentAuthor = "owner";
+  const implementing = initialExecution(
+    await store.get(43),
+    "main",
+    "a".repeat(40),
+  );
+  implementing.phase = "implementing";
+  remote.issues[2]!.comments.push({
+    databaseId: 60,
+    author: { login: "daemon" },
+    body: renderExecution(implementing),
+  });
+  const originalWriteComment = remote.api.writeComment;
+  let failing = true;
+  remote.api.writeComment = async (
+    repo: string,
+    number: number,
+    body: string,
+    id?: number,
+  ) => {
+    if (failing && id !== undefined) throw Error("injected checkpoint failure");
+    return originalWriteComment(repo, number, body, id);
+  };
+  await expect(store.supersede(41, 43)).rejects.toMatchObject({
+    code: "GITHUB_SUPERSEDE_UNCONFIRMED",
+  });
+  // Every body already carries the rewritten plan, so the replaced specification
+  // is only recognizable by reversing this supersede's dependency repoint.
+  const interrupted = await store.list();
+  expect(
+    new Set(interrupted.tasks.map((item) => item.envelope.planId)).size,
+  ).toBe(1);
+  failing = false;
+  const result = await store.supersede(41, 43);
+  const view = await store.list();
+  expect(view.tasks).toHaveLength(3);
+  for (const item of view.tasks) {
+    expect(item.envelope.planId).toBe(result.planId);
+    expect(item.approved).toBe(true);
+    expect(item.blockedReason).toBeUndefined();
+  }
+  const migrated = view.tasks.find((item) => item.issue.number === 43);
+  if (!migrated?.execution) throw Error("Missing replacement task");
+  expect(migrated.execution.specHash).toBe(jsonHash(migrated.envelope));
+  expect(migrated.execution.phase).toBe("implementing");
 });

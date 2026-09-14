@@ -19,6 +19,7 @@ import {
   parseRemoteTaskApproval,
   parseRemoteTaskEnvelope,
   type RemoteTaskEnvelope,
+  RemoteTaskEnvelopeSchema,
   remotePlanId,
   remoteTaskEnvelope,
   renderRemoteTaskApproval,
@@ -539,6 +540,25 @@ export class GitHubExecutionStore {
         remoteTaskEnvelope(manifest, task.id),
       ]),
     );
+    // Provenance of the specification this supersede replaces: a member whose
+    // body an interrupted attempt already rewrote no longer shows its old
+    // envelope, so the replaced plan identity is either still readable on a
+    // member that lags behind, or reconstructed from the members themselves by
+    // reversing this supersede's dependency repoint.
+    const previousPlanIds = new Set(
+      plan
+        .map((item) => item.envelope.planId)
+        .filter((candidate) => candidate !== planId),
+    );
+    const reconstructedPlanId = remotePlanId({
+      cycleId,
+      goal,
+      tasks: plan.map((item) =>
+        repointDependencies(item.envelope.task, newId, oldId),
+      ),
+    });
+    if (reconstructedPlanId !== planId)
+      previousPlanIds.add(reconstructedPlanId);
     const dependentIssues: number[] = [];
     const rewrittenIssues: number[] = [];
     // Whole-plan precheck: classify every member before the first write so one
@@ -556,7 +576,12 @@ export class GitHubExecutionStore {
       const needsRewrite = currentHash !== targetHash;
       // A body already rewritten by an interrupted attempt still owes its approval.
       const needsApproval = !needsRewrite && !member.approved;
-      const migrated = this.migrationFor(member, currentHash, targetHash);
+      const migrated = this.migrationFor(
+        member,
+        currentHash,
+        targetHash,
+        this.previousHashes(member, previousPlanIds, oldId, newId),
+      );
       if (needsRewrite || needsApproval || migrated)
         actions.push({
           member,
@@ -577,6 +602,7 @@ export class GitHubExecutionStore {
       needsApproval,
       migrated,
     } of actions) {
+      let migratedRecord = migrated;
       try {
         if (needsRewrite) {
           await this.api.editBody(
@@ -592,23 +618,36 @@ export class GitHubExecutionStore {
             renderRemoteTaskApproval(envelope),
           );
         }
-        if (migrated)
-          await this.api.writeComment(
-            this.repository,
-            member.issue.number,
-            renderExecution(migrated),
-            member.commentId,
-          );
       } catch {
         // A failed response can follow a successful remote write; confirm before failing.
+      }
+      // Only a body already rewritten to the target specification can carry a
+      // rebinding checkpoint, and that write rereads the current revision: a
+      // checkpoint the daemon advanced while the plan was rewritten keeps its
+      // newer revision, phase and evidence instead of being overwritten by the
+      // plan snapshot this supersede classified.
+      if (migrated) {
+        const current = await this.get(member.issue.number);
+        if (jsonHash(current.envelope) === targetHash) {
+          migratedRecord = this.migrationOfLatest(member, current, targetHash);
+          if (migratedRecord)
+            await this.api
+              .writeComment(
+                this.repository,
+                member.issue.number,
+                renderExecution(migratedRecord),
+                current.commentId,
+              )
+              .catch(() => undefined);
+        }
       }
       const fresh = await this.get(member.issue.number);
       if (
         jsonHash(fresh.envelope) !== targetHash ||
         !fresh.approved ||
-        (migrated &&
+        (migratedRecord &&
           (!fresh.execution ||
-            jsonHash(fresh.execution) !== jsonHash(migrated)))
+            jsonHash(fresh.execution) !== jsonHash(migratedRecord)))
       )
         throw new AgileError({
           code: "GITHUB_SUPERSEDE_UNCONFIRMED",
@@ -635,20 +674,82 @@ export class GitHubExecutionStore {
     member: NativeTask,
     currentHash: string,
     targetHash: string,
+    previousHashes: ReadonlySet<string>,
   ): ExecutionRecord | undefined {
     const execution = member.execution;
     if (!execution || execution.specHash === targetHash) return undefined;
     if (
       execution.specHash !== currentHash &&
       // A body rewritten by an interrupted attempt hides its pre-supersede
-      // envelope; only the trusted approval history can prove the checkpoint
-      // was bound to a specification this Issue legitimately carried. Anything
-      // else is a stale checkpoint from an unknown specification.
-      (currentHash !== targetHash ||
-        !this.approvedHashes(member).has(execution.specHash))
+      // envelope; the checkpoint is only trusted when it binds exactly the
+      // specification this supersede replaces, which is the target task with
+      // this supersede's dependency repoint reversed. Any other approved
+      // change — a revised requirement the member must replan — stays stale.
+      (currentHash !== targetHash || !previousHashes.has(execution.specHash))
     )
       throw Error(
         `Supersede refused: Issue #${member.issue.number} has a checkpoint (phase ${execution.phase}) that matches neither its current nor its target specification; reconcile the stale checkpoint before superseding`,
+      );
+    return this.reanchored(execution, targetHash, member.issue.number);
+  }
+
+  /** Builds every specification hash one member could have carried before this supersede replaced its plan. */
+  private previousHashes(
+    member: NativeTask,
+    planIds: ReadonlySet<string>,
+    oldId: string,
+    newId: string,
+  ): Set<string> {
+    const task = repointDependencies(member.envelope.task, newId, oldId);
+    return new Set(
+      [...planIds].map((planId) =>
+        jsonHash(
+          RemoteTaskEnvelopeSchema.parse({
+            version: 1,
+            planId,
+            cycleId: member.envelope.cycleId,
+            goal: member.envelope.goal,
+            task,
+          }),
+        ),
+      ),
+    );
+  }
+
+  /** Reconciles one classified migration with a fresh read so a concurrently advanced checkpoint is never overwritten. */
+  private migrationOfLatest(
+    member: NativeTask,
+    current: NativeTask,
+    targetHash: string,
+  ): ExecutionRecord | undefined {
+    const sourceHash = member.execution?.specHash;
+    const fresh = current.execution;
+    if (!sourceHash || !fresh)
+      throw Error(
+        `Supersede refused: Issue #${member.issue.number} lost the checkpoint this supersede was classified against; reconcile it before retrying`,
+      );
+    // A checkpoint an interrupted attempt already re-anchored needs no write.
+    if (fresh.specHash === targetHash) return undefined;
+    if (fresh.specHash !== sourceHash)
+      throw Error(
+        `Supersede refused: Issue #${member.issue.number} checkpoint advanced to revision ${fresh.revision} (phase ${fresh.phase}) under a different specification while the plan was rewritten; reconcile it before retrying`,
+      );
+    // The newer revision, phase and evidence carry over; only the binding moves.
+    return this.reanchored(fresh, targetHash, member.issue.number);
+  }
+
+  /** Re-anchors one checkpoint onto the rewritten plan, refusing an already invalid merge binding. */
+  private reanchored(
+    execution: ExecutionRecord,
+    targetHash: string,
+    issueNumber: number,
+  ): ExecutionRecord {
+    if (
+      execution.mergeReview &&
+      execution.mergeReview.specHash !== execution.specHash
+    )
+      throw Error(
+        `Supersede refused: Issue #${issueNumber} carries merge review evidence that its checkpoint does not bind; reconcile the invalid merge evidence before superseding`,
       );
     return ExecutionRecordSchema.parse({
       ...execution,
@@ -660,21 +761,6 @@ export class GitHubExecutionStore {
         : {}),
       updatedAt: new Date().toISOString(),
     });
-  }
-
-  /** Collects every envelope hash a trusted publisher has approved on one Issue. */
-  private approvedHashes(task: NativeTask): Set<string> {
-    const hashes = new Set<string>();
-    for (const comment of task.issue.comments) {
-      if (!this.publishers.has(comment.author?.login ?? "")) continue;
-      try {
-        const approval = parseRemoteTaskApproval(comment.body);
-        if (approval) hashes.add(approval.hash);
-      } catch {
-        // Unrelated or malformed prose never carried an approval.
-      }
-    }
-    return hashes;
   }
 
   /** Recognizes a supersede's plan members, including a partially written retry. */
