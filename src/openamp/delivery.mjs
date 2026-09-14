@@ -89,11 +89,12 @@ export class ChangeDelivery {
     const deliveryEnvironment = { ...(options.environment ?? process.env) };
     this.commandRunner =
       options.commandRunner ??
-      ((command, args, cwd) =>
+      ((command, args, cwd, signal) =>
         runCommand(command, args, {
           cwd,
           env: deliveryEnvironment,
           allowFailure: true,
+          signal,
           timeoutMs: 60_000,
         }));
   }
@@ -388,11 +389,23 @@ export class ChangeDelivery {
         throw error;
       }
     }
-    const result = await this.commandRunner(
-      command,
-      args,
-      this.store.state.workspace,
-    );
+    let result;
+    try {
+      const abortable = !["push", "create-pr", "update-pr"].includes(action);
+      result = await this.commandRunner(
+        command,
+        args,
+        this.store.state.workspace,
+        abortable ? signal : undefined,
+      );
+    } catch (error) {
+      await this.store.update((state) => {
+        const entry = state.commandLedger.find((item) => item.id === ledgerId);
+        entry.status = signal?.aborted ? "cancelled" : "failed";
+        entry.finishedAt = new Date().toISOString();
+      });
+      throw error;
+    }
     await this.store.update((state) => {
       const entry = state.commandLedger.find((item) => item.id === ledgerId);
       entry.status = result.exitCode === 0 ? "completed" : "failed";
@@ -508,18 +521,22 @@ export class ChangeDelivery {
       inputGeneration,
       signal,
     );
-    if (push.exitCode !== 0) {
+    if (push.exitCode !== 0 || signal?.aborted) {
       const reconciled = await this.#run("reconcile-push", "git", [
         "ls-remote",
         "origin",
         `refs/heads/${state.branch}`,
       ]);
       if (reconciled.stdout.split(/\s/u)[0] !== head) {
+        await this.store.update((current) => {
+          current.publication.status = "reconcile_required";
+        });
         throw new Error(
           "Feature branch push failed and could not be reconciled",
         );
       }
     }
+    this.#assertRequirementsCurrent(inputGeneration, signal);
 
     const finalBase = await this.#readRemoteBranch(
       "confirm-publication-base",
@@ -563,22 +580,33 @@ export class ChangeDelivery {
       inputGeneration,
       signal,
     );
-    const finalPullRequest = await this.#findPullRequest(
-      inputGeneration,
-      signal,
-    );
+    const finalPullRequest = await this.#findPullRequest();
     if (
       finalPullRequest?.state !== "OPEN" ||
       finalPullRequest.headRefOid !== head ||
       finalPullRequest.title !== input.title ||
       finalPullRequest.body !== body
     ) {
+      await this.store.update((current) => {
+        current.publication.status = "reconcile_required";
+        current.publication.pullRequestNumber =
+          finalPullRequest?.number ?? null;
+        current.publication.pullRequestUrl = finalPullRequest?.url ?? null;
+      });
       throw new Error(
         changed.exitCode === 0
           ? "GitHub did not confirm the expected pull request head"
           : "PR mutation failed and could not be reconciled",
       );
     }
+    await this.store.update((current) => {
+      Object.assign(current.publication, {
+        status: "published",
+        pullRequestNumber: finalPullRequest.number,
+        pullRequestUrl: finalPullRequest.url,
+        head,
+      });
+    });
     return finalPullRequest;
   }
 }

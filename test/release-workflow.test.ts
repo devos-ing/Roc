@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { access, readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 
 const projectRoot = resolve(import.meta.dir, "..");
 
@@ -58,6 +58,13 @@ function stepRun(steps: WorkflowStep[], name: string): string {
     throw new Error(`Release workflow step has no run script: ${name}`);
   }
   return run;
+}
+
+/** Extracts repository-local targets from Markdown links and images. */
+function localMarkdownTargets(source: string): string[] {
+  return [
+    ...source.matchAll(/\]\((?!https?:|mailto:|#)([^)#]+)(?:#[^)]*)?\)/gu),
+  ].map((match) => match[1] ?? "");
 }
 
 test("release workflow keeps the stable-tag, immutable-action, and ordered-release contract", async () => {
@@ -162,4 +169,22 @@ test("README and architecture describe the interactive OpenAmp boundary", async 
   const architecture = await readProjectFile("docs/architecture.md");
   expect(architecture).toContain("Pi native TUI");
   expect(architecture).toContain("It has no merge operation");
+});
+
+test("retired Roc guides keep valid repository-local links", async () => {
+  const guides = [
+    "docs/legacy/roc-guide.md",
+    "docs/legacy/roc-guide.zh-HK.md",
+    "docs/legacy/roc-architecture.md",
+  ];
+  const missing: string[] = [];
+  for (const guide of guides) {
+    const source = await readProjectFile(guide);
+    for (const target of localMarkdownTargets(source)) {
+      await access(resolve(projectRoot, dirname(guide), target)).catch(() => {
+        missing.push(`${guide} -> ${target}`);
+      });
+    }
+  }
+  expect(missing).toEqual([]);
 });

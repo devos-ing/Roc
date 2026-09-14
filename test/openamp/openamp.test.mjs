@@ -1157,4 +1157,212 @@ describe("M4 reviewed PR delivery", () => {
     expect(store.state.phase).toBe("needs_replan");
     expect(store.state.publication.status).toBe("cancelled");
   });
+
+  test("reconciles a push response when cancellation arrives in flight", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m4-push-cancel-race",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    await writeFile(join(store.state.workspace, "feature.txt"), "feature\n");
+    const controller = new AbortController();
+    let remoteHead = null;
+    const calls = [];
+    const delivery = new ChangeDelivery(
+      store,
+      workspace,
+      {
+        list: () => [],
+        review: async () => ({
+          summary: JSON.stringify({
+            decision: "accepted",
+            findings: [],
+            summary: "correct",
+          }),
+        }),
+      },
+      {
+        validationRunner: async () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+        commandRunner: async (command, args) => {
+          calls.push([command, ...args]);
+          if (command === "gh" && args[0] === "auth") {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (command === "gh" && args[0] === "pr") {
+            return { exitCode: 0, stdout: "[]", stderr: "" };
+          }
+          if (command === "gh" && args[0] === "repo") {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({ owner: { login: "owner" } }),
+              stderr: "",
+            };
+          }
+          if (command === "git" && args[0] === "push") {
+            remoteHead = store.state.mainHead;
+            controller.abort();
+            return { exitCode: 1, stdout: "", stderr: "response lost" };
+          }
+          if (command === "git" && args[0] === "ls-remote") {
+            const ref = args.at(-1);
+            return {
+              exitCode: 0,
+              stdout:
+                ref === `refs/heads/${store.state.baseBranch}`
+                  ? `${store.state.baseCommit}\t${ref}`
+                  : remoteHead
+                    ? `${remoteHead}\t${ref}`
+                    : "",
+              stderr: "",
+            };
+          }
+          throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+        },
+      },
+    );
+    await expect(
+      delivery.deliver(
+        {
+          title: "Cancelled push",
+          requirements: "Reconcile every started push",
+          validationCommands: ["npm test"],
+          inputGeneration: 0,
+        },
+        controller.signal,
+      ),
+    ).rejects.toThrow("Interaction cancellation invalidated");
+    expect(remoteHead).toBe(store.state.mainHead);
+    expect(
+      calls.filter(
+        ([command, operation]) =>
+          command === "git" && operation === "ls-remote",
+      ),
+    ).toHaveLength(4);
+    expect(
+      calls.some(
+        ([command, resource, operation]) =>
+          command === "gh" &&
+          resource === "pr" &&
+          ["create", "edit"].includes(operation),
+      ),
+    ).toBeFalse();
+    expect(store.state.phase).toBe("needs_replan");
+    expect(store.state.publication.status).toBe("cancelled");
+  });
+
+  test("reconciles and records a PR created while cancellation is in flight", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m4-pr-cancel-race",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    await writeFile(join(store.state.workspace, "feature.txt"), "feature\n");
+    const controller = new AbortController();
+    let remoteHead = null;
+    let pullRequest = null;
+    const calls = [];
+    const delivery = new ChangeDelivery(
+      store,
+      workspace,
+      {
+        list: () => [],
+        review: async () => ({
+          summary: JSON.stringify({
+            decision: "accepted",
+            findings: [],
+            summary: "correct",
+          }),
+        }),
+      },
+      {
+        validationRunner: async () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+        commandRunner: async (command, args) => {
+          calls.push([command, ...args]);
+          if (command === "gh" && args[0] === "auth") {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (command === "gh" && args[0] === "repo") {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({ owner: { login: "owner" } }),
+              stderr: "",
+            };
+          }
+          if (command === "gh" && args[0] === "pr" && args[1] === "list") {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify(pullRequest ? [pullRequest] : []),
+              stderr: "",
+            };
+          }
+          if (command === "gh" && args[0] === "pr" && args[1] === "create") {
+            pullRequest = {
+              number: 17,
+              url: "https://example.test/pr/17",
+              state: "OPEN",
+              title: args[args.indexOf("--title") + 1],
+              body: args[args.indexOf("--body") + 1],
+              headRefOid: store.state.mainHead,
+              headRepositoryOwner: { login: "owner" },
+            };
+            controller.abort();
+            return { exitCode: 1, stdout: "", stderr: "response lost" };
+          }
+          if (command === "git" && args[0] === "push") {
+            remoteHead = store.state.mainHead;
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (command === "git" && args[0] === "ls-remote") {
+            const ref = args.at(-1);
+            return {
+              exitCode: 0,
+              stdout:
+                ref === `refs/heads/${store.state.baseBranch}`
+                  ? `${store.state.baseCommit}\t${ref}`
+                  : remoteHead
+                    ? `${remoteHead}\t${ref}`
+                    : "",
+              stderr: "",
+            };
+          }
+          throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+        },
+      },
+    );
+    await expect(
+      delivery.deliver(
+        {
+          title: "Cancelled PR creation",
+          requirements: "Reconcile every started PR mutation",
+          validationCommands: ["npm test"],
+          inputGeneration: 0,
+        },
+        controller.signal,
+      ),
+    ).rejects.toThrow("Interaction cancellation invalidated");
+    expect(
+      calls.filter(
+        ([command, resource, operation]) =>
+          command === "gh" && resource === "pr" && operation === "create",
+      ),
+    ).toHaveLength(1);
+    expect(pullRequest.number).toBe(17);
+    expect(store.state.phase).toBe("needs_replan");
+    expect(store.state.publication).toMatchObject({
+      status: "published",
+      pullRequestNumber: 17,
+      pullRequestUrl: "https://example.test/pr/17",
+      head: store.state.mainHead,
+    });
+  });
 });
