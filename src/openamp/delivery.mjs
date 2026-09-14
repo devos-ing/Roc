@@ -298,11 +298,15 @@ export class ChangeDelivery {
         throw new Error("Feature head changed after independent review");
       }
       await this.store.update((state) => {
+        const publicationStatus =
+          state.publication?.status === "reconcile_required"
+            ? "reconcile_required"
+            : "pending";
         state.validation = { head, commands: validation };
         state.review = { head, base, specHash, inputGeneration, ...review };
         state.phase = "ready_to_publish";
         state.publication = {
-          status: "pending",
+          status: publicationStatus,
           repository: state.repoRoot,
           branch: state.branch,
           baseBranch: state.baseBranch,
@@ -356,6 +360,7 @@ export class ChangeDelivery {
 
   /** Records and runs a controlled Delivery command without exposing a merge operation. */
   async #run(action, command, args, inputGeneration, signal) {
+    const mutatesRemote = ["push", "create-pr", "update-pr"].includes(action);
     if (
       command === "gh" &&
       args[0] === "pr" &&
@@ -389,26 +394,59 @@ export class ChangeDelivery {
         throw error;
       }
     }
+    if (mutatesRemote) {
+      await this.store.update((state) => {
+        state.publication.status = "reconcile_required";
+      });
+      try {
+        this.#assertRequirementsCurrent(inputGeneration, signal);
+      } catch (error) {
+        await this.store.update((state) => {
+          state.publication.status = "pending";
+          const entry = state.commandLedger.find(
+            (item) => item.id === ledgerId,
+          );
+          entry.status = "cancelled";
+          entry.finishedAt = new Date().toISOString();
+        });
+        throw error;
+      }
+    }
     let result;
     try {
-      const abortable = !["push", "create-pr", "update-pr"].includes(action);
       result = await this.commandRunner(
         command,
         args,
         this.store.state.workspace,
-        abortable ? signal : undefined,
+        mutatesRemote ? undefined : signal,
       );
     } catch (error) {
       await this.store.update((state) => {
         const entry = state.commandLedger.find((item) => item.id === ledgerId);
-        entry.status = signal?.aborted ? "cancelled" : "failed";
+        entry.status = mutatesRemote
+          ? "unknown"
+          : signal?.aborted
+            ? "cancelled"
+            : "failed";
         entry.finishedAt = new Date().toISOString();
       });
+      if (mutatesRemote) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: error instanceof Error ? error.message : String(error),
+        };
+      }
       throw error;
     }
     await this.store.update((state) => {
       const entry = state.commandLedger.find((item) => item.id === ledgerId);
-      entry.status = result.exitCode === 0 ? "completed" : "failed";
+      entry.status =
+        result.exitCode === 0
+          ? "completed"
+          : mutatesRemote
+            ? "unknown"
+            : "failed";
       entry.finishedAt = new Date().toISOString();
       entry.exitCode = result.exitCode;
     });
@@ -509,33 +547,38 @@ export class ChangeDelivery {
       throw new Error("Feature head changed before publication");
     }
     this.#assertRequirementsCurrent(inputGeneration, signal);
-    const push = await this.#run(
-      "push",
-      "git",
-      [
+    if (remoteHead !== head) {
+      const push = await this.#run(
         "push",
-        `--force-with-lease=refs/heads/${state.branch}:${remoteHead ?? ""}`,
-        "origin",
-        `${head}:refs/heads/${state.branch}`,
-      ],
-      inputGeneration,
-      signal,
-    );
-    if (push.exitCode !== 0 || signal?.aborted) {
-      const reconciled = await this.#run("reconcile-push", "git", [
-        "ls-remote",
-        "origin",
-        `refs/heads/${state.branch}`,
-      ]);
-      if (reconciled.stdout.split(/\s/u)[0] !== head) {
-        await this.store.update((current) => {
-          current.publication.status = "reconcile_required";
-        });
-        throw new Error(
-          "Feature branch push failed and could not be reconciled",
-        );
+        "git",
+        [
+          "push",
+          `--force-with-lease=refs/heads/${state.branch}:${remoteHead ?? ""}`,
+          "origin",
+          `${head}:refs/heads/${state.branch}`,
+        ],
+        inputGeneration,
+        signal,
+      );
+      if (push.exitCode !== 0 || signal?.aborted) {
+        const reconciled = await this.#run("reconcile-push", "git", [
+          "ls-remote",
+          "origin",
+          `refs/heads/${state.branch}`,
+        ]);
+        if (reconciled.stdout.split(/\s/u)[0] !== head) {
+          await this.store.update((current) => {
+            current.publication.status = "reconcile_required";
+          });
+          throw new Error(
+            "Feature branch push failed and could not be reconciled",
+          );
+        }
       }
     }
+    await this.store.update((current) => {
+      current.publication.status = "pending";
+    });
     this.#assertRequirementsCurrent(inputGeneration, signal);
 
     const finalBase = await this.#readRemoteBranch(
@@ -573,14 +616,23 @@ export class ChangeDelivery {
           "--body",
           body,
         ];
-    const changed = await this.#run(
-      existing ? "update-pr" : "create-pr",
-      "gh",
-      mutation,
-      inputGeneration,
-      signal,
-    );
-    const finalPullRequest = await this.#findPullRequest();
+    const existingMatches =
+      existing?.state === "OPEN" &&
+      existing.headRefOid === head &&
+      existing.title === input.title &&
+      existing.body === body;
+    const changed = existingMatches
+      ? null
+      : await this.#run(
+          existing ? "update-pr" : "create-pr",
+          "gh",
+          mutation,
+          inputGeneration,
+          signal,
+        );
+    const finalPullRequest = existingMatches
+      ? existing
+      : await this.#findPullRequest();
     if (
       finalPullRequest?.state !== "OPEN" ||
       finalPullRequest.headRefOid !== head ||
@@ -594,7 +646,7 @@ export class ChangeDelivery {
         current.publication.pullRequestUrl = finalPullRequest?.url ?? null;
       });
       throw new Error(
-        changed.exitCode === 0
+        changed?.exitCode === 0
           ? "GitHub did not confirm the expected pull request head"
           : "PR mutation failed and could not be reconciled",
       );

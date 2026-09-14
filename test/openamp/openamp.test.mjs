@@ -1365,4 +1365,282 @@ describe("M4 reviewed PR delivery", () => {
       head: store.state.mainHead,
     });
   });
+
+  test("preserves an unknown push when cancellation and reconciliation both fail", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m4-push-reconciliation-unavailable",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    await writeFile(join(store.state.workspace, "feature.txt"), "feature\n");
+    const controller = new AbortController();
+    let pushStarted = false;
+    let pullRequestMutations = 0;
+    const supervisor = {
+      list: () => [],
+      review: async () => ({
+        summary: JSON.stringify({
+          decision: "accepted",
+          findings: [],
+          summary: "correct",
+        }),
+      }),
+    };
+    const delivery = new ChangeDelivery(store, workspace, supervisor, {
+      validationRunner: async () => ({
+        exitCode: 0,
+        stdout: "ok",
+        stderr: "",
+      }),
+      commandRunner: async (command, args) => {
+        if (command === "gh" && args[0] === "auth") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (command === "gh" && args[0] === "repo") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({ owner: { login: "owner" } }),
+            stderr: "",
+          };
+        }
+        if (command === "gh" && args[0] === "pr" && args[1] === "list") {
+          return { exitCode: 0, stdout: "[]", stderr: "" };
+        }
+        if (
+          command === "gh" &&
+          args[0] === "pr" &&
+          ["create", "edit"].includes(args[1])
+        ) {
+          pullRequestMutations += 1;
+        }
+        if (command === "git" && args[0] === "push") {
+          pushStarted = true;
+          controller.abort();
+          return { exitCode: 1, stdout: "", stderr: "response lost" };
+        }
+        if (command === "git" && args[0] === "ls-remote") {
+          const ref = args.at(-1);
+          if (ref === `refs/heads/${store.state.baseBranch}`) {
+            return {
+              exitCode: 0,
+              stdout: `${store.state.baseCommit}\t${ref}`,
+              stderr: "",
+            };
+          }
+          return pushStarted
+            ? { exitCode: 1, stdout: "", stderr: "network unavailable" }
+            : { exitCode: 0, stdout: "", stderr: "" };
+        }
+        throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    await expect(
+      delivery.deliver(
+        {
+          title: "Unknown push",
+          requirements: "Never hide an unknown push outcome",
+          validationCommands: ["npm test"],
+          inputGeneration: 0,
+        },
+        controller.signal,
+      ),
+    ).rejects.toThrow("Interaction cancellation invalidated");
+    expect(store.state.phase).toBe("needs_replan");
+    expect(store.state.publication.status).toBe("reconcile_required");
+    expect(
+      store.state.commandLedger.find((entry) => entry.action === "push")
+        ?.status,
+    ).toBe("unknown");
+    expect(pullRequestMutations).toBe(0);
+
+    const resumed = await resumeChange(source, store.state.id);
+    expect(resumed.state.publication.status).toBe("reconcile_required");
+    let retryMutations = 0;
+    const retry = new ChangeDelivery(
+      resumed,
+      new ChangeWorkspace(resumed),
+      supervisor,
+      {
+        validationRunner: async () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+        commandRunner: async (command, args) => {
+          if (command === "gh" && args[0] === "auth") {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (command === "gh" && args[0] === "repo") {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({ owner: { login: "owner" } }),
+              stderr: "",
+            };
+          }
+          if (command === "gh" && args[0] === "pr") {
+            return { exitCode: 0, stdout: "[]", stderr: "" };
+          }
+          if (command === "git" && args[0] === "ls-remote") {
+            const ref = args.at(-1);
+            return ref === `refs/heads/${resumed.state.baseBranch}`
+              ? {
+                  exitCode: 0,
+                  stdout: `${resumed.state.baseCommit}\t${ref}`,
+                  stderr: "",
+                }
+              : { exitCode: 1, stdout: "", stderr: "network unavailable" };
+          }
+          retryMutations += 1;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    );
+    await expect(
+      retry.deliver({
+        title: "Unknown push",
+        requirements: "Never hide an unknown push outcome",
+        validationCommands: ["npm test"],
+        inputGeneration: resumed.state.inputGeneration,
+      }),
+    ).rejects.toThrow("Cannot read the remote feature branch");
+    expect(retryMutations).toBe(0);
+    expect(resumed.state.publication.status).toBe("reconcile_required");
+  });
+
+  test("preserves an unknown PR creation when reconciliation is unavailable", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m4-pr-reconciliation-unavailable",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    await writeFile(join(store.state.workspace, "feature.txt"), "feature\n");
+    const controller = new AbortController();
+    let remoteHead = null;
+    let pullRequestLists = 0;
+    let pullRequestCreates = 0;
+    const supervisor = {
+      list: () => [],
+      review: async () => ({
+        summary: JSON.stringify({
+          decision: "accepted",
+          findings: [],
+          summary: "correct",
+        }),
+      }),
+    };
+    const delivery = new ChangeDelivery(store, workspace, supervisor, {
+      validationRunner: async () => ({
+        exitCode: 0,
+        stdout: "ok",
+        stderr: "",
+      }),
+      commandRunner: async (command, args) => {
+        if (command === "gh" && args[0] === "auth") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (command === "gh" && args[0] === "repo") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({ owner: { login: "owner" } }),
+            stderr: "",
+          };
+        }
+        if (command === "gh" && args[0] === "pr" && args[1] === "list") {
+          pullRequestLists += 1;
+          return pullRequestLists === 1
+            ? { exitCode: 0, stdout: "[]", stderr: "" }
+            : { exitCode: 1, stdout: "", stderr: "network unavailable" };
+        }
+        if (command === "gh" && args[0] === "pr" && args[1] === "create") {
+          pullRequestCreates += 1;
+          controller.abort();
+          throw new Error("response lost");
+        }
+        if (command === "git" && args[0] === "push") {
+          remoteHead = store.state.mainHead;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (command === "git" && args[0] === "ls-remote") {
+          const ref = args.at(-1);
+          return {
+            exitCode: 0,
+            stdout:
+              ref === `refs/heads/${store.state.baseBranch}`
+                ? `${store.state.baseCommit}\t${ref}`
+                : remoteHead
+                  ? `${remoteHead}\t${ref}`
+                  : "",
+            stderr: "",
+          };
+        }
+        throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+      },
+    });
+
+    await expect(
+      delivery.deliver(
+        {
+          title: "Unknown PR",
+          requirements: "Never hide an unknown PR outcome",
+          validationCommands: ["npm test"],
+          inputGeneration: 0,
+        },
+        controller.signal,
+      ),
+    ).rejects.toThrow("Interaction cancellation invalidated");
+    expect(pullRequestCreates).toBe(1);
+    expect(store.state.phase).toBe("needs_replan");
+    expect(store.state.publication.status).toBe("reconcile_required");
+    expect(
+      store.state.commandLedger.find((entry) => entry.action === "create-pr")
+        ?.status,
+    ).toBe("unknown");
+
+    const resumed = await resumeChange(source, store.state.id);
+    expect(resumed.state.publication.status).toBe("reconcile_required");
+    let retryMutations = 0;
+    const retry = new ChangeDelivery(
+      resumed,
+      new ChangeWorkspace(resumed),
+      supervisor,
+      {
+        validationRunner: async () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+        commandRunner: async (command, args) => {
+          if (command === "git" && args[0] === "ls-remote") {
+            const ref = args.at(-1);
+            return {
+              exitCode: 0,
+              stdout: `${resumed.state.baseCommit}\t${ref}`,
+              stderr: "",
+            };
+          }
+          if (command === "gh" && args[0] === "auth") {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (command === "gh" && args[0] === "pr" && args[1] === "list") {
+            return { exitCode: 1, stdout: "", stderr: "network unavailable" };
+          }
+          retryMutations += 1;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    );
+    await expect(
+      retry.deliver({
+        title: "Unknown PR",
+        requirements: "Never hide an unknown PR outcome",
+        validationCommands: ["npm test"],
+        inputGeneration: resumed.state.inputGeneration,
+      }),
+    ).rejects.toThrow("network unavailable");
+    expect(retryMutations).toBe(0);
+    expect(resumed.state.publication.status).toBe("reconcile_required");
+  });
 });
