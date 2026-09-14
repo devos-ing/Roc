@@ -159,6 +159,21 @@ async function reconcilePendingIntegration(state) {
   };
 }
 
+/** Marks crash-interrupted remote mutations unknown when publication still requires reconciliation. */
+function reconcilePendingPublicationLedger(state) {
+  if (state.publication?.status !== "reconcile_required") return;
+  const finishedAt = new Date().toISOString();
+  for (const entry of state.commandLedger) {
+    if (
+      entry.status === "pending" &&
+      ["push", "create-pr", "update-pr"].includes(entry.action)
+    ) {
+      entry.status = "unknown";
+      entry.finishedAt = finishedAt;
+    }
+  }
+}
+
 /** Opens an existing change after validating its durable workspace identity. */
 export async function resumeChange(cwd, id) {
   if (!CHANGE_ID.test(id)) throw new Error(`Invalid OpenAmp change ID: ${id}`);
@@ -193,6 +208,7 @@ export async function resumeChange(cwd, id) {
     }
     await reconcilePendingIntegration(state);
   }
+  reconcilePendingPublicationLedger(state);
   for (const run of Object.values(state.runs)) {
     if (["starting", "running", "cancelling"].includes(run.status)) {
       run.status = "interrupted";

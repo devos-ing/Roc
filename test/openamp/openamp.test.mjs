@@ -663,6 +663,35 @@ describe("M3 collaborative implementation", () => {
 });
 
 describe("M4 reviewed PR delivery", () => {
+  test("recovers crash-interrupted remote mutation ledger entries as unknown", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m4-crash-ledger",
+      base: "main",
+    });
+    await store.update((state) => {
+      state.publication = { status: "reconcile_required" };
+      state.commandLedger = [
+        { id: "push", action: "push", status: "pending" },
+        { id: "create", action: "create-pr", status: "pending" },
+        { id: "update", action: "update-pr", status: "pending" },
+        { id: "read", action: "reconcile-push", status: "pending" },
+      ];
+    });
+
+    const resumed = await resumeChange(source, store.state.id);
+    expect(resumed.state.publication.status).toBe("reconcile_required");
+    expect(
+      resumed.state.commandLedger.slice(0, 3).map((entry) => entry.status),
+    ).toEqual(["unknown", "unknown", "unknown"]);
+    expect(
+      resumed.state.commandLedger
+        .slice(0, 3)
+        .every((entry) => entry.finishedAt),
+    ).toBeTrue();
+    expect(resumed.state.commandLedger[3].status).toBe("pending");
+  });
+
   test("reconciles lost responses, updates one PR, and never invokes merge", async () => {
     const { source } = await fixtureRepository();
     const store = await createChange(source, {
