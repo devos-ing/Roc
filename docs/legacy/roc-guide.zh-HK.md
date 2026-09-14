@@ -238,11 +238,10 @@ commit 和 dirty worktree 仍在舊機器，須先完成或保留它們及共享
 
 ## 規劃 skills
 
-規劃 assistant 需要 `grilling` 和 `unslop`，缺少時可安裝：
+規劃 assistant 需要 `grilling`，缺少時可安裝：
 
 ```bash
 npx skills add mattpocock/skills --skill grilling --global
-npx skills add backnotprop/pstack --skill unslop --global
 ```
 
 Roc onboarding 安裝隨附 skills，並讓你選擇可信 Pi skills。
@@ -282,9 +281,21 @@ flowchart TD
 
 ## 進度、恢復及 hooks
 
-`task board` 每 30 秒讀取 GitHub checkpoints，顯示狀態、attempt、模型、用量及 PR。
-按 Enter 查看詳情，Q 離開；`--all` 包含其他週期，`--history` 包含已退役 Issue。
-即時工具動作在 daemon terminal 顯示，看板不會串流每個工具事件。
+`tui` 預設開啟 Welcome，即使尚未設定 Roc 或登入 GitHub，仍會顯示待設定／連線狀態。
+`task board` 直接開啟 Tasks，並永遠只供監看。互動式 `tui` 會先顯示倉庫預設分支、concurrency 2 和手動合併預覽，按 `S` 才啟動本畫面擁有的一個 scheduler；再按 `S` 或退出會等待同一取消及清理程序。外部 live、stale 或 unreadable lock 只可監看，TUI 不會發停止訊號或移除它。寬螢幕的
+Tasks 左側是任務列表，右側顯示選中任務的進度詳情。按 Tab、1／2 或點擊頂部分頁切換，
+R 刷新。刷新失敗會保留上次已保存快照、上次成功讀取時間及過期／錯誤標記；讀取時間
+只是監看資料的新鮮度，不是任務活動時間。切換分頁或縮放視窗會保留選中任務及詳情；
+窄視窗使用列表和全頁詳情，PgUp／PgDn 可捲動長頁及詳情而保留頂部分頁。非 TTY 的
+`task board` 仍輸出純文字快照。
+
+`task board` 每 30 秒讀取 GitHub checkpoints，顯示六個已保存階段（Scout、Implement、
+獨立 Review、發佈 PR、等待合併、確認完成）、依賴、驗收證據、失敗原因、Issue 及 PR。
+PR 已開啟只代表等待合併；只有已驗證的 `done` checkpoint 才是完成。缺少證據或失敗原因
+會明示未記錄。恢復指引只供診斷：在執行主機使用 `scheduler inspect` 或查看
+`.agile/runtime/agile.log`；監看器沒有恢復按鈕。按 Enter 查看詳情，Q 離開；`--all`
+包含其他週期，`--history` 包含已退役 Issue。即時工具動作在 daemon terminal 顯示，看板
+不會串流每個工具事件。
 
 `tokens` 只計算已確認用量，缺少 receipt 時標示總數不完整。
 Token ceiling 是規劃估算，不會強制中止 agent；Scout 也沒有額外 bytes 硬上限。
@@ -292,6 +303,15 @@ Token ceiling 是規劃估算，不會強制中止 agent；Scout 也沒有額外
 Daemon 先驗證完整計劃、依賴關係及精確批准。依賴任務的 PR 必須合併到指定 branch，
 且 head 與保存的 implementation commit 一致。Roc fetch 目標 branch，核對
 merge commit 後才固定新任務的 base。
+
+同一份計劃中的線性功能鏈以不可變的 local task ID 宣告 `continues`
+（`{ "task": "A" }`），一般已合併前置條件仍放在 `dependencies`。Roc
+在任何 GitHub 寫入前驗證引用、單一 successor 線性限制與完整圖。鏈共用 root
+worktree、branch 和累積 PR，每次只執行一張 ticket，並要求 predecessor 對完全相同
+spec、base、head 的獨立 Review 已接受。PR 保留每張 Issue、segment SHA 和 Review
+結果，base 一直是設定的 target branch。中斷或無法驗證時保留工作並要求重新規劃；
+cleanup 會等到所有成員都符合條件且共用 worktree 乾淨。舊的
+`{ "issue": N }` continues 記錄只用來顯示 replan，不會被改寫或執行。
 
 預設由 Scout 閱讀程式，Implement 修改，harness 建立單一可信 commit，再由獨立 Pi session
 Review。接受後執行可信 posthook，再發佈 PR。開啟 PR 是 `awaiting_merge`，

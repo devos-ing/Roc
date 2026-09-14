@@ -96,20 +96,10 @@ export function renderSettingsStep(settingsPath: string): string {
 }
 
 /** Renders the successful onboarding summary and copyable follow-up commands. */
-export function renderOnboardingComplete(
-  input: { unslopMissing?: boolean } = {},
-): string {
+export function renderOnboardingComplete(): string {
   return [
     "Result: Complete",
     "Next:",
-    ...(input.unslopMissing
-      ? [
-          "  Install unslop from pstack if needed:",
-          "    npx skills add backnotprop/pstack --skill unslop --global --agent pi",
-          "  Then choose it:",
-          "    npx roc-it@latest onboard",
-        ]
-      : []),
     "  Connect GitHub if needed:",
     "    gh auth login",
     ...createBacklogGuidance,

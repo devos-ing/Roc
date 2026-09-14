@@ -43,10 +43,11 @@ export {
 export async function connectGitHub(
   cwd: string,
   command: GitHubCommandRunner = new BunGitHubCommandRunner(),
+  signal?: AbortSignal,
 ) {
   const api = new GitHubRemoteIssueReader(cwd, command);
-  const repository = await api.repository();
-  const login = await api.authenticatedLogin();
+  const repository = await api.repository(signal);
+  const login = await api.authenticatedLogin(signal);
   const executor = process.env.ROC_GITHUB_EXECUTOR ?? login;
   return {
     store: new GitHubExecutionStore(
@@ -95,215 +96,259 @@ export async function runBackendSession(
     path: join(input.repoPath, ".agile/runtime/agile.log"),
     err: () => {},
   });
-  await runSession((stop) =>
-    Effect.tryPromise({
-      try: async () => {
-        const ownership = await acquireCheckoutOwnership(input.repoPath, runId);
-        let backend: BackendRuntime | undefined;
-        let loopSettled = true;
-        let retain = false;
-        let failure: unknown;
-        try {
-          const command = new GitHubRateLimitRunner(
-            options.command ?? new BunGitHubCommandRunner(),
-            {
-              signal: stop,
-              onWait: (until) =>
-                process.stderr.write(
-                  `GitHub rate limit reached; waiting until ${new Date(until).toISOString()} before retrying. Ctrl-C stops the scheduler.\n`,
-                ),
-            },
+  await runSession(
+    (stop) =>
+      Effect.tryPromise({
+        try: async () => {
+          const ownership = await acquireCheckoutOwnership(
+            input.repoPath,
+            runId,
           );
-          let baseBranch = input.baseBranch;
-          if (!baseBranch) {
-            const result = await command.run({
-              command: [
-                "gh",
-                "repo",
-                "view",
-                "--json",
-                "defaultBranchRef",
-                "--jq",
-                ".defaultBranchRef.name",
-              ],
+          let backend: BackendRuntime | undefined;
+          let loopSettled = true;
+          let retain = false;
+          let failure: unknown;
+          try {
+            const command = new GitHubRateLimitRunner(
+              options.command ?? new BunGitHubCommandRunner(),
+              {
+                signal: stop,
+                onWait: (until) =>
+                  (input.output?.err ?? ((text) => process.stderr.write(text)))(
+                    `GitHub rate limit reached; waiting until ${new Date(until).toISOString()} before retrying. Ctrl-C stops the scheduler.\n`,
+                  ),
+              },
+            );
+            let baseBranch = input.baseBranch;
+            if (!baseBranch) {
+              const result = await command.run({
+                command: [
+                  "gh",
+                  "repo",
+                  "view",
+                  "--json",
+                  "defaultBranchRef",
+                  "--jq",
+                  ".defaultBranchRef.name",
+                ],
+                cwd: input.repoPath,
+              });
+              if (result.exitCode !== 0)
+                throw Error("Could not resolve GitHub target branch");
+              baseBranch = result.stdout.trim();
+            }
+            await new GitHubCliPreflight(
+              input.repoPath,
+              baseBranch,
+              command,
+            ).assertReady();
+            const connected = options.store
+              ? undefined
+              : await connectGitHub(input.repoPath, command, stop);
+            if (connected && connected.login !== connected.executor)
+              throw Error("Run the daemon as ROC_GITHUB_EXECUTOR");
+            const store = options.store ?? connected?.store;
+            if (!store) throw Error("GitHub state is unavailable");
+            const fetched = await command.run({
+              command: ["git", "fetch", "origin", baseBranch],
               cwd: input.repoPath,
             });
-            if (result.exitCode !== 0)
-              throw Error("Could not resolve GitHub target branch");
-            baseBranch = result.stdout.trim();
-          }
-          await new GitHubCliPreflight(
-            input.repoPath,
-            baseBranch,
-            command,
-          ).assertReady();
-          const connected = options.store
-            ? undefined
-            : await connectGitHub(input.repoPath, command);
-          if (connected && connected.login !== connected.executor)
-            throw Error("Run the daemon as ROC_GITHUB_EXECUTOR");
-          const store = options.store ?? connected?.store;
-          if (!store) throw Error("GitHub state is unavailable");
-          const fetched = await command.run({
-            command: ["git", "fetch", "origin", baseBranch],
-            cwd: input.repoPath,
-          });
-          if (fetched.exitCode !== 0)
-            throw Error("Could not fetch the GitHub target branch");
-          stop.throwIfAborted();
-          const branches = await createTaskBranchManager(
-            input.repoPath,
-            `refs/remotes/origin/${baseBranch}`,
-          );
-          // Until the factory returns, it may own processes that only it can close.
-          retain = true;
-          backend = await factory({ branches });
-          retain = false;
-          stop.throwIfAborted();
-          const lastProgress = new Map<number, string>();
-          const runner = new GitHubTaskPool({
-            concurrency: input.concurrency,
-            autoMerge: input.autoMerge,
-            store,
-            branches,
-            harness: backend.harness,
-            advisor: createModelAdvisor(backend.catalog, backend.modelMapping),
-            publisher:
-              options.publisherFactory?.(branches) ??
-              new GitHubPullRequestPublisher(baseBranch, branches, command),
-            command,
-            cwd: input.repoPath,
-            baseBranch,
-            diagnostic: (message) => process.stderr.write(`${message}\n`),
-            /** Emits confirmed phase changes and wait reasons once while tool activity stays local. */
-            progress(record) {
-              const summary = `Phase: ${record.phase}${record.failure ? ` · ${record.failure}` : ""}`;
-              if (lastProgress.get(record.issueNumber) === summary) return;
-              lastProgress.set(record.issueNumber, summary);
-              const taskId = `issue-${record.issueNumber}`;
-              if (options.onActivity) options.onActivity(taskId, summary);
-              else process.stdout.write(`${taskId}: ${summary}\n`);
-            },
-            logError: (error) =>
-              logger.error(
-                new AgileError({
-                  ...error,
-                  message: error.message,
-                  runId,
-                }),
-              ),
-            activity: (taskId, event) => {
-              const summary =
-                event.type === "attempt.activity"
-                  ? event.activity.summary
-                  : event.type;
-              if (options.onActivity) options.onActivity(taskId, summary);
-              else process.stdout.write(`${taskId}: ${summary}\n`);
-            },
-          });
-          loopSettled = false;
-          const loop = runner
-            .run(stop, input.once)
-            .catch((error) => {
-              failure = error;
-            })
-            .finally(() => {
-              loopSettled = true;
-            });
-          let wake: (() => void) | undefined;
-          const stopped = new Promise<void>((resolve) => {
-            /** Wakes the session cleanup path when admission is stopped. */
-            const onAbort = () => resolve();
-            wake = onAbort;
-            stop.addEventListener("abort", onAbort, { once: true });
-            if (stop.aborted) resolve();
-          });
-          try {
-            await Promise.race([loop, stopped]);
-            if (stop.aborted || failure) {
-              const drain = Promise.allSettled([loop, runner.cancel()]).then(
-                (results) => {
-                  if (results.some((result) => result.status === "rejected"))
-                    throw Error("Cancellation was not confirmed");
-                },
+            if (fetched.exitCode !== 0)
+              throw Error("Could not fetch the GitHub target branch");
+            stop.throwIfAborted();
+            const branches = await createTaskBranchManager(
+              input.repoPath,
+              `refs/remotes/origin/${baseBranch}`,
+            );
+            // Until the factory returns, it may own processes that only it can close.
+            retain = true;
+            backend = await factory({ branches });
+            retain = false;
+            stop.throwIfAborted();
+            const lastProgress = new Map<number, string>();
+            const emitDiagnostic = (message: string) =>
+              (input.output?.err ?? ((text) => process.stderr.write(text)))(
+                `${message}\n`,
               );
+            const runner = new GitHubTaskPool({
+              concurrency: input.concurrency,
+              autoMerge: input.autoMerge,
+              store,
+              branches,
+              harness: backend.harness,
+              advisor: createModelAdvisor(
+                backend.catalog,
+                backend.modelMapping,
+                {
+                  efforts: backend.efforts,
+                  onDiagnostic: emitDiagnostic,
+                },
+              ),
+              publisher:
+                options.publisherFactory?.(branches) ??
+                new GitHubPullRequestPublisher(baseBranch, branches, command),
+              command,
+              cwd: input.repoPath,
+              baseBranch,
+              diagnostic: emitDiagnostic,
+              /** Emits confirmed phase changes and wait reasons once while tool activity stays local. */
+              progress(record) {
+                const summary = `Phase: ${record.phase}${record.failure ? ` · ${record.failure}` : ""}`;
+                if (lastProgress.get(record.issueNumber) === summary) return;
+                lastProgress.set(record.issueNumber, summary);
+                const taskId = `issue-${record.issueNumber}`;
+                if (options.onActivity) options.onActivity(taskId, summary);
+                else
+                  (input.output?.out ?? ((text) => process.stdout.write(text)))(
+                    `${taskId}: ${summary}\n`,
+                  );
+              },
+              logError: (error) =>
+                logger.error(
+                  new AgileError({
+                    ...error,
+                    message: error.message,
+                    runId,
+                  }),
+                ),
+              activity: (taskId, event) => {
+                const summary =
+                  event.type === "attempt.activity"
+                    ? event.activity.summary
+                    : event.type;
+                if (options.onActivity) options.onActivity(taskId, summary);
+                else
+                  (input.output?.out ?? ((text) => process.stdout.write(text)))(
+                    `${taskId}: ${summary}\n`,
+                  );
+              },
+            });
+            loopSettled = false;
+            const loop = runner
+              .run(stop, input.once)
+              .catch((error) => {
+                failure = error;
+              })
+              .finally(() => {
+                loopSettled = true;
+              });
+            let wake: (() => void) | undefined;
+            const stopped = new Promise<void>((resolve) => {
+              /** Wakes the session cleanup path when admission is stopped. */
+              const onAbort = () => resolve();
+              wake = onAbort;
+              stop.addEventListener("abort", onAbort, { once: true });
+              if (stop.aborted) resolve();
+            });
+            try {
+              await Promise.race([loop, stopped]);
+              if (stop.aborted || failure) {
+                const drain = Promise.allSettled([loop, runner.cancel()]).then(
+                  (results) => {
+                    if (results.some((result) => result.status === "rejected"))
+                      throw Error("Cancellation was not confirmed");
+                  },
+                );
+                try {
+                  if (!(await completesWithin(drain, 5_000))) retain = true;
+                } catch {
+                  retain = true;
+                }
+              }
+            } finally {
+              if (wake) stop.removeEventListener("abort", wake);
+            }
+            if (failure) throw failure;
+          } catch (error) {
+            failure = error;
+            if (
+              error instanceof AgileError &&
+              [
+                "GITHUB_CHECKPOINT_UNCONFIRMED",
+                "TASK_CLEANUP_UNCONFIRMED",
+              ].includes(error.code)
+            )
+              retain = true;
+          } finally {
+            if (backend) {
               try {
-                if (!(await completesWithin(drain, 5_000))) retain = true;
-              } catch {
+                if (!(await completesWithin(backend.close(), 250)))
+                  retain = true;
+              } catch (error) {
                 retain = true;
+                failure ??= error;
               }
             }
-          } finally {
-            if (wake) stop.removeEventListener("abort", wake);
-          }
-          if (failure) throw failure;
-        } catch (error) {
-          failure = error;
-          if (
-            error instanceof AgileError &&
-            [
-              "GITHUB_CHECKPOINT_UNCONFIRMED",
-              "TASK_CLEANUP_UNCONFIRMED",
-            ].includes(error.code)
-          )
-            retain = true;
-        } finally {
-          if (backend) {
-            try {
-              if (!(await completesWithin(backend.close(), 250))) retain = true;
-            } catch (error) {
-              retain = true;
-              failure ??= error;
-            }
-          }
-          if (!loopSettled) retain = true;
-          if (retain) {
-            await completesWithin(
-              logger.write({
-                level: "warn",
+            if (!loopSettled) retain = true;
+            if (retain) {
+              await completesWithin(
+                logger.write({
+                  level: "warn",
+                  code: "SCHEDULER_CHECKOUT_RETAINED",
+                  category: "infra",
+                  component: "cli",
+                  retryable: false,
+                  runId,
+                  message:
+                    "Execution ownership retained because work or cleanup could not be confirmed",
+                }),
+                100,
+              ).catch(() => false);
+              failure ??= new AgileError({
                 code: "SCHEDULER_CHECKOUT_RETAINED",
                 category: "infra",
                 component: "cli",
                 retryable: false,
-                runId,
                 message:
-                  "Execution ownership retained because work or cleanup could not be confirmed",
-              }),
-              100,
-            ).catch(() => false);
-            failure ??= new AgileError({
-              code: "SCHEDULER_CHECKOUT_RETAINED",
-              category: "infra",
-              component: "cli",
-              retryable: false,
-              message:
-                "Execution ownership retained; confirm cleanup before restarting",
-            });
-          } else {
-            try {
-              await ownership.release();
-            } catch (error) {
-              failure ??= error;
+                  "Execution ownership retained; confirm cleanup before restarting",
+              });
+            } else {
+              try {
+                await ownership.release();
+              } catch (error) {
+                if (stop.aborted && failure === stop.reason) failure = error;
+                else failure ??= error;
+              }
             }
           }
-        }
-        if (failure && !(stop.aborted && !retain))
-          throw normalizeError(failure, {
-            code: "SCHEDULER_RUN_FAILED",
-            category: "infra",
-            retryable: false,
-            component: "cli",
-            message:
-              "GitHub task execution stopped; inspect remote checkpoints and local diagnostics",
-            runId,
-          });
-      },
-      catch: (error) => error,
-    }),
+          if (failure && !(stop.aborted && !retain && failure === stop.reason))
+            throw normalizeError(failure, {
+              code: "SCHEDULER_RUN_FAILED",
+              category: "infra",
+              retryable: false,
+              component: "cli",
+              message:
+                "GitHub task execution stopped; inspect remote checkpoints and local diagnostics",
+              runId,
+            });
+        },
+        catch: (error) => error,
+      }),
+    input.signal,
   );
 }
 
 export const defaultRuntime: CliRuntime = {
+  /** Reads the GitHub repository identity and authoritative default branch for TUI preview. */
+  async schedulerMetadata(cwd) {
+    const command = new BunGitHubCommandRunner();
+    const result = await command.run({
+      command: [
+        "gh",
+        "repo",
+        "view",
+        "--json",
+        "nameWithOwner,defaultBranchRef",
+        "--jq",
+        '"\\(.nameWithOwner)\\t\\(.defaultBranchRef.name)"',
+      ],
+      cwd,
+    });
+    const [repository, baseBranch] = result.stdout.trim().split("\t");
+    if (result.exitCode !== 0 || !repository || !baseBranch)
+      throw Error("Could not resolve GitHub repository metadata");
+    return { repository, baseBranch };
+  },
   /** Loads Pi's model setup only when onboarding connects the provider. */
   async configureModel(io, cwd) {
     const { configureCodex } = await import("../agents/pi/onboard");
@@ -315,9 +360,23 @@ export const defaultRuntime: CliRuntime = {
   },
   /** Reads GitHub checkpoints for task and token inspection. */
   async readTasks(cwd) {
-    const { store } = await connectGitHub(cwd);
-    const result = await store.list();
-    return githubTaskSnapshot(result.tasks, result.diagnostics);
+    let snapshot: ReturnType<typeof githubTaskSnapshot> | undefined;
+    await runSession((signal) =>
+      Effect.tryPromise({
+        try: async () => {
+          const command = new GitHubRateLimitRunner(
+            new BunGitHubCommandRunner(),
+            { signal },
+          );
+          const { store } = await connectGitHub(cwd, command, signal);
+          const result = await store.list(signal);
+          snapshot = githubTaskSnapshot(result.tasks, result.diagnostics);
+        },
+        catch: (error) => error,
+      }),
+    );
+    if (!snapshot) throw Error("GitHub task inspection was cancelled");
+    return snapshot;
   },
   /** Writes only sanitized operational diagnostics to the project log. */
   async logError(error, input) {

@@ -223,6 +223,24 @@ test("saved execution consent permits the probe without an environment override"
   }
 });
 
+test("surfaces configured per-role efforts on the returned runtime", async () => {
+  const probe = new ScriptedProbeClient(probeModels, probeDefaultModel);
+  const runtime = await buildPiBackendFactory({
+    allowUnsandboxed: true,
+    efforts: { implement: "xhigh", scout: "medium" },
+    startProbeClient: async () => probe,
+  })({ branches: memoryBranches() });
+  try {
+    expect(runtime.efforts).toEqual({
+      implement: "xhigh",
+      scout: "medium",
+    });
+  } finally {
+    await runtime.close();
+  }
+  expect(probe.closeCount).toBe(1);
+});
+
 test("the factory fails closed and closes the probe when no default model resolves", async () => {
   const previous = process.env.ROC_ALLOW_UNSANDBOXED;
   const probe = new ScriptedProbeClient(probeModels, null);

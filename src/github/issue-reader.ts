@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AgileError } from "../runtime/errors";
+import { GitHubGraphQLReader } from "./graphql-reader";
 import type { GitHubCommandRunner } from "./pr-publisher";
 import { withGitHubBodyFile } from "./remote-tasks";
 
@@ -25,14 +26,6 @@ const RemoteIssueSchema = RemoteIssueBaseSchema.extend({
       .passthrough(),
   ),
 });
-const RestCommentSchema = z
-  .object({
-    id: z.number().int().positive(),
-    body: z.string(),
-    user: z.object({ login: NonEmpty }),
-  })
-  .passthrough();
-
 export type RemoteIssue = z.infer<typeof RemoteIssueSchema>;
 
 type GitHubOperation =
@@ -89,10 +82,13 @@ export class GitHubRemoteIssueReader {
   constructor(
     private readonly cwd: string,
     private readonly runner: GitHubCommandRunner,
-  ) {}
+  ) {
+    this.graphql = new GitHubGraphQLReader(cwd, runner);
+  }
+  private readonly graphql: GitHubGraphQLReader;
 
   /** Resolves the repository selected by the configured checkout. */
-  async repository(): Promise<string> {
+  async repository(signal?: AbortSignal): Promise<string> {
     return (
       await this.mustRun(
         [
@@ -105,63 +101,39 @@ export class GitHubRemoteIssueReader {
           ".nameWithOwner",
         ],
         "repository-lookup",
+        signal,
       )
     ).trim();
   }
 
   /** Resolves the authenticated GitHub login that owns Roc status comments. */
-  async authenticatedLogin(): Promise<string> {
+  async authenticatedLogin(signal?: AbortSignal): Promise<string> {
     return (
       await this.mustRun(
         ["gh", "api", "user", "--jq", ".login"],
         "authenticated-login",
+        signal,
       )
     ).trim();
   }
 
   /** Reads one Issue and its complete comment history for a role boundary. */
-  async get(repository: string, number: number): Promise<RemoteIssue> {
-    const issue = RemoteIssueBaseSchema.parse(
-      JSON.parse(
-        await this.mustRun(
-          [
-            "gh",
-            "issue",
-            "view",
-            String(number),
-            "--repo",
-            repository,
-            "--json",
-            "number,title,body,url,state,labels",
-          ],
-          "issue-read",
-        ),
-      ),
-    );
-    const pages = z
-      .array(z.array(RestCommentSchema))
-      .parse(
-        JSON.parse(
-          await this.mustRun(
-            [
-              "gh",
-              "api",
-              "--paginate",
-              "--slurp",
-              `repos/${repository}/issues/${number}/comments?per_page=100`,
-            ],
-            "issue-comments-read",
-          ),
-        ),
-      );
-    return {
-      ...issue,
-      comments: pages.flat().map((comment) => ({
-        body: comment.body,
-        author: { login: comment.user.login },
-        databaseId: comment.id,
-      })),
-    };
+  async get(
+    repository: string,
+    number: number,
+    signal?: AbortSignal,
+  ): Promise<RemoteIssue> {
+    const issues = await this.graphql.getMany(repository, [number], signal);
+    return RemoteIssueSchema.parse(issues[0]);
+  }
+
+  /** Reads a complete known plan with validated numbers and bounded GraphQL batches. */
+  async getMany(
+    repository: string,
+    numbers: readonly number[],
+    signal?: AbortSignal,
+  ): Promise<RemoteIssue[]> {
+    return this.graphql.getMany(repository, numbers, signal);
   }
 
   /** Closes an open Issue as completed, reconciling uncertain writes without changing closed reasons. */
@@ -269,68 +241,15 @@ export class GitHubRemoteIssueReader {
   }
 
   /** Lists managed active and completed Issues independently of their ready label. */
-  async read(repository: string): Promise<RemoteIssue[]> {
-    const output = await this.mustRun(
-      [
-        "gh",
-        "issue",
-        "list",
-        "--repo",
-        repository,
-        "--state",
-        "all",
-        "--label",
-        "roc:task",
-        "--limit",
-        "1000",
-        "--json",
-        "number,title,body,url,state,labels",
-      ],
-      "issue-list-read",
-    );
-    const baseIssues = z.array(RemoteIssueBaseSchema).parse(JSON.parse(output));
-    const issues: RemoteIssue[] = [];
-    for (let offset = 0; offset < baseIssues.length; offset += 4) {
-      const batch = await Promise.allSettled(
-        baseIssues.slice(offset, offset + 4).map(async (issue) => {
-          const commentOutput = await this.mustRun(
-            [
-              "gh",
-              "api",
-              "--paginate",
-              "--slurp",
-              `repos/${repository}/issues/${issue.number}/comments?per_page=100`,
-            ],
-            "issue-comments-read",
-          );
-          const pages = z
-            .array(z.array(RestCommentSchema))
-            .parse(JSON.parse(commentOutput));
-          return RemoteIssueSchema.parse({
-            ...issue,
-            comments: pages.flat().map((comment) => ({
-              body: comment.body,
-              author: { login: comment.user.login },
-              databaseId: comment.id,
-            })),
-          });
-        }),
-      );
-      for (const result of batch) {
-        if (result.status === "rejected") throw result.reason;
-        issues.push(result.value);
-      }
-    }
-    if (issues.length >= 1000) {
-      throw new Error("GitHub task source reached its 1000-Issue safety bound");
-    }
-    return issues;
+  async read(repository: string, signal?: AbortSignal): Promise<RemoteIssue[]> {
+    return this.graphql.read(repository, signal);
   }
 
   /** Executes a GitHub operation and exposes safe read/write diagnostics without raw CLI output. */
   private async mustRun(
     command: string[],
     operation: GitHubOperation,
+    signal?: AbortSignal,
   ): Promise<string> {
     const write =
       command.includes("--method") ||
@@ -341,7 +260,7 @@ export class GitHubRemoteIssueReader {
     let status: string | undefined;
     let cause: unknown;
     try {
-      const result = await this.runner.run({ command, cwd: this.cwd });
+      const result = await this.runner.run({ command, cwd: this.cwd, signal });
       if (result.exitCode === 0) return result.stdout;
       status = result.stderr.match(/HTTP (\d{3})\b/u)?.[1];
       category = failureCategory(result.exitCode, status);

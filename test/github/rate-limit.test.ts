@@ -6,6 +6,7 @@ import { GitHubRemoteIssueReader } from "../../src/github/issue-reader";
 import { BunGitHubCommandRunner } from "../../src/github/pr-publisher";
 import { GitHubRateLimitRunner } from "../../src/github/rate-limit";
 import { barrier } from "../helpers/github-plan";
+import { graphqlResponse } from "../helpers/graphql-github";
 
 test("gh transport preserves paginated JSON while extracting response rate-limit headers", async () => {
   const temp = await mkdtemp(join(tmpdir(), "roc-gh-headers-"));
@@ -68,7 +69,7 @@ test("a rate-limited Issue read waits for reset and returns its original result"
   const notices: number[] = [];
   const runner = new GitHubRateLimitRunner(
     {
-      async run() {
+      async run({ command }) {
         reads++;
         return reads === 1
           ? {
@@ -77,7 +78,11 @@ test("a rate-limited Issue read waits for reset and returns its original result"
               stderr: "API rate limit exceeded for user private-id (HTTP 403)",
               rateLimit: { remaining: 0, resetAt: 1_060_000 },
             }
-          : { exitCode: 0, stdout: "[]", stderr: "" };
+          : {
+              exitCode: 0,
+              stdout: JSON.stringify(graphqlResponse([], command)),
+              stderr: "",
+            };
       },
     },
     {
@@ -310,7 +315,11 @@ test("GraphQL's already-exceeded diagnostic waits for its exhausted quota window
               stderr:
                 "GraphQL: API rate limit already exceeded for user ID private-id.",
             }
-          : { exitCode: 0, stdout: "[]", stderr: "" };
+          : {
+              exitCode: 0,
+              stdout: JSON.stringify(graphqlResponse([], command)),
+              stderr: "",
+            };
       },
     },
     {

@@ -7,7 +7,15 @@ import type {
 import {
   renderTaskBoard,
   taskBoardHitTest,
+  taskBoardSelectionRows,
+  taskBoardUsesWidePanes,
 } from "../../src/cli/task-board-renderer";
+
+test("shares the wide-pane breakpoint with session rendering", () => {
+  expect(taskBoardUsesWidePanes(88)).toBe(false);
+  expect(taskBoardUsesWidePanes(99)).toBe(false);
+  expect(taskBoardUsesWidePanes(100)).toBe(true);
+});
 
 const tokens = {
   inputTokens: 12,
@@ -118,6 +126,45 @@ const snapshot: TaskBoardSnapshot = {
   },
 };
 
+test.each([40, 80, 120])(
+  "selection bounds match variable-height cards and mouse cells at %i columns",
+  (width) => {
+    const options = {
+      width,
+      color: false,
+      detailMode: "none" as const,
+      doneExpanded: true,
+    };
+    for (const item of snapshot.tasks) {
+      const selected = { ...options, selectedTaskId: item.id };
+      const lines = renderTaskBoard(snapshot, selected).split("\n");
+      const start = lines.findIndex((line) => line.includes("▌"));
+      const x = displayWidth(lines[start]?.split("▌")[0] ?? "") + 1;
+      const height = 2 + Number(item.blockingDependencyIds.length > 0);
+      expect(taskBoardSelectionRows(snapshot, selected)).toEqual({
+        start,
+        end: start + height,
+      });
+      for (let row = start; row < start + height; row++)
+        expect(taskBoardHitTest(snapshot, { x, y: row + 1 }, selected)).toEqual(
+          { kind: "task", taskId: item.id },
+        );
+      expect(
+        taskBoardHitTest(snapshot, { x, y: start + height + 1 }, selected),
+      ).not.toEqual({ kind: "task", taskId: item.id });
+    }
+  },
+);
+
+test("keeps the wide Done control inside the list pane", () => {
+  expect(
+    taskBoardHitTest(snapshot, { x: 100, y: 3 }, { width: 120 }),
+  ).toBeUndefined();
+  expect(taskBoardHitTest(snapshot, { x: 1, y: 3 }, { width: 120 })).toEqual({
+    kind: "done",
+  });
+});
+
 test("details show elapsed, attempt and merge waiting time with partial usage", () => {
   const item = task({
     id: "timed",
@@ -148,6 +195,53 @@ test("details show elapsed, attempt and merge waiting time with partial usage", 
   expect(output).toContain("Attempt time: 50s");
   expect(output).toContain("Merge wait: 30s");
   expect(output).toContain("20/100 · partial usage");
+});
+
+test("retains retry evidence for each workflow stage", () => {
+  const item = task({
+    id: "retries",
+    attempts: [
+      {
+        ...active.attempts[0]!,
+        id: "implement-retry",
+        status: "succeeded",
+        role: "implement",
+        retryIndex: 1,
+      },
+      {
+        ...active.attempts[0]!,
+        id: "review-retry",
+        status: "succeeded",
+        role: "review",
+        retryIndex: 0,
+      },
+    ],
+    progress: [
+      { label: "Scout", status: "Not recorded", tone: "muted" },
+      { label: "Implement", status: "Completed", tone: "done", retryIndex: 1 },
+      {
+        label: "Independent Review",
+        status: "Evidence unavailable",
+        tone: "muted",
+        retryIndex: 0,
+      },
+    ],
+  });
+  const board = {
+    ...snapshot,
+    tasks: [item],
+    columns: { ready: [item], inProgress: [], attention: [], done: [] },
+  };
+  const output = renderTaskBoard(board, {
+    width: 80,
+    color: false,
+    detailMode: "full",
+    detailTaskId: item.id,
+  });
+  expect(output).toContain("Implement · Completed · retry 1");
+  expect(output).toContain(
+    "Independent Review · Evidence unavailable · retry 0",
+  );
 });
 
 test("details retain original acceptance text with safe item evidence", () => {
@@ -219,16 +313,15 @@ test("renders canonical model columns, compact state, and a right-side detail pa
   expect(output).toContain(
     "Cycle 2026-W35 · 5 tasks · 1 active · 20 / 1000 tok",
   );
-  expect(output).toContain("Ready · 1");
-  expect(output).toContain("In progress · 1");
-  expect(output).toContain("Attention · 1");
-  expect(output).toContain("Done · 2");
-  expect(output).toContain("[d] expand");
+  expect(output).toContain("Ready · 1 · Tasks 3 · Done 2 hidden [d]");
   expect(output).toContain("● active");
   expect(output).toContain("blocked by re");
   expect(output).toContain("Status");
   expect(output).toContain("State: implementing");
-  expect(output).not.toContain("Phase: implement");
+  expect(output).toContain("Independent Review");
+  expect(output).toContain("Publish PR");
+  expect(output).toContain("Waiting merge");
+  expect(output).toContain("Confirm complete");
   expect(output).toContain("Execution");
   expect(output).toContain("Attempt: attempt-active");
   expect(output).toContain("Model: gpt-5");
@@ -263,9 +356,9 @@ test("separates cards while retaining their narrow and wide mouse rows", () => {
     taskId: "second",
   });
   expect(
-    taskBoardHitTest(twoReady, { x: 1, y: 6 }, { width: 60 }),
+    taskBoardHitTest(twoReady, { x: 1, y: 7 }, { width: 60 }),
   ).toBeUndefined();
-  expect(taskBoardHitTest(twoReady, { x: 1, y: 7 }, { width: 60 })).toEqual({
+  expect(taskBoardHitTest(twoReady, { x: 1, y: 8 }, { width: 60 })).toEqual({
     kind: "task",
     taskId: "second",
   });
@@ -312,7 +405,7 @@ test("renders project-scoped numeric card IDs without changing canonical hit-tes
     taskBoardHitTest(compactSnapshot, { x: 1, y: 5 }, { width: 200 }),
   ).toEqual({ kind: "task", taskId: "phase7-TASK-012" });
   expect(
-    taskBoardHitTest(compactSnapshot, { x: 1, y: 4 }, { width: 80 }),
+    taskBoardHitTest(compactSnapshot, { x: 1, y: 5 }, { width: 80 }),
   ).toEqual({ kind: "task", taskId: "phase7-TASK-012" });
 });
 
@@ -337,10 +430,10 @@ test("keeps colliding display labels mapped to their distinct canonical card IDs
   });
   expect(output.match(/#roc-7/g)).toHaveLength(2);
   expect(
-    taskBoardHitTest(collisionSnapshot, { x: 1, y: 4 }, { width: 80 }),
+    taskBoardHitTest(collisionSnapshot, { x: 1, y: 5 }, { width: 80 }),
   ).toEqual({ kind: "task", taskId: "alpha-7" });
   expect(
-    taskBoardHitTest(collisionSnapshot, { x: 1, y: 7 }, { width: 80 }),
+    taskBoardHitTest(collisionSnapshot, { x: 1, y: 8 }, { width: 80 }),
   ).toEqual({ kind: "task", taskId: "beta-007" });
 });
 
@@ -388,7 +481,7 @@ test("pads colored wide columns and keeps ANSI resets intact", () => {
   const boardLines = output
     .split("\n")
     .map((line) => stripVTControlCharacters(line))
-    .filter((line) => line.split(" │ ").length === 5);
+    .filter((line) => line.split(" │ ").length === 2);
 
   expect(boardLines).not.toHaveLength(0);
   expect(new Set(boardLines.map((line) => line.indexOf(" │ "))).size).toBe(1);
@@ -472,9 +565,8 @@ test("colors workflow headings in a terminal and preserves plain redirected layo
   for (const width of [60, 120]) {
     const colored = renderTaskBoard(snapshot, { width, isTTY: true });
     const plain = renderTaskBoard(snapshot, { width, isTTY: false });
-    expect(colored).toContain("\u001B[36mIn progress");
-    expect(colored).toContain("\u001B[33mAttention");
-    expect(colored).toContain("\u001B[32mDone");
+    expect(colored).toContain("\u001B[36m●");
+    expect(colored).toContain("\u001B[33mblocked");
     expect(stripVTControlCharacters(colored)).toBe(plain);
     expect(plain).toContain("Roc · Cycle");
   }
@@ -543,9 +635,6 @@ test("keeps widths below forty bounded and frames empty boards completely", () =
 
   expect(output).toContain("Cycle 2026-W35");
   expect(output).toContain("Ready · 0");
-  expect(output).toContain("In progress · 0");
-  expect(output).toContain("Attention · 0");
-  expect(output).toContain("Done · 0");
   expect(output).toContain("No tasks.");
   expect(output).toContain("roc-create-tasks");
   expect(output).toContain("--global --agent pi");
@@ -608,9 +697,8 @@ test("shows actual phase duration and activity with safe terminal text and accur
     detailMode: "full",
     now,
   });
-  expect(detail).toContain("├─ ◌ Implement · Running · 1m 42s · retry 1");
-  expect(detail).toContain("Running: Run tests");
-  expect(detail).toContain("└─ ○ Review · Waiting");
+  expect(detail).toContain("├─ ○ Implement · Not recorded");
+  expect(detail).toContain("├─ ○ Independent Review · Not recorded");
   for (const width of [16, 120]) {
     const colored = renderTaskBoard(live, {
       width,

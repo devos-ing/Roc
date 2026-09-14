@@ -36,17 +36,10 @@ await selectSkillAllowlist(
   [
     {
       identity: { name: "tdd", source: "mattpocock/skills" },
-      installed: true,
       initiallySelected: true,
     },
     {
-      identity: { name: "unslop", source: "backnotprop/pstack" },
-      installed: false,
-      initiallySelected: false,
-    },
-    {
-      identity: { name: "focus", source: "example/skills" },
-      installed: true,
+      identity: { name: "i-have-adhd:focus", source: "ayghri/i-have-adhd" },
       initiallySelected: false,
     },
   ],

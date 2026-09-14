@@ -9,17 +9,15 @@ import {
 const candidates = [
   {
     identity: { name: "tdd", source: "mattpocock/skills" },
-    installed: true,
     initiallySelected: true,
   },
   {
-    identity: { name: "unslop", source: "backnotprop/pstack" },
-    installed: false,
+    identity: { name: "i-have-adhd:focus", source: "ayghri/i-have-adhd" },
     initiallySelected: false,
   },
 ];
 
-test("maps defaults and missing unslop into one optional multiselect", () => {
+test("maps trusted installed skills into one optional multiselect", () => {
   const config = buildSkillPromptConfig(candidates);
   expect({
     ...config,
@@ -39,20 +37,21 @@ test("maps defaults and missing unslop into one optional multiselect", () => {
         disabled: false,
       },
       {
-        value: '["backnotprop/pstack","unslop"]',
-        label: "unslop",
-        hint: "pstack · Not installed",
-        disabled: true,
+        value: '["ayghri/i-have-adhd","i-have-adhd:focus"]',
+        label: "i-have-adhd:focus",
+        hint: "ayghri/i-have-adhd",
+        disabled: false,
       },
     ],
   });
 });
 
 test("returns exact identities and permits an empty selection", async () => {
-  const selected = await selectSkillAllowlist(candidates, async () => [
-    '["mattpocock/skills","tdd"]',
-  ]);
-  expect(selected).toEqual({
+  await expect(
+    selectSkillAllowlist(candidates, async () => [
+      '["mattpocock/skills","tdd"]',
+    ]),
+  ).resolves.toEqual({
     kind: "selected",
     identities: [{ name: "tdd", source: "mattpocock/skills" }],
   });
@@ -64,42 +63,13 @@ test("returns exact identities and permits an empty selection", async () => {
   });
 });
 
-test("filters a disabled missing unslop value from the selection", async () => {
+test("ignores a selection outside the trusted candidates", async () => {
   await expect(
     selectSkillAllowlist(candidates, async () => [
       '["backnotprop/pstack","unslop"]',
+      '["dietrichgebert/ponytail","ponytail:ponytail"]',
     ]),
   ).resolves.toEqual({ kind: "selected", identities: [] });
-});
-
-test("returns every selected installed candidate without a cap", async () => {
-  const installedCandidates = [
-    ...candidates.slice(0, 1),
-    {
-      identity: { name: "ponytail", source: "dietrichgebert/ponytail" },
-      installed: true,
-      initiallySelected: false,
-    },
-    {
-      identity: { name: "i-have-adhd", source: "ayghri/i-have-adhd" },
-      installed: true,
-      initiallySelected: false,
-    },
-  ];
-  await expect(
-    selectSkillAllowlist(installedCandidates, async () => [
-      '["mattpocock/skills","tdd"]',
-      '["dietrichgebert/ponytail","ponytail"]',
-      '["ayghri/i-have-adhd","i-have-adhd"]',
-    ]),
-  ).resolves.toEqual({
-    kind: "selected",
-    identities: [
-      { name: "tdd", source: "mattpocock/skills" },
-      { name: "ponytail", source: "dietrichgebert/ponytail" },
-      { name: "i-have-adhd", source: "ayghri/i-have-adhd" },
-    ],
-  });
 });
 
 test("normalizes Ctrl-C without terminating the host process", async () => {
@@ -137,14 +107,11 @@ test("renders colored onboarding and keyboard selectors", async () => {
   const ansiSgr = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`);
   expect(colored).toMatch(ansiSgr);
   expect(colored).toContain("\u001B[32m");
-  expect(colored).toContain("\u001B[36m◻\u001B[39m focus");
+  expect(colored).toContain("\u001B[36m◻\u001B[39m i-have-adhd:focus");
   expect(colored).toContain("\u001B[2m");
-  expect(colored).toContain("focus");
   expect(plain).not.toMatch(ansiSgr);
   expect(plain).toContain("tdd");
   expect(plain).toContain("focus");
-  expect(plain).toContain("unslop");
-  expect(plain).toContain("Not installed");
   expect(colored).toContain("Welcome to Roc");
   expect(plain).toContain("Welcome to Roc");
   expect(plain).toContain("Choose your Agile cycle");

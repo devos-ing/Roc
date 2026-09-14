@@ -16,22 +16,9 @@ const SkillLockSchema = z
   })
   .passthrough();
 
-const allowedStandaloneSources = new Set([
-  "ayghri/i-have-adhd",
-  "dietrichgebert/ponytail",
-]);
+const allowedStandaloneSources = new Set(["ayghri/i-have-adhd"]);
 const mattPocockSkills = new Set(["grilling", "tdd"]);
-const UNSLOP_IDENTITY = {
-  name: "unslop",
-  source: "backnotprop/pstack",
-} as const;
 const pluginSources = [
-  {
-    prefix: "ponytail:",
-    source: "dietrichgebert/ponytail",
-    cachePublisher: "ponytail",
-    cachePackage: "ponytail",
-  },
   {
     prefix: "i-have-adhd:",
     source: "ayghri/i-have-adhd",
@@ -43,7 +30,6 @@ const pluginSources = [
 export type DiscoveredSkill = { name: string; path: string; enabled: boolean };
 export type DefaultSkillCandidate = {
   identity: SkillIdentity;
-  installed: boolean;
   initiallySelected: boolean;
 };
 export type DefaultSkillPolicy = {
@@ -140,8 +126,7 @@ export async function loadDefaultSkillPolicy(
       const source = metadata.source.toLowerCase();
       if (
         allowedStandaloneSources.has(source) ||
-        (source === "mattpocock/skills" && mattPocockSkills.has(name)) ||
-        (name === UNSLOP_IDENTITY.name && source === UNSLOP_IDENTITY.source)
+        (source === "mattpocock/skills" && mattPocockSkills.has(name))
       ) {
         standaloneSkillSources.set(name, source);
       }
@@ -168,28 +153,14 @@ export function buildDefaultSkillCandidates(
     return [
       {
         identity,
-        installed: true,
         initiallySelected:
           input.selectedSkillKeys === undefined ||
           input.selectedSkillKeys.has(skillIdentityKey(identity)),
       },
     ];
   });
-  if (
-    !candidates.some(
-      ({ identity }) =>
-        skillIdentityKey(identity) === skillIdentityKey(UNSLOP_IDENTITY),
-    )
-  ) {
-    candidates.push({
-      identity: UNSLOP_IDENTITY,
-      installed: false,
-      initiallySelected: false,
-    });
-  }
   return candidates.sort(
     (left, right) =>
-      Number(right.installed) - Number(left.installed) ||
       left.identity.source.localeCompare(right.identity.source) ||
       left.identity.name.localeCompare(right.identity.name),
   );

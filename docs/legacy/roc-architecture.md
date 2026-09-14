@@ -53,10 +53,34 @@ and retain local ownership. GitHub labels are repairable projections, not locks
 or authoritative execution state. There is no distributed compare-and-swap
 claim protocol; only one host and daemon may execute the repository.
 
-GitHub reads use complete paginated comment lists. Issue discovery has a
-1,000-managed-Issue safety bound and fails visibly rather than treating a
-truncated result as a complete plan. Idle polling waits 30 seconds. A read
-outage stops the invocation; it cannot advance roles offline.
+`GitHubRemoteIssueReader` delegates `read`, `get` and `getMany` to fixed GraphQL
+queries in `GitHubGraphQLReader`. Discovery includes OPEN and CLOSED `roc:task`
+Issues in pages of 25. Comments and labels each have independent cursors,
+counts and unique identities; nested pages are collected before results escape.
+Missing required fields, duplicate identities, partial data, errors, cursor
+stalls and count drift reject the complete read. Discovery rejects 1,000 or more
+managed Issues. Nullable authors never gain approval or executor trust.
+
+`getMany` batches validated Issue numbers into at most 25 fixed aliases, using
+variables for values. It applies the same complete comment and label contract
+as discovery. `freshPlan` uses remembered numbers only as locators and rebuilds
+plan identity, membership and dependency validation from current Issues.
+A new claim verifies the fresh OPEN approved candidate and done dependencies,
+checks their exact PR and Git ancestry, then requires a second complete plan
+with the same version before the initial checkpoint write/readback. Closed done
+dependencies remain valid. A version change restarts admission from a fresh
+list without letting a later candidate jump ahead. GitHub has no cross-request
+transaction snapshot; a final-read-to-write TOCTOU remains.
+
+`GitHubRateLimitRunner` retries only recognized reads or explicitly identified
+GraphQL reads. HTTP 200 GraphQL errors still reject data. Quota errors enter
+one cancellable shared wait; permission failures never retry. A worker can leave
+the wait without cancelling siblings. Active reads carry cancellation through
+the pager and Bun subprocess, which drains after termination. Confirmed cleanup
+and unknown-write readback use their own bounded reconciliation lifetime so
+shutdown can persist attention after admission stops. A stopped quota wait
+cannot authorize more cleanup requests. Unknown writes retain ownership.
+Idle polling waits 30 seconds. A read outage cannot advance roles offline.
 
 ## Parallel admission
 
@@ -229,9 +253,12 @@ derive elapsed time, attempt time and merge waiting from recorded boundaries,
 and mark incomplete usage explicitly. Missing historical timing or an Issue
 status that no longer matches its checkpoint yields unavailable timing.
 
-GitHub comment reads run in batches of at most four requests. The reader waits
-for all requests in a failed batch and returns no partial snapshot. It preserves
-the original order, request count, complete comment history and approval checks.
+GraphQL Issue and nested connection pages run sequentially. The shared transport
+retains argv-only `gh` execution and existing REST writes, PR publication and
+merge mechanisms. There is no REST fallback or persistent snapshot cache.
+The retired M1 `tools/github-read-proof.ts --pair` refuses to run in this checkout.
+The frozen M1 source remains the independent REST baseline for the isolated
+production read probe. See [GraphQL runtime verification](validation/graphql-runtime-local.md).
 
 An approved low-risk spec may explicitly omit Scout using `skipScout: true`.
 The schema requires conservative literal file scopes and the existing complete

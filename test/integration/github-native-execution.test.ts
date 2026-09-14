@@ -20,6 +20,7 @@ import { createTaskBranchManager } from "../../src/workspace/task-branch";
 import { messageEnd, RecordedPiClient } from "../agents/pi/fixtures";
 import { git } from "../helpers/git";
 import { manifest, memoryGitHub } from "../helpers/github-native";
+import { protocolGitHub } from "../helpers/graphql-github";
 
 test("Fake Harness completes on a non-default target and restart retries only denied closure", async () => {
   const hook = { command: "fixture", args: [], timeoutSeconds: 1 };
@@ -271,7 +272,9 @@ for (const skipScout of [false, true])
         await realpath(root),
         "HEAD",
       );
-      const remote = memoryGitHub();
+      const seed = memoryGitHub();
+      const protocol = protocolGitHub([seed.issue], root);
+      const remote = { ...seed, store: protocol.store };
       if (skipScout) {
         const envelope = remoteTaskEnvelope(
           {

@@ -50,6 +50,9 @@ export function memoryPlan(scopes: string[][]) {
       if (!issue) throw Error("Missing fixture Issue");
       return structuredClone(issue);
     },
+    async getMany(repo: string, numbers: readonly number[]) {
+      return Promise.all(numbers.map((number) => api.get(repo, number)));
+    },
     async writeComment(
       _repo: string,
       number: number,

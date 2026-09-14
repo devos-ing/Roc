@@ -123,6 +123,7 @@ function fixture(scopes: string[][], concurrency = 2) {
   let failedTask: string | undefined;
   let failure: Error = Error("Private backend diagnostic");
   const errors: AgileError[] = [];
+  const diagnostics: string[] = [];
   let cleanupFails = false;
   const pool = new GitHubTaskPool({
     store: remote.store,
@@ -130,6 +131,9 @@ function fixture(scopes: string[][], concurrency = 2) {
     concurrency,
     async logError(error) {
       errors.push(error);
+    },
+    diagnostic(message) {
+      diagnostics.push(message);
     },
     advisor: createStaticModelAdvisor(),
     harness: {
@@ -195,6 +199,7 @@ function fixture(scopes: string[][], concurrency = 2) {
     started,
     cancelled,
     errors,
+    diagnostics,
     failCleanup() {
       cleanupFails = true;
     },
@@ -553,3 +558,233 @@ for (const mode of [
     }
   });
 }
+
+/** Builds the sanitized transient read failure raised by the remote reader. */
+function transientReadFailure(): AgileError {
+  return new AgileError({
+    code: "GITHUB_READ_FAILED",
+    category: "infra",
+    component: "github-state",
+    retryable: true,
+    message:
+      "GitHub task read failed (Issue list; HTTP 502); check connection, authentication and repository access",
+  });
+}
+
+/** Compresses scheduler-scale waits to two milliseconds while recording each requested delay. */
+function compressPollingTimers(): { delays: number[]; restore: () => void } {
+  const setTimer = globalThis.setTimeout;
+  const delays: number[] = [];
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(
+    Object.assign(
+      (...[handler, delay, ...args]: Parameters<typeof setTimeout>) => {
+        const wait = delay ?? 0;
+        if (wait >= 30_000) {
+          delays.push(wait);
+          return setTimer(handler, 2, ...args);
+        }
+        return setTimer(handler, delay, ...args);
+      },
+      { __promisify__: setTimer.__promisify__ },
+    ) as typeof setTimeout,
+  );
+  return { delays, restore: () => timer.mockRestore() };
+}
+
+/** Waits briefly in real time for an asynchronous scheduler condition to hold. */
+async function until(condition: () => boolean): Promise<void> {
+  for (let i = 0; i < 500 && !condition(); i++) await Bun.sleep(2);
+  expect(condition()).toBe(true);
+}
+
+/** Extracts the consecutive-failure counts from the daemon's poll warnings. */
+function failureCounts(messages: string[]): string[] {
+  return messages
+    .map((message) => /consecutive failures: (\d+)/u.exec(message)?.[1])
+    .filter((count): count is string => count !== undefined);
+}
+
+test("a retryable read failure during polling warns, backs off and keeps the run loop alive", async () => {
+  const f = fixture([["a.ts"]]);
+  const timers = compressPollingTimers();
+  const apiRead = f.api.read;
+  let injected = false;
+  f.api.read = async () => {
+    if (f.started.length > 0 && !injected) {
+      injected = true;
+      throw transientReadFailure();
+    }
+    return apiRead();
+  };
+  const stop = new AbortController();
+  let settled = false;
+  const run = f.pool.run(stop.signal).catch((error) => {
+    if (!stop.signal.aborted) throw error;
+  });
+  const finished = run.finally(() => {
+    settled = true;
+  });
+  try {
+    await f.entered[0]?.promise;
+    await until(() => failureCounts(f.diagnostics).length === 1);
+    expect(f.diagnostics[0]).toContain("GITHUB_READ_FAILED");
+    expect(f.diagnostics[0]).toContain("consecutive failures: 1");
+    expect(f.diagnostics[0]).toContain("retrying in 30s");
+    expect(timers.delays).toContain(30_000);
+    expect(settled).toBe(false);
+    f.release[0]?.release();
+    await f.completed[0]?.promise;
+    expect(settled).toBe(false);
+    let task = await f.store.get(41);
+    for (let i = 0; i < 100 && task.task.status !== "awaiting_merge"; i++) {
+      await Bun.sleep(2);
+      task = await f.store.get(41);
+    }
+    expect(task.task.status).toBe("awaiting_merge");
+  } finally {
+    stop.abort();
+    for (const gate of f.release) gate.release();
+    await f.pool.cancel().catch(() => undefined);
+    await finished;
+    timers.restore();
+    expect(settled).toBe(true);
+    expect(failureCounts(f.diagnostics)).toEqual(["1"]);
+  }
+});
+
+test("backoff for consecutive retryable read failures doubles to a five-minute cap and resets after success", async () => {
+  const f = fixture([["a.ts"]]);
+  const timers = compressPollingTimers();
+  const failOnCall = new Set([1, 2, 3, 4, 5, 6]);
+  let calls = 0;
+  f.api.read = async () => {
+    calls++;
+    if (failOnCall.has(calls)) throw transientReadFailure();
+    return [];
+  };
+  const stop = new AbortController();
+  const run = f.pool.run(stop.signal).catch((error) => {
+    if (!stop.signal.aborted) throw error;
+  });
+  try {
+    await until(() => failureCounts(f.diagnostics).length >= 6);
+    expect(timers.delays.slice(0, 6)).toEqual([
+      30_000, 60_000, 120_000, 240_000, 300_000, 300_000,
+    ]);
+    expect(failureCounts(f.diagnostics)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+    ]);
+    expect(f.diagnostics[5]).toContain("retrying in 300s");
+    await until(() => timers.delays.length >= 7);
+    failOnCall.add(calls + 1);
+    await until(() => failureCounts(f.diagnostics).length >= 7);
+    expect(failureCounts(f.diagnostics)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "1",
+    ]);
+  } finally {
+    stop.abort();
+    for (const gate of f.release) gate.release();
+    await f.pool.cancel().catch(() => undefined);
+    await run;
+    timers.restore();
+  }
+});
+
+test("selection-path retries follow the backoff ladder without a stacked ordinary wait", async () => {
+  const f = fixture([["a.ts"]]);
+  const timers = compressPollingTimers();
+  const apiRead = f.api.read;
+  // Read 1 admits the task; reads 2-7 fail so the selector stays in flight and
+  // every retry is driven by awaitSelection; read 8 succeeds; read 9 fails
+  // again to prove the ladder reset.
+  const failOnCall = new Set([2, 3, 4, 5, 6, 7, 9]);
+  let calls = 0;
+  f.api.read = async () => {
+    calls++;
+    if (failOnCall.has(calls)) throw transientReadFailure();
+    return apiRead();
+  };
+  const syncLabels = f.store.syncLabels.bind(f.store);
+  const selecting = barrier();
+  const releaseSelection = barrier();
+  f.store.syncLabels = async (task) => {
+    selecting.release();
+    await releaseSelection.promise;
+    await syncLabels(task);
+  };
+  const stop = new AbortController();
+  const run = f.pool.run(stop.signal).catch((error) => {
+    if (!stop.signal.aborted) throw error;
+  });
+  try {
+    await selecting.promise;
+    await until(() => timers.delays.length >= 7);
+    // The first delay is the ordinary poll before the first failure; the six
+    // that follow must be exactly the backoff ladder at its cap with no
+    // ordinary 30s wait stacked between rungs.
+    expect(timers.delays.slice(1, 7)).toEqual([
+      30_000, 60_000, 120_000, 240_000, 300_000, 300_000,
+    ]);
+    expect(failureCounts(f.diagnostics)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+    ]);
+    // After the successful read the ladder resets, so the next failure waits
+    // one ordinary interval and then backs off 30s again.
+    await until(() => timers.delays.length >= 9);
+    expect(timers.delays.slice(7, 9)).toEqual([30_000, 30_000]);
+    expect(failureCounts(f.diagnostics)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "1",
+    ]);
+  } finally {
+    stop.abort();
+    releaseSelection.release();
+    for (const gate of f.release) gate.release();
+    await f.pool.cancel().catch(() => undefined);
+    await run;
+    timers.restore();
+  }
+});
+
+test("a non-retryable read failure such as a 401 still terminates the run loop", async () => {
+  const f = fixture([["a.ts"]]);
+  f.api.read = async () => {
+    throw new AgileError({
+      code: "GITHUB_READ_FORBIDDEN",
+      category: "infra",
+      component: "github-state",
+      retryable: false,
+      message:
+        "GitHub GraphQL task read failed (permission); check connection and repository access",
+    });
+  };
+  const run = f.pool
+    .run(new AbortController().signal)
+    .catch((error: unknown) => error);
+  expect(await run).toMatchObject({
+    code: "GITHUB_READ_FORBIDDEN",
+    retryable: false,
+  });
+  await f.pool.cancel().catch(() => undefined);
+});

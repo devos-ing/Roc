@@ -137,6 +137,9 @@ async function executeOnboard(
         ...(priorSettings?.models === undefined
           ? {}
           : { models: priorSettings.models }),
+        ...(priorSettings?.efforts === undefined
+          ? {}
+          : { efforts: priorSettings.efforts }),
       },
       homeRoot,
     );
@@ -152,13 +155,7 @@ async function executeOnboard(
     const modelStep = `6. Model: Connected (${model})`;
     completedSteps.push(modelStep);
     context.io.out(modelStep);
-    context.io.out(
-      renderOnboardingComplete({
-        unslopMissing: candidates.some(
-          ({ identity, installed }) => identity.name === "unslop" && !installed,
-        ),
-      }),
-    );
+    context.io.out(renderOnboardingComplete());
     return 0;
   } catch (error) {
     const partialSkills =

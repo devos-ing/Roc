@@ -40,13 +40,8 @@ test("onboarding selection becomes the scheduler skill configuration", async () 
     );
     for (const skill of discovered) {
       await mkdir(join(agentsSkills, skill.name), { recursive: true });
-      await writeFile(skill.path, "# Trusted fixture skill");
+      await writeFile(skill.path, "# Fixture skill");
     }
-    await mkdir(join(agentsSkills, "untrusted"), { recursive: true });
-    await writeFile(
-      join(agentsSkills, "untrusted", "SKILL.md"),
-      "# Not in the trusted lock",
-    );
     const io = {
       out: () => {},
       err: () => {},
@@ -55,7 +50,7 @@ test("onboarding selection becomes the scheduler skill configuration", async () 
       selectCycle: async () => "weekly" as const,
       selectSkills: async () => ({
         kind: "selected" as const,
-        identities: [{ name: "unslop", source: "backnotprop/pstack" }],
+        identities: [{ name: "tdd", source: "mattpocock/skills" }],
       }),
     };
     const runtime = {
@@ -70,7 +65,7 @@ test("onboarding selection becomes the scheduler skill configuration", async () 
     expect(await runCli(["onboard", "--global"], io, runtime)).toBe(0);
     const settings = await loadRocSettings(home);
     expect(settings.skills?.allowlist).toEqual([
-      { name: "unslop", source: "backnotprop/pstack" },
+      { name: "tdd", source: "mattpocock/skills" },
     ]);
     const models = { luna: "openai-codex/gpt-5.6-luna" };
     await saveRocSettings({ ...settings, models }, home);
@@ -78,13 +73,8 @@ test("onboarding selection becomes the scheduler skill configuration", async () 
     expect((await loadRocSettings(home)).models).toEqual(models);
     const policy = await loadSchedulerSkillPolicy(home);
     expect(
-      buildDefaultSkillConfig(await discoverTrustedSkills(policy), policy).sort(
-        (a, b) => a.path.localeCompare(b.path),
-      ),
-    ).toEqual([
-      { path: discovered[0]!.path, enabled: false },
-      { path: discovered[1]!.path, enabled: true },
-    ]);
+      buildDefaultSkillConfig(await discoverTrustedSkills(policy), policy),
+    ).toEqual([{ path: discovered[0]!.path, enabled: true }]);
   } finally {
     await rm(project, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });

@@ -43,13 +43,8 @@ export function buildSkillPromptConfig(
     options: candidates.map((candidate) => ({
       value: skillIdentityKey(candidate.identity),
       label: candidate.identity.name,
-      hint: styleText(
-        "dim",
-        candidate.installed
-          ? candidate.identity.source
-          : "pstack · Not installed",
-      ),
-      disabled: !candidate.installed,
+      hint: styleText("dim", candidate.identity.source),
+      disabled: false,
     })),
     initialValues: candidates
       .filter((candidate) => candidate.initiallySelected)
@@ -75,11 +70,7 @@ export async function selectSkillAllowlist(
   return {
     kind: "selected",
     identities: candidates
-      .filter(
-        (candidate) =>
-          candidate.installed &&
-          selected.has(skillIdentityKey(candidate.identity)),
-      )
+      .filter((candidate) => selected.has(skillIdentityKey(candidate.identity)))
       .map((candidate) => candidate.identity),
   };
 }

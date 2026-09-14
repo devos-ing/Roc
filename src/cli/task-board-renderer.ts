@@ -28,16 +28,23 @@ export type TaskBoardRenderOptions = {
 
 export type TaskBoardHit = { kind: "task"; taskId: string } | { kind: "done" };
 
-type ColumnName = "Ready" | "In progress" | "Attention" | "Done";
-
-type BoardColumn = { name: ColumnName; tasks: readonly TaskBoardTask[] };
+export type TaskBoardPanes = {
+  list: string;
+  detail: string;
+  listWidth: number;
+};
 
 const reset = "\u001B[0m";
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matches terminal SGR sequences emitted below.
 const ansiSgrPattern = /\u001B\[[0-9;]*m/g;
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const colors = taskDisplayColors;
-const narrowWidth = 88;
+const narrowWidth = 100;
+
+/** Reports whether the task board uses its two-pane layout at this width. */
+export function taskBoardUsesWidePanes(width: number): boolean {
+  return width >= narrowWidth;
+}
 
 /** Splits text into user-perceived characters without separating combining or ZWJ sequences. */
 function splitGraphemes(value: string): string[] {
@@ -104,7 +111,8 @@ function fit(value: string, width: number): string {
 }
 
 /** Pads a possibly colored line to its visible terminal-cell width. */
-function pad(value: string, width: number): string {
+/** Pads text to a visible terminal-cell width. */
+export function padToVisibleWidth(value: string, width: number): string {
   return `${value}${" ".repeat(Math.max(0, width - visibleWidth(value)))}`;
 }
 
@@ -167,15 +175,6 @@ function latestActivity(
   return `${symbol} ${summary}`;
 }
 
-/** Formats attempt duration using its recorded end time once execution has stopped. */
-function elapsed(
-  attempt: TaskBoardTask["attempts"][number],
-  now: number,
-): string {
-  const end = attempt.endedAt === undefined ? now : Date.parse(attempt.endedAt);
-  return duration(end - Date.parse(attempt.startedAt));
-}
-
 /** Formats a measured duration without treating unavailable timing as zero. */
 function duration(milliseconds: number | undefined): string {
   if (milliseconds === undefined) return "Unavailable";
@@ -186,76 +185,58 @@ function duration(milliseconds: number | undefined): string {
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
-/** Renders each role's latest attempt with its actual review outcome and bounded activity. */
+/** Renders all persisted workflow stages without inferring missing checkpoint evidence. */
 function renderProgress(
   task: TaskBoardTask,
   width: number,
   colorEnabled: boolean,
-  now: number,
+  _now: number,
 ): string[] {
-  return (["scout", "implement", "review"] as const).flatMap((role, index) => {
-    const attempt = task.attempts
-      .filter((candidate) => candidate.role === role)
-      .at(-1);
-    let status =
-      task.column === "attention" || task.rawStatus === "retired"
-        ? "Not run"
-        : "Waiting";
-    let symbol = "○";
-    let tone: keyof typeof colors = "muted";
-    if (role === "scout" && task.spec.skipScout && attempt === undefined) {
-      status = "Skipped by approved ticket";
-      symbol = "·";
-    }
-    if (attempt !== undefined) {
-      if (attempt.status === "running") {
-        status = "Running";
-        symbol = "◌";
-        tone = "active";
-      } else if (
-        attempt.status === "failed_infra" ||
-        attempt.reviewDecision === "rejected"
-      ) {
-        status = attempt.reviewDecision === "rejected" ? "Rejected" : "Failed";
-        symbol = "×";
-        tone = "error";
-      } else if (attempt.status === "blocked_policy") {
-        status = "Blocked";
-        symbol = "!";
-        tone = "attention";
-      } else {
-        status =
-          attempt.reviewDecision === "accepted" ? "Accepted" : "Completed";
-        symbol = "✓";
-        tone =
-          role === "review" && attempt.reviewDecision === undefined
-            ? "muted"
-            : "done";
-      }
-    }
-    const branch = index === 2 ? "└─" : "├─";
-    const indent = index === 2 ? "   " : "│  ";
-    const label = role[0]?.toUpperCase() + role.slice(1);
-    const timing = attempt === undefined ? "" : ` · ${elapsed(attempt, now)}`;
-    const retry =
-      attempt === undefined || attempt.retryIndex === 0
-        ? ""
-        : ` · retry ${attempt.retryIndex}`;
-    const activity = latestActivity(attempt);
-    return [
-      ...wrap(
-        `${branch} ${symbol} ${label} · ${status}${timing}${retry}`,
-        width,
-      ).map((line) => color(line, tone, colorEnabled)),
-      ...(activity === undefined ? [] : wrap(activity, width, indent)),
-      ...(attempt?.failure === undefined
-        ? []
-        : wrap(
-            `Reason: ${activitySummary(attempt.failure)}`,
-            width,
-            indent,
-          ).map((line) => color(line, tone, colorEnabled))),
-    ];
+  const stages = task.progress ?? [
+    { label: "Scout", status: "Not recorded", tone: "muted" as const },
+    { label: "Implement", status: "Not recorded", tone: "muted" as const },
+    {
+      label: "Independent Review",
+      status: "Not recorded",
+      tone: "muted" as const,
+    },
+    {
+      label: "Publish PR",
+      status: task.pullRequestUrl ? "Published" : "Not recorded",
+      tone: task.pullRequestUrl ? ("done" as const) : ("muted" as const),
+    },
+    {
+      label: "Waiting merge",
+      status:
+        task.rawStatus === "awaiting_merge" ? "Awaiting merge" : "Not recorded",
+      tone:
+        task.rawStatus === "awaiting_merge"
+          ? ("attention" as const)
+          : ("muted" as const),
+    },
+    {
+      label: "Confirm complete",
+      status:
+        task.rawStatus === "done" ? "Confirmed complete" : "Not confirmed",
+      tone: task.rawStatus === "done" ? ("done" as const) : ("muted" as const),
+    },
+  ];
+  return stages.flatMap((stage, index) => {
+    const symbol =
+      stage.tone === "done"
+        ? "✓"
+        : stage.tone === "error"
+          ? "×"
+          : stage.tone === "attention"
+            ? "!"
+            : stage.tone === "active"
+              ? "◌"
+              : "○";
+    const branch = index === stages.length - 1 ? "└─" : "├─";
+    return wrap(
+      `${branch} ${symbol} ${stage.label} · ${stage.status}${stage.retryIndex === undefined ? "" : ` · retry ${stage.retryIndex}`}`,
+      width,
+    ).map((line) => color(line, stage.tone, colorEnabled));
   });
 }
 
@@ -317,46 +298,6 @@ function cardStatus(
     : `${color(currentPhase, "muted", colorEnabled)} · ${status}`;
 }
 
-/** Returns the four stable renderer columns backed by the canonical record-valued model columns. */
-function boardColumns(snapshot: TaskBoardSnapshot): BoardColumn[] {
-  return [
-    { name: "Ready", tasks: snapshot.columns.ready },
-    { name: "In progress", tasks: snapshot.columns.inProgress },
-    { name: "Attention", tasks: snapshot.columns.attention },
-    { name: "Done", tasks: snapshot.columns.done },
-  ];
-}
-
-/** Colors each column heading by its workflow state without changing its layout. */
-function columnHeading(
-  column: BoardColumn,
-  width: number,
-  enabled: boolean,
-): string {
-  const tones = {
-    Ready: "muted",
-    "In progress": "active",
-    Attention: "attention",
-    Done: "done",
-  } as const;
-  const heading = fit(`${column.name} · ${column.tasks.length}`, width);
-  return enabled
-    ? `\u001B[1m${color(heading, tones[column.name], true)}`
-    : heading;
-}
-
-/** Finds one task across all canonical board columns. */
-function taskById(
-  taskColumns: readonly BoardColumn[],
-  id: string | undefined,
-): TaskBoardTask | undefined {
-  return id === undefined
-    ? undefined
-    : taskColumns
-        .flatMap((column) => column.tasks)
-        .find((task) => task.id === id);
-}
-
 /** Renders one compact task card for a board column or vertical list. */
 function renderCard(input: {
   task: TaskBoardTask;
@@ -394,44 +335,6 @@ function renderCard(input: {
   return lines;
 }
 
-/** Renders one width-bounded board column including its collapsed Done state. */
-function renderColumn(input: {
-  column: BoardColumn;
-  snapshot: TaskBoardSnapshot;
-  selectedId?: string;
-  width: number;
-  doneExpanded: boolean;
-  colorEnabled: boolean;
-  projectSlug: string;
-}): string[] {
-  const collapsed = input.column.name === "Done" && !input.doneExpanded;
-  const tasks = collapsed ? [] : input.column.tasks;
-  const lines = [
-    columnHeading(input.column, input.width, input.colorEnabled),
-    color("─".repeat(input.width), "muted", input.colorEnabled),
-  ];
-  if (collapsed)
-    lines.push(
-      color(fit("  [d] expand", input.width), "muted", input.colorEnabled),
-    );
-  for (const [index, task] of tasks.entries()) {
-    if (index > 0) lines.push("");
-    lines.push(
-      ...renderCard({
-        task,
-        snapshot: input.snapshot,
-        selected: task.id === input.selectedId,
-        width: input.width,
-        colorEnabled: input.colorEnabled,
-        projectSlug: input.projectSlug,
-      }),
-    );
-  }
-  if (!collapsed && tasks.length === 0)
-    lines.push(color(fit("  —", input.width), "muted", input.colorEnabled));
-  return lines;
-}
-
 /** Returns the number of terminal rows occupied by one rendered card. */
 function cardHeight(task: TaskBoardTask, snapshot: TaskBoardSnapshot): number {
   return (
@@ -439,19 +342,6 @@ function cardHeight(task: TaskBoardTask, snapshot: TaskBoardSnapshot): number {
     Number(latestActivity(currentAttempt(task, snapshot)) !== undefined) +
     Number(blocker(task) !== undefined) +
     Number(task.rawStatus === "retired")
-  );
-}
-
-/** Combines equal-height padded columns into a width-bounded horizontal board. */
-function joinColumns(
-  columnsToJoin: readonly string[][],
-  cellWidth: number,
-): string[] {
-  const height = Math.max(...columnsToJoin.map((column) => column.length));
-  return Array.from({ length: height }, (_, index) =>
-    columnsToJoin
-      .map((column) => pad(column[index] ?? "", cellWidth))
-      .join(" │ "),
   );
 }
 
@@ -539,8 +429,16 @@ function renderDetails(
     ...(task.pullRequestUrl
       ? [detailField("PR", task.pullRequestUrl, width)]
       : []),
-    ...(task.failure
-      ? [detailField("Reason", activitySummary(task.failure), width)]
+    ...(task.failure || task.column === "attention"
+      ? [
+          detailField(
+            "Reason",
+            task.failure
+              ? activitySummary(task.failure)
+              : "No failure reason recorded.",
+            width,
+          ),
+        ]
       : []),
     ...(attempt?.role === undefined
       ? []
@@ -601,7 +499,11 @@ function renderDetails(
               ? item.evidence
                   .split("\n")
                   .flatMap((line) => wrap(`Evidence: ${line}`, width, "  "))
-              : ["  Evidence: No item-level evidence recorded."]),
+              : wrap(
+                  "Evidence: No item-level evidence recorded.",
+                  width,
+                  "  ",
+                )),
           ]),
         ];
   const retirement =
@@ -646,6 +548,16 @@ function renderDetails(
       ? []
       : ["", detailSection("Brief", width, colorEnabled), ...brief]),
     ...(acceptance.length === 0 ? [] : ["", ...acceptance]),
+    ...(task.failure || task.column === "attention"
+      ? [
+          "",
+          detailSection("Recovery guidance", width, colorEnabled),
+          ...wrap(
+            "Read-only monitor: run scheduler inspect or inspect .agile/runtime/agile.log on the execution host. Review the saved Issue, PR, and retained worktree; no recovery action is available here.",
+            width,
+          ),
+        ]
+      : []),
     ...retirement,
   ];
 }
@@ -691,7 +603,56 @@ function summary(
   );
 }
 
-/** Renders a stable, width-aware task board without terminal I/O or control sequences. */
+/** Returns the task-list entries while preserving the existing Done filtering behavior. */
+function listedTasks(
+  snapshot: TaskBoardSnapshot,
+  doneExpanded: boolean,
+): TaskBoardTask[] {
+  return snapshot.tasks.filter(
+    (task) => doneExpanded || task.column !== "done",
+  );
+}
+
+/** Renders the task-list half of either responsive board layout at its assigned width. */
+function renderListLines(input: {
+  snapshot: TaskBoardSnapshot;
+  tasks: TaskBoardTask[];
+  selectedId?: string;
+  width: number;
+  colorEnabled: boolean;
+  projectSlug: string;
+  doneExpanded: boolean;
+}): string[] {
+  const lines = [
+    color(
+      fit(
+        `Ready · ${input.snapshot.columns.ready.length} · Tasks ${input.tasks.length}${input.doneExpanded ? "" : ` · Done ${input.snapshot.columns.done.length} hidden [d]`}`,
+        input.width,
+      ),
+      "muted",
+      input.colorEnabled,
+    ),
+    color("─".repeat(input.width), "muted", input.colorEnabled),
+    ...(input.tasks.length === 0
+      ? [color("  —", "muted", input.colorEnabled)]
+      : input.tasks.flatMap((task, index) => [
+          ...(index === 0 ? [] : [""]),
+          ...renderCard({
+            task,
+            snapshot: input.snapshot,
+            selected: task.id === input.selectedId,
+            width: input.width,
+            colorEnabled: input.colorEnabled,
+            projectSlug: input.projectSlug,
+          }),
+        ])),
+  ];
+  if (input.snapshot.tasks.length === 0)
+    lines.push("", ...emptyBoardGuidance(input.width));
+  return lines;
+}
+
+/** Renders a stable responsive task list with selected-task progress details. */
 export function renderTaskBoard(
   snapshot: TaskBoardSnapshot,
   options: TaskBoardRenderOptions = {},
@@ -701,27 +662,24 @@ export function renderTaskBoard(
   const now = options.now ?? Date.now();
   const colorEnabled =
     options.color !== false && options.isTTY !== false && options.tty !== false;
-  const taskColumns = boardColumns(snapshot);
-  const taskCount = snapshot.tasks.length;
-  const selected = taskById(
-    taskColumns,
-    options.selectedTaskId ?? options.selectedId,
-  );
-  const selectedId = selected?.id;
-  const detail = taskById(
-    taskColumns,
-    options.detailTaskId ??
-      (options.detailMode === undefined ? selectedId : undefined),
-  );
   const doneExpanded =
     options.doneExpanded === true ||
     options.expandedDone === true ||
     snapshot.history === true;
-
-  if (
-    detail !== undefined &&
-    (options.detailMode === "full" || width < narrowWidth)
-  )
+  const selected = snapshot.tasks.find(
+    (task) => task.id === (options.selectedTaskId ?? options.selectedId),
+  );
+  const detail = options.detailTaskId
+    ? snapshot.tasks.find((task) => task.id === options.detailTaskId)
+    : options.detailMode === "none"
+      ? undefined
+      : selected;
+  const heading = color(
+    summary(snapshot, snapshot.tasks.length, width),
+    "active",
+    colorEnabled,
+  );
+  if (detail && (options.detailMode === "full" || width < narrowWidth))
     return plainSnapshot(
       [
         ...renderDetails(detail, snapshot, width, colorEnabled, now),
@@ -731,150 +689,182 @@ export function renderTaskBoard(
       colorEnabled,
     );
 
-  const heading = color(
-    summary(snapshot, taskCount, width),
-    "active",
-    colorEnabled,
-  );
-  if (width < narrowWidth) {
-    const lines = [heading, ""];
-    for (const column of taskColumns) {
-      lines.push(columnHeading(column, width, colorEnabled));
-      if (column.name === "Done" && !doneExpanded)
-        lines.push(color(fit("  [d] expand", width), "muted", colorEnabled));
-      else if (column.tasks.length === 0) lines.push(fit("  —", width));
-      else
-        for (const [index, task] of column.tasks.entries()) {
-          if (index > 0) lines.push("");
-          lines.push(
-            ...renderCard({
-              task,
-              snapshot,
-              selected: task.id === selectedId,
-              width,
-              colorEnabled,
-              projectSlug,
-            }),
-          );
-        }
-    }
-    if (taskCount === 0) lines.push("", ...emptyBoardGuidance(width));
+  const tasks = listedTasks(snapshot, doneExpanded);
+  if (width < narrowWidth)
     return plainSnapshot(
-      [...lines, "", footer(width, colorEnabled)].join("\n"),
+      [
+        heading,
+        "",
+        ...renderListLines({
+          snapshot,
+          tasks,
+          selectedId: selected?.id,
+          width,
+          colorEnabled,
+          projectSlug,
+          doneExpanded,
+        }),
+        "",
+        footer(width, colorEnabled),
+      ].join("\n"),
       colorEnabled,
     );
-  }
 
-  const detailWidth = detail === undefined ? 0 : Math.floor(width * 0.3);
-  const boardWidth = detail === undefined ? width : width - detailWidth - 3;
-  const cellWidth = Math.max(1, Math.floor((boardWidth - 9) / 4));
-  const boardLines = joinColumns(
-    taskColumns.map((column) =>
-      renderColumn({
-        column,
-        snapshot,
-        selectedId,
-        width: cellWidth,
-        doneExpanded,
-        colorEnabled,
-        projectSlug,
-      }),
-    ),
-    cellWidth,
-  );
-  const lines = [heading, "", ...boardLines];
-  if (detail !== undefined) {
-    const details = renderDetails(
-      detail,
-      snapshot,
-      detailWidth,
-      colorEnabled,
-      now,
-    );
-    const height = Math.max(boardLines.length, details.length);
-    lines.splice(
-      2,
-      boardLines.length,
+  const listWidth = Math.max(28, Math.floor((width - 3) * 0.38));
+  const detailWidth = Math.max(1, width - listWidth - 3);
+  const boundedList = renderListLines({
+    snapshot,
+    tasks,
+    selectedId: selected?.id,
+    width: listWidth,
+    colorEnabled,
+    projectSlug,
+    doneExpanded,
+  });
+  const detailLines = selected
+    ? renderDetails(selected, snapshot, detailWidth, colorEnabled, now)
+    : [color("Select a task", "muted", colorEnabled)];
+  const height = Math.max(boundedList.length, detailLines.length);
+  return plainSnapshot(
+    [
+      heading,
+      "",
       ...Array.from(
         { length: height },
         (_, index) =>
-          `${pad(boardLines[index] ?? "", boardWidth)} │ ${details[index] ?? ""}`,
+          `${padToVisibleWidth(boundedList[index] ?? "", listWidth)} │ ${detailLines[index] ?? ""}`,
       ),
-    );
-  }
-  if (taskCount === 0) lines.push("", ...emptyBoardGuidance(width));
-  return plainSnapshot(
-    [...lines, "", footer(width, colorEnabled)].join("\n"),
+      "",
+      footer(width, colorEnabled),
+    ].join("\n"),
     colorEnabled,
   );
 }
 
-/** Maps a one-based terminal mouse position to a board card or Done header control. */
+/** Splits the wide board into independently scrollable list and pinned detail text. */
+export function renderTaskBoardPanes(
+  snapshot: TaskBoardSnapshot,
+  options: TaskBoardRenderOptions = {},
+): TaskBoardPanes | undefined {
+  const width = Math.max(1, Math.floor(options.width ?? 100));
+  if (width < narrowWidth || options.detailMode === "full") return undefined;
+  const listWidth = Math.max(28, Math.floor((width - 3) * 0.38));
+  const colorEnabled = options.color !== false && options.isTTY !== false;
+  const doneExpanded =
+    options.doneExpanded === true || snapshot.history === true;
+  const selected = snapshot.tasks.find(
+    (task) => task.id === options.selectedTaskId,
+  );
+  const detailWidth = Math.max(1, width - listWidth - 3);
+  const list = renderListLines({
+    snapshot,
+    tasks: listedTasks(snapshot, doneExpanded),
+    selectedId: selected?.id,
+    width: listWidth,
+    colorEnabled,
+    projectSlug: options.projectSlug ?? "project",
+    doneExpanded,
+  });
+  const detail = selected
+    ? renderDetails(
+        selected,
+        snapshot,
+        detailWidth,
+        colorEnabled,
+        options.now ?? Date.now(),
+      )
+    : [color("Select a task", "muted", colorEnabled)];
+  return {
+    list: [
+      color(
+        summary(snapshot, snapshot.tasks.length, listWidth),
+        "active",
+        colorEnabled,
+      ),
+      "",
+      ...list,
+      "",
+      footer(listWidth, colorEnabled),
+    ].join("\n"),
+    detail: ["", "", ...detail].join("\n"),
+    listWidth,
+  };
+}
+
+/** Shares rendered list-card bounds between mouse input and keyboard scrolling. */
+function taskBoardRegions(
+  snapshot: TaskBoardSnapshot,
+  options: TaskBoardRenderOptions,
+) {
+  const width = Math.max(1, Math.floor(options.width ?? 100));
+  const doneExpanded =
+    options.doneExpanded === true ||
+    options.expandedDone === true ||
+    snapshot.history === true;
+  const selectedId = options.selectedTaskId ?? options.selectedId;
+  if (
+    options.detailMode === "full" ||
+    (width < narrowWidth && options.detailMode !== "none" && selectedId)
+  )
+    return [];
+  const listWidth =
+    width < narrowWidth ? width : Math.max(28, Math.floor((width - 3) * 0.38));
+  const regions: {
+    hit: TaskBoardHit;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }[] = [];
+  let row = 3; // summary and blank line precede the list heading.
+  regions.push({
+    hit: { kind: "done" },
+    x: 1,
+    y: row,
+    width: listWidth,
+    height: 1,
+  });
+  row += 2;
+  for (const [index, task] of listedTasks(snapshot, doneExpanded).entries()) {
+    if (index > 0) row += 1;
+    const height = cardHeight(task, snapshot);
+    regions.push({
+      hit: { kind: "task", taskId: task.id },
+      x: 1,
+      y: row,
+      width: listWidth,
+      height,
+    });
+    row += height;
+  }
+  return regions;
+}
+
+/** Returns the selected list card's zero-based row range with an exclusive end. */
+export function taskBoardSelectionRows(
+  snapshot: TaskBoardSnapshot,
+  options: TaskBoardRenderOptions,
+): { start: number; end: number } | undefined {
+  const selectedId = options.selectedTaskId ?? options.selectedId;
+  const region = taskBoardRegions(snapshot, options).find(
+    ({ hit }) => hit.kind === "task" && hit.taskId === selectedId,
+  );
+  return region === undefined
+    ? undefined
+    : { start: region.y - 1, end: region.y - 1 + region.height };
+}
+
+/** Maps a one-based terminal mouse position to a responsive task-list card. */
 export function taskBoardHitTest(
   snapshot: TaskBoardSnapshot,
   point: { x: number; y: number },
   options: TaskBoardRenderOptions = {},
 ): TaskBoardHit | undefined {
-  const width = Math.max(1, Math.floor(options.width ?? 100));
-  const columns = boardColumns(snapshot);
-  const doneExpanded =
-    options.doneExpanded === true ||
-    options.expandedDone === true ||
-    snapshot.history === true;
-  if (options.detailMode === "full") return undefined;
-
-  if (width < narrowWidth) {
-    let row = 3;
-    for (const column of columns) {
-      if (point.y === row && column.name === "Done") return { kind: "done" };
-      row += 1;
-      if (column.name === "Done" && !doneExpanded) {
-        row += 1;
-        continue;
-      }
-      if (column.tasks.length === 0) {
-        row += 1;
-        continue;
-      }
-      for (const [index, task] of column.tasks.entries()) {
-        const height = cardHeight(task, snapshot);
-        if (point.y >= row && point.y < row + height)
-          return { kind: "task", taskId: task.id };
-        row += height + (index < column.tasks.length - 1 ? 1 : 0);
-      }
-    }
-    return undefined;
-  }
-
-  const detail = taskById(
-    columns,
-    options.detailTaskId ??
-      (options.detailMode === undefined
-        ? (options.selectedTaskId ?? options.selectedId)
-        : undefined),
-  );
-  const detailWidth = detail === undefined ? 0 : Math.floor(width * 0.3);
-  const boardWidth = detail === undefined ? width : width - detailWidth - 3;
-  const cellWidth = Math.max(1, Math.floor((boardWidth - 9) / 4));
-  const columnIndex = Math.floor((point.x - 1) / (cellWidth + 3));
-  const column = columns[columnIndex];
-  const columnStart = columnIndex * (cellWidth + 3) + 1;
-  if (
-    column === undefined ||
-    point.x < columnStart ||
-    point.x >= columnStart + cellWidth ||
-    point.y < 3
-  )
-    return undefined;
-  if (point.y === 3 && column.name === "Done") return { kind: "done" };
-  if (point.y <= 4 || (column.name === "Done" && !doneExpanded))
-    return undefined;
-  let row = 5;
-  for (const [index, task] of column.tasks.entries()) {
-    const height = cardHeight(task, snapshot);
-    if (point.y >= row && point.y < row + height)
-      return { kind: "task", taskId: task.id };
-    row += height + (index < column.tasks.length - 1 ? 1 : 0);
-  }
-  return undefined;
+  return taskBoardRegions(snapshot, options).find(
+    (region) =>
+      point.x >= region.x &&
+      point.x < region.x + region.width &&
+      point.y >= region.y &&
+      point.y < region.y + region.height,
+  )?.hit;
 }

@@ -1,5 +1,9 @@
 import { AgileError } from "../../runtime/errors";
-import type { CatalogModel, ModelMapping } from "../../scheduler/model-routing";
+import type {
+  CatalogModel,
+  ModelMapping,
+  RoleEfforts,
+} from "../../scheduler/model-routing";
 import { loadRocSettings } from "../../settings";
 import {
   buildDefaultSkillConfig,
@@ -88,6 +92,7 @@ export const startPiBackend: BackendFactory = async (context) => {
     skillPaths,
     allowUnsandboxed,
     models: settings.models,
+    efforts: settings.efforts,
   })(context);
 };
 
@@ -101,6 +106,7 @@ export function buildPiBackendFactory(input: {
   skillPaths?: readonly string[];
   allowUnsandboxed?: boolean;
   models?: ModelMapping;
+  efforts?: RoleEfforts;
   startAttemptClient?: (cwd: string) => Promise<PiClientApi>;
 }): BackendFactory {
   return async ({ branches }: { branches: TaskBranchManager }) => {
@@ -236,6 +242,7 @@ export function buildPiBackendFactory(input: {
       return {
         catalog,
         modelMapping,
+        efforts: input.efforts,
         harness: createPiHarness({ branches, startClient: startAttemptClient }),
         close: () => {
           closed ??= (async () => {

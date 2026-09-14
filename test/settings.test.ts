@@ -24,6 +24,7 @@ test("round-trips optional profile mappings and rejects malformed configuration"
   const settings = {
     cycle: { type: "weekly" as const },
     models: { luna: "openai-codex/gpt-5.6-luna" },
+    efforts: { implement: "xhigh" as const },
   };
   await saveRocSettings(settings, homeRoot);
   expect(await loadRocSettings(homeRoot)).toEqual(settings);
@@ -37,6 +38,44 @@ test("round-trips optional profile mappings and rejects malformed configuration"
       RocSettingsSchema.safeParse({ cycle: { type: "weekly" }, models })
         .success,
     ).toBe(false);
+  }
+  for (const efforts of [
+    { coder: "high" },
+    { implement: "low" },
+    { implement: "max" },
+    { scout: "medium", review: "secret-effort" },
+    "high",
+  ]) {
+    expect(
+      RocSettingsSchema.safeParse({ cycle: { type: "weekly" }, efforts })
+        .success,
+    ).toBe(false);
+  }
+});
+
+test("rejects malformed efforts with bounded diagnostics", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "roc-effort-settings-"));
+  await saveRocSettings({ cycle: { type: "weekly" } }, homeRoot);
+  const path = rocSettingsPath(homeRoot);
+
+  for (const [source, expected] of [
+    [
+      '{"cycle":{"type":"weekly"},"efforts":{"implementer":"secret-effort"}}',
+      "Unsupported fields: 1 other field name(s) hidden.",
+    ],
+    [
+      '{"cycle":{"type":"weekly"},"efforts":{"implement":"ultra-secret"}}',
+      "Invalid settings data; check the supported settings types and structure.",
+    ],
+  ] as const) {
+    await writeFile(path, source);
+    const error = await loadRocSettings(homeRoot).then(
+      () => undefined,
+      (failure: AgileError) => failure,
+    );
+    expect(error).toBeInstanceOf(AgileError);
+    expect(error?.message).toContain(expected);
+    expect(error?.message).not.toContain("secret");
   }
 });
 

@@ -5,6 +5,10 @@ import {
   errorMessage,
   reportOperationalError,
 } from "../command-context";
+import {
+  readSchedulerStatus,
+  schedulerStatusReport,
+} from "../scheduler-status";
 import type { CliCommandContext } from "../types";
 
 /** Registers GitHub-only scheduler execution and remote inspection. */
@@ -96,6 +100,22 @@ export function registerSchedulerCommands(
         context.io.out(
           JSON.stringify(await context.runtime.readTasks(root), null, 2),
         );
+      } catch (error) {
+        context.io.err(errorMessage(error));
+        context.exitCode = 1;
+      }
+    });
+  scheduler
+    .command("status")
+    .description(
+      "Report daemon health from the checkout lock; exits 0 while the owner process is alive, 1 when stopped, stale or unreadable",
+    )
+    .action(async () => {
+      try {
+        const root = await commandProjectRoot(context);
+        const status = await readSchedulerStatus(root);
+        context.io.out(JSON.stringify(schedulerStatusReport(status), null, 2));
+        if (status.state !== "live") context.exitCode = 1;
       } catch (error) {
         context.io.err(errorMessage(error));
         context.exitCode = 1;

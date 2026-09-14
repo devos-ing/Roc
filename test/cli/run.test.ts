@@ -22,10 +22,6 @@ import type { DefaultSkillCandidate } from "../../src/skills/policy";
 
 const onboardingNextSteps = [
   "Next:",
-  "  Install unslop from pstack if needed:",
-  "    npx skills add backnotprop/pstack --skill unslop --global --agent pi",
-  "  Then choose it:",
-  "    npx roc-it@latest onboard",
   "  Connect GitHub if needed:",
   "    gh auth login",
   "  Install the grilling skill if needed:",
@@ -61,10 +57,7 @@ function interactiveIo(
           : {
               kind: "selected" as const,
               identities: candidates
-                .filter(
-                  ({ identity, installed }) =>
-                    installed && selectedNames.includes(identity.name),
-                )
+                .filter(({ identity }) => selectedNames.includes(identity.name))
                 .map(({ identity }) => identity),
             },
     },
@@ -333,40 +326,6 @@ test.each(["skills", "cycle"] as const)(
   },
 );
 
-test("missing unslop is disabled and only produces manual install guidance", async () => {
-  const home = await mkdtemp(join(tmpdir(), "roc-onboard-unslop-"));
-  let seen: DefaultSkillCandidate[] = [];
-  const io = {
-    out: () => {},
-    err: () => {},
-    ask: async (question: string) =>
-      question.startsWith("Roc's coding tools") ? "yes" : "1",
-    selectCycle: async () => "daily" as const,
-    selectSkills: async (candidates: DefaultSkillCandidate[]) => {
-      seen = candidates;
-      return { kind: "selected" as const, identities: [] };
-    },
-  };
-  expect(
-    await runCli(
-      ["onboard", "--global"],
-      io,
-      onboardingRuntime({
-        homeRoot: home,
-        listWorkspaceSkills: async () => [],
-      }),
-    ),
-  ).toBe(0);
-  expect(seen).toContainEqual({
-    identity: { name: "unslop", source: "backnotprop/pstack" },
-    installed: false,
-    initiallySelected: false,
-  });
-  await expect(
-    lstat(join(home, ".agents", "skills", "unslop")),
-  ).rejects.toThrow();
-});
-
 test("repeat onboarding preselects only the saved identities", async () => {
   const home = await mkdtemp(join(tmpdir(), "roc-onboard-repeat-selection-"));
   await mkdir(join(home, ".agents"), { recursive: true });
@@ -414,12 +373,10 @@ test("repeat onboarding preselects only the saved identities", async () => {
     ),
   ).toBe(0);
   expect(
-    seen
-      .filter(({ installed }) => installed)
-      .map(({ identity, initiallySelected }) => ({
-        name: identity.name,
-        initiallySelected,
-      })),
+    seen.map(({ identity, initiallySelected }) => ({
+      name: identity.name,
+      initiallySelected,
+    })),
   ).toEqual([
     { name: "grilling", initiallySelected: false },
     { name: "tdd", initiallySelected: true },

@@ -1,6 +1,20 @@
+import { stripVTControlCharacters } from "node:util";
 import { renderHelpBox } from "./help-box";
 import type { TaskBoardSnapshot } from "./task-board-model";
-import { renderTaskBoard, taskBoardHitTest } from "./task-board-renderer";
+import {
+  renderTaskBoard,
+  renderTaskBoardPanes,
+  taskBoardHitTest,
+  taskBoardSelectionRows,
+  taskBoardUsesWidePanes,
+} from "./task-board-renderer";
+import {
+  renderTuiFrame,
+  renderWelcome,
+  type TuiTab,
+  tabTargets,
+  tuiTabs,
+} from "./tui-renderer";
 import type { CliTerminalInput, CliTerminalOutput } from "./types";
 
 export type TaskBoardSessionOptions = {
@@ -11,6 +25,15 @@ export type TaskBoardSessionOptions = {
   /** Optionally supplies the project-scoped label prefix resolved for this session. */
   projectSlug?: string;
   refreshIntervalMs?: number;
+  initialTab?: TuiTab;
+  /** Interactive TUI-only scheduler controls; omitted by read-only boards. */
+  scheduler?: {
+    preview: string;
+    start(): Promise<void>;
+    stop(): Promise<void>;
+    /** Registers notification that scheduler dispatch has begun. */
+    onStarted?(notify: () => void): void;
+  };
 };
 
 type DetailMode = "peek" | "full" | "none";
@@ -22,17 +45,12 @@ const showCursor = "\u001B[?25h";
 const enableMouse = "\u001B[?1000h\u001B[?1006h";
 const disableMouse = "\u001B[?1000l\u001B[?1006l";
 const clearScreen = "\u001B[2J\u001B[H";
-const red = "\u001B[31m";
-const reset = "\u001B[0m";
 
 /** Converts an unknown failure into text that is safe to place in the status area. */
 function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/** Clips one status line to the current terminal width. */
-function statusLine(value: string, width: number): string {
-  return Array.from(value).slice(0, Math.max(1, width)).join("");
+  return stripVTControlCharacters(
+    error instanceof Error ? error.message : String(error),
+  ).replace(/[\r\t]/gu, " ");
 }
 
 /** Renders the keyboard fallback reference without requiring a board snapshot. */
@@ -40,6 +58,8 @@ function renderHelp(width: number): string {
   return renderHelpBox(
     "Task board controls",
     [
+      "Tab / 1 / 2  Switch pages (or click a tab)",
+      "PgUp/PgDn     Scroll page or task details",
       "↑/↓ or J/K  Select a task",
       "Space         Peek at the selected task",
       "Enter         Open full task details",
@@ -61,51 +81,142 @@ export async function runTaskBoardSession(
   if (input.isTTY === false || output.isTTY === false || !input.setRawMode)
     throw new Error("Task board requires an interactive terminal");
 
+  let tab = options.initialTab ?? "tasks";
+  const scrolls: Record<TuiTab, number> = { welcome: 0, tasks: 0 };
+  let bodyOffset = 0;
+  let bodyRows = 1;
   let snapshot: TaskBoardSnapshot | undefined;
   let selectedTaskId: string | undefined;
   let detailMode: DetailMode = "none";
   let doneExpanded = false;
   let helpVisible = false;
   let lastError: string | undefined;
+  let lastSuccessfulReadAt: number | undefined;
   let inputBuffer = "";
   let refreshInFlight = false;
   let refreshQueued = false;
   let closed = false;
+  let admissionClosed = false;
   let interval: ReturnType<typeof setInterval> | undefined;
   let escapeTimer: ReturnType<typeof setTimeout> | undefined;
+  let schedulerState:
+    | "idle"
+    | "starting"
+    | "running"
+    | "stopping"
+    | "stopped"
+    | "failed" = "idle";
+  let schedulerError: string | undefined;
+  let schedulerRun: Promise<void> | undefined;
+  let schedulerStop: Promise<void> | undefined;
+  let schedulerStopRequested = false;
   const decoder = new TextDecoder();
 
-  /** Keeps the selected identity when possible and otherwise selects the first task. */
+  /** Returns cards currently available to keyboard selection. */
+  const visibleTasks = () =>
+    snapshot?.tasks.filter(
+      (task) => snapshot?.history || doneExpanded || task.column !== "done",
+    ) ?? [];
+
+  /** Keeps selection on a visible task, falling back to the first visible card. */
   const normalizeSelection = () => {
-    if (snapshot?.tasks.some((task) => task.id === selectedTaskId)) return;
-    selectedTaskId = snapshot?.tasks.at(0)?.id;
+    const tasks = visibleTasks();
+    if (tasks.some((task) => task.id === selectedTaskId)) return;
+    selectedTaskId = tasks[0]?.id;
     if (detailMode !== "none" && selectedTaskId === undefined)
       detailMode = "none";
   };
 
   /** Draws the latest successful frame or a readable recovery status after a failed read. */
-  const render = () => {
+  const render = (revealSelection = false) => {
+    if (closed) return;
     const width = Math.max(1, output.columns ?? 80);
     let frame: string;
     if (helpVisible) frame = renderHelp(width);
-    else if (snapshot === undefined) frame = "Task board data is unavailable.";
+    else if (tab === "welcome")
+      frame = renderWelcome(
+        width,
+        options.scheduler === undefined
+          ? undefined
+          : {
+              preview: options.scheduler.preview,
+              state: schedulerState,
+              error: schedulerError,
+            },
+      );
+    else if (snapshot === undefined)
+      frame = renderHelpBox(
+        "Tasks",
+        "Data unavailable. Refresh with R after setup.",
+        width,
+      );
+    else if (detailMode !== "full" && taskBoardUsesWidePanes(width)) frame = "";
     else {
       frame = renderTaskBoard(snapshot, {
         width,
         isTTY: output.isTTY,
         projectSlug: options.projectSlug,
+        ...(lastSuccessfulReadAt === undefined
+          ? {}
+          : { now: lastSuccessfulReadAt }),
         selectedTaskId,
         ...(detailMode === "none"
-          ? { detailMode: "none" as const }
+          ? { detailMode }
           : { detailMode, detailTaskId: selectedTaskId }),
         doneExpanded,
       });
     }
-    if (lastError !== undefined) {
-      const error = statusLine(`Error: ${lastError}`, width);
-      frame = `${frame}\n\n${red}${error}${reset}`;
-    }
-    output.write(`${clearScreen}${frame}`);
+    const schedulerStatus =
+      options.scheduler === undefined
+        ? "Read-only"
+        : `${options.scheduler.preview}\nScheduler: ${schedulerState}${schedulerError ? ` · Scheduler error: ${errorText(schedulerError)}` : ""}`;
+    const status =
+      lastError !== undefined
+        ? `${snapshot ? `STALE — saved task progress retained. Last successful read: ${lastSuccessfulReadAt === undefined ? "not recorded" : new Date(lastSuccessfulReadAt).toISOString()}` : "Setup / connection needs attention"}\nError: ${errorText(lastError)}\n${schedulerStatus}\nR retries.`
+        : snapshot
+          ? `GitHub checkpoints loaded · Last successful read: ${lastSuccessfulReadAt === undefined ? "not recorded" : new Date(lastSuccessfulReadAt).toISOString()} · Saved task progress is checkpoint data · ${schedulerStatus}`
+          : `Checking settings and GitHub connection… · ${schedulerStatus}`;
+    const panes =
+      !helpVisible &&
+      tab === "tasks" &&
+      snapshot !== undefined &&
+      detailMode !== "full"
+        ? renderTaskBoardPanes(snapshot, {
+            width,
+            isTTY: output.isTTY,
+            selectedTaskId,
+            detailMode,
+            doneExpanded,
+            projectSlug: options.projectSlug,
+            ...(lastSuccessfulReadAt === undefined
+              ? {}
+              : { now: lastSuccessfulReadAt }),
+          })
+        : undefined;
+    const viewport = renderTuiFrame({
+      tab,
+      body: panes?.list ?? frame,
+      status,
+      width,
+      rows: Math.max(1, output.rows ?? 40),
+      scroll: scrolls[tab],
+      revealRows:
+        revealSelection && tab === "tasks" && detailMode !== "full" && snapshot
+          ? taskBoardSelectionRows(snapshot, {
+              width,
+              selectedTaskId,
+              detailMode,
+              doneExpanded,
+            })
+          : undefined,
+      ...(panes === undefined
+        ? {}
+        : { pinnedDetail: { body: panes.detail, listWidth: panes.listWidth } }),
+    });
+    bodyOffset = viewport.bodyOffset;
+    bodyRows = viewport.bodyRows;
+    scrolls[tab] = viewport.scroll;
+    output.write(`${clearScreen}${viewport.text}`);
   };
 
   /** Reads one snapshot and leaves the previous frame in place when that read fails. */
@@ -114,13 +225,14 @@ export async function runTaskBoardSession(
       const next = await options.read();
       if (closed) return;
       snapshot = next;
+      lastSuccessfulReadAt = Date.now();
       normalizeSelection();
       lastError = undefined;
     } catch (error) {
       if (closed) return;
       lastError = errorText(error);
     }
-    render();
+    render(true);
   };
 
   /** Requests a serialized refresh and preserves one request that arrives during a read. */
@@ -143,16 +255,81 @@ export async function runTaskBoardSession(
 
   /** Selects the next visible card in the requested direction. */
   const moveSelection = (offset: number) => {
-    const tasks =
-      snapshot?.tasks.filter(
-        (task) => doneExpanded || task.column !== "done",
-      ) ?? [];
+    const tasks = visibleTasks();
     if (tasks.length === 0) return;
     const current = tasks.findIndex((task) => task.id === selectedTaskId);
     selectedTaskId =
       tasks[(current + offset + tasks.length) % tasks.length]?.id;
     detailMode = "none";
     helpVisible = false;
+    render(true);
+  };
+
+  /** Starts exactly one scheduler owned by this interactive session. */
+  const startScheduler = () => {
+    if (
+      admissionClosed ||
+      !options.scheduler ||
+      schedulerRun ||
+      schedulerState === "stopping" ||
+      schedulerState === "failed"
+    )
+      return;
+    schedulerState = "starting";
+    schedulerError = undefined;
+    render();
+    schedulerRun = options.scheduler
+      .start()
+      .then(
+        () => {
+          if (schedulerState !== "stopping") schedulerState = "stopped";
+        },
+        (error) => {
+          schedulerState = "failed";
+          schedulerError = errorText(error);
+        },
+      )
+      .finally(() => {
+        schedulerRun = undefined;
+        try {
+          render();
+        } catch (error) {
+          finish(error);
+        }
+      });
+    options.scheduler.onStarted?.(() => {
+      schedulerState = "running";
+      try {
+        render();
+      } catch (error) {
+        finish(error);
+      }
+    });
+  };
+
+  /** Stops only this session's scheduler and waits for its existing cleanup. */
+  const stopScheduler = async () => {
+    if (!options.scheduler) return;
+    if (!schedulerRun) {
+      if (schedulerState === "failed") throw new Error(schedulerError);
+      return;
+    }
+    const run = schedulerRun;
+    if (!schedulerStop) {
+      schedulerStopRequested = true;
+      schedulerState = "stopping";
+      render();
+      schedulerStop = options.scheduler.stop().finally(() => {
+        schedulerStop = undefined;
+      });
+    }
+    await schedulerStop;
+    await run.catch((error) => {
+      if (!schedulerStopRequested) throw error;
+    });
+    if (schedulerState === "failed") throw new Error(schedulerError);
+    schedulerState = "stopped";
+    schedulerStopRequested = false;
     render();
   };
 
@@ -167,12 +344,25 @@ export async function runTaskBoardSession(
       | "refresh"
       | "help"
       | "escape"
+      | "start"
+      | "stop"
       | "quit",
   ) => {
     if (action === "quit") {
-      finish();
+      admissionClosed = true;
+      void stopScheduler().then(() => finish(), finish);
       return;
     }
+    if (action === "start") {
+      startScheduler();
+      return;
+    }
+    if (action === "stop") {
+      void stopScheduler().catch(finish);
+      return;
+    }
+    if (tab !== "tasks" && !["refresh", "help", "escape"].includes(action))
+      return;
     if (action === "next" || action === "previous") {
       moveSelection(action === "next" ? 1 : -1);
       return;
@@ -190,26 +380,56 @@ export async function runTaskBoardSession(
       if (!helpVisible && detailMode === "none") return;
       helpVisible = false;
       detailMode = "none";
-      render();
+      render(true);
       return;
     }
     if (action === "done") {
       doneExpanded = !doneExpanded;
-      render();
+      normalizeSelection();
+      render(true);
       return;
     }
     if (selectedTaskId === undefined) return;
     helpVisible = false;
     detailMode = action === "peek" ? "peek" : "full";
-    render();
+    if (detailMode === "full") scrolls.tasks = 0;
+    render(detailMode !== "full");
+  };
+
+  /** Changes only the page, retaining task identity, detail mode and viewport. */
+  const switchTab = (next: TuiTab) => {
+    tab = next;
+    helpVisible = false;
+    render(next === "tasks");
   };
 
   /** Handles a decoded mouse-reporting click if it lands on a board control. */
   const click = (button: number, x: number, y: number) => {
-    if (snapshot === undefined || button >= 64 || (button & 3) !== 0) return;
+    if (button >= 64 || (button & 3) !== 0) return;
+    if (y === 1) {
+      const target = tabTargets().find(
+        (target) =>
+          x >= target.start && x <= target.end && x <= (output.columns ?? 80),
+      );
+      if (target) switchTab(target.id);
+      return;
+    }
+    if (
+      tab !== "tasks" ||
+      helpVisible ||
+      snapshot === undefined ||
+      y <= bodyOffset ||
+      y > bodyOffset + bodyRows
+    )
+      return;
+    if (
+      detailMode === "peek" &&
+      !taskBoardUsesWidePanes(Math.max(1, output.columns ?? 80))
+    )
+      return;
     const hit = taskBoardHitTest(
       snapshot,
-      { x, y },
+      { x, y: y - bodyOffset + scrolls.tasks },
       {
         width: Math.max(1, output.columns ?? 80),
         selectedTaskId,
@@ -226,6 +446,7 @@ export async function runTaskBoardSession(
       selectedTaskId = hit.taskId;
       helpVisible = false;
       detailMode = "full";
+      scrolls.tasks = 0;
       render();
     }
   };
@@ -255,6 +476,15 @@ export async function runTaskBoardSession(
         continue;
       }
       if (inputBuffer.startsWith("\u001B[<")) return;
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: parses terminal paging keys.
+      const page = inputBuffer.match(/^\u001B\[([56])~/u);
+      if (page) {
+        inputBuffer = inputBuffer.slice(page[0].length);
+        scrolls[tab] += (page[1] === "6" ? 1 : -1) * bodyRows;
+        render();
+        continue;
+      }
+      if (["\u001B[5", "\u001B[6"].includes(inputBuffer)) return;
       if (inputBuffer.startsWith("\u001B[A")) {
         inputBuffer = inputBuffer.slice(3);
         act("previous");
@@ -271,7 +501,15 @@ export async function runTaskBoardSession(
       }
       const key = inputBuffer[0];
       inputBuffer = inputBuffer.slice(1);
-      if (key === "\u0003") act("quit");
+      if (key === "\t")
+        switchTab(
+          tuiTabs[
+            (tuiTabs.findIndex((item) => item.id === tab) + 1) % tuiTabs.length
+          ]?.id ?? "welcome",
+        );
+      else if (key === "1") switchTab("welcome");
+      else if (key === "2") switchTab("tasks");
+      else if (key === "\u0003") act("quit");
       else if (key === "\u001B") act("escape");
       else if (key === "\r" || key === "\n") act("details");
       else if (key === " ") act("peek");
@@ -279,6 +517,8 @@ export async function runTaskBoardSession(
       else if (key === "k" || key === "K") act("previous");
       else if (key === "d" || key === "D") act("done");
       else if (key === "r" || key === "R") act("refresh");
+      else if (key === "s" || key === "S")
+        schedulerRun ? act("stop") : act("start");
       else if (key === "?") act("help");
       else if (key === "q" || key === "Q") act("quit");
     }
@@ -304,7 +544,7 @@ export async function runTaskBoardSession(
   /** Re-renders at the current width while retaining the existing selected identity. */
   const onResize = () => {
     try {
-      render();
+      render(true);
     } catch (error) {
       finish(error);
     }
@@ -316,17 +556,25 @@ export async function runTaskBoardSession(
   const stopped = new Promise<void>((resolve, reject) => {
     finish = (error?: unknown) => {
       if (closed) return;
+      admissionClosed = true;
       closed = true;
-      if (interval !== undefined) clearInterval(interval);
-      if (escapeTimer !== undefined) clearTimeout(escapeTimer);
-      input.off("data", onData);
-      input.off("error", onInputError);
-      input.off("end", onInputEnd);
-      input.off("close", onInputClose);
-      output.off("resize", onResize);
-      output.off("close", onOutputClose);
-      process.off("SIGINT", onSignal);
-      error === undefined ? resolve() : reject(error);
+      /** Settles the terminal session after owned scheduler cleanup finishes. */
+      const settle = (cleanupError?: unknown) => {
+        if (interval !== undefined) clearInterval(interval);
+        if (escapeTimer !== undefined) clearTimeout(escapeTimer);
+        input.off("data", onData);
+        input.off("error", onInputError);
+        input.off("end", onInputEnd);
+        input.off("close", onInputClose);
+        output.off("resize", onResize);
+        output.off("close", onOutputClose);
+        process.off("SIGINT", onSignal);
+        process.off("SIGTERM", onSignal);
+        process.off("SIGHUP", onSignal);
+        const outcome = error ?? cleanupError;
+        outcome === undefined ? resolve() : reject(outcome);
+      };
+      void stopScheduler().then(() => settle(), settle);
     };
   });
 
@@ -340,8 +588,8 @@ export async function runTaskBoardSession(
   const onOutputError = (error: Error) => finish(error);
   /** Treats terminal output closing as a normal session exit. */
   const onOutputClose = () => finish();
-  /** Treats process Ctrl-C consistently with the raw Ctrl-C byte. */
-  const onSignal = () => finish();
+  /** Routes process termination and terminal hangup signals through owned session cleanup. */
+  const onSignal = () => act("quit");
 
   /** Performs one restoration write without preventing the remaining terminal cleanup. */
   const restore = async (operation: (callback: () => void) => void) => {
@@ -368,18 +616,14 @@ export async function runTaskBoardSession(
     output.on("resize", onResize);
     output.on("close", onOutputClose);
     process.once("SIGINT", onSignal);
-    interval = setInterval(requestRefresh, options.refreshIntervalMs ?? 1_000);
-    refreshInFlight = true;
+    process.once("SIGTERM", onSignal);
+    process.once("SIGHUP", onSignal);
+    interval = setInterval(requestRefresh, options.refreshIntervalMs ?? 30_000);
     try {
-      await refresh();
+      render();
+      requestRefresh();
     } catch (error) {
       finish(error);
-    } finally {
-      refreshInFlight = false;
-      if (refreshQueued && !closed) {
-        refreshQueued = false;
-        requestRefresh();
-      }
     }
     await stopped;
   } finally {

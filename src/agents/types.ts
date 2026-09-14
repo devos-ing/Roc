@@ -1,5 +1,9 @@
 import type { AgentHarness } from "../harness/contracts";
-import type { CatalogModel, ModelMapping } from "../scheduler/model-routing";
+import type {
+  CatalogModel,
+  ModelMapping,
+  RoleEfforts,
+} from "../scheduler/model-routing";
 import type { TaskBranchManager } from "../workspace/task-branch";
 
 /**
@@ -16,6 +20,8 @@ export type BackendRuntime = {
    * catalog instead of inferring profiles from provider model names.
    */
   readonly modelMapping?: ModelMapping;
+  /** Per-role reasoning effort overrides from Roc settings; unset roles keep defaults. */
+  readonly efforts?: RoleEfforts;
   readonly harness: AgentHarness;
   /** Releases owned resources idempotently, rejecting if child exit or cleanup cannot be confirmed. */
   close(): Promise<void>;

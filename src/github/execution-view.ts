@@ -10,6 +10,8 @@ import { jsonHash } from "./remote-tasks";
 
 export type GitHubTaskSnapshot = {
   tasks: StoredTask[];
+  chainMembers: ReadonlyMap<string, readonly string[]>;
+  incompleteChainWorktrees: ReadonlySet<string>;
   inspection: InspectionSnapshot;
   diagnostics: string[];
   usageIncomplete: boolean;
@@ -124,12 +126,99 @@ function acceptanceChecklist(task: NativeTask) {
   );
 }
 
+/** Returns findings only when the latest saved Review remains the current rejection. */
+function rejectedReviewFailure(task: NativeTask): string | undefined {
+  if (!["rejected", "needs_replan"].includes(task.task.status))
+    return undefined;
+  const review = task.execution?.attempts.findLast(
+    (attempt) => attempt.descriptor.role === "review",
+  );
+  if (
+    review?.output?.kind !== "review" ||
+    review.output.decision !== "rejected"
+  )
+    return undefined;
+  const reason = [...review.output.findings, ...review.output.remainingGaps]
+    .join("; ")
+    .trim();
+  return reason || "Review rejected without a recorded finding";
+}
+
+/** Maps a local continuation reference to the scheduler-facing task ID for cleanup and display. */
+function continuationView(task: NativeTask, native: NativeTask[]) {
+  const continues = task.envelope.task.spec.continues;
+  if (!continues || !("task" in continues)) return continues;
+  return {
+    task:
+      native.find(
+        (candidate) =>
+          candidate.envelope.planId === task.envelope.planId &&
+          candidate.envelope.task.id === continues.task,
+      )?.task.id ?? continues.task,
+  };
+}
+
+/** Projects same-plan local continuation IDs into the runtime IDs that own worktree directories. */
+function worktreeChainMembership(native: NativeTask[]): {
+  chainMembers: ReadonlyMap<string, readonly string[]>;
+  incompleteWorktrees: ReadonlySet<string>;
+} {
+  const byKey = new Map(
+    native.map((task) => [
+      `${task.envelope.planId}\u0000${task.envelope.task.id}`,
+      task,
+    ]),
+  );
+  const groups = new Map<string, string[]>();
+  const incompleteWorktrees = new Set<string>();
+  for (const task of native) {
+    let current = task;
+    const seen = new Set<string>();
+    while (current.envelope.task.spec.continues) {
+      const currentKey = `${current.envelope.planId}\u0000${current.envelope.task.id}`;
+      if (seen.has(currentKey)) {
+        for (const key of seen) {
+          const member = byKey.get(key);
+          if (member) incompleteWorktrees.add(member.task.id);
+        }
+        break;
+      }
+      seen.add(currentKey);
+      const continues = current.envelope.task.spec.continues;
+      if (!("task" in continues)) {
+        for (const key of seen) {
+          const member = byKey.get(key);
+          if (member) incompleteWorktrees.add(member.task.id);
+        }
+        incompleteWorktrees.add(`issue-${continues.issue}`);
+        break;
+      }
+      const predecessor = byKey.get(
+        `${current.envelope.planId}\u0000${continues.task}`,
+      );
+      if (!predecessor) {
+        for (const key of seen) {
+          const member = byKey.get(key);
+          if (member) incompleteWorktrees.add(member.task.id);
+        }
+        break;
+      }
+      current = predecessor;
+    }
+    const members = groups.get(current.task.id) ?? [];
+    members.push(task.task.id);
+    groups.set(current.task.id, members);
+  }
+  return { chainMembers: groups, incompleteWorktrees };
+}
+
 /** Adapts remote checkpoints to the existing read-only task board and token views. */
 export function githubTaskSnapshot(
   native: NativeTask[],
   diagnostics: string[] = [],
   now = Date.now(),
 ): GitHubTaskSnapshot {
+  const membership = worktreeChainMembership(native);
   const tasks = native.map((item) => ({
     ...item.task,
     spec: {
@@ -142,6 +231,7 @@ export function githubTaskSnapshot(
               candidate.envelope.task.id === id,
           )?.task.id ?? id,
       ),
+      continues: continuationView(item, native),
     },
   }));
   const inspected = native.map((item) => {
@@ -157,7 +247,17 @@ export function githubTaskSnapshot(
       usageKnown: attempt.usageKnown,
       ...(attempt.activity ? { activity: attempt.activity } : {}),
       ...(attempt.endedAt ? { endedAt: attempt.endedAt } : {}),
-      ...(attempt.failure ? { failure: attempt.failure } : {}),
+      ...(attempt.failure
+        ? { failure: attempt.failure }
+        : attempt.output?.kind === "review" &&
+            attempt.output.decision === "rejected"
+          ? {
+              failure:
+                [...attempt.output.findings, ...attempt.output.remainingGaps]
+                  .join("; ")
+                  .trim() || "Review rejected without a recorded finding",
+            }
+          : {}),
       ...(attempt.output?.kind === "review"
         ? { reviewDecision: attempt.output.decision }
         : {}),
@@ -171,7 +271,12 @@ export function githubTaskSnapshot(
       issueUrl: item.issue.url,
       pullRequestUrl: item.execution?.publication?.url,
       acceptanceChecklist: acceptanceChecklist(item),
-      failure: item.blockedReason ?? item.execution?.failure,
+      failure:
+        item.blockedReason ??
+        ([item.execution?.failure, rejectedReviewFailure(item)]
+          .filter(Boolean)
+          .join("\n") ||
+          undefined),
       status: item.task.status,
       timing: executionTiming(item, now),
       usageIncomplete: (item.execution?.attempts ?? []).some(
@@ -198,6 +303,8 @@ export function githubTaskSnapshot(
   const cycleIds = [...new Set(tasks.map((task) => task.cycleId))];
   return {
     tasks,
+    chainMembers: membership.chainMembers,
+    incompleteChainWorktrees: membership.incompleteWorktrees,
     diagnostics,
     usageIncomplete: native.some((task) =>
       task.execution?.attempts.some((attempt) => !attempt.usageKnown),
