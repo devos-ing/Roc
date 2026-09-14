@@ -190,10 +190,11 @@ export function classifyPiTurnFailure(
   }
   if (stopReason === "length") {
     return {
-      code: "context_window_exceeded",
+      code: "output_limit_exceeded",
       category: "protocol",
       retryable: false,
-      message: "The Pi context window was exceeded",
+      message:
+        "The model stopped at its per-turn output token limit (max_tokens); raise the model's maxTokens configuration or split the work into smaller turns",
     };
   }
   if (/unauthorized|authentication|api key|401|403/.test(text)) {
