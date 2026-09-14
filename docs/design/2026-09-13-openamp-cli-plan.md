@@ -196,12 +196,12 @@ M0–M5 的本機實作結果及逐項證據見 [里程碑驗證紀錄](openamp-
 
 目前 production runtime 的責任如下：
 
-- `src/openamp/cli.mjs`：Node 入口與 Pi 互動模式啟動。
-- `src/openamp/extension.mjs`：委派工具、UI 操作與 Pi session 事件綁定。
-- `src/openamp/supervisor.mjs`：子 agent process、狀態與結果交付。
-- `src/openamp/state.mjs`：必要的協作、change 與 publication 紀錄。
-- `src/openamp/workspace.mjs`：功能 workspace 與子結果整合。
-- `src/openamp/delivery.mjs`：驗證與自動 PR。
+- `src/openamp/cli.ts`：Node 入口與 Pi 互動模式啟動。
+- `src/openamp/extension.ts`：委派工具、UI 操作與 Pi session 事件綁定。
+- `src/openamp/supervisor.ts`：子 agent process、狀態與結果交付。
+- `src/openamp/state.ts`：必要的協作、change 與 publication 紀錄。
+- `src/openamp/workspace.ts`：功能 workspace 與子結果整合。
+- `src/openamp/delivery.ts`：驗證與自動 PR。
 
 保持模組數量由實際責任決定。可以合併尚未需要獨立介面的檔案，不先建立 Plugin API、通用 backend registry 或新的 event bus。
 
@@ -219,7 +219,7 @@ M0–M5 的本機實作結果及逐項證據見 [里程碑驗證紀錄](openamp-
 | Fake Harness 與 Git fixtures | 重用可控制失敗與副作用的測試能力；不把舊角色契約搬入新產品 |
 | ObservationPack、功能 ticket-chain | 分開辨識其當前狀態；不作為 OpenAmp MVP 必要依賴，不覆蓋其工作或暗中改寫資料 |
 
-新產品 runtime 使用 Node.js；Bun 只負責 repository 測試。封裝驗證會實際 npm pack、安裝，再由 Node 執行 `openamp --help`，不以 Bun 相容性代替 Node 驗證。
+新產品以 TypeScript 實作並編譯至 `dist/openamp`，production runtime 使用 Node.js；Bun 只負責 repository 測試。封裝驗證會實際 npm pack、安裝，再由 Node 執行 `openamp --help`，不以 Bun 相容性代替 Node 驗證，也不把 TypeScript source 當作公開 executable surface。
 
 M0–M4 期間舊 Roc 入口只作遷移保護，不繼續增加兩套產品的功能。M5 前停止舊 daemon 接收新工作，盤點活躍 Issue、PR、worktree、lock 與 session。未完成的舊工作要在既有版本完成或明確保留待處理；不得自動轉成 OpenAmp conversation。
 

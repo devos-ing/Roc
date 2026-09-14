@@ -51,9 +51,13 @@ and state remain available for a later retry.
 
 ```bash
 bun install --frozen-lockfile
+bun run build
 bun run typecheck
 bun test
 ```
+
+OpenAmp is implemented in TypeScript. npm packages contain the compiled
+`dist/openamp` Node.js runtime rather than executable TypeScript source.
 
 The design and milestone evidence are in
 [`docs/design/openamp-cli`](docs/design/openamp-cli/README.md). The previous Roc

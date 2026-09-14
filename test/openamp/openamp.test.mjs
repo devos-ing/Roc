@@ -2,21 +2,21 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runOpenAmp } from "../../src/openamp/cli.mjs";
+import { runOpenAmp } from "../../src/openamp/cli.ts";
 import {
   agentEnvironment,
   remoteMutationReason,
   runGit,
-} from "../../src/openamp/command.mjs";
-import { ChangeDelivery, parseReview } from "../../src/openamp/delivery.mjs";
-import { createOpenAmpExtension } from "../../src/openamp/extension.mjs";
-import { ChangeStore } from "../../src/openamp/state.mjs";
-import { AgentSupervisor } from "../../src/openamp/supervisor.mjs";
+} from "../../src/openamp/command.ts";
+import { ChangeDelivery, parseReview } from "../../src/openamp/delivery.ts";
+import { createOpenAmpExtension } from "../../src/openamp/extension.ts";
+import { ChangeStore } from "../../src/openamp/state.ts";
+import { AgentSupervisor } from "../../src/openamp/supervisor.ts";
 import {
   ChangeWorkspace,
   createChange,
   resumeChange,
-} from "../../src/openamp/workspace.mjs";
+} from "../../src/openamp/workspace.ts";
 
 const temporaryDirectories = [];
 

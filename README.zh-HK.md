@@ -47,9 +47,13 @@ PR 交付。GitHub 暫時不可用時，本地修改及狀態會保留，登入�
 
 ```bash
 bun install --frozen-lockfile
+bun run build
 bun run typecheck
 bun test
 ```
+
+OpenAmp 以 TypeScript 實作。npm package 只包含編譯後的 `dist/openamp` Node.js
+runtime，不會把 TypeScript source 當作 executable 發布。
 
 設計及 milestone 證據位於
 [`docs/design/openamp-cli`](docs/design/openamp-cli/README.md)。舊 Roc Issue backlog

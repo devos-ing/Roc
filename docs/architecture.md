@@ -26,19 +26,19 @@ web service, or merge worker.
 
 ## Ownership boundaries
 
-- `src/openamp/cli.mjs` starts or resumes the Pi runtime in the durable feature
+- `src/openamp/cli.ts` starts or resumes the Pi runtime in the durable feature
   workspace. Pi remains the source of truth for the chat transcript and model
   lifecycle.
-- `src/openamp/extension.mjs` supplies delegation, status, integration, and
+- `src/openamp/extension.ts` supplies delegation, status, integration, and
   delivery operations to the main session. Result messages retain stable IDs.
-- `src/openamp/supervisor.mjs` owns at most two Pi RPC child processes, targeted
+- `src/openamp/supervisor.ts` owns at most two Pi RPC child processes, targeted
   steering/cancellation, durable run states, and result-first delivery.
-- `src/openamp/workspace.mjs` creates feature and writer worktrees, validates Git
+- `src/openamp/workspace.ts` creates feature and writer worktrees, validates Git
   identity, commits checkpoints, and integrates one result at a time.
-- `src/openamp/delivery.mjs` owns validation, mandatory independent read-only
+- `src/openamp/delivery.ts` owns validation, mandatory independent read-only
   review, publication intent, command ledger, remote reconciliation, and PR
   creation/update. It has no merge operation.
-- `src/openamp/state.mjs` atomically stores only coordination evidence under the
+- `src/openamp/state.ts` atomically stores only coordination evidence under the
   Git common directory. It does not copy the Pi transcript or credentials.
 
 ## Safety invariants
