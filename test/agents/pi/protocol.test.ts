@@ -16,7 +16,7 @@ describe("classifyPiTurnFailure", () => {
 
   test("classifies length stops as non-retryable protocol failure", () => {
     expect(classifyPiTurnFailure("length", undefined)).toMatchObject({
-      code: "context_window_exceeded",
+      code: "output_limit_exceeded",
       category: "protocol",
       retryable: false,
     });
