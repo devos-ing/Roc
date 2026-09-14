@@ -249,7 +249,7 @@ export async function resumeChange(
 /** Creates a dedicated feature workspace while preserving the source checkout untouched. */
 export async function createChange(
   cwd: string,
-  options: { id?: string; base?: string } = {},
+  options: { id?: string; base?: string; observationPack?: boolean } = {},
 ): Promise<ChangeStore> {
   const id = options.id ?? `change-${crypto.randomUUID().slice(0, 12)}`;
   if (!CHANGE_ID.test(id)) throw new Error(`Invalid OpenAmp change ID: ${id}`);
@@ -272,6 +272,7 @@ export async function createChange(
       mainHead: null,
       sessionId: null,
       sessionFile: null,
+      observationPack: options.observationPack === true,
       inputGeneration: 0,
       phase: "conversation",
       runs: {},
@@ -317,6 +318,7 @@ export async function createChange(
     mainHead: baseCommit,
     sessionId: null,
     sessionFile: null,
+    observationPack: options.observationPack === true,
     inputGeneration: 0,
     phase: "active",
     runs: {},

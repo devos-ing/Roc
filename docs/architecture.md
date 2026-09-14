@@ -71,3 +71,20 @@ outcomes retain worktrees and require attention instead of reset.
 
 The retired Roc daemon architecture and operator guide remain in
 [`docs/legacy`](legacy/) for migration and historical recovery only.
+
+## Optional ObservationPack
+
+OpenAmp offers ObservationPack as an opt-in plugin during a new interactive
+change and through `--plugins` for an existing change. The checkbox is clear by
+default. Its saved choice belongs to that change; resuming without a new choice
+preserves it, and cancelling the selector leaves the previous choice untouched.
+
+When enabled, both the main Pi session and every supervised child load the
+same package-owned ObservationPack extension and explicitly allow `obs_recall`.
+The plugin remains subject to the parent and child tool boundaries: reviewers
+and researchers remain read-only and writers retain their dedicated worktree.
+OpenAmp stores the accepted upstream snapshot under `src/third-party/sol-pi/`.
+The build records hashes for the compiled extension artifacts and binds them to
+the raw provenance manifest; startup checks that binding before loading either
+session. Observation archives stay with Pi sessions and have no background
+cleanup process.

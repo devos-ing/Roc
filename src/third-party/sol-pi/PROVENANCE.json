@@ -1,0 +1,12 @@
+{
+  "upstreamCommit": "d7ecfc089944f0d04b80122a0a9a6ca0d786f3d0",
+  "patchSha256": "8bf0618ba036047b8dbacde65455e77e5eea8a803b626040a83623a78857373f",
+  "files": {
+    "LICENSE": "3d48837289818b1f3efac782ec22fed30c4656b6c5abecdf5a04f3c0e0cbe7d2",
+    "extensions/observation-pack/index.ts": "cd2addbb2b3967b785eb6a08086c05d376b150005bd490e3d123177820aba880",
+    "extensions/observation-pack/ledger.ts": "518f2fa13e21fa1eeba5e372e875dc3217dbbae0a24863801d5309dbb1a1fb5c",
+    "extensions/observation-pack/observation.ts": "c71d48740093db74b2a47c61fbe9b4281058b2fec272a2fbadd5384fd0733d56",
+    "runtime-paths.ts": "2377507643c199332fc8473019a2d86f7473991a456e63683d1eb159767296da",
+    "tui.ts": "7c20a5f9ceab135aac4afad29c256bc26817498869500f9b46b9b09d2a4ba466"
+  }
+}
