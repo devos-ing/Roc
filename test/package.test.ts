@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const projectRoot = resolve(import.meta.dir, "..");
 
@@ -70,20 +77,25 @@ test("package metadata exposes only the public Node OpenAmp CLI", async () => {
   expect(manifest.bin).toEqual({ openamp: "./dist/openamp/main.js" });
   expect(manifest.files).toEqual([
     "dist/openamp",
+    "dist/third-party/sol-pi",
     "README.md",
     "README.zh-HK.md",
     "LICENSE",
   ]);
   expect(manifest.engines).toEqual({ node: ">=22.19.0" });
   expect(manifest.publishConfig).toEqual({ access: "public" });
-  expect(manifest.scripts?.build).toBe("tsc -p tsconfig.build.json");
+  expect(manifest.scripts?.build).toBe(
+    "tsc -p tsconfig.build.json && node tools/write-observation-pack-build-manifest.mjs",
+  );
   expect(manifest.scripts?.dev).toBe(
     "bun run build && node dist/openamp/main.js",
   );
   expect(manifest.scripts?.prepack).toBe("bun run build");
   expect(manifest.scripts?.prepublishOnly).toBe("bun run check");
   expect(manifest.dependencies).toEqual({
+    "@clack/prompts": "1.7.0",
     "@earendil-works/pi-coding-agent": "0.82.1",
+    "@earendil-works/pi-tui": "0.82.1",
     typebox: "1.1.38",
   });
 });
@@ -150,6 +162,8 @@ test("npm archive installs a working Node CLI without Roc runtime paths", async 
     const paths = result.files.map((file) => file.path).sort();
     expect(paths).toContain("dist/openamp/main.js");
     expect(paths).toContain("dist/openamp/main.d.ts");
+    expect(paths).toContain("dist/third-party/sol-pi/PROVENANCE.json");
+    expect(paths).toContain("dist/third-party/sol-pi/BUILD-PROVENANCE.json");
     expect(paths.some((path) => path.startsWith("src/openamp/"))).toBeFalse();
     expect(paths).not.toContain("src/cli/main.ts");
     expect(paths.some((path) => path.startsWith("src/scheduler/"))).toBeFalse();
@@ -170,6 +184,26 @@ test("npm archive installs a working Node CLI without Roc runtime paths", async 
     expect(help.stdout).toContain(
       "OpenAmp - interactive Pi agent collaboration",
     );
+    const runtimeCheck = await run(
+      [
+        "node",
+        "--input-type=module",
+        "--eval",
+        "import { createHash } from 'node:crypto'; import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'; import { tmpdir } from 'node:os'; import { join, resolve } from 'node:path'; const root = resolve('node_modules/openamp'); const piRoot = resolve('node_modules/@earendil-works/pi-coding-agent'); const { createEventBus } = await import(join(piRoot, 'dist/core/event-bus.js')); const { createExtensionRuntime, loadExtensionFromFactory, loadExtensions } = await import(join(piRoot, 'dist/core/extensions/loader.js')); const observation = await import(join(root, 'dist/openamp/observation-pack.js')); await observation.validateObservationPackRuntime(); const parent = await loadExtensionFromFactory(await observation.createOpenAmpObservationPackExtension(), process.cwd(), createEventBus(), createExtensionRuntime()); const child = await loadExtensions([join(root, 'dist/openamp/observation-pack-extension.js')], process.cwd()); if (child.errors.length || !parent.tools.has('obs_recall') || !child.extensions[0]?.tools.has('obs_recall')) throw new Error('ObservationPack tool was not registered'); const sessionDir = await mkdtemp(join(tmpdir(), 'openamp-recall-')); const sessionId = 'session'; const id = 'obs_aaaaaaaaaaaaaaaaaaaaaaaa'; const text = 'recalled text\\n'; const contentHash = createHash('sha256').update(text).digest('hex'); const archive = join(sessionDir, 'sol-pi', sessionId, 'observation-pack'); await mkdir(join(archive, 'objects'), { recursive: true }); await writeFile(join(archive, 'objects', id + '.txt'), text); await writeFile(join(archive, 'ledger.jsonl'), JSON.stringify({ event: 'full', id, contentHash }) + '\\n'); const recall = child.extensions[0].tools.get('obs_recall').definition; const result = await recall.execute('call', { id, offset: 0 }, new AbortController().signal, () => {}, { mode: 'json', sessionManager: { getSessionDir: () => sessionDir, getSessionId: () => sessionId } }); if (result.content[0]?.text !== '[obs_recall id=' + id + ' offset=0 next_offset=14 eof=true]\\n[chunk_bytes=14 chunk_lines=1; use next_offset to continue]\\n' + text) throw new Error('ObservationPack recall did not execute');",
+      ],
+      installDirectory,
+    );
+    expect(runtimeCheck.exitCode, runtimeCheck.stderr).toBe(0);
+    const vendorEntry = join(
+      installDirectory,
+      "node_modules/openamp/dist/third-party/sol-pi/extensions/observation-pack/index.js",
+    );
+    await rename(vendorEntry, `${vendorEntry}.disabled`);
+    const disabledHelp = await run(
+      [resolve(installDirectory, "node_modules/.bin/openamp"), "--help"],
+      installDirectory,
+    );
+    expect(disabledHelp.exitCode, disabledHelp.stderr).toBe(0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -81,6 +81,7 @@ export interface ChangeState {
   mainHead: string | null;
   sessionId: string | null;
   sessionFile: string | null;
+  observationPack: boolean;
   inputGeneration: number;
   phase: string;
   runs: Record<string, AgentRun>;
