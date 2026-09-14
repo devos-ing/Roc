@@ -7,7 +7,7 @@ export async function git(
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
   );
-  const child = Bun.spawn(["git", ...args], {
+  const child = Bun.spawn(["git", "-c", "commit.gpgSign=false", ...args], {
     cwd,
     env,
     stdout: "pipe",

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { access, readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 
 const projectRoot = resolve(import.meta.dir, "..");
 
@@ -60,6 +60,13 @@ function stepRun(steps: WorkflowStep[], name: string): string {
   return run;
 }
 
+/** Extracts repository-local targets from Markdown links and images. */
+function localMarkdownTargets(source: string): string[] {
+  return [
+    ...source.matchAll(/\]\((?!https?:|mailto:|#)([^)#]+)(?:#[^)]*)?\)/gu),
+  ].map((match) => match[1] ?? "");
+}
+
 test("release workflow keeps the stable-tag, immutable-action, and ordered-release contract", async () => {
   const source = await readProjectFile(".github/workflows/release.yml");
   const workflow = parseReleaseWorkflow(source);
@@ -110,12 +117,12 @@ test("release workflow keeps the stable-tag, immutable-action, and ordered-relea
 
   const packing = stepRun(steps, "Pack tagged source");
   expect(packing).toContain(
-    'if type == "array" then .[0] else .["roc-it"] end',
+    'if type == "array" then .[0] else .["openamp"] end',
   );
 
   const registry = stepRun(steps, "Check npm publication state");
   expect(registry).toContain(
-    'if published_integrity="$(npm view "roc-it@$VERSION" dist.integrity 2>"$error_file")"; then',
+    'if published_integrity="$(npm view "openamp@$VERSION" dist.integrity 2>"$error_file")"; then',
   );
   expect(registry).toContain('echo "publish=false" >> "$GITHUB_OUTPUT"');
   const integrityMismatch = registry.indexOf(
@@ -155,12 +162,29 @@ test("release workflow keeps the stable-tag, immutable-action, and ordered-relea
   expect(release).toContain('gh release create "$GITHUB_REF_NAME"');
 });
 
-test("README links to the detailed agile Scout, Implement, Review guide", async () => {
+test("README and architecture describe the interactive OpenAmp boundary", async () => {
   const overview = await readProjectFile("README.md");
-  expect(overview).toContain("[detailed guide](README.details.md)");
-  const readme = await readProjectFile("README.details.md");
-  const start = readme.indexOf("## How it works");
-  const end = readme.indexOf("## Commands", start);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
+  expect(overview).toContain("Independent read-only review is mandatory");
+  expect(overview).toContain("it never calls merge");
+  const architecture = await readProjectFile("docs/architecture.md");
+  expect(architecture).toContain("Pi native TUI");
+  expect(architecture).toContain("It has no merge operation");
+});
+
+test("retired Roc guides keep valid repository-local links", async () => {
+  const guides = [
+    "docs/legacy/roc-guide.md",
+    "docs/legacy/roc-guide.zh-HK.md",
+    "docs/legacy/roc-architecture.md",
+  ];
+  const missing: string[] = [];
+  for (const guide of guides) {
+    const source = await readProjectFile(guide);
+    for (const target of localMarkdownTargets(source)) {
+      await access(resolve(projectRoot, dirname(guide), target)).catch(() => {
+        missing.push(`${guide} -> ${target}`);
+      });
+    }
+  }
+  expect(missing).toEqual([]);
 });

@@ -1,15 +1,15 @@
 # Roc 詳細指南
 
-[快速開始](README.zh-HK.md) · [English detailed guide](README.details.md)
+[目前 OpenAmp 快速開始](../../README.zh-HK.md) · [English Roc detailed guide](roc-guide.md)
 
 ## 架構與執行方式
 
 GitHub Issues 保存規格、批准和執行紀錄。Daemon 在自己帳戶擁有的一則 Issue comment
 中保存 attempt、模型、用量、角色結果及 PR 資料。Labels 只顯示狀態，不能代替批准或鎖。
 
-[開啟互動架構圖](output/archify/roc-current/roc-architecture.html)。最新架構圖與操作介面均為英文，節點附有對應版本的原始碼連結。下載 HTML 後在瀏覽器開啟；GitHub 頁面顯示原始碼。
+[開啟互動架構圖](../../output/archify/roc-current/roc-architecture.html)。最新架構圖與操作介面均為英文，節點附有對應版本的原始碼連結。下載 HTML 後在瀏覽器開啟；GitHub 頁面顯示原始碼。
 
-![Roc 最新架構](docs/assets/roc-architecture.png)
+![Roc 最新架構](../assets/roc-architecture.png)
 
 規劃與執行可在同一台機器；圖中的角色不代表必須部署兩部 Mac。
 
@@ -37,11 +37,11 @@ M1–M4 已按修訂範圍完成。以下功能請使用這份 checkout 的 `src
 
 | 範圍 | 證據 |
 | --- | --- |
-| GitHub 任務、worktree、平行與恢復 | [M1/M2 真實流程驗收](docs/validation/m1-m2-live-2026-09-09.md) |
-| 自動合併、更新基底與新的 Review | [M3 protected branch 驗收](docs/validation/m3-live-2026-09-09.md) |
-| 診斷、進度、耗時、用量及效率比較 | [M4 實測報告](docs/validation/m4-live-2026-09-09.md)，292 個本地測試通過 |
+| GitHub 任務、worktree、平行與恢復 | [M1/M2 真實流程驗收](../validation/m1-m2-live-2026-09-09.md) |
+| 自動合併、更新基底與新的 Review | [M3 protected branch 驗收](../validation/m3-live-2026-09-09.md) |
+| 診斷、進度、耗時、用量及效率比較 | [M4 實測報告](../validation/m4-live-2026-09-09.md)，292 個本地測試通過 |
 
-另有[分角色 reasoning 實測](docs/validation/role-routing-live-2026-09-09.md)，透過 Pi 狀態讀回
+另有[分角色 reasoning 實測](../validation/role-routing-live-2026-09-09.md)，透過 Pi 狀態讀回
 確認 Scout／Review 使用 `high`、Implement 使用 `medium`。加上診斷的第二輪完整合併兩個 PR；
 首輪一次 refresh 取消的原因仍未確認，保留在 [#79](https://github.com/devos-ing/Roc/issues/79)。
 
@@ -134,7 +134,7 @@ Shutdown 等待 selector 擁有的 Git／Review 操作及所有 workers；清理
 PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依賴任務。
 `--once` 可核對已有 PR，但不會持續等待新 PR 的 CI；完整自動完成請用持續模式。
 自動合併已有涵蓋 refresh／重新 Review 的 transport／Fake Harness 測試，以及真實 Git
-衝突及 lease 測試。[真實 protected branch 驗收](docs/validation/m3-live-2026-09-09.md)
+衝突及 lease 測試。[真實 protected branch 驗收](../validation/m3-live-2026-09-09.md)
 亦已通過：兩個任務平行執行，其中一個經 rebase、新的獨立 Review 和 CI 後自動合併。
 這次驗收在同一部 Mac 完成，實體雙機流程仍待驗證。
 
@@ -151,7 +151,7 @@ PR，fetch 目標並核對 merge ancestry，確認 `done` 寫入後才釋放依�
 關閉 Issue。未通過 admission 的候選任務不會觸發 label 修復，也不會進行關閉所需的
 檢查或寫入。
 
-[實際關閉與重啟驗收](docs/validation/issue-closure-live-2026-09-09.md)
+[實際關閉與重啟驗收](../validation/issue-closure-live-2026-09-09.md)
 已確認非預設 branch 的 GitHub Issue 關閉及不重跑模型的恢復流程。報告亦保留了
 兩次中斷紀錄，並註明成功任務使用單次執行模式。
 
@@ -175,7 +175,7 @@ Pi 子程序退出獲確認後才會放行下一個角色或釋放名額。清�
 輪詢結果顯示授權失效時，Roc 會先直接讀取該 Issue 與已知的同計劃 Issues，重新驗證
 授權，再決定是否取消。列表暫時漏項不會取消仍獲批准的任務，正常輪詢也不會增加讀取。
 確認失敗時會以 `GITHUB_AUTHORITY_UNCONFIRMED` 安全停止，取消紀錄會包含具體原因。
-[輪詢回歸驗證](docs/validation/polling-authority-2026-09-09.md)涵蓋 worker、refresh 後的
+[輪詢回歸驗證](../validation/polling-authority-2026-09-09.md)涵蓋 worker、refresh 後的
 Review，以及真正撤回批准或關閉 Issue 的情況。
 
 ### 可選的 Scout 省略
@@ -183,7 +183,7 @@ Review，以及真正撤回批准或關閉 Issue 的情況。
 資料已足夠的低風險任務，可在批准的 manifest 設定 `skipScout: true`，直接執行 Implement
 及獨立 Review。預設不啟用。Scope 必須是有副檔名的明確相對檔案路徑，不含空白、
 路徑跳轉或 glob；驗收條件和 validation 仍然必填。不確定或較廣的工作保留 Scout。
-Board 會顯示 Scout 已省略，基底更新後仍須新的 Review。詳見 [M4 實測及限制](docs/validation/m4-live-2026-09-09.md)。
+Board 會顯示 Scout 已省略，基底更新後仍須新的 Review。詳見 [M4 實測及限制](../validation/m4-live-2026-09-09.md)。
 
 ### 進度與失敗恢復
 
@@ -343,5 +343,5 @@ bun "$ROC_CLI_ENTRY" task trust-hooks 41 --phase posthook
 請用舊版完成工作或明確遷移。只有舊 `roc:status` comment、沒有新 execution checkpoint
 的 Issue 會阻擋自動開始；不要為啟動任務而刪除這些紀錄。
 
-完整指令見 [English guide](README.details.md#commands)。舊 `task import`、
+完整指令見 [English guide](roc-guide.md#commands)。舊 `task import`、
 `task import-github`、local queue mode 和 `--base` 已移除。

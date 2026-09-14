@@ -1,24 +1,19 @@
 {
-  "name": "roc-it",
-  "version": "0.1.1",
-  "description": "Run Pi agents through a durable Scout, Implement, and Review flow.",
+  "name": "openamp",
+  "version": "0.1.0",
+  "description": "Interactive Pi agent collaboration with reviewed pull-request delivery.",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "roc-it": "./src/cli/main.ts",
-    "agile": "./src/cli/main.ts"
+    "openamp": "./src/openamp/main.mjs"
   },
   "files": [
-    "src",
-    "skills",
+    "src/openamp",
     "README.md",
     "README.zh-HK.md",
-    "README.details.md",
-    "README.details.zh-HK.md",
     "LICENSE"
   ],
   "engines": {
-    "bun": ">=1.3.0",
     "node": ">=22.19.0"
   },
   "repository": {
@@ -31,19 +26,18 @@
   },
   "keywords": [
     "ai-agents",
-    "agile",
-    "bun",
     "cli",
     "pi",
-    "codex",
-    "orchestration"
+    "multi-agent",
+    "orchestration",
+    "pull-request"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "dev": "bun src/cli/main.ts",
-    "test": "mkdir -p \"${TMPDIR:-/tmp}/roc-it-tests\" && PATH=/Applications/Xcode.app/Contents/Developer/usr/bin:$PATH TMPDIR=\"${TMPDIR:-/tmp}/roc-it-tests\" bun test --timeout 120000",
+    "dev": "node src/openamp/main.mjs",
+    "test": "mkdir -p \"${TMPDIR:-/tmp}/openamp-tests\" && TMPDIR=\"${TMPDIR:-/tmp}/openamp-tests\" bun test --timeout 120000 test/openamp test/package.test.ts test/release-workflow.test.ts",
     "typecheck": "tsc --noEmit",
     "prepare": "husky",
     "format": "biome check --write .",
@@ -52,18 +46,19 @@
     "prepublishOnly": "bun run check"
   },
   "dependencies": {
-    "@clack/prompts": "1.7.0",
     "@earendil-works/pi-coding-agent": "0.82.1",
-    "commander": "15.0.0",
-    "effect": "3.22.1",
-    "simple-git": "^3.36.0",
-    "zod": "^4.0.0"
+    "typebox": "1.1.38"
   },
   "devDependencies": {
+    "@clack/prompts": "1.7.0",
     "@biomejs/biome": "2.5.6",
     "@types/bun": "latest",
+    "commander": "15.0.0",
+    "effect": "3.22.1",
     "husky": "9.1.7",
     "lint-staged": "17.0.5",
-    "typescript": "latest"
+    "simple-git": "^3.36.0",
+    "typescript": "latest",
+    "zod": "^4.0.0"
   }
 }

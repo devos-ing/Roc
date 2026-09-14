@@ -1,0 +1,33 @@
+{
+  "date": "2026-09-13",
+  "scope": "Proposed OpenAmp architecture and delivery workflow; no product implementation tested.",
+  "visualReviewScope": "Inspected all eight captured PNGs in default READ/still mode, light/dark at 1440x900 and 2048x1320. Other viewer interactions and exports were not tested.",
+  "diagrams": [
+    {
+      "diagram_type": "architecture",
+      "output": "architecture.html",
+      "specification_sha256": "8d0a7d1a435174f1d89292860b9c4c04935dee3611e58621d25c7a9233bf4f19",
+      "specification_bytes": 2838,
+      "artifact_sha256": "8a9e7d14422a9018838c83c716b2594505bbfcdd4d08974531e815823448e053",
+      "artifact_bytes": 708031,
+      "validation": "9/9 showcase, 0 errors, 0 warnings",
+      "visual_review": "passed",
+      "correction_rounds": 0,
+      "containment": "1440x900, 1600x1000, 1920x1080, 2048x1320 passed",
+      "visual_evidence": "architecture.visual-check.json"
+    },
+    {
+      "diagram_type": "workflow",
+      "output": "delivery-workflow.html",
+      "specification_sha256": "dd502537d2adb5b8a8833653749ee2a1c0af065ab2dd849d2051e36c1fea2257",
+      "specification_bytes": 2901,
+      "artifact_sha256": "c751734e79f1c96a69730f3e4cada4d2709585c585482a1d1f689aa3861063ec",
+      "artifact_bytes": 708184,
+      "validation": "9/9 showcase, 0 errors, 0 warnings",
+      "visual_review": "passed",
+      "correction_rounds": 3,
+      "containment": "1440x900, 1600x1000, 1920x1080, 2048x1320 passed",
+      "visual_evidence": "delivery-workflow.visual-check.json"
+    }
+  ]
+}
