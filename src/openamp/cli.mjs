@@ -65,7 +65,6 @@ export async function runOpenAmp(args, options = {}) {
     workspace,
     options.supervisorOptions,
   );
-  await supervisor.recover();
   const delivery = new ChangeDelivery(
     store,
     workspace,
@@ -140,6 +139,7 @@ export async function runOpenAmp(args, options = {}) {
   };
   let runtime;
   try {
+    await supervisor.recover();
     runtime = await createAgentSessionRuntime(createRuntime, {
       cwd: store.state.workspace,
       agentDir,

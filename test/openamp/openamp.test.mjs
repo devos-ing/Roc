@@ -186,6 +186,67 @@ describe("M1 feature conversations", () => {
     }
   });
 
+  test("isolates credentials before recovering queued child agents", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-recovery-environment",
+      base: "main",
+    });
+    await store.update((state) => {
+      state.runs["run-queued-recovery"] = {
+        id: "run-queued-recovery",
+        role: "reviewer",
+        prompt: "Review after restart",
+        status: "queued",
+        parentSessionId: null,
+        deliveryOnly: true,
+        createdAt: new Date().toISOString(),
+        startedAt: null,
+        finishedAt: null,
+        cwd: null,
+        sessionId: null,
+        model: null,
+        effort: null,
+        resultId: null,
+      };
+    });
+    const originalToken = process.env.GH_TOKEN;
+    const originalHome = process.env.HOME;
+    process.env.GH_TOKEN = "delivery-only-recovery-token";
+    let recoveredEnvironment;
+    let markRecovered;
+    const recovered = new Promise((resolve) => {
+      markRecovered = resolve;
+    });
+    class FakeInteractiveMode {
+      /** Waits until queued recovery has constructed its isolated child. */
+      async run() {
+        await recovered;
+      }
+    }
+    try {
+      await runOpenAmp(["--resume", store.state.id], {
+        cwd: source,
+        InteractiveMode: FakeInteractiveMode,
+        supervisorOptions: {
+          clientFactory: (options) => {
+            recoveredEnvironment = options.env;
+            markRecovered();
+            return new FakeRpcClient(options, async () => undefined);
+          },
+        },
+      });
+      expect(recoveredEnvironment.GH_TOKEN).toBeUndefined();
+      expect(recoveredEnvironment.HOME).not.toBe(originalHome);
+      expect(recoveredEnvironment.GIT_CONFIG_GLOBAL).toBe("/dev/null");
+      expect(process.env.GH_TOKEN).toBe("delivery-only-recovery-token");
+      expect(process.env.HOME).toBe(originalHome);
+    } finally {
+      if (originalToken === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = originalToken;
+    }
+  });
+
   test("builds a child environment without normal publication stores", () => {
     const environment = agentEnvironment(
       {
