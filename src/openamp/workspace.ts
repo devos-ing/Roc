@@ -1,19 +1,32 @@
 import { access, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { runGit } from "./command.mjs";
+import { runGit } from "./command.js";
 import {
+  type ChangeState,
   ChangeStore,
   readChange,
   STATE_VERSION,
   writeJsonAtomic,
-} from "./state.mjs";
+} from "./state.js";
 
 const FULL_SHA = /^[0-9a-f]{40}$/u;
 const CHANGE_ID = /^[a-z0-9][a-z0-9-]{5,63}$/u;
 
+/** Identifies the repository root and shared Git metadata directory. */
+interface RepositoryIdentity {
+  repoRoot: string;
+  commonDir: string;
+}
+
+export interface AgentWorkspace {
+  path: string;
+  branch: string;
+  baseCommit: string;
+}
+
 /** Returns whether a path exists without following its value into application logic. */
-async function exists(path) {
+async function exists(path: string): Promise<boolean> {
   try {
     await access(path);
     return true;
@@ -23,7 +36,9 @@ async function exists(path) {
 }
 
 /** Resolves the repository root and common Git directory for a working path. */
-async function repositoryIdentity(cwd) {
+async function repositoryIdentity(
+  cwd: string,
+): Promise<RepositoryIdentity | undefined> {
   const root = await runGit(cwd, ["rev-parse", "--show-toplevel"], {
     allowFailure: true,
   });
@@ -38,14 +53,17 @@ async function repositoryIdentity(cwd) {
 }
 
 /** Derives a publishable target branch from a requested or remote-default ref. */
-async function resolveBase(identity, requested) {
+async function resolveBase(
+  identity: RepositoryIdentity,
+  requested?: string,
+): Promise<{ baseCommit: string; baseBranch?: string }> {
   const ref = requested ?? "refs/remotes/origin/HEAD";
   let resolved = await runGit(
     identity.repoRoot,
     ["rev-parse", "--verify", `${ref}^{commit}`],
     { allowFailure: true },
   );
-  let baseBranch;
+  let baseBranch: string | undefined;
   if (resolved.exitCode !== 0 && requested === undefined) {
     resolved = await runGit(identity.repoRoot, [
       "rev-parse",
@@ -76,17 +94,17 @@ async function resolveBase(identity, requested) {
 }
 
 /** Returns the durable change-state path for one repository identity. */
-function repositoryStatePath(identity, id) {
+function repositoryStatePath(identity: RepositoryIdentity, id: string): string {
   return join(identity.commonDir, "openamp", "changes", `${id}.json`);
 }
 
 /** Returns the fallback state path used for a conversation outside Git. */
-function globalStatePath(id) {
+function globalStatePath(id: string): string {
   return join(homedir(), ".openamp", "changes", `${id}.json`);
 }
 
 /** Reconciles a crash between a completed cherry-pick and its durable receipt. */
-async function reconcilePendingIntegration(state) {
+async function reconcilePendingIntegration(state: ChangeState): Promise<void> {
   const integration = state.integration;
   if (!state.repoRoot || integration?.status !== "pending") return;
   const result = state.results[integration.resultId];
@@ -96,7 +114,12 @@ async function reconcilePendingIntegration(state) {
   const status = (await runGit(state.workspace, ["status", "--porcelain"]))
     .stdout;
   let reconciled = false;
-  if (status === "" && result?.commit && result?.baseCommit) {
+  if (
+    status === "" &&
+    integration.expectedHead &&
+    result?.commit &&
+    result?.baseCommit
+  ) {
     const [ancestry, currentCount, resultCount, currentDiff, resultDiff] =
       await Promise.all([
         runGit(
@@ -160,7 +183,7 @@ async function reconcilePendingIntegration(state) {
 }
 
 /** Marks crash-interrupted remote mutations unknown when publication still requires reconciliation. */
-function reconcilePendingPublicationLedger(state) {
+function reconcilePendingPublicationLedger(state: ChangeState): void {
   if (state.publication?.status !== "reconcile_required") return;
   const finishedAt = new Date().toISOString();
   for (const entry of state.commandLedger) {
@@ -175,14 +198,17 @@ function reconcilePendingPublicationLedger(state) {
 }
 
 /** Opens an existing change after validating its durable workspace identity. */
-export async function resumeChange(cwd, id) {
+export async function resumeChange(
+  cwd: string,
+  id: string,
+): Promise<ChangeStore> {
   if (!CHANGE_ID.test(id)) throw new Error(`Invalid OpenAmp change ID: ${id}`);
   const identity = await repositoryIdentity(cwd);
   const candidates = [
     ...(identity ? [repositoryStatePath(identity, id)] : []),
     globalStatePath(id),
   ];
-  let resolvedPath;
+  let resolvedPath: string | undefined;
   for (const candidate of candidates) {
     if (await exists(candidate)) {
       resolvedPath = candidate;
@@ -221,14 +247,17 @@ export async function resumeChange(cwd, id) {
 }
 
 /** Creates a dedicated feature workspace while preserving the source checkout untouched. */
-export async function createChange(cwd, options = {}) {
+export async function createChange(
+  cwd: string,
+  options: { id?: string; base?: string } = {},
+): Promise<ChangeStore> {
   const id = options.id ?? `change-${crypto.randomUUID().slice(0, 12)}`;
   if (!CHANGE_ID.test(id)) throw new Error(`Invalid OpenAmp change ID: ${id}`);
   const identity = await repositoryIdentity(cwd);
   const now = new Date().toISOString();
   if (!identity) {
     const path = globalStatePath(id);
-    const state = {
+    const state: ChangeState = {
       version: STATE_VERSION,
       id,
       createdAt: now,
@@ -273,7 +302,7 @@ export async function createChange(cwd, options = {}) {
     baseCommit,
   ]);
   const path = repositoryStatePath(identity, id);
-  const state = {
+  const state: ChangeState = {
     version: STATE_VERSION,
     id,
     createdAt: now,
@@ -303,27 +332,31 @@ export async function createChange(cwd, options = {}) {
 
 /** Owns local Git mutations for one OpenAmp feature workspace. */
 export class ChangeWorkspace {
+  readonly store: ChangeStore;
+
   /** Binds workspace operations to a durable change store. */
-  constructor(store) {
+  constructor(store: ChangeStore) {
     this.store = store;
   }
 
   /** Returns the current full feature-branch head. */
-  async head() {
+  async head(): Promise<string | null> {
     if (!this.store.state.repoRoot) return null;
     return (await runGit(this.store.state.workspace, ["rev-parse", "HEAD"]))
       .stdout;
   }
 
   /** Returns the feature workspace's porcelain status. */
-  async status() {
+  async status(): Promise<string> {
     if (!this.store.state.repoRoot) return "";
     return (await runGit(this.store.state.workspace, ["status", "--porcelain"]))
       .stdout;
   }
 
   /** Commits pending main-agent changes and records the resulting checkpoint. */
-  async checkpoint(message = "openamp: checkpoint conversation changes") {
+  async checkpoint(
+    message = "openamp: checkpoint conversation changes",
+  ): Promise<string | null> {
     if (!this.store.state.repoRoot) return null;
     if ((await this.status()) !== "") {
       await runGit(this.store.state.workspace, ["add", "-A"]);
@@ -338,13 +371,14 @@ export class ChangeWorkspace {
   }
 
   /** Creates a writer worktree from a clean, recorded feature checkpoint. */
-  async createAgentWorkspace(runId) {
+  async createAgentWorkspace(runId: string): Promise<AgentWorkspace> {
     if (!this.store.state.repoRoot) {
       throw new Error(
         "Writing delegation is unavailable outside a Git repository",
       );
     }
     const baseCommit = await this.checkpoint();
+    if (!baseCommit) throw new Error("Writer workspace requires a Git head");
     const root = `${this.store.state.repoRoot}.openamp-agents`;
     const path = join(root, this.store.state.id, runId);
     const branch = `openamp-agent/${this.store.state.id}/${runId}`;
@@ -361,7 +395,10 @@ export class ChangeWorkspace {
   }
 
   /** Commits a writer's pending changes and validates its exact branch result. */
-  async finalizeAgentWorkspace(workspace, runId) {
+  async finalizeAgentWorkspace(
+    workspace: AgentWorkspace,
+    runId: string,
+  ): Promise<AgentWorkspace & { head: string; changed: boolean }> {
     const branch = (await runGit(workspace.path, ["branch", "--show-current"]))
       .stdout;
     if (branch !== workspace.branch)
@@ -393,7 +430,7 @@ export class ChangeWorkspace {
   }
 
   /** Integrates one verified result exactly once and records uncertain conflicts without replay. */
-  async integrate(resultId) {
+  async integrate(resultId: string): Promise<string | null> {
     const state = this.store.state;
     if (state.integratedResultIds.includes(resultId)) return await this.head();
     const result = state.results[resultId];
@@ -427,14 +464,17 @@ export class ChangeWorkspace {
     if (applied.exitCode !== 0) {
       await this.store.update((draft) => {
         draft.phase = "needs_attention";
-        draft.integration.status = "conflict";
-        draft.integration.error = applied.stderr || applied.stdout;
+        if (draft.integration) {
+          draft.integration.status = "conflict";
+          draft.integration.error = applied.stderr || applied.stdout;
+        }
       });
       throw new Error(
         "Integration conflicted; worktrees and conflict state were preserved",
       );
     }
     const head = await this.head();
+    if (!head) throw new Error("Integrated feature workspace has no Git head");
     await this.store.update((draft) => {
       draft.mainHead = head;
       draft.integratedResultIds.push(resultId);
@@ -451,7 +491,7 @@ export class ChangeWorkspace {
   }
 
   /** Requires a clean feature branch at the state-recorded head. */
-  async assertReady() {
+  async assertReady(): Promise<string> {
     if (!this.store.state.repoRoot)
       throw new Error("Delivery requires a Git repository");
     if ((await this.status()) !== "")
@@ -460,6 +500,7 @@ export class ChangeWorkspace {
     if (head !== this.store.state.mainHead) {
       throw new Error("Feature workspace head does not match durable state");
     }
+    if (!head) throw new Error("Feature workspace has no Git head");
     return head;
   }
 }

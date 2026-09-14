@@ -67,16 +67,20 @@ test("package metadata exposes only the public Node OpenAmp CLI", async () => {
   expect(manifest.version).toMatch(stableVersionPattern);
   expect(manifest.private).toBeUndefined();
   expect(manifest.license).toBe("Apache-2.0");
-  expect(manifest.bin).toEqual({ openamp: "./src/openamp/main.mjs" });
+  expect(manifest.bin).toEqual({ openamp: "./dist/openamp/main.js" });
   expect(manifest.files).toEqual([
-    "src/openamp",
+    "dist/openamp",
     "README.md",
     "README.zh-HK.md",
     "LICENSE",
   ]);
   expect(manifest.engines).toEqual({ node: ">=22.19.0" });
   expect(manifest.publishConfig).toEqual({ access: "public" });
-  expect(manifest.scripts?.dev).toBe("node src/openamp/main.mjs");
+  expect(manifest.scripts?.build).toBe("tsc -p tsconfig.build.json");
+  expect(manifest.scripts?.dev).toBe(
+    "bun run build && node dist/openamp/main.js",
+  );
+  expect(manifest.scripts?.prepack).toBe("bun run build");
   expect(manifest.scripts?.prepublishOnly).toBe("bun run check");
   expect(manifest.dependencies).toEqual({
     "@earendil-works/pi-coding-agent": "0.82.1",
@@ -144,7 +148,9 @@ test("npm archive installs a working Node CLI without Roc runtime paths", async 
     const result = (JSON.parse(stdout) as PackResult[])[0];
     if (!result) throw new Error("npm pack returned no archive");
     const paths = result.files.map((file) => file.path).sort();
-    expect(paths).toContain("src/openamp/main.mjs");
+    expect(paths).toContain("dist/openamp/main.js");
+    expect(paths).toContain("dist/openamp/main.d.ts");
+    expect(paths.some((path) => path.startsWith("src/openamp/"))).toBeFalse();
     expect(paths).not.toContain("src/cli/main.ts");
     expect(paths.some((path) => path.startsWith("src/scheduler/"))).toBeFalse();
     expect(paths.some((path) => path.startsWith("skills/"))).toBeFalse();

@@ -2,22 +2,44 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  type AgentSessionRuntime,
+  type CreateAgentSessionRuntimeFactory,
   createAgentSessionFromServices,
   createAgentSessionRuntime,
   createAgentSessionServices,
   getAgentDir,
   InteractiveMode,
+  type InteractiveModeOptions,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { agentEnvironment } from "./command.mjs";
-import { ChangeDelivery } from "./delivery.mjs";
-import { createOpenAmpExtension } from "./extension.mjs";
-import { AgentSupervisor } from "./supervisor.mjs";
-import { ChangeWorkspace, createChange, resumeChange } from "./workspace.mjs";
+import { agentEnvironment } from "./command.js";
+import { ChangeDelivery, type DeliveryOptions } from "./delivery.js";
+import { createOpenAmpExtension } from "./extension.js";
+import { AgentSupervisor, type SupervisorOptions } from "./supervisor.js";
+import { ChangeWorkspace, createChange, resumeChange } from "./workspace.js";
+
+interface ParsedArguments {
+  resume?: string;
+  base?: string;
+  help: boolean;
+}
+
+type InteractiveModeConstructor = new (
+  runtime: AgentSessionRuntime,
+  options: InteractiveModeOptions,
+) => { run(): Promise<void> };
+
+export interface RunOpenAmpOptions {
+  stdout?: Pick<NodeJS.WriteStream, "write">;
+  cwd?: string;
+  supervisorOptions?: SupervisorOptions;
+  deliveryOptions?: DeliveryOptions;
+  InteractiveMode?: InteractiveModeConstructor;
+}
 
 /** Parses OpenAmp's intentionally small process-level CLI surface. */
-export function parseArguments(args) {
-  const options = { resume: undefined, base: undefined, help: false };
+export function parseArguments(args: string[]): ParsedArguments {
+  const options: ParsedArguments = { help: false };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--help" || argument === "-h") options.help = true;
@@ -35,7 +57,7 @@ export function parseArguments(args) {
 }
 
 /** Returns the public OpenAmp command help. */
-export function helpText() {
+export function helpText(): string {
   return [
     "OpenAmp - interactive Pi agent collaboration",
     "",
@@ -49,7 +71,10 @@ export function helpText() {
 }
 
 /** Starts or resumes one OpenAmp native Pi TUI session. */
-export async function runOpenAmp(args, options = {}) {
+export async function runOpenAmp(
+  args: string[],
+  options: RunOpenAmpOptions = {},
+): Promise<number> {
   const parsed = parseArguments(args);
   if (parsed.help) {
     (options.stdout ?? process.stdout).write(`${helpText()}\n`);
@@ -101,7 +126,7 @@ export async function runOpenAmp(args, options = {}) {
     ? SessionManager.open(store.state.sessionFile, sessionDirectory)
     : SessionManager.create(store.state.workspace, sessionDirectory);
 
-  const createRuntime = async ({
+  const createRuntime: CreateAgentSessionRuntimeFactory = async ({
     cwd: runtimeCwd,
     sessionManager: manager,
     sessionStartEvent,
@@ -137,20 +162,21 @@ export async function runOpenAmp(args, options = {}) {
       diagnostics: services.diagnostics,
     };
   };
-  let runtime;
+  let runtime: AgentSessionRuntime | undefined;
   try {
     await supervisor.recover();
-    runtime = await createAgentSessionRuntime(createRuntime, {
+    const activeRuntime = await createAgentSessionRuntime(createRuntime, {
       cwd: store.state.workspace,
       agentDir,
       sessionManager,
     });
+    runtime = activeRuntime;
     await store.update((state) => {
-      state.sessionId = runtime.session.sessionId;
-      state.sessionFile = runtime.session.sessionFile;
+      state.sessionId = activeRuntime.session.sessionId;
+      state.sessionFile = activeRuntime.session.sessionFile ?? null;
     });
     const Mode = options.InteractiveMode ?? InteractiveMode;
-    const mode = new Mode(runtime, {
+    const mode = new Mode(activeRuntime, {
       migratedProviders: [],
       initialMessage: undefined,
       initialImages: [],
