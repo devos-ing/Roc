@@ -258,7 +258,7 @@ retains argv-only `gh` execution and existing REST writes, PR publication and
 merge mechanisms. There is no REST fallback or persistent snapshot cache.
 The retired M1 `tools/github-read-proof.ts --pair` refuses to run in this checkout.
 The frozen M1 source remains the independent REST baseline for the isolated
-production read probe. See [GraphQL runtime verification](validation/graphql-runtime-local.md).
+production read probe. See [GraphQL runtime verification](../validation/graphql-runtime-local.md).
 
 An approved low-risk spec may explicitly omit Scout using `skipScout: true`.
 The schema requires conservative literal file scopes and the existing complete
@@ -280,16 +280,16 @@ M1 provides GitHub execution and separate task worktrees; M2 adds bounded parall
 M3 adds opt-in guarded automatic PR merge with at most two clean base refreshes
 and independent re-reviews. M4 adds diagnostics, phase/activity timing, bounded
 GitHub reads and explicit Scout omission. M1–M4 are complete for the revised
-[roadmap](roadmap.md); physical two-host acceptance and Superset are deferred.
-Deterministic checks are complemented by [live GitHub and sandboxed GPT-6 acceptance](validation/m1-m2-live-2026-09-09.md).
-[M3 protected-branch acceptance](validation/m3-live-2026-09-09.md) also verified
+[roadmap](../roadmap.md); physical two-host acceptance and Superset are deferred.
+Deterministic checks are complemented by [live GitHub and sandboxed GPT-6 acceptance](../validation/m1-m2-live-2026-09-09.md).
+[M3 protected-branch acceptance](../validation/m3-live-2026-09-09.md) also verified
 two automatic merges with a real base refresh, new Review and fresh CI.
-[M4 comparisons](validation/m4-live-2026-09-09.md) record measured time, usage and
-startup recovery limits. The [interactive architecture map](../output/archify/roc-current/roc-architecture.html)
+[M4 comparisons](../validation/m4-live-2026-09-09.md) record measured time, usage and
+startup recovery limits. The [interactive architecture map](../../output/archify/roc-current/roc-architecture.html)
 links its components to source files. Physical two-host operation remains unverified.
-See the [current specification](specs/github-native-execution.md)
-and [M2 specification](specs/parallel-execution.md), plus
-[validation status](../README.details.md#validation-status).
+See the [current specification](../specs/github-native-execution.md)
+and [M2 specification](../specs/parallel-execution.md), plus the archived
+[validation status](https://github.com/devos-ing/Roc/blob/ab5f10f605925c4f52ceca24df34afc1634417c9/README.details.md#validation-status).
 
 ## Pi backend
 

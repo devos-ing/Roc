@@ -42,12 +42,13 @@ export function parseReview(text) {
 }
 
 /** Runs one local verification command while forbidding publication side effects. */
-async function defaultValidationRunner(command, cwd) {
+async function defaultValidationRunner(command, cwd, signal) {
   const reason = remoteMutationReason(command);
   if (reason) throw new Error(`Validation command rejected: ${reason}`);
   return runCommand("/bin/sh", ["-lc", command], {
     cwd,
     allowFailure: true,
+    signal,
     timeoutMs: 30 * 60 * 1000,
   });
 }
@@ -98,12 +99,14 @@ export class ChangeDelivery {
   }
 
   /** Reads one exact remote branch head through the controlled Delivery runner. */
-  async #readRemoteBranch(action, branch) {
-    const result = await this.#run(action, "git", [
-      "ls-remote",
-      "origin",
-      `refs/heads/${branch}`,
-    ]);
+  async #readRemoteBranch(action, branch, inputGeneration, signal) {
+    const result = await this.#run(
+      action,
+      "git",
+      ["ls-remote", "origin", `refs/heads/${branch}`],
+      inputGeneration,
+      signal,
+    );
     const head = result.stdout.split(/\s/u)[0];
     if (result.exitCode !== 0 || !/^[0-9a-f]{40}$/u.test(head)) {
       throw new Error(`Cannot read remote branch: ${branch}`);
@@ -151,8 +154,11 @@ export class ChangeDelivery {
     return path;
   }
 
-  /** Rejects delivery when newer user input has invalidated the requirements. */
-  #assertRequirementsCurrent(inputGeneration) {
+  /** Rejects delivery when cancellation or newer user input invalidates the requirements. */
+  #assertRequirementsCurrent(inputGeneration, signal) {
+    if (signal?.aborted) {
+      throw new Error("Interaction cancellation invalidated the delivery");
+    }
     if ((this.store.state.inputGeneration ?? 0) !== inputGeneration) {
       throw new Error(
         "New user input invalidated the delivery requirements; process it before retrying",
@@ -161,151 +167,194 @@ export class ChangeDelivery {
   }
 
   /** Verifies, independently reviews, and creates or updates exactly one pull request. */
-  async deliver(input) {
-    if (!this.store.state.repoRoot || !this.store.state.baseBranch) {
-      throw new Error(
-        "Automatic PR delivery requires a Git remote base branch",
-      );
-    }
-    const active = this.supervisor
-      .list()
-      .filter((run) =>
-        ["queued", "starting", "running", "cancelling"].includes(run.status),
-      );
-    if (active.length > 0)
-      throw new Error("Delivery waits for all child agents to settle");
-
-    const inputGeneration =
-      input.inputGeneration ?? this.store.state.inputGeneration ?? 0;
-    this.#assertRequirementsCurrent(inputGeneration);
-    const head = await this.workspace.checkpoint(
-      `openamp(${this.store.state.id}): complete requested change`,
-    );
-    if (head === this.store.state.baseCommit) {
-      throw new Error(
-        "Delivery requires a change relative to the selected base",
-      );
-    }
-    const base = this.store.state.baseCommit;
-    const remoteBase = await this.#readRemoteBranch(
-      "read-review-base",
-      this.store.state.baseBranch,
-    );
-    if (remoteBase !== base) {
-      throw new Error(
-        "Remote base branch changed; update the change before independent review",
-      );
-    }
-    const requirements = input.requirements.trim();
-    if (!requirements)
-      throw new Error("Delivery requires the current requirements");
-    if (
-      !Array.isArray(input.validationCommands) ||
-      input.validationCommands.length === 0
-    ) {
-      throw new Error("Delivery requires at least one validation command");
-    }
-    const validation = [];
-    for (const command of input.validationCommands) {
-      const result = await this.validationRunner(
-        command,
-        this.store.state.workspace,
-      );
-      validation.push({
-        command,
-        exitCode: result.exitCode,
-        output: (result.stdout || result.stderr || "").slice(-4_000),
+  async deliver(input, signal) {
+    let cancellationWrite;
+    /** Persists one cancellation generation and prevents pending publication recovery. */
+    const recordCancellation = () => {
+      cancellationWrite ??= this.store.update((state) => {
+        state.inputGeneration = (state.inputGeneration ?? 0) + 1;
+        state.phase = "needs_replan";
+        if (state.publication?.status === "pending") {
+          state.publication.status = "cancelled";
+        }
       });
-      if (result.exitCode !== 0) {
-        await this.store.update((state) => {
-          state.phase = "validation_failed";
-          state.validation = { head, commands: validation };
-        });
-        throw new Error(`Validation failed: ${command}`);
+      return cancellationWrite;
+    };
+    /** Starts durable cancellation recording without blocking the abort event. */
+    const onAbort = () => {
+      void recordCancellation();
+    };
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      if (!this.store.state.repoRoot || !this.store.state.baseBranch) {
+        throw new Error(
+          "Automatic PR delivery requires a Git remote base branch",
+        );
       }
-    }
-    if ((await this.workspace.assertReady()) !== head) {
-      throw new Error("Validation changed the feature workspace or head");
-    }
-    this.#assertRequirementsCurrent(inputGeneration);
+      const active = this.supervisor
+        .list()
+        .filter((run) =>
+          ["queued", "starting", "running", "cancelling"].includes(run.status),
+        );
+      if (active.length > 0)
+        throw new Error("Delivery waits for all child agents to settle");
 
-    const specHash = requirementHash(requirements);
-    const reviewBundle = await this.#writeReviewBundle(
-      base,
-      head,
-      requirements,
-      specHash,
-    );
-    const reviewResult = await this.supervisor.review(
-      [
-        "Independently review the exact current change. Do not modify files.",
-        `Base commit: ${base}`,
-        `Final head: ${head}`,
-        `Requirements SHA-256: ${specHash}`,
-        "Requirements:",
+      const inputGeneration =
+        input.inputGeneration ?? this.store.state.inputGeneration ?? 0;
+      this.#assertRequirementsCurrent(inputGeneration, signal);
+      const head = await this.workspace.checkpoint(
+        `openamp(${this.store.state.id}): complete requested change`,
+      );
+      if (head === this.store.state.baseCommit) {
+        throw new Error(
+          "Delivery requires a change relative to the selected base",
+        );
+      }
+      const base = this.store.state.baseCommit;
+      const remoteBase = await this.#readRemoteBranch(
+        "read-review-base",
+        this.store.state.baseBranch,
+        inputGeneration,
+        signal,
+      );
+      if (remoteBase !== base) {
+        throw new Error(
+          "Remote base branch changed; update the change before independent review",
+        );
+      }
+      const requirements = input.requirements.trim();
+      if (!requirements)
+        throw new Error("Delivery requires the current requirements");
+      if (
+        !Array.isArray(input.validationCommands) ||
+        input.validationCommands.length === 0
+      ) {
+        throw new Error("Delivery requires at least one validation command");
+      }
+      const validation = [];
+      for (const command of input.validationCommands) {
+        const result = await this.validationRunner(
+          command,
+          this.store.state.workspace,
+          signal,
+        );
+        validation.push({
+          command,
+          exitCode: result.exitCode,
+          output: (result.stdout || result.stderr || "").slice(-4_000),
+        });
+        if (result.exitCode !== 0) {
+          await this.store.update((state) => {
+            state.phase = "validation_failed";
+            state.validation = { head, commands: validation };
+          });
+          throw new Error(`Validation failed: ${command}`);
+        }
+      }
+      if ((await this.workspace.assertReady()) !== head) {
+        throw new Error("Validation changed the feature workspace or head");
+      }
+      this.#assertRequirementsCurrent(inputGeneration, signal);
+
+      const specHash = requirementHash(requirements);
+      const reviewBundle = await this.#writeReviewBundle(
+        base,
+        head,
         requirements,
-        `Read the immutable review bundle at ${reviewBundle}; it contains the commit list and complete binary base..head diff. Inspect relevant source and tests as needed.`,
-        'Return only JSON: {"decision":"accepted|rejected","findings":[{"severity":"blocking|nonblocking","message":"..."}],"summary":"..."}',
-      ].join("\n"),
-      this.store.state.sessionId,
-    );
-    const review = parseReview(reviewResult.summary);
-    this.#assertRequirementsCurrent(inputGeneration);
-    if (review.decision !== "accepted") {
+        specHash,
+      );
+      const reviewResult = await this.supervisor.review(
+        [
+          "Independently review the exact current change. Do not modify files.",
+          `Base commit: ${base}`,
+          `Final head: ${head}`,
+          `Requirements SHA-256: ${specHash}`,
+          "Requirements:",
+          requirements,
+          `Read the immutable review bundle at ${reviewBundle}; it contains the commit list and complete binary base..head diff. Inspect relevant source and tests as needed.`,
+          'Return only JSON: {"decision":"accepted|rejected","findings":[{"severity":"blocking|nonblocking","message":"..."}],"summary":"..."}',
+        ].join("\n"),
+        this.store.state.sessionId,
+        signal,
+      );
+      const review = parseReview(reviewResult.summary);
+      this.#assertRequirementsCurrent(inputGeneration, signal);
+      if (review.decision !== "accepted") {
+        await this.store.update((state) => {
+          state.phase = "review_rejected";
+          state.review = {
+            head,
+            base,
+            specHash,
+            inputGeneration,
+            ...review,
+          };
+        });
+        throw new Error("Independent review rejected the current change");
+      }
+      if ((await this.workspace.assertReady()) !== head) {
+        throw new Error("Feature head changed after independent review");
+      }
       await this.store.update((state) => {
-        state.phase = "review_rejected";
-        state.review = {
+        state.validation = { head, commands: validation };
+        state.review = { head, base, specHash, inputGeneration, ...review };
+        state.phase = "ready_to_publish";
+        state.publication = {
+          status: "pending",
+          repository: state.repoRoot,
+          branch: state.branch,
+          baseBranch: state.baseBranch,
+          baseCommit: base,
           head,
-          base,
           specHash,
           inputGeneration,
-          ...review,
+          pullRequestNumber: state.publication?.pullRequestNumber ?? null,
+          pullRequestUrl: state.publication?.pullRequestUrl ?? null,
         };
       });
-      throw new Error("Independent review rejected the current change");
-    }
-    if ((await this.workspace.assertReady()) !== head) {
-      throw new Error("Feature head changed after independent review");
-    }
-    await this.store.update((state) => {
-      state.validation = { head, commands: validation };
-      state.review = { head, base, specHash, inputGeneration, ...review };
-      state.phase = "ready_to_publish";
-      state.publication = {
-        status: "pending",
-        repository: state.repoRoot,
-        branch: state.branch,
-        baseBranch: state.baseBranch,
-        baseCommit: base,
-        head,
-        specHash,
-        inputGeneration,
-        pullRequestNumber: state.publication?.pullRequestNumber ?? null,
-        pullRequestUrl: state.publication?.pullRequestUrl ?? null,
-      };
-    });
 
-    const pullRequest = await this.#publish(
-      { ...input, requirements },
-      review,
-      head,
-      base,
-      inputGeneration,
-    );
-    await this.store.update((state) => {
-      state.phase = "pr_open";
-      Object.assign(state.publication, {
-        status: "published",
-        pullRequestNumber: pullRequest.number,
-        pullRequestUrl: pullRequest.url,
+      const pullRequest = await this.#publish(
+        { ...input, requirements },
+        review,
         head,
+        base,
+        inputGeneration,
+        signal,
+      );
+      this.#assertRequirementsCurrent(inputGeneration, signal);
+      await this.store.update((state) => {
+        state.phase = "pr_open";
+        Object.assign(state.publication, {
+          status: "published",
+          pullRequestNumber: pullRequest.number,
+          pullRequestUrl: pullRequest.url,
+          head,
+        });
       });
-    });
-    return pullRequest;
+      this.#assertRequirementsCurrent(inputGeneration, signal);
+      return pullRequest;
+    } catch (error) {
+      if (signal?.aborted) {
+        await recordCancellation();
+        await this.store.update((state) => {
+          state.phase = "needs_replan";
+          if (state.publication?.status === "pending") {
+            state.publication.status = "cancelled";
+          }
+        });
+        throw new Error("Interaction cancellation invalidated the delivery", {
+          cause: error,
+        });
+      }
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
   }
 
   /** Records and runs a controlled Delivery command without exposing a merge operation. */
-  async #run(action, command, args, inputGeneration) {
+  async #run(action, command, args, inputGeneration, signal) {
     if (
       command === "gh" &&
       args[0] === "pr" &&
@@ -325,9 +374,9 @@ export class ChangeDelivery {
         status: "pending",
       });
     });
-    if (inputGeneration !== undefined) {
+    if (inputGeneration !== undefined || signal) {
       try {
-        this.#assertRequirementsCurrent(inputGeneration);
+        this.#assertRequirementsCurrent(inputGeneration, signal);
       } catch (error) {
         await this.store.update((state) => {
           const entry = state.commandLedger.find(
@@ -354,28 +403,35 @@ export class ChangeDelivery {
   }
 
   /** Queries the one same-repository PR associated with the feature branch and base. */
-  async #findPullRequest() {
+  async #findPullRequest(inputGeneration, signal) {
     const state = this.store.state;
-    const result = await this.#run("find-pr", "gh", [
-      "pr",
-      "list",
-      "--head",
-      state.branch,
-      "--base",
-      state.baseBranch,
-      "--state",
-      "all",
-      "--json",
-      "number,url,state,title,body,headRefOid,headRepositoryOwner",
-    ]);
+    const result = await this.#run(
+      "find-pr",
+      "gh",
+      [
+        "pr",
+        "list",
+        "--head",
+        state.branch,
+        "--base",
+        state.baseBranch,
+        "--state",
+        "all",
+        "--json",
+        "number,url,state,title,body,headRefOid,headRepositoryOwner",
+      ],
+      inputGeneration,
+      signal,
+    );
     if (result.exitCode !== 0)
       throw new Error(result.stderr || "GitHub PR lookup failed");
-    const repository = await this.#run("repository", "gh", [
-      "repo",
-      "view",
-      "--json",
-      "owner",
-    ]);
+    const repository = await this.#run(
+      "repository",
+      "gh",
+      ["repo", "view", "--json", "owner"],
+      inputGeneration,
+      signal,
+    );
     if (repository.exitCode !== 0)
       throw new Error("GitHub repository lookup failed");
     const owner = JSON.parse(repository.stdout).owner.login;
@@ -388,31 +444,41 @@ export class ChangeDelivery {
   }
 
   /** Pushes the exact reviewed branch then creates or updates and re-reads its PR. */
-  async #publish(input, review, head, base, inputGeneration) {
+  async #publish(input, review, head, base, inputGeneration, signal) {
     const state = this.store.state;
-    this.#assertRequirementsCurrent(inputGeneration);
+    this.#assertRequirementsCurrent(inputGeneration, signal);
     const remoteBase = await this.#readRemoteBranch(
       "read-publication-base",
       state.baseBranch,
+      inputGeneration,
+      signal,
     );
     if (remoteBase !== base) {
       throw new Error(
         "Remote base branch changed after review; independent review is invalid",
       );
     }
-    const auth = await this.#run("auth", "gh", ["auth", "status"]);
+    const auth = await this.#run(
+      "auth",
+      "gh",
+      ["auth", "status"],
+      inputGeneration,
+      signal,
+    );
     if (auth.exitCode !== 0) throw new Error("GitHub CLI is not authenticated");
-    const existing = await this.#findPullRequest();
+    const existing = await this.#findPullRequest(inputGeneration, signal);
     if (existing?.state === "MERGED")
       throw new Error("The prior pull request is already merged");
     if (existing?.state === "CLOSED")
       throw new Error("The prior pull request is closed");
 
-    const remote = await this.#run("read-remote-head", "git", [
-      "ls-remote",
-      "origin",
-      `refs/heads/${state.branch}`,
-    ]);
+    const remote = await this.#run(
+      "read-remote-head",
+      "git",
+      ["ls-remote", "origin", `refs/heads/${state.branch}`],
+      inputGeneration,
+      signal,
+    );
     if (remote.exitCode !== 0)
       throw new Error("Cannot read the remote feature branch");
     const remoteHead = remote.stdout.split(/\s/u)[0] || null;
@@ -429,7 +495,7 @@ export class ChangeDelivery {
     if ((await this.workspace.assertReady()) !== head) {
       throw new Error("Feature head changed before publication");
     }
-    this.#assertRequirementsCurrent(inputGeneration);
+    this.#assertRequirementsCurrent(inputGeneration, signal);
     const push = await this.#run(
       "push",
       "git",
@@ -440,6 +506,7 @@ export class ChangeDelivery {
         `${head}:refs/heads/${state.branch}`,
       ],
       inputGeneration,
+      signal,
     );
     if (push.exitCode !== 0) {
       const reconciled = await this.#run("reconcile-push", "git", [
@@ -457,13 +524,15 @@ export class ChangeDelivery {
     const finalBase = await this.#readRemoteBranch(
       "confirm-publication-base",
       state.baseBranch,
+      inputGeneration,
+      signal,
     );
     if (finalBase !== base) {
       throw new Error(
         "Remote base branch changed before PR publication; independent review is invalid",
       );
     }
-    this.#assertRequirementsCurrent(inputGeneration);
+    this.#assertRequirementsCurrent(inputGeneration, signal);
     const body = pullRequestBody(input, review, head, state.id);
     const mutation = existing
       ? [
@@ -492,8 +561,12 @@ export class ChangeDelivery {
       "gh",
       mutation,
       inputGeneration,
+      signal,
     );
-    const finalPullRequest = await this.#findPullRequest();
+    const finalPullRequest = await this.#findPullRequest(
+      inputGeneration,
+      signal,
+    );
     if (
       finalPullRequest?.state !== "OPEN" ||
       finalPullRequest.headRefOid !== head ||

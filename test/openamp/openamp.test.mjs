@@ -222,6 +222,58 @@ describe("M1 feature conversations", () => {
     expect(environment.node_auth_token).toBeUndefined();
     expect(environment.SSH_AUTH_SOCK).toBeUndefined();
   });
+
+  test("forwards Pi tool cancellation to Delivery", async () => {
+    const path = join(
+      await mkdtemp(join(tmpdir(), "openamp-state-")),
+      "state.json",
+    );
+    temporaryDirectories.push(path.slice(0, path.lastIndexOf("/")));
+    const store = new ChangeStore(path, {
+      version: 1,
+      id: "change-cancel-signal",
+      workspace: "/tmp",
+      phase: "active",
+      inputGeneration: 3,
+      runs: {},
+      results: {},
+      integratedResultIds: [],
+      commandLedger: [],
+    });
+    let tool;
+    let receivedSignal;
+    const pi = {
+      on: () => undefined,
+      registerCommand: () => undefined,
+      registerTool: (definition) => {
+        if (definition.name === "deliver_change") tool = definition;
+      },
+    };
+    const supervisor = {
+      list: () => [],
+      setDeliveryHandler: () => undefined,
+    };
+    const delivery = {
+      deliver: async (_input, signal) => {
+        receivedSignal = signal;
+        throw new Error("cancelled for test");
+      },
+    };
+    createOpenAmpExtension(store, supervisor, {}, delivery).factory(pi);
+    const controller = new AbortController();
+    await expect(
+      tool.execute(
+        "call-one",
+        {
+          title: "Feature",
+          requirements: "Current requirements",
+          validation_commands: ["npm test"],
+        },
+        controller.signal,
+      ),
+    ).rejects.toThrow("cancelled for test");
+    expect(receivedSignal).toBe(controller.signal);
+  });
 });
 
 describe("M2 reliable delegation", () => {
@@ -293,6 +345,44 @@ describe("M2 reliable delegation", () => {
     ).toHaveLength(2);
     expect(statuses.filter((status) => status === "queued")).toHaveLength(1);
     await Promise.all(runs.map((run) => supervisor.wait(run.id)));
+  });
+
+  test("cancels a delivery reviewer instead of recording a stale result", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m2-review-cancel",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    let releasePrompt;
+    class CancellableRpcClient extends FakeRpcClient {
+      /** Blocks reviewer work until cancellation releases the fake prompt. */
+      async prompt() {
+        await new Promise((resolve) => {
+          releasePrompt = resolve;
+        });
+      }
+
+      /** Releases the fake prompt to model an aborted Pi child. */
+      async abort() {
+        releasePrompt?.();
+      }
+    }
+    const supervisor = new AgentSupervisor(store, workspace, {
+      clientFactory: (options) => new CancellableRpcClient(options, () => {}),
+    });
+    const controller = new AbortController();
+    const review = supervisor.review(
+      "Review exact change",
+      "parent-session",
+      controller.signal,
+    );
+    while (!releasePrompt) await Bun.sleep(1);
+    controller.abort();
+    await expect(review).rejects.toThrow();
+    const reviewer = supervisor.list().find((run) => run.role === "reviewer");
+    expect(reviewer.status).toBe("cancelled");
+    expect(reviewer.resultId).toBeNull();
   });
 
   test("recovers custom results once and never routes them to another session", async () => {
@@ -856,6 +946,72 @@ describe("M4 reviewed PR delivery", () => {
     expect(publicationCommands).toBe(1);
   });
 
+  test("cancels an in-flight review and requires replanning", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m4-review-cancelled",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    await writeFile(join(store.state.workspace, "feature.txt"), "feature\n");
+    const controller = new AbortController();
+    const mutations = [];
+    const delivery = new ChangeDelivery(
+      store,
+      workspace,
+      {
+        list: () => [],
+        review: async (_prompt, _parentSessionId, signal) => {
+          expect(signal).toBe(controller.signal);
+          controller.abort();
+          return {
+            summary: JSON.stringify({
+              decision: "accepted",
+              findings: [],
+              summary: "stale after cancellation",
+            }),
+          };
+        },
+      },
+      {
+        validationRunner: async () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+        commandRunner: async (command, args) => {
+          if (
+            (command === "git" && args[0] === "push") ||
+            (command === "gh" &&
+              args[0] === "pr" &&
+              ["create", "edit"].includes(args[1]))
+          ) {
+            mutations.push([command, ...args]);
+          }
+          return {
+            exitCode: 0,
+            stdout: `${store.state.baseCommit}\t${args.at(-1)}`,
+            stderr: "",
+          };
+        },
+      },
+    );
+    await expect(
+      delivery.deliver(
+        {
+          title: "Cancelled review",
+          requirements: "Cancellation must invalidate delivery",
+          validationCommands: ["npm test"],
+          inputGeneration: 0,
+        },
+        controller.signal,
+      ),
+    ).rejects.toThrow("Interaction cancellation invalidated");
+    expect(mutations).toHaveLength(0);
+    expect(store.state.phase).toBe("needs_replan");
+    expect(store.state.inputGeneration).toBe(1);
+  });
+
   test("stops before push when new input arrives during publication lookup", async () => {
     const { source } = await fixtureRepository();
     const store = await createChange(source, {
@@ -928,5 +1084,77 @@ describe("M4 reviewed PR delivery", () => {
       }),
     ).rejects.toThrow("New user input invalidated");
     expect(mutations).toHaveLength(0);
+  });
+
+  test("stops before push when cancellation arrives during publication lookup", async () => {
+    const { source } = await fixtureRepository();
+    const store = await createChange(source, {
+      id: "change-m4-publication-cancel-race",
+      base: "main",
+    });
+    const workspace = new ChangeWorkspace(store);
+    await writeFile(join(store.state.workspace, "feature.txt"), "feature\n");
+    const controller = new AbortController();
+    const mutations = [];
+    const delivery = new ChangeDelivery(
+      store,
+      workspace,
+      {
+        list: () => [],
+        review: async () => ({
+          summary: JSON.stringify({
+            decision: "accepted",
+            findings: [],
+            summary: "correct",
+          }),
+        }),
+      },
+      {
+        validationRunner: async () => ({
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+        commandRunner: async (command, args) => {
+          if (
+            (command === "git" && args[0] === "push") ||
+            (command === "gh" &&
+              args[0] === "pr" &&
+              ["create", "edit"].includes(args[1]))
+          ) {
+            mutations.push([command, ...args]);
+          }
+          if (command === "gh" && args[0] === "auth") {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (command === "gh" && args[0] === "pr") {
+            controller.abort();
+            return { exitCode: 0, stdout: "[]", stderr: "" };
+          }
+          if (command === "git" && args[0] === "ls-remote") {
+            return {
+              exitCode: 0,
+              stdout: `${store.state.baseCommit}\t${args.at(-1)}`,
+              stderr: "",
+            };
+          }
+          throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+        },
+      },
+    );
+    await expect(
+      delivery.deliver(
+        {
+          title: "Cancelled publication",
+          requirements: "Never mutate after cancellation",
+          validationCommands: ["npm test"],
+          inputGeneration: 0,
+        },
+        controller.signal,
+      ),
+    ).rejects.toThrow("Interaction cancellation invalidated");
+    expect(mutations).toHaveLength(0);
+    expect(store.state.phase).toBe("needs_replan");
+    expect(store.state.publication.status).toBe("cancelled");
   });
 });

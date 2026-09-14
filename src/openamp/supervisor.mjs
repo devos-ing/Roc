@@ -109,20 +109,20 @@ export class AgentSupervisor {
   async cancel(runId) {
     const run = this.store.state.runs[runId];
     if (!run) throw new Error(`Unknown agent: ${runId}`);
-    if (run.status === "queued") {
+    const client = this.#clients.get(runId);
+    if (run.status === "queued" || (run.status === "starting" && !client)) {
       await this.store.update((state) => {
         state.runs[runId].status = "cancelled";
         state.runs[runId].finishedAt = new Date().toISOString();
       });
       return;
     }
-    const client = this.#clients.get(runId);
     if (!client) throw new Error(`Agent is not cancellable: ${runId}`);
     await this.store.update((state) => {
       state.runs[runId].status = "cancelling";
     });
     await client.abort().catch(() => undefined);
-    await client.stop();
+    await client.stop().catch(() => undefined);
     this.#clients.delete(runId);
     await this.store.update((state) => {
       state.runs[runId].status = "cancelled";
@@ -159,15 +159,29 @@ export class AgentSupervisor {
     return this.store.state.results[run.resultId];
   }
 
-  /** Runs a delivery-only independent read-only review to completion. */
-  async review(prompt, parentSessionId) {
+  /** Runs a delivery-only independent read-only review until completion or caller cancellation. */
+  async review(prompt, parentSessionId, signal) {
     const run = await this.delegate({
       role: "reviewer",
       prompt,
       parentSessionId,
       deliveryOnly: true,
     });
-    return this.wait(run.id);
+    let cancellation;
+    /** Cancels the dedicated reviewer at most once. */
+    const cancel = () => {
+      cancellation ??= this.cancel(run.id);
+    };
+    if (signal?.aborted) cancel();
+    else signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      const result = await this.wait(run.id);
+      if (signal?.aborted) throw new Error("Independent review aborted");
+      return result;
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+      await cancellation?.catch(() => undefined);
+    }
   }
 
   /** Restarts only work that was durably queued before process exit. */
@@ -205,6 +219,13 @@ export class AgentSupervisor {
     await completion;
   }
 
+  /** Returns whether cancellation has claimed a child before result persistence. */
+  #isCancelling(runId) {
+    return ["cancelling", "cancelled"].includes(
+      this.store.state.runs[runId]?.status,
+    );
+  }
+
   /** Executes one child assignment and persists its result before delivery. */
   async #run(runId) {
     const run = this.store.state.runs[runId];
@@ -232,7 +253,9 @@ export class AgentSupervisor {
       });
       this.#clients.set(runId, client);
       await client.start();
+      if (this.#isCancelling(runId)) return;
       const rpcState = await client.getState();
+      if (this.#isCancelling(runId)) return;
       await this.store.update((state) => {
         Object.assign(state.runs[runId], {
           status: "running",
@@ -245,17 +268,22 @@ export class AgentSupervisor {
           effort: rpcState.thinkingLevel ?? null,
         });
       });
+      if (this.#isCancelling(runId)) return;
       const roleConstraint =
         run.role === "writer"
           ? "Modify only this dedicated worktree. Do not push, publish, merge, or delegate. Leave a coherent working tree; OpenAmp will create the result commit."
           : "This is a read-only assignment. Use only read/search tools. Do not modify files, publish, merge, or delegate.";
       await client.prompt(`${roleConstraint}\n\nAssignment:\n${run.prompt}`);
+      if (this.#isCancelling(runId)) return;
       await client.waitForIdle(30 * 60 * 1000);
+      if (this.#isCancelling(runId)) return;
       const summary = boundedText(await client.getLastAssistantText());
+      if (this.#isCancelling(runId)) return;
       const finalized =
         run.role === "writer"
           ? await this.workspace.finalizeAgentWorkspace(agentWorkspace, runId)
           : undefined;
+      if (this.#isCancelling(runId)) return;
       const resultId = `result-${crypto.randomUUID().slice(0, 12)}`;
       const result = {
         id: resultId,

@@ -279,13 +279,16 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
             minItems: 1,
           }),
         }),
-        execute: async (_id, parameters) => {
-          const pullRequest = await delivery.deliver({
-            title: parameters.title,
-            requirements: parameters.requirements,
-            validationCommands: parameters.validation_commands,
-            inputGeneration: store.state.inputGeneration ?? 0,
-          });
+        execute: async (_id, parameters, signal) => {
+          const pullRequest = await delivery.deliver(
+            {
+              title: parameters.title,
+              requirements: parameters.requirements,
+              validationCommands: parameters.validation_commands,
+              inputGeneration: store.state.inputGeneration ?? 0,
+            },
+            signal,
+          );
           refreshStatus(currentContext);
           return {
             content: [

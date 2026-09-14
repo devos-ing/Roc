@@ -92,6 +92,7 @@ export async function runCommand(command, args, options = {}) {
       env: options.env ?? process.env,
       encoding: "utf8",
       maxBuffer: options.maxBuffer ?? 4 * 1024 * 1024,
+      signal: options.signal,
       timeout: options.timeoutMs ?? 120_000,
     });
     return {
@@ -100,6 +101,9 @@ export async function runCommand(command, args, options = {}) {
       stderr: result.stderr.trimEnd(),
     };
   } catch (error) {
+    if (options.signal?.aborted) {
+      throw new Error("Operation aborted", { cause: error });
+    }
     const stdout =
       typeof error?.stdout === "string" ? error.stdout.trimEnd() : "";
     const stderr =
