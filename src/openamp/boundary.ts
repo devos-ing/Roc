@@ -1,10 +1,14 @@
-import { remoteMutationReason } from "./command.mjs";
+import {
+  type ExtensionAPI,
+  isToolCallEventType,
+} from "@earendil-works/pi-coding-agent";
+import { remoteMutationReason } from "./command.js";
 
 /** Installs the normal-path remote mutation boundary in a Pi process. */
-export default function openAmpBoundary(pi) {
+export default function openAmpBoundary(pi: ExtensionAPI): void {
   pi.on("tool_call", (event) => {
-    if (event.toolName !== "bash") return undefined;
-    const reason = remoteMutationReason(String(event.input.command ?? ""));
+    if (!isToolCallEventType("bash", event)) return undefined;
+    const reason = remoteMutationReason(event.input.command);
     return reason ? { block: true, reason } : undefined;
   });
   pi.on("user_bash", (event) => {

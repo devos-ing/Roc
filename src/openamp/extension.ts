@@ -1,8 +1,18 @@
+import {
+  type ExtensionAPI,
+  type ExtensionContext,
+  type InlineExtension,
+  isToolCallEventType,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { remoteMutationReason } from "./command.mjs";
+import { remoteMutationReason } from "./command.js";
+import type { ChangeDelivery } from "./delivery.js";
+import type { AgentResult, ChangeState, ChangeStore } from "./state.js";
+import type { AgentSupervisor } from "./supervisor.js";
+import type { ChangeWorkspace } from "./workspace.js";
 
 /** Formats durable child state for both the TUI widget and model tool result. */
-function agentLines(supervisor) {
+function agentLines(supervisor: AgentSupervisor): string[] {
   const runs = supervisor.list();
   return runs.length === 0
     ? ["No child agents"]
@@ -13,27 +23,44 @@ function agentLines(supervisor) {
 }
 
 /** Returns whether a result ID already exists in the current Pi branch. */
-function branchContainsResult(context, resultId) {
+function branchContainsResult(
+  context: ExtensionContext,
+  resultId: string,
+): boolean {
   return context.sessionManager
     .getBranch()
     .some(
       (entry) =>
         entry.type === "custom_message" &&
         entry.customType === "openamp-result" &&
-        entry.details?.resultId === resultId,
+        (entry.details as { resultId?: string } | undefined)?.resultId ===
+          resultId,
     );
 }
 
+/** Returns a persisted result that must still exist during delivery. */
+function requireResult(state: ChangeState, resultId: string): AgentResult {
+  const result = state.results[resultId];
+  if (!result) throw new Error(`Persisted result is missing: ${resultId}`);
+  return result;
+}
+
 /** Creates the Pi extension that exposes OpenAmp collaboration and delivery. */
-export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
+export function createOpenAmpExtension(
+  store: ChangeStore,
+  supervisor: AgentSupervisor,
+  workspace: ChangeWorkspace,
+  delivery: ChangeDelivery,
+): InlineExtension {
   return {
     name: "openamp",
-    factory(pi) {
-      let currentContext;
-      const pendingDeliveries = new Set();
+    factory(pi: ExtensionAPI) {
+      let currentContext: ExtensionContext | undefined;
+      const pendingDeliveries = new Set<string>();
 
       /** Refreshes the compact OpenAmp status shown by Pi's native footer. */
-      function refreshStatus(context) {
+      function refreshStatus(context: ExtensionContext | undefined): void {
+        if (!context) return;
         const active = supervisor
           .list()
           .filter((run) =>
@@ -48,16 +75,21 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
       }
 
       /** Injects one persisted result into only its original parent session. */
-      async function deliverResult(result, context, triggerTurn = true) {
+      async function deliverResult(
+        result: AgentResult,
+        context: ExtensionContext,
+        triggerTurn = true,
+      ): Promise<boolean> {
         const sessionId = context.sessionManager.getSessionId();
         const run = store.state.runs[result.runId];
+        if (!run) throw new Error(`Result run is missing: ${result.runId}`);
         if (run.parentSessionId && run.parentSessionId !== sessionId)
           return false;
         if (branchContainsResult(context, result.id)) {
           pendingDeliveries.delete(result.id);
           if (result.deliveredSessionId !== sessionId) {
             await store.update((state) => {
-              state.results[result.id].deliveredSessionId = sessionId;
+              requireResult(state, result.id).deliveredSessionId = sessionId;
             });
           }
           refreshStatus(context);
@@ -88,7 +120,7 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
         if (branchContainsResult(context, result.id)) {
           pendingDeliveries.delete(result.id);
           await store.update((state) => {
-            state.results[result.id].deliveredSessionId = sessionId;
+            requireResult(state, result.id).deliveredSessionId = sessionId;
           });
         }
         refreshStatus(context);
@@ -111,7 +143,7 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
           ).length;
         await store.update((state) => {
           state.sessionId = sessionId;
-          state.sessionFile = context.sessionManager.getSessionFile();
+          state.sessionFile = context.sessionManager.getSessionFile() ?? null;
           state.inputGeneration = Math.max(
             state.inputGeneration ?? 0,
             persistedUserInputs,
@@ -183,8 +215,8 @@ export function createOpenAmpExtension(store, supervisor, workspace, delivery) {
       });
 
       pi.on("tool_call", (event) => {
-        if (event.toolName !== "bash") return undefined;
-        const reason = remoteMutationReason(String(event.input.command ?? ""));
+        if (!isToolCallEventType("bash", event)) return undefined;
+        const reason = remoteMutationReason(event.input.command);
         return reason ? { block: true, reason } : undefined;
       });
 

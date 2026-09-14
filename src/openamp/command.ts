@@ -3,6 +3,26 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+export interface CommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+export interface CommandOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  maxBuffer?: number;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  allowFailure?: boolean;
+}
+
+/** Returns whether an unknown failure is an object record. */
+function isErrorRecord(error: unknown): error is Record<string, unknown> {
+  return typeof error === "object" && error !== null;
+}
+
 const COMMAND = String.raw`(?:^|[\s;&|()\x60])(?:[^\s;&|()\x60]+/)?`;
 const REMOTE_MUTATION = [
   new RegExp(`${COMMAND}git\\b[^;&|\\n]*\\b(?:push|send-pack)(?:\\s|$)`, "iu"),
@@ -32,7 +52,7 @@ const REMOTE_MUTATION = [
 ];
 
 /** Returns a stable reason when an agent command crosses the Delivery boundary. */
-export function remoteMutationReason(command) {
+export function remoteMutationReason(command: string): string | undefined {
   const inspectable = command
     .replace(/\\\r?\n/gu, "")
     .replace(/\\([^\r\n])/gu, "$1")
@@ -43,8 +63,15 @@ export function remoteMutationReason(command) {
 }
 
 /** Returns an environment isolated from normal publication credential stores. */
-export function agentEnvironment(environment = process.env, isolatedHome) {
-  const result = { ...environment };
+export function agentEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+  isolatedHome?: string,
+): Record<string, string> {
+  const result = Object.fromEntries(
+    Object.entries(environment).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
   for (const name of Object.keys(result)) {
     if (
       /^(?:GH|GITHUB|GITLAB|NPM|SSH|GCM)_/iu.test(name) ||
@@ -68,8 +95,13 @@ export function agentEnvironment(environment = process.env, isolatedHome) {
 }
 
 /** Removes ambient repository overrides from OpenAmp-owned Git commands. */
-function localGitEnvironment(environment = process.env) {
-  const result = { ...environment, GIT_TERMINAL_PROMPT: "0" };
+function localGitEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const result: NodeJS.ProcessEnv = {
+    ...environment,
+    GIT_TERMINAL_PROMPT: "0",
+  };
   for (const name of [
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -85,7 +117,11 @@ function localGitEnvironment(environment = process.env) {
 }
 
 /** Runs an argv-only subprocess and returns bounded text output. */
-export async function runCommand(command, args, options = {}) {
+export async function runCommand(
+  command: string,
+  args: string[],
+  options: CommandOptions = {},
+): Promise<CommandResult> {
   try {
     const result = await execFileAsync(command, args, {
       cwd: options.cwd,
@@ -104,24 +140,32 @@ export async function runCommand(command, args, options = {}) {
     if (options.signal?.aborted) {
       throw new Error("Operation aborted", { cause: error });
     }
+    const record = isErrorRecord(error) ? error : {};
     const stdout =
-      typeof error?.stdout === "string" ? error.stdout.trimEnd() : "";
+      typeof record.stdout === "string" ? record.stdout.trimEnd() : "";
     const stderr =
-      typeof error?.stderr === "string" ? error.stderr.trimEnd() : "";
+      typeof record.stderr === "string" ? record.stderr.trimEnd() : "";
     if (options.allowFailure) {
       return {
-        exitCode: Number.isInteger(error?.code) ? error.code : 1,
+        exitCode: Number.isInteger(record.code) ? Number(record.code) : 1,
         stdout,
         stderr,
       };
     }
-    const diagnostic = stderr || stdout || error?.message || "unknown failure";
+    const diagnostic =
+      stderr ||
+      stdout ||
+      (error instanceof Error ? error.message : "unknown failure");
     throw new Error(`${command} ${args.join(" ")} failed: ${diagnostic}`);
   }
 }
 
 /** Runs a Git command with deterministic noninteractive local commit settings. */
-export async function runGit(cwd, args, options = {}) {
+export async function runGit(
+  cwd: string,
+  args: string[],
+  options: CommandOptions = {},
+): Promise<CommandResult> {
   return runCommand(
     "git",
     [

@@ -1,48 +1,128 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { remoteMutationReason, runCommand, runGit } from "./command.mjs";
+import {
+  type CommandResult,
+  remoteMutationReason,
+  runCommand,
+  runGit,
+} from "./command.js";
+import type {
+  ChangeState,
+  ChangeStore,
+  CommandLedgerEntry,
+  ReviewDecision,
+} from "./state.js";
+import type { AgentSupervisor } from "./supervisor.js";
+import type { ChangeWorkspace } from "./workspace.js";
+
+export interface DeliveryInput {
+  title: string;
+  requirements: string;
+  validationCommands: string[];
+  inputGeneration?: number;
+}
+
+interface PullRequest {
+  number: number;
+  url: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  title: string;
+  body: string;
+  headRefOid: string;
+  headRepositoryOwner?: { login?: string };
+}
+
+type ValidationRunner = (
+  command: string,
+  cwd: string,
+  signal?: AbortSignal,
+) => Promise<CommandResult>;
+
+type DeliveryCommandRunner = (
+  command: string,
+  args: string[],
+  cwd: string,
+  signal?: AbortSignal,
+) => Promise<CommandResult>;
+
+export interface DeliveryOptions {
+  validationRunner?: ValidationRunner;
+  commandRunner?: DeliveryCommandRunner;
+  environment?: NodeJS.ProcessEnv;
+}
+
+/** Returns the required publication record after its lifecycle has begun. */
+function requirePublication(
+  state: ChangeState,
+): NonNullable<ChangeState["publication"]> {
+  if (!state.publication) throw new Error("Publication state is missing");
+  return state.publication;
+}
+
+/** Returns a just-recorded command ledger entry by its durable identifier. */
+function requireLedgerEntry(
+  state: ChangeState,
+  id: string,
+): CommandLedgerEntry {
+  const entry = state.commandLedger.find((item) => item.id === id);
+  if (!entry) throw new Error(`Command ledger entry is missing: ${id}`);
+  return entry;
+}
 
 /** Hashes the exact current requirements bound to independent review. */
-function requirementHash(requirements) {
+function requirementHash(requirements: string): string {
   return createHash("sha256").update(requirements).digest("hex");
 }
 
 /** Extracts the reviewer's single strict JSON object from plain or fenced output. */
-export function parseReview(text) {
+export function parseReview(text: string): ReviewDecision {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/iu)?.[1];
   const candidate =
     fenced ?? text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
-  let value;
+  let value: unknown;
   try {
     value = JSON.parse(candidate);
   } catch {
     throw new Error("Independent review did not return valid JSON");
   }
   if (
-    !["accepted", "rejected"].includes(value?.decision) ||
-    !Array.isArray(value?.findings) ||
+    typeof value !== "object" ||
+    value === null ||
+    !("decision" in value) ||
+    !("findings" in value) ||
+    !["accepted", "rejected"].includes(String(value.decision)) ||
+    !Array.isArray(value.findings) ||
     value.findings.some(
-      (finding) =>
-        !["blocking", "nonblocking"].includes(finding?.severity) ||
-        typeof finding?.message !== "string",
+      (finding: unknown) =>
+        typeof finding !== "object" ||
+        finding === null ||
+        !("severity" in finding) ||
+        !("message" in finding) ||
+        !["blocking", "nonblocking"].includes(String(finding.severity)) ||
+        typeof finding.message !== "string",
     )
   ) {
     throw new Error("Independent review returned an invalid decision schema");
   }
+  const review = value as ReviewDecision;
   if (
-    value.decision === "accepted" &&
-    value.findings.some((finding) => finding.severity === "blocking")
+    review.decision === "accepted" &&
+    review.findings.some((finding) => finding.severity === "blocking")
   ) {
     throw new Error(
       "Independent review accepted while retaining a blocking finding",
     );
   }
-  return value;
+  return review;
 }
 
 /** Runs one local verification command while forbidding publication side effects. */
-async function defaultValidationRunner(command, cwd, signal) {
+async function defaultValidationRunner(
+  command: string,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<CommandResult> {
   const reason = remoteMutationReason(command);
   if (reason) throw new Error(`Validation command rejected: ${reason}`);
   return runCommand("/bin/sh", ["-lc", command], {
@@ -54,7 +134,12 @@ async function defaultValidationRunner(command, cwd, signal) {
 }
 
 /** Renders the durable requirements, checks, review, and limitations for GitHub. */
-function pullRequestBody(input, review, head, changeId) {
+function pullRequestBody(
+  input: DeliveryInput,
+  review: ReviewDecision,
+  head: string,
+  changeId: string,
+): string {
   const validations = input.validationCommands.map(
     (command) => `- \`${command}\``,
   );
@@ -80,8 +165,19 @@ function pullRequestBody(input, review, head, changeId) {
 
 /** Publishes only a fully bound reviewed feature head and reconciles uncertain responses. */
 export class ChangeDelivery {
+  readonly store: ChangeStore;
+  readonly workspace: ChangeWorkspace;
+  readonly supervisor: AgentSupervisor;
+  readonly validationRunner: ValidationRunner;
+  readonly commandRunner: DeliveryCommandRunner;
+
   /** Connects validation, review, and publication to one durable change. */
-  constructor(store, workspace, supervisor, options = {}) {
+  constructor(
+    store: ChangeStore,
+    workspace: ChangeWorkspace,
+    supervisor: AgentSupervisor,
+    options: DeliveryOptions = {},
+  ) {
     this.store = store;
     this.workspace = workspace;
     this.supervisor = supervisor;
@@ -100,7 +196,12 @@ export class ChangeDelivery {
   }
 
   /** Reads one exact remote branch head through the controlled Delivery runner. */
-  async #readRemoteBranch(action, branch, inputGeneration, signal) {
+  async #readRemoteBranch(
+    action: string,
+    branch: string,
+    inputGeneration?: number,
+    signal?: AbortSignal,
+  ): Promise<string> {
     const result = await this.#run(
       action,
       "git",
@@ -108,7 +209,7 @@ export class ChangeDelivery {
       inputGeneration,
       signal,
     );
-    const head = result.stdout.split(/\s/u)[0];
+    const head = result.stdout.split(/\s/u)[0] ?? "";
     if (result.exitCode !== 0 || !/^[0-9a-f]{40}$/u.test(head)) {
       throw new Error(`Cannot read remote branch: ${branch}`);
     }
@@ -116,7 +217,12 @@ export class ChangeDelivery {
   }
 
   /** Writes the immutable review metadata and complete base-to-head patch for read-only agents. */
-  async #writeReviewBundle(base, head, requirements, specHash) {
+  async #writeReviewBundle(
+    base: string,
+    head: string,
+    requirements: string,
+    specHash: string,
+  ): Promise<string> {
     const history = await runGit(this.store.state.workspace, [
       "log",
       "--format=%H %s",
@@ -156,7 +262,10 @@ export class ChangeDelivery {
   }
 
   /** Rejects delivery when cancellation or newer user input invalidates the requirements. */
-  #assertRequirementsCurrent(inputGeneration, signal) {
+  #assertRequirementsCurrent(
+    inputGeneration?: number,
+    signal?: AbortSignal,
+  ): void {
     if (signal?.aborted) {
       throw new Error("Interaction cancellation invalidated the delivery");
     }
@@ -168,8 +277,11 @@ export class ChangeDelivery {
   }
 
   /** Verifies, independently reviews, and creates or updates exactly one pull request. */
-  async deliver(input, signal) {
-    let cancellationWrite;
+  async deliver(
+    input: DeliveryInput,
+    signal?: AbortSignal,
+  ): Promise<PullRequest> {
+    let cancellationWrite: Promise<unknown> | undefined;
     /** Persists one cancellation generation and prevents pending publication recovery. */
     const recordCancellation = () => {
       cancellationWrite ??= this.store.update((state) => {
@@ -207,12 +319,14 @@ export class ChangeDelivery {
       const head = await this.workspace.checkpoint(
         `openamp(${this.store.state.id}): complete requested change`,
       );
+      if (!head) throw new Error("Delivery requires a Git feature head");
       if (head === this.store.state.baseCommit) {
         throw new Error(
           "Delivery requires a change relative to the selected base",
         );
       }
       const base = this.store.state.baseCommit;
+      if (!base) throw new Error("Delivery requires a recorded base commit");
       const remoteBase = await this.#readRemoteBranch(
         "read-review-base",
         this.store.state.baseBranch,
@@ -233,7 +347,11 @@ export class ChangeDelivery {
       ) {
         throw new Error("Delivery requires at least one validation command");
       }
-      const validation = [];
+      const validation: Array<{
+        command: string;
+        exitCode: number;
+        output: string;
+      }> = [];
       for (const command of input.validationCommands) {
         const result = await this.validationRunner(
           command,
@@ -330,7 +448,7 @@ export class ChangeDelivery {
       this.#assertRequirementsCurrent(inputGeneration, signal);
       await this.store.update((state) => {
         state.phase = "pr_open";
-        Object.assign(state.publication, {
+        Object.assign(requirePublication(state), {
           status: "published",
           pullRequestNumber: pullRequest.number,
           pullRequestUrl: pullRequest.url,
@@ -359,11 +477,18 @@ export class ChangeDelivery {
   }
 
   /** Records and runs a controlled Delivery command without exposing a merge operation. */
-  async #run(action, command, args, inputGeneration, signal) {
+  async #run(
+    action: string,
+    command: string,
+    args: string[],
+    inputGeneration?: number,
+    signal?: AbortSignal,
+  ): Promise<CommandResult> {
     const mutatesRemote = ["push", "create-pr", "update-pr"].includes(action);
     if (
       command === "gh" &&
       args[0] === "pr" &&
+      args[1] !== undefined &&
       ["merge", "close", "reopen"].includes(args[1])
     ) {
       throw new Error(
@@ -385,9 +510,7 @@ export class ChangeDelivery {
         this.#assertRequirementsCurrent(inputGeneration, signal);
       } catch (error) {
         await this.store.update((state) => {
-          const entry = state.commandLedger.find(
-            (item) => item.id === ledgerId,
-          );
+          const entry = requireLedgerEntry(state, ledgerId);
           entry.status = "cancelled";
           entry.finishedAt = new Date().toISOString();
         });
@@ -396,23 +519,21 @@ export class ChangeDelivery {
     }
     if (mutatesRemote) {
       await this.store.update((state) => {
-        state.publication.status = "reconcile_required";
+        requirePublication(state).status = "reconcile_required";
       });
       try {
         this.#assertRequirementsCurrent(inputGeneration, signal);
       } catch (error) {
         await this.store.update((state) => {
-          state.publication.status = "pending";
-          const entry = state.commandLedger.find(
-            (item) => item.id === ledgerId,
-          );
+          requirePublication(state).status = "pending";
+          const entry = requireLedgerEntry(state, ledgerId);
           entry.status = "cancelled";
           entry.finishedAt = new Date().toISOString();
         });
         throw error;
       }
     }
-    let result;
+    let result: CommandResult;
     try {
       result = await this.commandRunner(
         command,
@@ -422,7 +543,7 @@ export class ChangeDelivery {
       );
     } catch (error) {
       await this.store.update((state) => {
-        const entry = state.commandLedger.find((item) => item.id === ledgerId);
+        const entry = requireLedgerEntry(state, ledgerId);
         entry.status = mutatesRemote
           ? "unknown"
           : signal?.aborted
@@ -440,7 +561,7 @@ export class ChangeDelivery {
       throw error;
     }
     await this.store.update((state) => {
-      const entry = state.commandLedger.find((item) => item.id === ledgerId);
+      const entry = requireLedgerEntry(state, ledgerId);
       entry.status =
         result.exitCode === 0
           ? "completed"
@@ -454,8 +575,14 @@ export class ChangeDelivery {
   }
 
   /** Queries the one same-repository PR associated with the feature branch and base. */
-  async #findPullRequest(inputGeneration, signal) {
+  async #findPullRequest(
+    inputGeneration?: number,
+    signal?: AbortSignal,
+  ): Promise<PullRequest | undefined> {
     const state = this.store.state;
+    if (!state.branch || !state.baseBranch) {
+      throw new Error("PR lookup requires feature and base branches");
+    }
     const result = await this.#run(
       "find-pr",
       "gh",
@@ -485,8 +612,10 @@ export class ChangeDelivery {
     );
     if (repository.exitCode !== 0)
       throw new Error("GitHub repository lookup failed");
-    const owner = JSON.parse(repository.stdout).owner.login;
-    const matches = JSON.parse(result.stdout).filter(
+    const owner = (
+      JSON.parse(repository.stdout) as { owner: { login: string } }
+    ).owner.login;
+    const matches = (JSON.parse(result.stdout) as PullRequest[]).filter(
       (item) => item.headRepositoryOwner?.login === owner,
     );
     if (matches.length > 1)
@@ -495,8 +624,18 @@ export class ChangeDelivery {
   }
 
   /** Pushes the exact reviewed branch then creates or updates and re-reads its PR. */
-  async #publish(input, review, head, base, inputGeneration, signal) {
+  async #publish(
+    input: DeliveryInput,
+    review: ReviewDecision,
+    head: string,
+    base: string,
+    inputGeneration: number,
+    signal?: AbortSignal,
+  ): Promise<PullRequest> {
     const state = this.store.state;
+    if (!state.branch || !state.baseBranch) {
+      throw new Error("Publication requires feature and base branches");
+    }
     this.#assertRequirementsCurrent(inputGeneration, signal);
     const remoteBase = await this.#readRemoteBranch(
       "read-publication-base",
@@ -568,7 +707,7 @@ export class ChangeDelivery {
         ]);
         if (reconciled.stdout.split(/\s/u)[0] !== head) {
           await this.store.update((current) => {
-            current.publication.status = "reconcile_required";
+            requirePublication(current).status = "reconcile_required";
           });
           throw new Error(
             "Feature branch push failed and could not be reconciled",
@@ -577,7 +716,7 @@ export class ChangeDelivery {
       }
     }
     await this.store.update((current) => {
-      current.publication.status = "pending";
+      requirePublication(current).status = "pending";
     });
     this.#assertRequirementsCurrent(inputGeneration, signal);
 
@@ -640,10 +779,10 @@ export class ChangeDelivery {
       finalPullRequest.body !== body
     ) {
       await this.store.update((current) => {
-        current.publication.status = "reconcile_required";
-        current.publication.pullRequestNumber =
-          finalPullRequest?.number ?? null;
-        current.publication.pullRequestUrl = finalPullRequest?.url ?? null;
+        const publication = requirePublication(current);
+        publication.status = "reconcile_required";
+        publication.pullRequestNumber = finalPullRequest?.number ?? null;
+        publication.pullRequestUrl = finalPullRequest?.url ?? null;
       });
       throw new Error(
         changed?.exitCode === 0
@@ -652,7 +791,7 @@ export class ChangeDelivery {
       );
     }
     await this.store.update((current) => {
-      Object.assign(current.publication, {
+      Object.assign(requirePublication(current), {
         status: "published",
         pullRequestNumber: finalPullRequest.number,
         pullRequestUrl: finalPullRequest.url,

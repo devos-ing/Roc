@@ -5,10 +5,10 @@
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "openamp": "./src/openamp/main.mjs"
+    "openamp": "./dist/openamp/main.js"
   },
   "files": [
-    "src/openamp",
+    "dist/openamp",
     "README.md",
     "README.zh-HK.md",
     "LICENSE"
@@ -36,13 +36,15 @@
     "access": "public"
   },
   "scripts": {
-    "dev": "node src/openamp/main.mjs",
-    "test": "mkdir -p \"${TMPDIR:-/tmp}/openamp-tests\" && TMPDIR=\"${TMPDIR:-/tmp}/openamp-tests\" bun test --timeout 120000 test/openamp test/package.test.ts test/release-workflow.test.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "bun run build && node dist/openamp/main.js",
+    "test": "bun run build && mkdir -p \"${TMPDIR:-/tmp}/openamp-tests\" && TMPDIR=\"${TMPDIR:-/tmp}/openamp-tests\" bun test --timeout 120000 test/openamp test/package.test.ts test/release-workflow.test.ts",
     "typecheck": "tsc --noEmit",
     "prepare": "husky",
     "format": "biome check --write .",
     "lint": "biome ci .",
     "check": "bun run lint && bun run typecheck && bun run test",
+    "prepack": "bun run build",
     "prepublishOnly": "bun run check"
   },
   "dependencies": {
