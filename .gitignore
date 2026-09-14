@@ -9,3 +9,5 @@ agile-codex-harness-*
 agile-branch-repo-*
 xcrun_db
 node_modules/
+dist/
+.amp/portals/

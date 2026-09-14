@@ -22,17 +22,28 @@ export function tabTargets() {
 }
 
 /** Renders setup guidance without requiring settings or a remote snapshot. */
-export function renderWelcome(width: number): string {
+export function renderWelcome(
+  width: number,
+  scheduler?: {
+    preview: string;
+    state: "idle" | "starting" | "running" | "stopping" | "stopped" | "failed";
+    error?: string;
+  },
+): string {
   return [
     renderHelpBox(
       "Welcome to Roc",
-      "Read-only workspace monitor.\nNo scheduler or agents are started here.",
+      scheduler === undefined
+        ? "Read-only workspace monitor.\nNo scheduler or agents are started here."
+        : `${scheduler.preview}\nScheduler: ${scheduler.state}${scheduler.error ? ` · ${scheduler.error}` : ""}\nS starts this TUI's scheduler; S again stops it.`,
       width,
     ),
     "",
     renderHelpBox(
       "Getting started",
-      "Use Tasks to inspect GitHub checkpoints.\nSetup: roc-it onboard\nGitHub login: gh auth login\nRefresh with R after setup; nothing is changed by this monitor.",
+      scheduler === undefined
+        ? "Use Tasks to inspect GitHub checkpoints.\nSetup: roc-it onboard\nGitHub login: gh auth login\nRefresh with R after setup; nothing is changed by this monitor."
+        : "Use Tasks to inspect saved GitHub checkpoints.\nStart uses existing onboarding consent and settings.\nExternal, stale, or unreadable locks are monitor-only; they are never stopped here.",
       width,
     ),
   ].join("\n");

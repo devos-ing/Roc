@@ -1,6 +1,6 @@
 # Roc detailed guide
 
-[Quick start](README.md) · [繁體中文詳細指南](README.details.zh-HK.md)
+[Current OpenAmp quick start](../../README.md) · [繁體中文 Roc 詳細指南](roc-guide.zh-HK.md)
 
 ## Architecture: GitHub tasks and one executor
 
@@ -9,9 +9,9 @@ The daemon saves attempts, model choices, usage, role results and PR receipts
 in one comment per Issue owned by its GitHub account. Labels show status; they
 do not lock tasks or grant execution permission.
 
-[Open the interactive architecture map](output/archify/roc-current/roc-architecture.html), authored in English with source links for the current architecture. Download the HTML and open it locally; GitHub displays its source.
+[Open the interactive architecture map](../../output/archify/roc-current/roc-architecture.html), authored in English with source links for the current architecture. Download the HTML and open it locally; GitHub displays its source.
 
-![Roc architecture map: GitHub task state, parallel worktrees, and verified merges](docs/assets/roc-architecture.png)
+![Roc architecture map: GitHub task state, parallel worktrees, and verified merges](../assets/roc-architecture.png)
 
 Planning and execution can share one machine. The roles in the diagram do not require two Macs.
 
@@ -42,11 +42,11 @@ through `ROC_CLI_ENTRY` in each terminal for the behavior described here.
 
 | Scope | Evidence |
 | --- | --- |
-| GitHub tasks, worktrees, parallel execution and recovery | [M1/M2 live acceptance](docs/validation/m1-m2-live-2026-09-09.md) |
-| Automatic merge, base refresh and fresh Review | [M3 protected-branch acceptance](docs/validation/m3-live-2026-09-09.md) |
-| Diagnostics, progress, timing, usage and comparisons | [M4 measurements](docs/validation/m4-live-2026-09-09.md), with 292 local tests passing |
+| GitHub tasks, worktrees, parallel execution and recovery | [M1/M2 live acceptance](../validation/m1-m2-live-2026-09-09.md) |
+| Automatic merge, base refresh and fresh Review | [M3 protected-branch acceptance](../validation/m3-live-2026-09-09.md) |
+| Diagnostics, progress, timing, usage and comparisons | [M4 measurements](../validation/m4-live-2026-09-09.md), with 292 local tests passing |
 
-A separate [mixed-effort live check](docs/validation/role-routing-live-2026-09-09.md)
+A separate [mixed-effort live check](../validation/role-routing-live-2026-09-09.md)
 confirmed Astra `high` Scout/Review and `medium` Implement through Pi state readback.
 Its traced repeat merged both PRs; an unexplained first-run refresh cancellation
 remains open in [#79](https://github.com/devos-ing/Roc/issues/79).
@@ -163,7 +163,7 @@ and verifies merge ancestry before saving `done` and releasing dependencies.
 `--once` can reconcile already published PRs but does not keep waiting for newly
 published CI; use continuous mode for automatic completion. Automatic merge has
 deterministic transport/Fake Harness tests, including refresh/re-review, and
-real-Git conflict/lease tests. [Live protected-branch acceptance](docs/validation/m3-live-2026-09-09.md)
+real-Git conflict/lease tests. [Live protected-branch acceptance](../validation/m3-live-2026-09-09.md)
 also passed for two parallel tasks, including one rebase, fresh independent
 Review and CI before automatic merge. That test used one Mac.
 
@@ -182,7 +182,7 @@ even when the Issue is already closed; a failed label write does not block
 closure. Candidates rejected by admission trigger neither label repair nor
 closure checks or writes.
 
-[Live closure and restart validation](docs/validation/issue-closure-live-2026-09-09.md)
+[Live closure and restart validation](../validation/issue-closure-live-2026-09-09.md)
 confirmed real GitHub closure on a non-default branch, including recovery without
 model replay. The report also records two interrupted attempts and the use of
 single-run execution for the successful tasks.
@@ -214,7 +214,7 @@ Issue and its known plan members and revalidates their authority. A temporary
 list omission therefore does not cancel approved work. Normal polls add no
 extra reads. Failed confirmation stops safely with `GITHUB_AUTHORITY_UNCONFIRMED`;
 cancellation records include the specific reason.
-[Polling regression evidence](docs/validation/polling-authority-2026-09-09.md)
+[Polling regression evidence](../validation/polling-authority-2026-09-09.md)
 covers workers, refreshed Review, and genuine withdrawal or closure.
 
 ### Optional Scout omission
@@ -225,7 +225,7 @@ by default. The scope must contain explicit relative file paths with suffixes,
 without whitespace, traversal or glob syntax; acceptance and validation remain
 required. Use the normal Scout flow for broader or uncertain work. The board
 shows Scout as skipped, and a later base refresh still requires a fresh Review.
-See the [M4 measurements and limitations](docs/validation/m4-live-2026-09-09.md).
+See the [M4 measurements and limitations](../validation/m4-live-2026-09-09.md).
 
 ### Progress and recovery
 
@@ -393,7 +393,7 @@ Use `roc-create-tasks` in your coding assistant to create and approve tasks.
 ## The task board
 
 `tui` opens Welcome with setup/connection status, even before Roc settings or
-GitHub login are available. `task board` opens Tasks directly. Both are read-only:
+GitHub login are available. `task board` opens Tasks directly and remains read-only. Interactive `tui` can explicitly start one scheduler it owns after showing the repository/default-branch, concurrency 2, and manual-merge preview; `S` stops it and quit waits for the same cancellation and cleanup. External live, stale, and unreadable locks are monitor-only and are never signalled or removed by TUI. The board itself remains checkpoint-only:
 neither starts a scheduler or changes tasks. On a wide terminal, Tasks shows a
 left task list and the selected task's progress detail on the right. Switch pages
 with Tab, 1/2, or a mouse click on the top tabs. R refreshes; failed reads keep
@@ -568,12 +568,12 @@ tokens [--no-color]                       Show confirmed token usage
 
 Run these after `bun "$ROC_CLI_ENTRY"`. Task identifiers are Issue numbers,
 `#41` or `issue-41`. `task import`, `task import-github`, local queue mode and
-`--base` have been removed. See [architecture](docs/architecture.md),
-[M1 specification](docs/specs/github-native-execution.md),
-[M2 specification](docs/specs/parallel-execution.md),
-[automatic merge specification](docs/specs/automatic-merge.md),
-[M4 specification](docs/specs/execution-efficiency.md) and
-[roadmap](docs/roadmap.md) for implementation scope.
+`--base` have been removed. See [architecture](roc-architecture.md),
+[M1 specification](../specs/github-native-execution.md),
+[M2 specification](../specs/parallel-execution.md),
+[automatic merge specification](../specs/automatic-merge.md),
+[M4 specification](../specs/execution-efficiency.md) and
+[roadmap](../roadmap.md) for implementation scope.
 
 ### Scheduler daemon status
 

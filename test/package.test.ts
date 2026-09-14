@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
-import { mkdir, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const projectRoot = resolve(import.meta.dir, "..");
 
@@ -15,52 +23,86 @@ type PackageManifest = {
   engines?: Record<string, string>;
   publishConfig?: Record<string, string>;
   scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
 };
 
 type PackResult = {
+  filename: string;
   files: Array<{ path: string }>;
 };
 
 const stableVersionPattern = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 
+/** Returns a package-test environment without inherited Git repository overrides. */
+function packageEnvironment(extra: Record<string, string> = {}) {
+  const environment: Record<string, string | undefined> = {
+    ...process.env,
+    ...extra,
+  };
+  for (const name of ["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"]) {
+    delete environment[name];
+  }
+  return environment;
+}
+
+/** Reads the package manifest from the repository root. */
 async function readManifest(): Promise<PackageManifest> {
   const text = await readFile(resolve(projectRoot, "package.json"), "utf8");
   return JSON.parse(text) as PackageManifest;
 }
 
-test("package metadata exposes roc-it as a public Bun CLI", async () => {
+/** Runs one subprocess and returns its complete output. */
+async function run(command: string[], cwd: string) {
+  const child = Bun.spawn(command, {
+    cwd,
+    env: packageEnvironment(),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
+test("package metadata exposes only the public Node OpenAmp CLI", async () => {
   const manifest = await readManifest();
 
-  expect(manifest.name).toBe("roc-it");
+  expect(manifest.name).toBe("openamp");
   expect(manifest.version).toMatch(stableVersionPattern);
   expect(manifest.private).toBeUndefined();
   expect(manifest.license).toBe("Apache-2.0");
-  expect(manifest.bin).toEqual({
-    "roc-it": "./src/cli/main.ts",
-    agile: "./src/cli/main.ts",
-  });
+  expect(manifest.bin).toEqual({ openamp: "./dist/openamp/main.js" });
   expect(manifest.files).toEqual([
-    "src",
-    "skills",
+    "dist/openamp",
+    "dist/third-party/sol-pi",
     "README.md",
     "README.zh-HK.md",
-    "README.details.md",
-    "README.details.zh-HK.md",
     "LICENSE",
   ]);
-  expect(manifest.engines).toEqual({ bun: ">=1.3.0", node: ">=22.19.0" });
+  expect(manifest.engines).toEqual({ node: ">=22.19.0" });
   expect(manifest.publishConfig).toEqual({ access: "public" });
-  expect(manifest.scripts?.dev).toBe("bun src/cli/main.ts");
+  expect(manifest.scripts?.build).toBe(
+    "tsc -p tsconfig.build.json && node tools/write-observation-pack-build-manifest.mjs",
+  );
+  expect(manifest.scripts?.dev).toBe(
+    "bun run build && node dist/openamp/main.js",
+  );
+  expect(manifest.scripts?.prepack).toBe("bun run build");
   expect(manifest.scripts?.prepublishOnly).toBe("bun run check");
+  expect(manifest.dependencies).toEqual({
+    "@clack/prompts": "1.7.0",
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@earendil-works/pi-tui": "0.82.1",
+    typebox: "1.1.38",
+  });
 });
 
-test("a representative next stable version satisfies the package boundary", () => {
-  expect("0.0.3").toMatch(stableVersionPattern);
-});
-
-test("Roc development PR review helpers pass their Python suites", async () => {
+test("OpenAmp development PR review helpers pass their Python suites", async () => {
   for (const script of ["test_evidence.py", "test_ledger.py"]) {
-    const child = Bun.spawn(
+    const result = await run(
       [
         "python3",
         "-B",
@@ -73,152 +115,96 @@ test("Roc development PR review helpers pass their Python suites", async () => {
           script,
         ),
       ],
-      { cwd: projectRoot, stdout: "pipe", stderr: "pipe" },
+      projectRoot,
+    );
+    expect(
+      result.exitCode,
+      `${script}\n${result.stdout}\n${result.stderr}`,
+    ).toBe(0);
+  }
+});
+
+test("npm archive installs a working Node CLI without Roc runtime paths", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "openamp-pack-"));
+  try {
+    const npmCache = resolve(root, "npm-cache");
+    const archiveDirectory = resolve(root, "archive");
+    const installDirectory = resolve(root, "install");
+    await Promise.all([
+      mkdir(npmCache, { recursive: true }),
+      mkdir(archiveDirectory, { recursive: true }),
+      mkdir(installDirectory, { recursive: true }),
+    ]);
+    const child = Bun.spawn(
+      [
+        "npm",
+        "pack",
+        "--json",
+        "--ignore-scripts",
+        "--pack-destination",
+        archiveDirectory,
+      ],
+      {
+        cwd: projectRoot,
+        env: packageEnvironment({ npm_config_cache: npmCache }),
+        stdout: "pipe",
+        stderr: "pipe",
+      },
     );
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    expect(exitCode, `${script}\n${stdout}\n${stderr}`).toBe(0);
+    expect(exitCode, stderr).toBe(0);
+    const result = (JSON.parse(stdout) as PackResult[])[0];
+    if (!result) throw new Error("npm pack returned no archive");
+    const paths = result.files.map((file) => file.path).sort();
+    expect(paths).toContain("dist/openamp/main.js");
+    expect(paths).toContain("dist/openamp/main.d.ts");
+    expect(paths).toContain("dist/third-party/sol-pi/PROVENANCE.json");
+    expect(paths).toContain("dist/third-party/sol-pi/BUILD-PROVENANCE.json");
+    expect(paths.some((path) => path.startsWith("src/openamp/"))).toBeFalse();
+    expect(paths).not.toContain("src/cli/main.ts");
+    expect(paths.some((path) => path.startsWith("src/scheduler/"))).toBeFalse();
+    expect(paths.some((path) => path.startsWith("skills/"))).toBeFalse();
+    expect(paths.some((path) => path.includes("README.details"))).toBeFalse();
+
+    const archive = resolve(archiveDirectory, result.filename);
+    const installed = await run(
+      ["npm", "install", "--ignore-scripts", "--no-audit", archive],
+      installDirectory,
+    );
+    expect(installed.exitCode, installed.stderr).toBe(0);
+    const help = await run(
+      [resolve(installDirectory, "node_modules/.bin/openamp"), "--help"],
+      installDirectory,
+    );
+    expect(help.exitCode, help.stderr).toBe(0);
+    expect(help.stdout).toContain(
+      "OpenAmp - interactive Pi agent collaboration",
+    );
+    const runtimeCheck = await run(
+      [
+        "node",
+        "--input-type=module",
+        "--eval",
+        "import { createHash } from 'node:crypto'; import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'; import { tmpdir } from 'node:os'; import { join, resolve } from 'node:path'; const root = resolve('node_modules/openamp'); const piRoot = resolve('node_modules/@earendil-works/pi-coding-agent'); const { createEventBus } = await import(join(piRoot, 'dist/core/event-bus.js')); const { createExtensionRuntime, loadExtensionFromFactory, loadExtensions } = await import(join(piRoot, 'dist/core/extensions/loader.js')); const observation = await import(join(root, 'dist/openamp/observation-pack.js')); await observation.validateObservationPackRuntime(); const parent = await loadExtensionFromFactory(await observation.createOpenAmpObservationPackExtension(), process.cwd(), createEventBus(), createExtensionRuntime()); const child = await loadExtensions([join(root, 'dist/openamp/observation-pack-extension.js')], process.cwd()); if (child.errors.length || !parent.tools.has('obs_recall') || !child.extensions[0]?.tools.has('obs_recall')) throw new Error('ObservationPack tool was not registered'); const sessionDir = await mkdtemp(join(tmpdir(), 'openamp-recall-')); const sessionId = 'session'; const id = 'obs_aaaaaaaaaaaaaaaaaaaaaaaa'; const text = 'recalled text\\n'; const contentHash = createHash('sha256').update(text).digest('hex'); const archive = join(sessionDir, 'sol-pi', sessionId, 'observation-pack'); await mkdir(join(archive, 'objects'), { recursive: true }); await writeFile(join(archive, 'objects', id + '.txt'), text); await writeFile(join(archive, 'ledger.jsonl'), JSON.stringify({ event: 'full', id, contentHash }) + '\\n'); const recall = child.extensions[0].tools.get('obs_recall').definition; const result = await recall.execute('call', { id, offset: 0 }, new AbortController().signal, () => {}, { mode: 'json', sessionManager: { getSessionDir: () => sessionDir, getSessionId: () => sessionId } }); if (result.content[0]?.text !== '[obs_recall id=' + id + ' offset=0 next_offset=14 eof=true]\\n[chunk_bytes=14 chunk_lines=1; use next_offset to continue]\\n' + text) throw new Error('ObservationPack recall did not execute');",
+      ],
+      installDirectory,
+    );
+    expect(runtimeCheck.exitCode, runtimeCheck.stderr).toBe(0);
+    const vendorEntry = join(
+      installDirectory,
+      "node_modules/openamp/dist/third-party/sol-pi/extensions/observation-pack/index.js",
+    );
+    await rename(vendorEntry, `${vendorEntry}.disabled`);
+    const disabledHelp = await run(
+      [resolve(installDirectory, "node_modules/.bin/openamp"), "--help"],
+      installDirectory,
+    );
+    expect(disabledHelp.exitCode, disabledHelp.stderr).toBe(0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
-});
-
-test("roc-create-tasks keeps its main and execution safeguards across every mirror", async () => {
-  const mainPaths = [
-    "skills/roc-create-tasks/SKILL.md",
-    ".agents/skills/roc-create-tasks/SKILL.md",
-    ".claude/skills/roc-create-tasks/SKILL.md",
-  ];
-  const executionPaths = mainPaths.map((path) =>
-    path.replace("SKILL.md", "execution.md"),
-  );
-  const skillFiles = await Promise.all(
-    [...mainPaths, ...executionPaths].map((path) =>
-      readFile(resolve(projectRoot, path), "utf8"),
-    ),
-  );
-  const shipped = skillFiles[0]!;
-  const agents = skillFiles[1]!;
-  const claude = skillFiles[2]!;
-  const execution = skillFiles[3]!;
-  const agentsExecution = skillFiles[4]!;
-  const claudeExecution = skillFiles[5]!;
-
-  expect(agents).toBe(shipped);
-  expect(claude).toBe(shipped);
-  expect(agentsExecution).toBe(execution);
-  expect(claudeExecution).toBe(execution);
-  const mainProse = shipped.replace(/\s+/g, " ");
-  const executionProse = execution.replace(/\s+/g, " ");
-  expect(mainProse).not.toMatch(/\btask\s+import\b|\*\*Local queue/i);
-  for (const requirement of [
-    "the user explicitly invoked `roc-create-tasks`",
-    "Use the installed `grilling` skill for requirement discovery",
-    "approval of the complete task set and repository",
-    "Write and publish exactly the approved manifest",
-    "GitHub Issues are the only execution destination",
-    "npx roc-it@latest task publish-github FILE",
-    'bun "$ROC_CLI_ENTRY"',
-    "Before starting, reusing, inspecting, or monitoring a scheduler",
-  ]) {
-    expect(mainProse).toContain(requirement);
-  }
-  for (const requirement of [
-    "Respect the user's chosen merge mode and existing execution consent",
-    "Task-plan approval is not permission to start execution or enable automatic merge",
-    "Reuse prior consent for this execution",
-    "If execution consent is missing, ask before starting",
-    "manual merge is the default",
-    "Never enable `--auto-merge` without that choice",
-    "confirm its repository, base branch, and merge mode",
-    "Keep one daemon per repository",
-    "Reuse an existing daemon when its configuration matches",
-    "Never implicitly start a duplicate daemon or restart one to change its mode",
-    "without `--auto-merge`",
-    "`--once` processes one eligible task and exits",
-    "readable classic branch protection",
-    "at least one required status check",
-    "strict up-to-date checks",
-    "administrator enforcement",
-    "Human reviews remain required when configured",
-    "Never bypass or silently modify repository protection",
-    "PR creation does not establish completion",
-    "An open PR stays `awaiting_merge`",
-    "visible wait reasons",
-    "npx roc-it@latest scheduler inspect",
-    "confirmed `done` only after",
-    "PR is confirmed merged into the selected target branch",
-    "verified the merge commit is present in the fetched target",
-  ]) {
-    expect(executionProse).toContain(requirement);
-  }
-
-  const schedulerCommands = execution.match(
-    /^npx roc-it@latest scheduler run .+$/gm,
-  );
-  expect(schedulerCommands).toEqual([
-    "npx roc-it@latest scheduler run --base-branch SELECTED_BASE --concurrency 1 --auto-merge",
-  ]);
-  expect(schedulerCommands?.join("\n")).not.toContain("--once");
-});
-
-test("npm archive contains only runtime files", async () => {
-  const npmCache = resolve(projectRoot, ".tmp-agile-tests", "npm-cache");
-  await mkdir(npmCache, { recursive: true });
-  const child = Bun.spawn(
-    ["npm", "pack", "--dry-run", "--json", "--ignore-scripts"],
-    {
-      cwd: projectRoot,
-      env: { ...process.env, npm_config_cache: npmCache },
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-
-  if (exitCode !== 0) {
-    throw new Error(`npm pack failed: ${stderr}`);
-  }
-
-  const output = JSON.parse(stdout) as
-    | PackResult[]
-    | Record<string, PackResult>;
-  const results = Array.isArray(output) ? output : Object.values(output);
-  expect(results).toHaveLength(1);
-
-  const paths = results[0]!.files.map((file) => file.path).sort();
-  const allowedRootFiles = new Set([
-    "LICENSE",
-    "README.md",
-    "README.zh-HK.md",
-    "README.details.md",
-    "README.details.zh-HK.md",
-    "package.json",
-  ]);
-  const unexpected = paths.filter(
-    (path) =>
-      !allowedRootFiles.has(path) &&
-      !path.startsWith("src/") &&
-      !path.startsWith("skills/"),
-  );
-
-  expect(unexpected).toEqual([]);
-  expect(paths).toContain("LICENSE");
-  expect(paths).toContain("README.md");
-  expect(paths).toContain("README.zh-HK.md");
-  expect(paths).toContain("README.details.md");
-  expect(paths).toContain("README.details.zh-HK.md");
-  expect(paths).not.toContain("CONTRIBUTING.md");
-  expect(paths).toContain("package.json");
-  expect(paths).toContain("src/cli/main.ts");
-  expect(paths).toContain("skills/roc-create-tasks/SKILL.md");
-  expect(paths).toContain("skills/roc-create-tasks/execution.md");
-  expect(paths.some((path) => path.includes("pr-review-to-closure"))).toBe(
-    false,
-  );
-});
+}, 60_000);

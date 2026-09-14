@@ -5,6 +5,7 @@
 # Development skills
 
 - `.agents/skills/pr-review-to-closure/` is only for reviewing Roc's own pull requests. Keep it out of user onboarding, runtime skills, and the published npm package.
+- For requested contributor instruction changes, use `.agents/skills/manage-agents-md/`. This development skill stays out of user onboarding, runtime skills, and the published npm package.
 
 # Testing Policy
 
@@ -23,11 +24,11 @@
 <!-- deliver-code:start -->
 ## Deliver Code navigation
 
-- Domain language: `CONTEXT.md`
-- Current architecture: `docs/architecture.md`
-- Durable decisions: `docs/adr/`
-- Bounded designs: `docs/design/`
-- Approved specifications: `docs/specs/`
-- Local tickets and resume state: `.scratch/deliver-code/`
-- Heavy research and source material: `/Users/roy/Documents/ChatGPT/agile-agents/.worktrees/real-codex-harness.knowledge`
+- For domain terminology, read `CONTEXT.md`.
+- For service boundaries and component interactions, read `docs/architecture.md`.
+- When revisiting an architectural decision, consult the relevant record in `docs/adr/`.
+- When implementing a bounded design, read its matching document in `docs/design/`.
+- For acceptance requirements, read the matching approved specification in `docs/specs/`.
+- When resuming delivery work, consult its ticket and resume state in `.scratch/deliver-code/`.
+- For historical Codex harness research, consult `.worktrees/real-codex-harness.knowledge/` if present; this optional local material is not required for unrelated work.
 <!-- deliver-code:end -->

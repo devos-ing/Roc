@@ -7,7 +7,12 @@
     "defaultBranch": "main"
   },
   "files": {
-    "includes": ["**", "!!output/archify"]
+    "includes": [
+      "**",
+      "!!output/archify",
+      "!!docs/design/openamp-cli/*.html",
+      "!!src/third-party/sol-pi/**"
+    ]
   },
   "formatter": {
     "enabled": true,
