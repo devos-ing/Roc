@@ -13,7 +13,9 @@ import { mainSessionTools } from "../../src/openamp/cli.ts";
 import { runGit } from "../../src/openamp/command.ts";
 import { ChangeDelivery } from "../../src/openamp/delivery.ts";
 import { createOpenAmpExtension } from "../../src/openamp/extension.ts";
+import { createOpenAmpObservationPackExtension } from "../../src/openamp/observation-pack.ts";
 import {
+  type AgentRun,
   ChangeStore,
   type ChecklistItem,
   readChange,
@@ -22,13 +24,18 @@ import {
   AgentSupervisor,
   type SupervisorOptions,
 } from "../../src/openamp/supervisor.ts";
-import { ChangeWorkspace, createChange } from "../../src/openamp/workspace.ts";
+import {
+  ChangeWorkspace,
+  createChange,
+  resumeChange,
+} from "../../src/openamp/workspace.ts";
 
 /** Loads the real Pi extension with a captured UI boundary and an on-disk task store. */
 async function boot(
   store: ChangeStore,
   agentDir: string,
   options?: SupervisorOptions,
+  sessionManager = SessionManager.inMemory(),
 ) {
   const workspace = new ChangeWorkspace(store);
   const supervisor = new AgentSupervisor(store, workspace, options);
@@ -42,13 +49,16 @@ async function boot(
       noPromptTemplates: true,
       extensionFactories: [
         createOpenAmpExtension(store, supervisor, workspace, delivery),
+        ...(store.state.observationPack
+          ? [await createOpenAmpObservationPackExtension()]
+          : []),
       ],
     },
   });
   const { session } = await createAgentSessionFromServices({
     services,
-    sessionManager: SessionManager.inMemory(),
-    tools: mainSessionTools(false),
+    sessionManager,
+    tools: mainSessionTools(store.state.observationPack === true),
   });
   const runner = session.extensionRunner;
   const widgets = new Map<string, string[]>();
@@ -430,6 +440,253 @@ test("Pi coding and checklist tools share Oracle results without granting review
     await active?.supervisor.shutdown();
     restoreDispatch?.();
     active?.session.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("resume preserves checklist evidence and interrupted work while Pi deduplicates compacted results", async () => {
+  const root = await mkdtemp(join(tmpdir(), "openamp-resume-integration-"));
+  const sessions: Awaited<ReturnType<typeof boot>>[] = [];
+  try {
+    const source = join(root, "source");
+    await runGit(root, ["init", "-b", "main", source]);
+    await writeFile(join(source, "README.md"), "recovery fixture\n");
+    await runGit(source, ["add", "."]);
+    await runGit(source, ["commit", "-m", "baseline"]);
+    const store = await createChange(source, {
+      id: "change-resume-integration",
+      base: "main",
+      observationPack: true,
+    });
+    const writerPath = join(root, "writer");
+    await runGit(source, [
+      "worktree",
+      "add",
+      "-b",
+      "codex/recovery-writer",
+      writerPath,
+    ]);
+    await writeFile(
+      join(writerPath, "unfinished.txt"),
+      "preserve writer work\n",
+    );
+    await writeFile(
+      join(store.state.workspace, "unfinished.txt"),
+      "preserve main work\n",
+    );
+    const manager = SessionManager.create(
+      store.state.workspace,
+      join(root, "sessions"),
+    );
+    manager.appendMessage({
+      role: "user",
+      content: "Continue the saved task",
+      timestamp: Date.now(),
+    });
+    manager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "Saved fixture reply" }],
+      api: "openai-completions",
+      provider: "openamp-fixture",
+      model: "fixture",
+      stopReason: "stop",
+      timestamp: Date.now(),
+      usage: {
+        input: 1,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 2,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    });
+    manager.appendCustomMessageEntry(
+      "openamp-result",
+      "Already inserted advice",
+      true,
+      { resultId: "result-saved", runId: "run-saved" },
+    );
+    const kept = manager.appendMessage({
+      role: "user",
+      content: "Continue after compaction",
+      timestamp: Date.now(),
+    });
+    manager.appendCompaction(
+      "Controlled summary at the Pi compaction boundary",
+      kept,
+      2000,
+    );
+    expect(JSON.stringify(manager.buildSessionContext())).not.toContain(
+      "Already inserted advice",
+    );
+    const sessionFile = manager.getSessionFile();
+    if (!sessionFile) throw new Error("Durable Pi session missing");
+    const baseRun: AgentRun = {
+      id: "run-saved",
+      role: "oracle",
+      prompt: "Recorded advice",
+      status: "completed",
+      parentSessionId: manager.getSessionId(),
+      deliveryOnly: false,
+      createdAt: new Date().toISOString(),
+      startedAt: null,
+      finishedAt: null,
+      cwd: store.state.workspace,
+      sessionId: "saved-child",
+      model: "openamp-fixture/oracle",
+      effort: "high",
+      requestedModel: "openamp-fixture/oracle",
+      requestedEffort: "high",
+      resultId: "result-saved",
+    };
+    await store.update((state) => {
+      state.sessionId = manager.getSessionId();
+      state.sessionFile = sessionFile;
+      state.plan = {
+        revision: 4,
+        updatedAt: new Date().toISOString(),
+        items: [
+          {
+            id: "advice",
+            text: "Inspect advice",
+            status: "completed",
+            note: "Evidence result-saved",
+          },
+          {
+            id: "work",
+            text: "Finish the edit",
+            status: "in_progress",
+            note: "Partial files retained",
+          },
+        ],
+      };
+      for (const status of ["starting", "running", "cancelling"] as const) {
+        const id = `run-${status}`;
+        state.runs[id] = {
+          ...baseRun,
+          id,
+          role: "writer",
+          status,
+          cwd: writerPath,
+          resultId: null,
+          model: "recorded/writer",
+          effort: "medium",
+        };
+      }
+      for (const suffix of ["saved", "pending", "foreign"]) {
+        const runId = `run-${suffix}`,
+          id = `result-${suffix}`;
+        state.runs[runId] = {
+          ...baseRun,
+          id: runId,
+          resultId: id,
+          parentSessionId:
+            suffix === "foreign" ? "other-parent" : manager.getSessionId(),
+        };
+        state.results[id] = {
+          id,
+          runId,
+          role: "oracle",
+          summary: `${suffix} advice`,
+          cwd: state.workspace,
+          baseCommit: state.baseCommit,
+          commit: null,
+          changed: false,
+          createdAt: new Date().toISOString(),
+          deliveredSessionId: null,
+        };
+      }
+      state.activity = {
+        owner: "writer",
+        runId: "run-running",
+        tool: "edit",
+        status: "running",
+        at: new Date().toISOString(),
+      };
+    });
+    const restored = await resumeChange(source, store.state.id);
+    let childLaunches = 0;
+    const recoveryOptions: SupervisorOptions = {
+      clientFactory: () => {
+        childLaunches += 1;
+        throw new Error("Interrupted work must not relaunch");
+      },
+    };
+    const reopened = SessionManager.open(sessionFile);
+    const first = await boot(
+      restored,
+      join(root, "pi-config"),
+      recoveryOptions,
+      reopened,
+    );
+    sessions.push(first);
+    await first.supervisor.recover();
+    expect(childLaunches).toBe(0);
+    expect(first.session.getActiveToolNames()).toContain("obs_recall");
+    expect(first.runner.getToolDefinition("obs_recall")).toBeDefined();
+    for (const status of ["starting", "running", "cancelling"]) {
+      expect(restored.state.runs[`run-${status}`]?.status).toBe("interrupted");
+      expect(restored.state.runs[`run-${status}`]?.effort).toBe("medium");
+      expect(restored.state.runs[`run-${status}`]?.cwd).toBe(writerPath);
+    }
+    expect(restored.state.activity?.status).toBe("interrupted");
+    expect(await readFile(join(writerPath, "unfinished.txt"), "utf8")).toBe(
+      "preserve writer work\n",
+    );
+    expect(
+      await readFile(join(restored.state.workspace, "unfinished.txt"), "utf8"),
+    ).toBe("preserve main work\n");
+    expect(first.widgets.get("openamp-progress")?.join("\n")).toContain(
+      "Plan 1/2 done · r4",
+    );
+    const context = await first.runner.emitBeforeAgentStart(
+      "Continue",
+      undefined,
+      "Fixture",
+      { cwd: restored.state.workspace },
+    );
+    expect(JSON.stringify(context)).toContain("Evidence result-saved");
+    expect(JSON.stringify(context)).toContain("Finish the edit");
+    expect(restored.state.results["result-saved"]?.deliveredSessionId).toBe(
+      manager.getSessionId(),
+    );
+    expect(restored.state.results["result-pending"]?.deliveredSessionId).toBe(
+      manager.getSessionId(),
+    );
+    expect(
+      restored.state.results["result-foreign"]?.deliveredSessionId,
+    ).toBeNull();
+    await first.runner.emit({ type: "session_shutdown", reason: "resume" });
+    const secondStore = await resumeChange(source, store.state.id);
+    const secondManager = SessionManager.open(sessionFile);
+    const second = await boot(
+      secondStore,
+      join(root, "pi-config"),
+      recoveryOptions,
+      secondManager,
+    );
+    sessions.push(second);
+    await second.supervisor.recover();
+    const results = secondManager
+      .getBranch()
+      .filter(
+        (entry) =>
+          entry.type === "custom_message" &&
+          entry.customType === "openamp-result",
+      );
+    expect(results).toHaveLength(2);
+    expect(JSON.stringify(results)).toContain("result-saved");
+    expect(JSON.stringify(results)).toContain("result-pending");
+    expect(JSON.stringify(results)).not.toContain("result-foreign");
+    expect(secondStore.state.plan).toEqual(store.state.plan);
+    expect(secondStore.state.observationPack).toBe(true);
+    expect(second.session.getActiveToolNames()).toContain("obs_recall");
+    expect(childLaunches).toBe(0);
+  } finally {
+    for (const active of sessions) {
+      await active.supervisor.shutdown();
+      active.session.dispose();
+    }
     await rm(root, { recursive: true, force: true });
   }
 });

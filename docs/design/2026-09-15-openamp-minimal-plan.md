@@ -31,7 +31,7 @@ Configure two profiles, `main` and `oracle`. They select actual Pi provider/mode
 
 Keep the task checklist, current role, recent real tool activity, blockers, and optional-review state visible in Pi's native widgets/status. Persist task/checklist state through the existing store and retain evidence references across compaction. A checked checklist item does not manufacture review acceptance.
 
-Use Pi native compaction first and retain opt-in ObservationPack. Give an Oracle or delegated worker only the relevant question, constraints, source pointers, and evidence. The main thread keeps its working conversation. Do not promise measured savings until live archive/recall and correctness are observed.
+Use Pi native compaction first and retain opt-in ObservationPack. Per the user's revised scope, confirm that the plugin loads and `obs_recall` is available; do not audit its archive/recall internals or benchmark savings. Give an Oracle or delegated worker only the relevant question, constraints, source pointers, and evidence. The main thread keeps its working conversation. No measured context savings are claimed.
 
 ## Wait expiry is not cancellation
 
@@ -44,7 +44,7 @@ Explicit cancellation, CLI shutdown, an unrecoverable process failure, or an exp
 | Milestone | Complete behavior |
 | --- | --- |
 | M0: main coding thread + optional Oracle | Main agent plans/edits/checks, calls Oracle on demand, and shows checklist/progress. Model/effort and returned advice are attributable. Wait expiry retains the same run. |
-| M1: reliable context and recovery | Validate cancellation, session recovery, result ownership/deduplication, and source recall. Adapt the existing runtime only where a demonstrated gap remains. |
+| M1: reliable context and recovery | Confirm plugin availability, checklist/evidence continuity after compaction and restart, cancellation, and result ownership/deduplication. Adapt the existing runtime only where a demonstrated gap remains. |
 | M2: optional review and PR delivery | Requested fresh review is enforced; skipped review is clearly recorded. Validation, revision identity, remote readback, one feature PR, and manual merge remain. Reuse the existing delivery implementation. |
 | M3: sandbox if needed | Evaluate isolated execution and remote-host needs as a separate milestone. |
 
@@ -82,5 +82,23 @@ The [M0 component acceptance check](../validation/2026-09-15-openamp-m0-componen
 connects registered Pi coding and checklist tools to Oracle supervision and real
 session insertion. It passed with a controlled Oracle response. Model-driven
 interactive acceptance remains unverified; repository policy prohibits AI-run
-end-to-end tests. The next implementation focus is M1 context recall and recovery.
+end-to-end tests. M1 now covers plugin availability and recovery, with evidence below.
 Do not claim measured context savings from the checklist alone.
+
+## M1 recovery evidence
+
+The enabled ObservationPack loads into real Pi services and exposes `obs_recall`
+after restart. Per the user's scope, its archive and recall behavior was not tested.
+
+A focused component integration reopens a persisted Pi session containing a
+compaction record and resumes the existing change state twice. The checklist and
+its evidence references remain available. Starting, running, and cancelling
+children become interrupted without relaunch. Recorded effort, workspace paths,
+and unfinished main/writer files remain intact. Already inserted results are not
+duplicated, pending results reach their original parent once, and results owned
+by another session remain undelivered.
+
+The scoped M1 checks passed without production changes. See
+[verification evidence](../validation/2026-09-15-openamp-m1-recovery.md).
+Next is M2: reconcile the existing optional-review and PR-delivery evidence,
+then fix only demonstrated gaps. Sandbox remains deferred.
