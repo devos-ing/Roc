@@ -100,5 +100,18 @@ by another session remain undelivered.
 
 The scoped M1 checks passed without production changes. See
 [verification evidence](../validation/2026-09-15-openamp-m1-recovery.md).
-Next is M2: reconcile the existing optional-review and PR-delivery evidence,
-then fix only demonstrated gaps. Sandbox remains deferred.
+M2 evidence is recorded below. Sandbox remains deferred.
+
+## M2 delivery evidence
+
+Six existing component checks passed for optional review, stale approval,
+cancellation, remote readback, one-PR updates, and uncertain-outcome recovery.
+One demonstrated gap was fixed: requested reviewers now receive the current
+validation commands, exit codes, and bounded output in the existing review bundle.
+Build, typecheck, focused lint, and the selected checks passed. See
+[verification evidence](../validation/2026-09-15-openamp-m2-delivery.md).
+
+The requested runtime components now have focused acceptance evidence. The next
+step is user trial of the implemented flow. Model-driven interactive M0 acceptance
+and live GitHub publication remain unverified here. Do not create more runtime
+layers or start the deferred sandbox milestone without a concrete need.

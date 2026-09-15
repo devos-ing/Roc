@@ -60,7 +60,8 @@ credentials; Delivery retains a separate captured publication environment.
 These controls prevent accidental publication through supported product paths;
 they are not an OS sandbox against malicious same-user code. Delivery is the
 only component that runs `git push` or PR mutation commands. It records intent,
-gives requested Review an immutable complete diff bundle, checks the exact head and remote
+gives requested Review an immutable complete diff bundle with validation commands,
+exit codes, and bounded output, checks the exact head and remote
 base before publication, and reconciles remote state after uncertain responses.
 It never calls merge or enables auto-merge.
 
