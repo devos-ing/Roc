@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "OpenAmp \u00b7 Code, consult when useful, deliver",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1120,
+      540
+    ]
+  },
+  "components": [
+    {
+      "id": "request",
+      "type": "frontend",
+      "label": "Your request",
+      "sublabel": "One main conversation",
+      "pos": [
+        40,
+        60
+      ],
+      "size": [
+        210,
+        86
+      ]
+    },
+    {
+      "id": "main-work",
+      "type": "backend",
+      "label": "Main coding thread",
+      "sublabel": "Plan \u00b7 edit \u00b7 check \u00b7 fix",
+      "pos": [
+        380,
+        60
+      ],
+      "size": [
+        250,
+        86
+      ]
+    },
+    {
+      "id": "validate",
+      "type": "backend",
+      "label": "Validate result",
+      "sublabel": "Checks + current Git revision",
+      "pos": [
+        760,
+        60
+      ],
+      "size": [
+        250,
+        86
+      ]
+    },
+    {
+      "id": "publish",
+      "type": "frontend",
+      "label": "Create or update PR",
+      "sublabel": "User decides whether to merge",
+      "pos": [
+        760,
+        310
+      ],
+      "size": [
+        280,
+        86
+      ]
+    },
+    {
+      "id": "oracle-help",
+      "type": "security",
+      "label": "Oracle \u00b7 optional",
+      "sublabel": "Advice or requested final review",
+      "pos": [
+        380,
+        310
+      ],
+      "size": [
+        280,
+        86
+      ]
+    },
+    {
+      "id": "worker-help",
+      "type": "backend",
+      "label": "Independent child \u00b7 optional",
+      "sublabel": "Returns its result to main",
+      "pos": [
+        40,
+        310
+      ],
+      "size": [
+        270,
+        86
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "request-main",
+      "from": "request",
+      "to": "main-work"
+    },
+    {
+      "id": "main-validate",
+      "from": "main-work",
+      "to": "validate",
+      "label": "ready"
+    },
+    {
+      "id": "validated-delivery",
+      "from": "validate",
+      "to": "publish",
+      "label": "validated head",
+      "labelDy": 70,
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "consult-oracle",
+      "from": "main-work",
+      "to": "oracle-help",
+      "label": "consult as needed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 120
+    },
+    {
+      "id": "delegate-independent",
+      "from": "main-work",
+      "to": "worker-help",
+      "label": "independent task",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Main thread stays in charge",
+      "items": [
+        "It plans, writes code and applies advice. Child results return to this thread."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Final review is opt-in",
+      "items": [
+        "Requested review must pass. Skipped review is labeled, never claimed as accepted."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Wait expiry keeps work running",
+      "items": [
+        "Same child, same run ID. Explicit cancellation stops it. Saved checklist tracks progress."
+      ]
+    }
+  ]
+}

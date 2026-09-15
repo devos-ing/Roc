@@ -1,5 +1,7 @@
 # OpenAmp CLI 產品與交付計畫
 
+> Workflow policy update: the [2026-09-15 minimal plan](2026-09-15-openamp-minimal-plan.md) supersedes the role model and milestone sequence below. The main coding thread plans and edits; Oracle advice and final review are optional. Requested final review uses a fresh session. Existing runtime and validation evidence remain relevant.
+
 日期：2026-09-13。狀態：M0–M5 的本機實作及可重現驗證已完成；真實 macOS、模型供應商及 GitHub 發布驗收仍待獲授權的目標環境。
 
 本計畫取代 [初步方向草案](2026-09-13-openamp-cli-direction.md) 的實作順序。OpenAmp 是暫名。Amp 的公開行為是產品參考，並非其內部架構的證據。

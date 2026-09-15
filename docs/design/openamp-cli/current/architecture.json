@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "OpenAmp \u00b7 Amp-style main coding thread",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1350,
+      640
+    ]
+  },
+  "components": [
+    {
+      "id": "task-ui",
+      "type": "frontend",
+      "label": "One visible task",
+      "sublabel": "Pi TUI \u00b7 checklist + activity",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "main-coder",
+      "type": "backend",
+      "label": "Main coding thread",
+      "sublabel": "Plans \u00b7 edits \u00b7 checks \u00b7 fixes",
+      "tag": "MAIN MODEL PROFILE",
+      "pos": [
+        390,
+        40
+      ],
+      "size": [
+        260,
+        86
+      ]
+    },
+    {
+      "id": "coordination",
+      "type": "backend",
+      "label": "OpenAmp extension",
+      "sublabel": "Consult \u00b7 delegate \u00b7 track \u00b7 deliver",
+      "tag": "CURATED PI EXTENSION",
+      "pos": [
+        730,
+        40
+      ],
+      "size": [
+        270,
+        86
+      ]
+    },
+    {
+      "id": "role-models",
+      "type": "external",
+      "label": "Main + Oracle models",
+      "sublabel": "Codex / GLM / DeepSeek",
+      "tag": "PI PROVIDERS + AUTH",
+      "pos": [
+        1120,
+        40
+      ],
+      "size": [
+        190,
+        86
+      ]
+    },
+    {
+      "id": "task-state",
+      "type": "database",
+      "label": "Session + task state",
+      "sublabel": "Pi transcript; OpenAmp metadata",
+      "tag": "NATIVE COMPACTION",
+      "pos": [
+        40,
+        260
+      ],
+      "size": [
+        250,
+        96
+      ]
+    },
+    {
+      "id": "oracle-adviser",
+      "type": "security",
+      "label": "Oracle \u00b7 optional",
+      "sublabel": "Read-only advice + review",
+      "tag": "STRONGER MODEL \u00b7 HIGH",
+      "pos": [
+        580,
+        260
+      ],
+      "size": [
+        270,
+        96
+      ]
+    },
+    {
+      "id": "delegated-worker",
+      "type": "backend",
+      "label": "Delegated work \u00b7 optional",
+      "sublabel": "Independent task \u00b7 owned workspace",
+      "tag": "RETURNS RESULTS TO MAIN",
+      "pos": [
+        1030,
+        260
+      ],
+      "size": [
+        280,
+        96
+      ]
+    },
+    {
+      "id": "workspaces",
+      "type": "database",
+      "label": "Owned local workspaces",
+      "sublabel": "Main feature + worker worktrees",
+      "tag": "LOCAL \u00b7 SANDBOX LATER",
+      "pos": [
+        760,
+        490
+      ],
+      "size": [
+        280,
+        96
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "talk-plan",
+      "from": "task-ui",
+      "to": "main-coder",
+      "label": "discuss"
+    },
+    {
+      "id": "plan-delegate",
+      "from": "main-coder",
+      "to": "coordination",
+      "label": "coordinate"
+    },
+    {
+      "id": "profile-selection",
+      "from": "role-models",
+      "to": "coordination",
+      "label": "configure"
+    },
+    {
+      "id": "native-persistence",
+      "from": "main-coder",
+      "to": "task-state",
+      "label": "persist task"
+    },
+    {
+      "id": "start-writer",
+      "from": "coordination",
+      "to": "oracle-adviser",
+      "label": "ask when useful",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "start-review",
+      "from": "coordination",
+      "to": "delegated-worker",
+      "label": "delegate as needed"
+    },
+    {
+      "id": "code-changes",
+      "from": "oracle-adviser",
+      "to": "workspaces",
+      "label": "inspect code",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "variant": "security"
+    },
+    {
+      "id": "inspect-diff",
+      "from": "delegated-worker",
+      "to": "workspaces",
+      "label": "edit own tree",
+      "variant": "default",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "main-code-work",
+      "from": "main-coder",
+      "to": "workspaces",
+      "label": "edit + check",
+      "fromSide": "bottom",
+      "toSide": "left"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Pi owns the runtime",
+      "items": [
+        "TUI, models, authentication, tools, sessions and compaction."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "No mandatory Oracle stage",
+      "items": [
+        "Main thread owns the work. Oracle advice and final review are optional."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Scope and current status",
+      "items": [
+        "Checklist and Oracle are available. Acceptance remains; merge is manual; sandbox later."
+      ]
+    }
+  ]
+}

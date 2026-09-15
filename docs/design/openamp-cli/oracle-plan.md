@@ -1,5 +1,7 @@
 # OpenAmp Oracle 實作計畫
 
+> Workflow policy update: the [2026-09-15 minimal plan](../2026-09-15-openamp-minimal-plan.md) supersedes the role model and milestone sequence below. The main coding thread plans and edits; Oracle advice and final review are optional. Requested final review uses a fresh session. Existing runtime and validation evidence remain relevant.
+
 日期：2026-09-14。狀態：設計完成，尚未實作。
 
 本計畫把 Amp 的 Oracle 概念轉成 OpenAmp 可驗證的產品契約。Oracle 是由主 agent 按需要呼叫的高推理、唯讀第二意見；它不是真相來源，也不取代每次 PR 交付前的強制獨立審查。
