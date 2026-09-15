@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "OpenAmp \u00b7 Pi-native architecture",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1350,
+      640
+    ]
+  },
+  "components": [
+    {
+      "id": "task-ui",
+      "type": "frontend",
+      "label": "One visible task",
+      "sublabel": "Pi TUI \u00b7 checklist + activity",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "plan-oracle",
+      "type": "backend",
+      "label": "Planning Oracle",
+      "sublabel": "Persistent \u00b7 read-only code tools",
+      "tag": "ORACLE PROFILE \u00b7 HIGH",
+      "pos": [
+        390,
+        40
+      ],
+      "size": [
+        260,
+        86
+      ]
+    },
+    {
+      "id": "coordination",
+      "type": "backend",
+      "label": "OpenAmp extension",
+      "sublabel": "Delegate \u00b7 track \u00b7 stop \u00b7 recover",
+      "tag": "ONE CHILD AT A TIME",
+      "pos": [
+        730,
+        40
+      ],
+      "size": [
+        270,
+        86
+      ]
+    },
+    {
+      "id": "role-models",
+      "type": "external",
+      "label": "Two model profiles",
+      "sublabel": "Codex / GLM / DeepSeek",
+      "tag": "PI PROVIDERS + AUTH",
+      "pos": [
+        1120,
+        40
+      ],
+      "size": [
+        190,
+        86
+      ]
+    },
+    {
+      "id": "pi-history",
+      "type": "database",
+      "label": "Pi session storage",
+      "sublabel": "Transcripts + task entries",
+      "tag": "NATIVE COMPACTION",
+      "pos": [
+        40,
+        260
+      ],
+      "size": [
+        250,
+        96
+      ]
+    },
+    {
+      "id": "code-writer",
+      "type": "backend",
+      "label": "Implementer",
+      "sublabel": "Cheaper model \u00b7 every code edit",
+      "tag": "PERSIST SESSION FOR FIXES",
+      "pos": [
+        580,
+        260
+      ],
+      "size": [
+        270,
+        96
+      ]
+    },
+    {
+      "id": "fresh-review",
+      "type": "security",
+      "label": "Fresh Oracle review",
+      "sublabel": "Read-only \u00b7 inherits Oracle profile",
+      "tag": "AFTER WRITER EXITS",
+      "pos": [
+        1030,
+        260
+      ],
+      "size": [
+        280,
+        96
+      ]
+    },
+    {
+      "id": "feature-files",
+      "type": "database",
+      "label": "One feature checkout",
+      "sublabel": "Fixed base/head + check evidence",
+      "tag": "LOCAL \u00b7 SANDBOX LATER",
+      "pos": [
+        760,
+        490
+      ],
+      "size": [
+        280,
+        96
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "talk-plan",
+      "from": "task-ui",
+      "to": "plan-oracle",
+      "label": "discuss"
+    },
+    {
+      "id": "plan-delegate",
+      "from": "plan-oracle",
+      "to": "coordination",
+      "label": "handoff"
+    },
+    {
+      "id": "profile-selection",
+      "from": "role-models",
+      "to": "coordination",
+      "label": "configure"
+    },
+    {
+      "id": "native-persistence",
+      "from": "plan-oracle",
+      "to": "pi-history",
+      "label": "persist task"
+    },
+    {
+      "id": "start-writer",
+      "from": "coordination",
+      "to": "code-writer",
+      "label": "implement",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "start-review",
+      "from": "coordination",
+      "to": "fresh-review",
+      "label": "review fixed revision"
+    },
+    {
+      "id": "code-changes",
+      "from": "code-writer",
+      "to": "feature-files",
+      "label": "write + verify",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "inspect-diff",
+      "from": "fresh-review",
+      "to": "feature-files",
+      "label": "read + compare",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Pi owns the runtime",
+      "items": [
+        "TUI, models, authentication, tools, sessions and compaction."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Small OpenAmp extension",
+      "items": [
+        "Checklist, compact handoffs, child lifecycle and review records."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Planned, not implemented",
+      "items": [
+        "ObservationPack optional. PR delivery M2; sandbox M3."
+      ]
+    }
+  ]
+}

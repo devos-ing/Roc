@@ -1,3 +1,16 @@
+# OpenAmp current plan and diagrams
+
+The [minimal implementation plan](../2026-09-15-openamp-minimal-plan.md) defines the approved Oracle-led direction. It adapts the existing runtime; the source baseline correction is recorded in that plan.
+
+- [Current architecture graph](current/architecture.html)
+- [Current implementation and fresh-review flow](current/workflow.html)
+- [Validated diagram receipts](current/delivery-receipts.json)
+- [Historical local architecture audit](../2026-09-15-openamp-architecture-review.md)
+
+The current graphs describe the target workflow. The earlier handoff and evidence below describe the already implemented first OpenAmp runtime. Its optional-adviser Oracle proposal is superseded by the current role policy.
+
+---
+
 # OpenAmp 實作交接
 
 這個分支包含 Roc 轉向 OpenAmp 的產品計畫、架構圖、Node production runtime 與 M0–M5 本機驗證證據。公開 CLI 執行入口是 `openamp`。

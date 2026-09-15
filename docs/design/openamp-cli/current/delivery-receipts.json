@@ -1,0 +1,91 @@
+{
+  "diagrams": [
+    {
+      "schemaVersion": 1,
+      "ok": true,
+      "command": "deliver",
+      "type": "architecture",
+      "input": "/Users/roy/Documents/ChatGPT/agile-agents/docs/design/openamp-cli/current/architecture.json",
+      "output": "/Users/roy/Documents/ChatGPT/agile-agents/docs/design/openamp-cli/current/architecture.html",
+      "specification": {
+        "sha256": "22c5273e3b197e2618e77339f349fa961c12421e6247aea01f35291f1374b32c",
+        "bytes": 4319
+      },
+      "artifact": {
+        "sha256": "3a8d1af2dc7d77785349f1fafdbf8696274ff4801b64ed0a9dc30a3d3ec98f0c",
+        "bytes": 713664
+      },
+      "validation": {
+        "checksPassed": 9,
+        "checkCount": 9,
+        "compositionProfile": "showcase",
+        "compositionStatus": "pass",
+        "errors": 0,
+        "warnings": 0
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "ok": true,
+      "command": "deliver",
+      "type": "architecture",
+      "input": "/Users/roy/Documents/ChatGPT/agile-agents/docs/design/openamp-cli/current/workflow.json",
+      "output": "/Users/roy/Documents/ChatGPT/agile-agents/docs/design/openamp-cli/current/workflow.html",
+      "specification": {
+        "sha256": "4006fc33f996d98774c80b67bf6e59e568d3db502a4ce80a49d005984d43df61",
+        "bytes": 3634
+      },
+      "artifact": {
+        "sha256": "63b90801d782e8917ce3a42418466b83ee6866f2dc96045847381c650e83c670",
+        "bytes": 707830
+      },
+      "validation": {
+        "checksPassed": 9,
+        "checkCount": 9,
+        "compositionProfile": "showcase",
+        "compositionStatus": "pass",
+        "errors": 0,
+        "warnings": 0
+      }
+    }
+  ],
+  "visual_review": "passed",
+  "correction_rounds": 1,
+  "inspected_themes": [
+    "light",
+    "dark"
+  ],
+  "inspected_screenshot_sizes": [
+    [
+      1440,
+      900
+    ],
+    [
+      2048,
+      1320
+    ]
+  ],
+  "containment_sizes": [
+    [
+      1440,
+      900
+    ],
+    [
+      1600,
+      1000
+    ],
+    [
+      1920,
+      1080
+    ],
+    [
+      2048,
+      1320
+    ]
+  ],
+  "notes": [
+    "Workflow is rendered as an architecture-style execution graph to retain readable explicit layout.",
+    "Automated visual-check sidecars retain visualReview=pending; this receipt records the separate image inspection.",
+    "Both diagrams describe proposed behavior, not implemented functionality."
+  ]
+}
