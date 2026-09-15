@@ -197,11 +197,13 @@ export function createOpenAmpExtension(
         return undefined;
       });
 
-      pi.on("before_agent_start", () => ({
+      pi.on("before_agent_start", (event) => ({
         systemPrompt: [
-          `You are the conversational main agent for OpenAmp change ${store.state.id}.`,
+          ...(event.systemPrompt ? [event.systemPrompt] : []),
+          `You are the main planning Oracle for OpenAmp change ${store.state.id}.`,
           `Work only in ${store.state.workspace}.`,
-          "Delegate only when useful. Research agents are read-only; writer agents use isolated worktrees.",
+          "Plan and review the work, and delegate every code edit and review correction to a writer agent. Do not edit code yourself.",
+          "Research agents are read-only; writer agents use isolated worktrees.",
           "Use integrate_result for selected writer results. Never push, create/modify/merge a PR, or call GitHub mutation APIs.",
           "When the requested modifying work is complete, call deliver_change with exact current requirements and validation commands. Delivery requires independent review and opens or updates the PR; only the user merges.",
         ].join("\n"),
@@ -215,23 +217,33 @@ export function createOpenAmpExtension(
       });
 
       pi.on("tool_call", (event) => {
-        if (!isToolCallEventType("bash", event)) return undefined;
-        const reason = remoteMutationReason(event.input.command);
-        return reason ? { block: true, reason } : undefined;
+        const oracleReason =
+          "The planning Oracle plans and reviews; writer agents make code edits.";
+        if (["bash", "edit", "write"].includes(event.toolName)) {
+          const mutationReason = isToolCallEventType("bash", event)
+            ? remoteMutationReason(event.input.command)
+            : undefined;
+          return {
+            block: true,
+            reason: mutationReason
+              ? `${oracleReason} ${mutationReason}`
+              : oracleReason,
+          };
+        }
+        return undefined;
       });
 
-      pi.on("user_bash", (event) => {
-        const reason = remoteMutationReason(event.command);
-        return reason
-          ? {
-              result: {
-                output: reason,
-                exitCode: 1,
-                cancelled: false,
-                truncated: false,
-              },
-            }
-          : undefined;
+      pi.on("user_bash", () => {
+        const reason =
+          "The planning Oracle is read-only; arbitrary shell access is blocked. Delegate code edits and checks to a writer agent.";
+        return {
+          result: {
+            output: reason,
+            exitCode: 1,
+            cancelled: false,
+            truncated: false,
+          },
+        };
       });
 
       pi.registerTool({

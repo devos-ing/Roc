@@ -29,6 +29,9 @@ web service, or merge worker.
 - `src/openamp/cli.ts` starts or resumes the Pi runtime in the durable feature
   workspace. Pi remains the source of truth for the chat transcript and model
   lifecycle.
+- The main Pi session is a planning Oracle with read/search tools. All code edits
+  and review fixes go to writer agents; arbitrary main-session shell shortcuts
+  are blocked. Model-profile routing and the remaining M0 workflow are pending.
 - `src/openamp/extension.ts` supplies delegation, status, integration, and
   delivery operations to the main session. Result messages retain stable IDs.
 - `src/openamp/supervisor.ts` owns at most two Pi RPC child processes, targeted
@@ -45,7 +48,7 @@ web service, or merge worker.
 
 The source checkout is never used as the feature workspace, so its dirty files
 are neither moved nor committed. Writer agents receive separate Git worktrees.
-Research and Review agents receive only Pi read/search tools. Main and writer
+Research and Review agents receive only Pi read/search tools. Writer
 bash calls pass a boundary that rejects ordinary remote mutation commands.
 While agents run, their shell environment uses an isolated temporary home,
 ignores normal Git configuration, and omits GitHub, npm, askpass, and SSH-agent
