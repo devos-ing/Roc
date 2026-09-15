@@ -70,6 +70,18 @@ M0 is the complete local plan/implement/progress/review loop above. M0 is the fi
 
 ## Required limits
 
+### Waiting and execution have separate lifetimes
+
+Confirmed after reviewing [Amp's plugin agent API](https://ampcode.com/docs/plugin-api): expiration of a caller's wait returns the existing run ID and its current status. It does not cancel the child, mark the run failed, consume a fix attempt, release its execution slot, or start a replacement. The caller can wait again or receive the existing result through normal parent-session delivery.
+
+The local OpenAmp runtime retains ownership of the child while the CLI remains open. Explicit user cancellation, application shutdown, an unrecoverable process failure, or an explicitly configured execution budget ends execution. A caller's wait deadline is not an execution budget. Closing the CLI still requires confirmed child cleanup; this decision does not introduce a background daemon.
+
+Expose elapsed time, current role, and the last observed activity. Silence during model reasoning does not prove a stalled process. Recoverable provider/request errors retain their own bounded handling and must not silently create duplicate agent runs.
+
+M0 acceptance must include an expired wait followed by successful completion of the same child, with one delivered result and no duplicate writer. Cancellation must still stop that child and preserve its work. This behavior is approved but is not implemented by the separate Auto helper's candidate-output recovery fix.
+
+### Role and delivery boundaries
+
 Oracle and reviewer get only code-reading/search tools plus narrow coordination tools. Do not load Pi's plan-mode execution switch or unrestricted reviewer bash. Extensions remain trusted host code until sandbox work.
 
 One writer per task, a bounded fix loop, visible blocked/error state, confirmed cancellation before another writer starts, and no blind replay after interruption. Proposed initial limit: one automatic fix/review cycle, then report remaining findings for explicit continuation. Do not silently upgrade the implementing model or reset counters. Preserve recorded model/effort on recovery and sanitized AgileError logging. Review has a fixed requirements revision and base/head. Durable results are delivered only to their owning task/session. A task is not complete merely because a child exits.
