@@ -44,6 +44,18 @@ commit 供明確整合。一般 agent command boundary 會拒絕遠端 Git／Git
 不在 Git repository 時，OpenAmp 仍提供可恢復的 Pi 對話，但停用 writer 委派及
 PR 交付。GitHub 暫時不可用時，本地修改及狀態會保留，登入後可再交付。
 
+## 按需要詢問 Oracle
+
+主 coding model 繼續使用 Pi 原生模型設定。可為目前工作指定獨立 Oracle：
+
+```bash
+openamp --oracle-model openai-codex/gpt-6-astra
+```
+
+使用 Pi 中已登入的完整 `provider/model`。設定隨 change 保存；恢復時不傳此參數便保留原設定。Oracle 必須先確認指定模型及 `high` effort，才會收到問題，不會暗中換模型。
+
+請主 agent 使用 `ask_oracle` 提出具體問題。工具先回傳 run ID 及狀態，唯讀建議會送回主對話一次。`agent_wait` 等待逾時不會停止工作；需要取消時使用 `/agent-cancel <run-id>`。Oracle 建議不等於 PR 審查核准。
+
 ## 開發
 
 ```bash

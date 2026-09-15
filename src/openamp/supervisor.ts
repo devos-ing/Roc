@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import {
+  getAgentDir,
   RpcClient,
   type RpcClientOptions,
   type RpcSessionState,
@@ -37,11 +38,36 @@ interface ChildClient {
   steer(message: string): Promise<unknown>;
   abort(): Promise<unknown>;
   stop(): Promise<unknown>;
+  onEvent?(listener: (event: { type: string }) => void): () => void;
 }
 
 export interface SupervisorOptions {
   maxActive?: number;
   clientFactory?: (options: RpcClientOptions) => ChildClient;
+  agentDir?: string;
+}
+
+/** Splits an explicit Pi provider/model selection without accepting CLI-like values. */
+export function parseOracleModel(value: string): {
+  provider: string;
+  id: string;
+} {
+  const slash = value.indexOf("/");
+  const provider = value.slice(0, slash);
+  const id = value.slice(slash + 1);
+  if (
+    slash < 1 ||
+    !/^[a-zA-Z0-9_.-]+$/u.test(provider) ||
+    provider.startsWith("-") ||
+    !id ||
+    id.startsWith("-") ||
+    /\s/u.test(id)
+  ) {
+    throw new Error(
+      "Oracle model must be an exact Pi provider/model identifier",
+    );
+  }
+  return { provider, id };
 }
 
 export interface DelegateInput {
@@ -108,6 +134,7 @@ export class AgentSupervisor {
   readonly store: ChangeStore;
   readonly workspace: ChangeWorkspace;
   readonly maxActive: number;
+  readonly agentDir: string;
   readonly clientFactory: (options: RpcClientOptions) => ChildClient;
 
   /** Binds child lifecycle to one change and workspace. */
@@ -119,6 +146,7 @@ export class AgentSupervisor {
     this.store = store;
     this.workspace = workspace;
     this.maxActive = options.maxActive ?? 2;
+    this.agentDir = options.agentDir ?? getAgentDir();
     this.clientFactory =
       options.clientFactory ??
       ((clientOptions) =>
@@ -146,7 +174,9 @@ export class AgentSupervisor {
   async delegate(input: DelegateInput): Promise<AgentRun> {
     const admission = this.#admitting.then(async () => {
       if (this.#closing) throw new Error("OpenAmp supervisor is shutting down");
-      if (!["researcher", "writer", "reviewer"].includes(input.role)) {
+      if (
+        !["researcher", "writer", "reviewer", "oracle"].includes(input.role)
+      ) {
         throw new Error(`Unsupported agent role: ${input.role}`);
       }
       if (input.role === "writer" && !this.store.state.repoRoot) {
@@ -154,6 +184,15 @@ export class AgentSupervisor {
           "Writer agents are unavailable outside a Git repository",
         );
       }
+      const requestedModel = ["oracle", "reviewer"].includes(input.role)
+        ? this.store.state.oracleModel
+        : undefined;
+      if (input.role === "oracle" && !requestedModel) {
+        throw new Error(
+          "Configure an Oracle with --oracle-model <provider/model> before asking it for advice",
+        );
+      }
+      if (requestedModel) parseOracleModel(requestedModel);
       const runId = `run-${crypto.randomUUID().slice(0, 12)}`;
       const active = this.list().filter((candidate) =>
         ["starting", "running", "cancelling"].includes(candidate.status),
@@ -173,6 +212,10 @@ export class AgentSupervisor {
         model: null,
         effort: null,
         resultId: null,
+        ...(requestedModel
+          ? { requestedModel, requestedEffort: "high" as const }
+          : {}),
+        inputGeneration: this.store.state.inputGeneration,
       };
       await this.store.update((state) => {
         state.runs[runId] = run;
@@ -182,6 +225,30 @@ export class AgentSupervisor {
     });
     this.#admitting = admission.catch(() => undefined);
     return admission;
+  }
+
+  /** Observes one existing run until it settles or this caller's wait expires without stopping it. */
+  async waitForStatus(runId: string, timeoutMs = 10_000): Promise<AgentRun> {
+    if (
+      !Number.isSafeInteger(timeoutMs) ||
+      timeoutMs < 0 ||
+      timeoutMs > 60_000
+    ) {
+      throw new Error("Wait must be between 0 and 60000 milliseconds");
+    }
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const run = requireRun(this.store.state, runId);
+      if (
+        !["queued", "starting", "running", "cancelling"].includes(run.status) ||
+        Date.now() >= deadline
+      ) {
+        return { ...run };
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(50, deadline - Date.now())),
+      );
+    }
   }
 
   /** Sends a targeted steering instruction to one active child. */
@@ -195,6 +262,7 @@ export class AgentSupervisor {
   async cancel(runId: string): Promise<void> {
     const run = this.store.state.runs[runId];
     if (!run) throw new Error(`Unknown agent: ${runId}`);
+    if (run.status === "completed" || run.status === "cancelled") return;
     const client = this.#clients.get(runId);
     if (run.status === "queued" || (run.status === "starting" && !client)) {
       await this.store.update((state) => {
@@ -209,7 +277,16 @@ export class AgentSupervisor {
       requireRun(state, runId).status = "cancelling";
     });
     await client.abort().catch(() => undefined);
-    await client.stop().catch(() => undefined);
+    try {
+      await client.stop();
+    } catch {
+      await this.store.update((state) => {
+        requireRun(state, runId).failure =
+          "Child cleanup could not be confirmed; retry cancellation";
+        state.phase = "needs_replan";
+      });
+      throw new Error("Child cancellation could not confirm cleanup");
+    }
     this.#clients.delete(runId);
     await this.store.update((state) => {
       const current = requireRun(state, runId);
@@ -219,31 +296,19 @@ export class AgentSupervisor {
     await this.#drainQueue();
   }
 
-  /** Waits for a delegated run and returns its durable result. */
-  async wait(runId: string): Promise<AgentResult> {
-    const deadline = Date.now() + 30 * 60 * 1000;
-    let run = this.store.state.runs[runId];
+  /** Awaits an owned run without turning a caller wait into an execution deadline. */
+  async wait(runId: string, signal?: AbortSignal): Promise<AgentResult> {
+    let run = requireRun(this.store.state, runId);
     while (
-      run &&
-      ["queued", "starting", "running", "cancelling"].includes(run.status) &&
-      Date.now() < deadline
+      ["queued", "starting", "running", "cancelling"].includes(run.status)
     ) {
-      await this.#completions.get(runId);
-      if (["queued", "starting"].includes(run.status)) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      run = this.store.state.runs[runId];
+      if (signal?.aborted) throw new Error(`Agent wait cancelled: ${runId}`);
+      run = await this.waitForStatus(runId, 250);
     }
     await this.#completions.get(runId);
-    run = this.store.state.runs[runId];
-    if (run?.status !== "completed") {
-      throw new Error(
-        run?.failure ??
-          (Date.now() >= deadline
-            ? `Agent wait timed out: ${runId}`
-            : `Agent did not complete: ${runId}`),
-      );
-    }
+    run = requireRun(this.store.state, runId);
+    if (run.status !== "completed")
+      throw new Error(run.failure ?? `Agent did not complete: ${runId}`);
     if (!run.resultId) throw new Error(`Agent result ID is missing: ${runId}`);
     const result = this.store.state.results[run.resultId];
     if (!result) throw new Error(`Agent result is missing: ${run.resultId}`);
@@ -270,7 +335,7 @@ export class AgentSupervisor {
     if (signal?.aborted) cancel();
     else signal?.addEventListener("abort", cancel, { once: true });
     try {
-      const result = await this.wait(run.id);
+      const result = await this.wait(run.id, signal);
       if (signal?.aborted) throw new Error("Independent review aborted");
       return result;
     } finally {
@@ -303,6 +368,11 @@ export class AgentSupervisor {
     );
     await Promise.allSettled([...this.#completions.values()]);
     await this.store.flush();
+    if (this.#clients.size > 0) {
+      throw new Error(
+        "OpenAmp could not confirm all child cleanup; unresolved ownership was preserved",
+      );
+    }
   }
 
   /** Launches one persisted run and owns its process through terminal state. */
@@ -327,6 +397,10 @@ export class AgentSupervisor {
     if (!run) throw new Error(`Unknown agent: ${runId}`);
     let agentWorkspace: AgentWorkspace | { path: string };
     let client: ChildClient | undefined;
+    let unsubscribe: (() => void) | undefined;
+    let settled = false;
+    let started = false;
+    let stopped = false;
     try {
       agentWorkspace =
         run.role === "writer"
@@ -335,26 +409,54 @@ export class AgentSupervisor {
       if (this.store.state.runs[runId]?.status === "cancelled") return;
       const observationPack = this.store.state.observationPack === true;
       if (observationPack) await validateObservationPackRuntime();
+      if (run.role === "oracle" && !run.requestedModel) {
+        throw new Error("Oracle run is missing its recorded model selection");
+      }
+      const route = run.requestedModel
+        ? parseOracleModel(run.requestedModel)
+        : undefined;
+      if (route && run.requestedEffort !== "high") {
+        throw new Error(
+          "Recorded Oracle route must retain high reasoning effort",
+        );
+      }
       client = this.clientFactory({
         cwd: agentWorkspace.path,
-        env: agentEnvironment(),
-        args: childArgsForRole(
-          run.role,
-          observationPack,
-          `${this.store.state.commonDir ?? this.store.path}.sessions`,
-        ),
+        env: { ...agentEnvironment(), PI_CODING_AGENT_DIR: this.agentDir },
+        ...(route ? { provider: route.provider, model: route.id } : {}),
+        args: [
+          ...childArgsForRole(
+            run.role,
+            observationPack,
+            `${this.store.state.commonDir ?? this.store.path}.sessions`,
+          ),
+          ...(run.requestedEffort ? ["--thinking", run.requestedEffort] : []),
+        ],
       });
       this.#clients.set(runId, client);
       await client.start();
       if (this.#isCancelling(runId)) return;
       const rpcState = await client.getState();
       if (this.#isCancelling(runId)) return;
+      const effectiveModel = rpcState.model
+        ? `${rpcState.model.provider}/${rpcState.model.id}`
+        : null;
+      if (
+        run.requestedModel &&
+        (effectiveModel !== run.requestedModel ||
+          rpcState.thinkingLevel !== run.requestedEffort)
+      ) {
+        throw new Error(
+          "Pi did not confirm the requested Oracle model and high reasoning effort; no prompt was sent",
+        );
+      }
       await this.store.update((state) => {
         Object.assign(requireRun(state, runId), {
           status: "running",
           startedAt: new Date().toISOString(),
           cwd: agentWorkspace.path,
           sessionId: rpcState.sessionId,
+          sessionFile: rpcState.sessionFile,
           model: rpcState.model
             ? `${rpcState.model.provider}/${rpcState.model.id}`
             : null,
@@ -365,12 +467,43 @@ export class AgentSupervisor {
       const roleConstraint =
         run.role === "writer"
           ? "Modify only this dedicated worktree. Do not push, publish, merge, or delegate. Leave a coherent working tree; OpenAmp will create the result commit."
-          : "This is a read-only assignment. Use only read/search tools. Do not modify files, publish, merge, or delegate.";
+          : run.role === "oracle"
+            ? "You are a read-only Oracle adviser. Analyze the specific question, inspect relevant code, and return concise advice with evidence and caveats. Do not edit, run shell commands, publish, merge, or delegate. Your answer is advice, not permission to publish."
+            : "This is a read-only assignment. Use only read/search tools. Do not modify files, publish, merge, or delegate.";
+      unsubscribe = client.onEvent?.((event) => {
+        if (event.type === "agent_start") started = true;
+        if (event.type === "agent_settled") settled = true;
+      });
       await client.prompt(`${roleConstraint}\n\nAssignment:\n${run.prompt}`);
       if (this.#isCancelling(runId)) return;
-      await client.waitForIdle(30 * 60 * 1000);
+      if (unsubscribe) {
+        while (!settled && !this.#isCancelling(runId)) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          if (!settled && !this.#isCancelling(runId)) {
+            const health = await client.getState();
+            if (
+              !started &&
+              !settled &&
+              !health.isStreaming &&
+              !health.isCompacting &&
+              health.pendingMessageCount === 0
+            ) {
+              throw new Error(
+                "Pi did not start the prompt; check model credentials or prompt preflight",
+              );
+            }
+          }
+        }
+      } else {
+        await client.waitForIdle(30 * 60 * 1000);
+      }
       if (this.#isCancelling(runId)) return;
       const summary = boundedText(await client.getLastAssistantText());
+      if (run.role === "oracle" && !summary.trim())
+        throw new Error("Oracle returned no advice");
+      if (this.#isCancelling(runId)) return;
+      await client.stop();
+      stopped = true;
       if (this.#isCancelling(runId)) return;
       const finalized =
         run.role === "writer" && "branch" in agentWorkspace
@@ -390,14 +523,20 @@ export class AgentSupervisor {
         createdAt: new Date().toISOString(),
         deliveredSessionId: null,
       };
+      let saved = false;
       await this.store.update((state) => {
+        if (
+          ["cancelling", "cancelled"].includes(requireRun(state, runId).status)
+        )
+          return;
+        saved = true;
         state.results[resultId] = result;
         const current = requireRun(state, runId);
         current.status = "completed";
         current.finishedAt = result.createdAt;
         current.resultId = resultId;
       });
-      if (!run.deliveryOnly) await this.#deliveryHandler?.(result);
+      if (saved && !run.deliveryOnly) await this.#deliveryHandler?.(result);
     } catch (error) {
       if (this.store.state.runs[runId]?.status !== "cancelled") {
         await this.store.update((state) => {
@@ -411,9 +550,25 @@ export class AgentSupervisor {
         });
       }
     } finally {
-      if (client) await client.stop().catch(() => undefined);
-      this.#clients.delete(runId);
-      await this.#drainQueue();
+      unsubscribe?.();
+      if (client && !stopped) {
+        try {
+          await client.stop();
+          stopped = true;
+        } catch {
+          await this.store.update((state) => {
+            const current = requireRun(state, runId);
+            current.status = "cancelling";
+            current.failure =
+              "Child cleanup could not be confirmed; retry cancellation before starting more work";
+            state.phase = "needs_replan";
+          });
+        }
+      }
+      if (!client || stopped) {
+        this.#clients.delete(runId);
+        await this.#drainQueue();
+      }
     }
   }
 

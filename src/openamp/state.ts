@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 
 export const STATE_VERSION = 1;
 
-export type AgentRole = "researcher" | "writer" | "reviewer";
+export type AgentRole = "researcher" | "writer" | "reviewer" | "oracle";
 export type RunStatus =
   | "queued"
   | "starting"
@@ -29,6 +29,10 @@ export interface AgentRun {
   model: string | null;
   effort: string | null;
   resultId: string | null;
+  requestedModel?: string;
+  requestedEffort?: "high";
+  sessionFile?: string;
+  inputGeneration?: number;
   failure?: string;
 }
 
@@ -82,6 +86,7 @@ export interface ChangeState {
   sessionId: string | null;
   sessionFile: string | null;
   observationPack: boolean;
+  oracleModel?: string;
   inputGeneration: number;
   phase: string;
   runs: Record<string, AgentRun>;

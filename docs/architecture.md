@@ -31,7 +31,7 @@ web service, or merge worker.
   lifecycle.
 - The main Pi session is the coding agent: it plans, edits, runs checks, and
   applies corrections. Independent work can be delegated. A separate optional
-  Oracle adviser and explicit model profiles are still planned.
+  Oracle adviser uses a persisted exact Pi model at high effort.
 - `src/openamp/extension.ts` supplies delegation, status, integration, and
   delivery operations to the main session. Result messages retain stable IDs.
 - `src/openamp/supervisor.ts` owns at most two Pi RPC child processes, targeted
@@ -93,3 +93,9 @@ The build records hashes for the compiled extension artifacts and binds them to
 the raw provenance manifest; startup checks that binding before loading either
 session. Observation archives stay with Pi sessions and have no background
 cleanup process.
+
+## Optional Oracle consultation
+
+`ask_oracle` creates a read-only Oracle run with the current change's explicit model selection, requested high effort, and parent-session identity. Requested routes are immutable per run and effective settings are checked before the prompt. Children inherit Pi's config directory even when the main process uses an isolated home. A configured Oracle also serves requested final review; its ordinary advice never satisfies the Delivery gate.
+
+`agent_wait` returns status for the same run on expiry and does not stop or replace it. The supervisor subscribes before prompting, follows Pi's settled event, and uses bounded state requests to detect a dead process or rejected prompt preflight. Quiet but active inference continues. Results are saved after the Pi client stops and delivered through the existing parent-message deduplication path. Failed cleanup retains ownership and reports attention rather than claiming shutdown success.

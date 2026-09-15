@@ -14,7 +14,7 @@ Continue to create/update the feature PR when modifying work is ready. Merge rem
 
 Work on `codex/openamp-oracle-workflow`, based on upstream OpenAmp runtime at `ff9861f`. The runtime already provides native Pi UI, dedicated feature workspaces, supervised children, durable coordination state, optional ObservationPack, and verified PR delivery. Reuse these modules.
 
-The temporary read-only main-thread restriction in `5c8a980` is being reversed. The current policy patch restores main-thread code tools and makes review optional in `deliver_change`. It does not complete Oracle consultation, model-profile routing, checklist UI, or non-cancelling wait expiry.
+The temporary read-only main-thread restriction in `5c8a980` is being reversed. The current policy patch restores main-thread code tools and makes review optional in `deliver_change`. The subsequent Oracle slice adds optional consultation, a persisted Oracle model selection, and non-cancelling waits. Checklist UI and full M0 acceptance remain.
 
 One curated Pi extension adds only missing product behavior. Pi owns provider/authentication integration, model execution, tools, conversation storage, and compaction. OpenAmp's existing atomic store owns coordination and delivery metadata. Do not migrate that metadata into a second store or duplicate transcripts.
 
@@ -59,3 +59,7 @@ The earlier architecture and Oracle-boundary evidence describe superseded behavi
 ## Amp references
 
 Amp's main agent can edit and consult Oracle optionally: [tools](https://ampcode.com/docs/tools). Independent threads exchange results explicitly: [agent to agent](https://ampcode.com/docs/orbs/agent-to-agent). Its plugin run timeout leaves the child running: [plugin API](https://ampcode.com/docs/plugin-api). We copy these public concepts, without claiming knowledge of Amp's private implementation or automatically copying its shipping defaults.
+
+## Oracle slice evidence
+
+The Oracle slice implements `--oracle-model`, `ask_oracle`, and `agent_wait`. Requested route snapshots survive configuration changes; actual model/high effort is checked before a prompt. Wait expiry leaves the same run active. A real Pi subprocess consultation with `openai-codex/gpt-6-astra` at high effort returned READY once after an expired short wait, with its session recorded. Focused real-Git/controlled-Pi integration covers repeated waits, route rejection, fast settlement, rejected preflight, cancellation, and cleanup failure. See [verification evidence](../validation/2026-09-15-openamp-oracle-tool.md). Full UI/checklist acceptance is still pending.

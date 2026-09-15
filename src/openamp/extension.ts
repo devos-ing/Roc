@@ -58,6 +58,69 @@ export function createOpenAmpExtension(
       let currentContext: ExtensionContext | undefined;
       const pendingDeliveries = new Set<string>();
 
+      /** Returns bounded status for the same owned child and cancels only on an explicit abort. */
+      async function waitForChild(
+        runId: string,
+        waitMs: number,
+        signal: AbortSignal | undefined,
+        context: ExtensionContext,
+      ) {
+        const run = store.state.runs[runId];
+        if (
+          !run ||
+          (run.parentSessionId &&
+            run.parentSessionId !== context.sessionManager.getSessionId())
+        ) {
+          throw new Error(
+            "This child does not belong to the current parent session",
+          );
+        }
+        let cancellation: Promise<void> | undefined;
+        /** Links explicit tool interruption to the existing child's cancellation path. */
+        const cancel = () => {
+          if (
+            ["queued", "starting", "running", "cancelling"].includes(run.status)
+          ) {
+            cancellation ??= supervisor.cancel(runId);
+            void cancellation.catch(() => undefined);
+          }
+        };
+        signal?.addEventListener("abort", cancel, { once: true });
+        if (signal?.aborted) cancel();
+        try {
+          const state = await supervisor.waitForStatus(runId, waitMs);
+          if (signal?.aborted)
+            throw new Error(`Child wait cancelled: ${runId}`);
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: [
+                  `${state.id} ${state.status}`,
+                  state.model
+                    ? `Model: ${state.model}; effort: ${state.effort}`
+                    : "Model startup not yet confirmed.",
+                  state.resultId
+                    ? `Result ${state.resultId} is saved; its advice appears in the parent result message.`
+                    : (state.failure ??
+                      "If still active, wait again with agent_wait; do not start a duplicate."),
+                ].join("\n"),
+              },
+            ],
+            details: {
+              runId: state.id,
+              status: state.status,
+              resultId: state.resultId,
+              model: state.model,
+              effort: state.effort,
+            },
+          };
+        } finally {
+          signal?.removeEventListener("abort", cancel);
+          await cancellation;
+        }
+      }
+
       /** Refreshes the compact OpenAmp status shown by Pi's native footer. */
       function refreshStatus(context: ExtensionContext | undefined): void {
         if (!context) return;
@@ -103,6 +166,16 @@ export function createOpenAmpExtension(
               customType: "openamp-result",
               content: [
                 `OpenAmp child result ${result.id} from ${result.runId} (${result.role}).`,
+                run.model
+                  ? `Model: ${run.model}; effort: ${run.effort ?? "default"}.`
+                  : "",
+                result.role === "oracle"
+                  ? "Oracle advice is not a publication approval; verify it against the current code."
+                  : "",
+                result.role === "oracle" &&
+                run.inputGeneration !== store.state.inputGeneration
+                  ? "The parent received new input after this consultation started; the advice may be stale."
+                  : "",
                 result.commit
                   ? `Verified result commit: ${result.commit}`
                   : "No result commit.",
@@ -154,6 +227,7 @@ export function createOpenAmpExtension(
           `OpenAmp ${store.state.id}`,
           `workspace: ${store.state.workspace}`,
           `branch: ${store.state.branch ?? "none (conversation only)"}`,
+          `Oracle: ${store.state.oracleModel ? `${store.state.oracleModel} · high` : "not configured (optional)"}`,
           store.state.repoRoot
             ? `PR target: ${store.state.baseBranch ?? "unavailable"}`
             : "Git unavailable: writer agents and PR delivery are disabled",
@@ -203,6 +277,7 @@ export function createOpenAmpExtension(
           `You are the main coding agent for OpenAmp change ${store.state.id}.`,
           `Work only in ${store.state.workspace}.`,
           "Plan, edit code, run checks, and apply fixes in this main thread. Delegate independent work only when useful. Research agents are read-only; delegated writers use isolated worktrees.",
+          "Use ask_oracle for a focused second opinion on difficult planning, debugging, tradeoffs, or review. Oracle use is optional; you remain responsible for edits and checking its advice. If it is still running, use agent_wait on the returned ID rather than starting another consultation. Advice arrives once as an OpenAmp result message and never grants publication approval.",
           "Use integrate_result for selected writer results. Never push, create/modify/merge a PR, or call GitHub mutation APIs.",
           "When the requested modifying work is complete, call deliver_change with exact current requirements and validation commands. Delivery validates and opens or updates the PR; independent review is optional. Set review=true only when review is requested. Only the user merges.",
         ].join("\n"),
@@ -233,6 +308,62 @@ export function createOpenAmpExtension(
               },
             }
           : undefined;
+      });
+
+      pi.registerTool({
+        name: "ask_oracle",
+        label: "Ask Oracle",
+        description:
+          "Consult the configured read-only high-effort Oracle and return its existing run status; advice arrives in a result message",
+        parameters: Type.Object({
+          question: Type.String({ minLength: 1, maxLength: 4000 }),
+          context: Type.Optional(Type.String({ maxLength: 16000 })),
+        }),
+        execute: async (_id, parameters, signal, _onUpdate, context) => {
+          if (signal?.aborted)
+            throw new Error("Oracle request cancelled before launch");
+          if (!parameters.question.trim())
+            throw new Error("Oracle question must not be empty");
+          const selected = store.state.oracleModel;
+          if (!selected)
+            throw new Error(
+              "Configure --oracle-model <provider/model> to enable Oracle advice",
+            );
+          const model = context.modelRegistry
+            .getAvailable()
+            .find((item) => `${item.provider}/${item.id}` === selected);
+          if (!model?.reasoning)
+            throw new Error(
+              "The selected Oracle must be an authenticated Pi reasoning model; no fallback was selected",
+            );
+          const run = await supervisor.delegate({
+            role: "oracle",
+            prompt: [parameters.question.trim(), parameters.context ?? ""]
+              .filter(Boolean)
+              .join("\n\nRelevant context:\n"),
+            parentSessionId: context.sessionManager.getSessionId(),
+          });
+          refreshStatus(context);
+          return waitForChild(run.id, 1000, signal, context);
+        },
+      });
+
+      pi.registerTool({
+        name: "agent_wait",
+        label: "Wait for agent",
+        description:
+          "Wait briefly for one existing child; expiration returns status and leaves the same child running",
+        parameters: Type.Object({
+          run_id: Type.String({ minLength: 1 }),
+          wait_ms: Type.Optional(Type.Integer({ minimum: 0, maximum: 60000 })),
+        }),
+        execute: async (_id, parameters, signal, _onUpdate, context) =>
+          waitForChild(
+            parameters.run_id,
+            parameters.wait_ms ?? 10000,
+            signal,
+            context,
+          ),
       });
 
       pi.registerTool({

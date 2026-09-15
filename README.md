@@ -47,6 +47,19 @@ Outside a Git repository, OpenAmp still provides a durable Pi conversation but
 disables writer delegation and PR delivery. If GitHub is unavailable, local work
 and state remain available for a later retry.
 
+## Optional Oracle advice
+
+Keep choosing the main coding model with Pi's native model controls. Configure a separate Oracle for a change:
+
+```bash
+openamp --oracle-model openai-codex/gpt-6-astra
+openamp --resume change-abc123def456 --oracle-model openai-codex/gpt-6-astra
+```
+
+Use an exact authenticated `provider/model` from Pi. The selection persists with the change; resuming without the flag keeps it. Explicitly changing it affects new consultations, while existing runs keep their recorded selection. The Oracle must confirm that model and `high` effort before receiving a prompt. No silent fallback is used. A configured Oracle is also used for requested final reviews; without one, existing review model defaults remain.
+
+Ask the main agent to consult Oracle for a specific planning, debugging, or review question. `ask_oracle` returns a run ID and brief status. Its read-only advice arrives once in the main conversation. `agent_wait` observes that same run for up to 60 seconds; expiry keeps it running. Use `/agent-cancel <run-id>` to cancel explicitly. Advice does not count as independent publication approval.
+
 ## Development
 
 ```bash

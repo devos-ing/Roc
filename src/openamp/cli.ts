@@ -22,12 +22,17 @@ import {
   validateObservationPackRuntime,
 } from "./observation-pack.js";
 import type { ChangeStore } from "./state.js";
-import { AgentSupervisor, type SupervisorOptions } from "./supervisor.js";
+import {
+  AgentSupervisor,
+  parseOracleModel,
+  type SupervisorOptions,
+} from "./supervisor.js";
 import { ChangeWorkspace, createChange, resumeChange } from "./workspace.js";
 
 interface ParsedArguments {
   resume?: string;
   base?: string;
+  oracleModel?: string;
   plugins: boolean;
   observationPack?: boolean;
   help: boolean;
@@ -55,16 +60,25 @@ export function parseArguments(args: string[]): ParsedArguments {
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--help" || argument === "-h") options.help = true;
-    else if (argument === "--resume") options.resume = args[++index];
-    else if (argument === "--base") options.base = args[++index];
-    else if (argument === "--plugins") options.plugins = true;
+    else if (
+      argument === "--resume" ||
+      argument === "--base" ||
+      argument === "--oracle-model"
+    ) {
+      const value = args[++index];
+      if (!value || value.startsWith("-"))
+        throw new Error(`${argument} requires a value`);
+      if (argument === "--resume") options.resume = value;
+      else if (argument === "--base") options.base = value;
+      else {
+        parseOracleModel(value);
+        options.oracleModel = value;
+      }
+    } else if (argument === "--plugins") options.plugins = true;
     else if (argument === "--observation-pack") options.observationPack = true;
     else if (argument === "--no-observation-pack")
       options.observationPack = false;
     else throw new Error(`Unknown OpenAmp option: ${argument}`);
-  }
-  if (args.at(-1) === "--resume" || args.at(-1) === "--base") {
-    throw new Error(`${args.at(-1)} requires a value`);
   }
   if (options.resume && options.base) {
     throw new Error("--base cannot change an existing --resume change");
@@ -85,6 +99,7 @@ export function helpText(): string {
     "Usage:",
     "  openamp [--base <ref>] [--observation-pack|--no-observation-pack]",
     "  openamp --resume <change-id> [--plugins]",
+    "  openamp --oracle-model <provider/model>",
     "",
     "OpenAmp creates a dedicated feature worktree, keeps Pi sessions durable,",
     "delegates through /agents, and opens validated pull requests without merging.",
@@ -125,6 +140,8 @@ export function mainSessionTools(observationPack: boolean): string[] {
     "edit",
     "write",
     "delegate",
+    "ask_oracle",
+    "agent_wait",
     "agent_status",
     "integrate_result",
     "deliver_change",
@@ -171,6 +188,11 @@ export async function runOpenAmp(
     store = await createChange(cwd, {
       base: parsed.base,
       observationPack: selection,
+    });
+  }
+  if (parsed.oracleModel !== undefined) {
+    await store.update((state) => {
+      state.oracleModel = parsed.oracleModel;
     });
   }
   const observationPack = store.state.observationPack === true;
