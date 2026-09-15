@@ -78,6 +78,9 @@ child activity after cancellation; reconciliation now clears that child's status
 while preserving newer activity. Re-review found no remaining issue in the fix.
 See [progress verification](../validation/2026-09-15-openamp-progress.md).
 
-Next, gather focused acceptance evidence for a main coding task that updates its
-checklist and optionally consults Oracle. Broader context recall and recovery
-remain M1 work. Do not claim measured context savings from the checklist alone.
+The [M0 component acceptance check](../validation/2026-09-15-openamp-m0-components.md)
+connects registered Pi coding and checklist tools to Oracle supervision and real
+session insertion. It passed with a controlled Oracle response. Model-driven
+interactive acceptance remains unverified; repository policy prohibits AI-run
+end-to-end tests. The next implementation focus is M1 context recall and recovery.
+Do not claim measured context savings from the checklist alone.
