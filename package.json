@@ -12,6 +12,8 @@
     "dist/third-party/sol-pi",
     "README.md",
     "README.zh-HK.md",
+    "CHANGELOG.md",
+    "output/imagegen/pied-piper-avatar-cute.png",
     "LICENSE"
   ],
   "engines": {
@@ -29,6 +31,7 @@
     "ai-agents",
     "cli",
     "pi",
+    "pied-piper",
     "multi-agent",
     "orchestration",
     "pull-request"

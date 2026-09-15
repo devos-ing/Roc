@@ -1,6 +1,6 @@
-# OpenAmp architecture
+# Pied Piper architecture
 
-OpenAmp is a local, interactive Node.js CLI built on Pi's native TUI, model
+Pied Piper is a local, interactive Node.js CLI built on Pi's native TUI, model
 runtime, tools, and session manager. It has no daemon, task backlog, database,
 web service, or merge worker.
 
@@ -9,7 +9,7 @@ web service, or merge worker.
 │ Pi native TUI│──────▶│ Main Pi session    │
 └──────────────┘       │ feature worktree   │
                        └──────┬─────────────┘
-                              │ OpenAmp tools
+                              │ Pied Piper tools
                   ┌───────────┼─────────────┐
                   ▼           ▼             ▼
            ┌──────────┐ ┌───────────┐ ┌────────────┐
@@ -83,7 +83,7 @@ The retired Roc daemon architecture and operator guide remain in
 
 ## Optional ObservationPack
 
-OpenAmp offers ObservationPack as an opt-in plugin during a new interactive
+Pied Piper offers ObservationPack as an opt-in plugin during a new interactive
 change and through `--plugins` for an existing change. The checkbox is clear by
 default. Its saved choice belongs to that change; resuming without a new choice
 preserves it, and cancelling the selector leaves the previous choice untouched.
@@ -92,7 +92,7 @@ When enabled, both the main Pi session and every supervised child load the
 same package-owned ObservationPack extension and explicitly allow `obs_recall`.
 The plugin remains subject to the parent and child tool boundaries: reviewers
 and researchers remain read-only and writers retain their dedicated worktree.
-OpenAmp stores the accepted upstream snapshot under `src/third-party/sol-pi/`.
+Pied Piper stores the accepted upstream snapshot under `src/third-party/sol-pi/`.
 The build records hashes for the compiled extension artifacts and binds them to
 the raw provenance manifest; startup checks that binding before loading either
 session. Observation archives stay with Pi sessions and have no background
@@ -115,7 +115,7 @@ A store observer refreshes native Pi widgets after persisted changes, including
 asynchronous child events. Session replacement transfers observer ownership.
 The widget defaults to three unfinished steps and expands through `/plan`.
 Each main-agent turn receives the current bounded plan as data. Pi continues to
-own transcripts and compaction; OpenAmp does not append a second activity log.
+own transcripts and compaction; Pied Piper does not append a second activity log.
 
 Tool events persist owner, run ID, tool name, status, and time. Arguments and
 outputs stay out of this record. Main settlement interrupts a dangling main

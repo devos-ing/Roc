@@ -1,13 +1,13 @@
 ---
 name: manage-agents-md
-description: Create, audit, or maintain AGENTS.md instructions for Roc contributors when requested.
+description: Create, audit, or maintain AGENTS.md instructions for Pied Piper contributors when requested.
 ---
 
 # Maintain contributor instructions
 
-Keep Roc's contributor instructions accurate, concise, and usable from a fresh checkout. An audit returns findings; a request to create or update instructions includes applying and verifying the changes.
+Keep Pied Piper's contributor instructions accurate, concise, and usable from a fresh checkout. An audit returns findings; a request to create or update instructions includes applying and verifying the changes.
 
-This is a repository development skill. Keep it out of Roc user onboarding, runtime skill installation, and the published npm package. It is self-contained and requires no contributor's personal skills or machine paths.
+This is a repository development skill. Keep it out of Pied Piper user onboarding, runtime skill installation, and the published npm package. It is self-contained and requires no contributor's personal skills or machine paths.
 
 ## Establish scope
 

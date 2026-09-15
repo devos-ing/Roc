@@ -122,7 +122,7 @@ export async function validateObservationPackSnapshot(
   return fingerprint;
 }
 
-/** Validates the compiled files that OpenAmp loads from a published package. */
+/** Validates the compiled files that Pied Piper loads from a published package. */
 export async function validateObservationPackRuntime(): Promise<void> {
   const manifestPath = resolve(snapshotRoot, "BUILD-PROVENANCE.json");
   try {

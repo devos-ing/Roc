@@ -180,7 +180,8 @@ export class AgentSupervisor {
   /** Starts or queues one non-recursive child-agent assignment. */
   async delegate(input: DelegateInput): Promise<AgentRun> {
     const admission = this.#admitting.then(async () => {
-      if (this.#closing) throw new Error("OpenAmp supervisor is shutting down");
+      if (this.#closing)
+        throw new Error("Pied Piper supervisor is shutting down");
       if (
         !["researcher", "writer", "reviewer", "oracle"].includes(input.role)
       ) {
@@ -377,7 +378,7 @@ export class AgentSupervisor {
     await this.store.flush();
     if (this.#clients.size > 0) {
       throw new Error(
-        "OpenAmp could not confirm all child cleanup; unresolved ownership was preserved",
+        "Pied Piper could not confirm all child cleanup; unresolved ownership was preserved",
       );
     }
   }
@@ -473,7 +474,7 @@ export class AgentSupervisor {
       if (this.#isCancelling(runId)) return;
       const roleConstraint =
         run.role === "writer"
-          ? "Modify only this dedicated worktree. Do not push, publish, merge, or delegate. Leave a coherent working tree; OpenAmp will create the result commit."
+          ? "Modify only this dedicated worktree. Do not push, publish, merge, or delegate. Leave a coherent working tree; Pied Piper will create the result commit."
           : run.role === "oracle"
             ? "You are a read-only Oracle adviser. Analyze the specific question, inspect relevant code, and return concise advice with evidence and caveats. Do not edit, run shell commands, publish, merge, or delegate. Your answer is advice, not permission to publish."
             : "This is a read-only assignment. Use only read/search tools. Do not modify files, publish, merge, or delegate.";
@@ -503,7 +504,7 @@ export class AgentSupervisor {
             })
             .catch(() => {
               process.stderr.write(
-                "OpenAmp: child activity could not be saved.\n",
+                "Pied Piper: child activity could not be saved.\n",
               );
             });
         }

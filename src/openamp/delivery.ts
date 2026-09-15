@@ -166,9 +166,9 @@ function pullRequestBody(
           `Not requested for head \`${head}\`; no independent review approval is claimed.`,
         ]),
     "",
-    "## OpenAmp",
+    "## Pied Piper",
     `Change ID: \`${changeId}\``,
-    "Merge remains a user decision; OpenAmp did not enable auto-merge.",
+    "Merge remains a user decision; Pied Piper did not enable auto-merge.",
   ].join("\n");
 }
 
@@ -513,7 +513,7 @@ export class ChangeDelivery {
       ["merge", "close", "reopen"].includes(args[1])
     ) {
       throw new Error(
-        "OpenAmp Delivery never merges or changes PR lifecycle state",
+        "Pied Piper Delivery never merges or changes PR lifecycle state",
       );
     }
     const ledgerId = `command-${crypto.randomUUID().slice(0, 12)}`;
@@ -640,7 +640,7 @@ export class ChangeDelivery {
       (item) => item.headRepositoryOwner?.login === owner,
     );
     if (matches.length > 1)
-      throw new Error("Multiple pull requests match this OpenAmp change");
+      throw new Error("Multiple pull requests match this Pied Piper change");
     return matches[0];
   }
 
@@ -700,7 +700,7 @@ export class ChangeDelivery {
         { allowFailure: true },
       );
       if (ancestor.exitCode !== 0) {
-        throw new Error("Remote feature branch changed outside OpenAmp");
+        throw new Error("Remote feature branch changed outside Pied Piper");
       }
     }
     if ((await this.workspace.assertReady()) !== head) {

@@ -52,7 +52,7 @@ function requireResult(state: ChangeState, resultId: string): AgentResult {
   return result;
 }
 
-/** Creates the Pi extension that exposes OpenAmp collaboration and delivery. */
+/** Creates the Pi extension that exposes Pied Piper collaboration and delivery. */
 export function createOpenAmpExtension(
   store: ChangeStore,
   supervisor: AgentSupervisor,
@@ -130,7 +130,7 @@ export function createOpenAmpExtension(
         }
       }
 
-      /** Refreshes the compact OpenAmp status shown by Pi's native footer. */
+      /** Refreshes the compact Pied Piper status shown by Pi's native footer. */
       function refreshStatus(context: ExtensionContext | undefined): void {
         if (!context) return;
         const active = supervisor
@@ -186,7 +186,7 @@ export function createOpenAmpExtension(
             {
               customType: "openamp-result",
               content: [
-                `OpenAmp child result ${result.id} from ${result.runId} (${result.role}).`,
+                `Pied Piper child result ${result.id} from ${result.runId} (${result.role}).`,
                 run.model
                   ? `Model: ${run.model}; effort: ${run.effort ?? "default"}.`
                   : "",
@@ -255,9 +255,9 @@ export function createOpenAmpExtension(
             persistedUserInputs,
           );
         });
-        context.ui.setTitle(`OpenAmp · ${store.state.id}`);
+        context.ui.setTitle(`Pied Piper · ${store.state.id}`);
         context.ui.setWidget("openamp-change", [
-          `OpenAmp ${store.state.id}`,
+          `Pied Piper ${store.state.id}`,
           `workspace: ${store.state.workspace}`,
           `branch: ${store.state.branch ?? "none (conversation only)"}`,
           `Oracle: ${store.state.oracleModel ? `${store.state.oracleModel} · high` : "not configured (optional)"}`,
@@ -347,12 +347,12 @@ export function createOpenAmpExtension(
       pi.on("before_agent_start", (event) => ({
         systemPrompt: [
           event.systemPrompt,
-          `You are the main coding agent for OpenAmp change ${store.state.id}.`,
+          `You are the main coding agent for Pied Piper change ${store.state.id}.`,
           `Work only in ${store.state.workspace}.`,
           "For multi-step work, maintain a short checklist with update_plan. Use stable step IDs and the current expected_revision; only one step may be in progress. Completed steps need concrete evidence in note, and blocked steps need a reason. Use agent_status to refresh a stale revision. Checklist completion is reported progress, not validation or publication approval. Do not create a checklist for a simple question.",
           planContext(store.state),
           "Plan, edit code, run checks, and apply fixes in this main thread. Delegate independent work only when useful. Research agents are read-only; delegated writers use isolated worktrees.",
-          "Use ask_oracle for a focused second opinion on difficult planning, debugging, tradeoffs, or review. Oracle use is optional; you remain responsible for edits and checking its advice. If it is still running, use agent_wait on the returned ID rather than starting another consultation. Advice arrives once as an OpenAmp result message and never grants publication approval.",
+          "Use ask_oracle for a focused second opinion on difficult planning, debugging, tradeoffs, or review. Oracle use is optional; you remain responsible for edits and checking its advice. If it is still running, use agent_wait on the returned ID rather than starting another consultation. Advice arrives once as a Pied Piper result message and never grants publication approval.",
           "Use integrate_result for selected writer results. Never push, create/modify/merge a PR, or call GitHub mutation APIs.",
           "When the requested modifying work is complete, call deliver_change with exact current requirements and validation commands. Delivery validates and opens or updates the PR; independent review is optional. Set review=true only when review is requested. Only the user merges.",
         ].join("\n"),
@@ -501,7 +501,7 @@ export function createOpenAmpExtension(
             content: [
               {
                 type: "text",
-                text: `${run.id} ${run.status}; continue the main conversation while OpenAmp owns its result delivery.`,
+                text: `${run.id} ${run.status}; continue the main conversation while Pied Piper owns its result delivery.`,
               },
             ],
             details: { runId: run.id, status: run.status },
@@ -589,10 +589,10 @@ export function createOpenAmpExtension(
       });
 
       pi.registerCommand("agents", {
-        description: "Show OpenAmp child agents",
+        description: "Show Pied Piper child agents",
         handler: async (_arguments, context) => {
           context.ui.setWidget("openamp-agents", [
-            "OpenAmp agents",
+            "Pied Piper agents",
             ...agentLines(supervisor),
           ]);
           refreshStatus(context);

@@ -54,7 +54,7 @@ export interface RunOpenAmpOptions {
   ) => Promise<boolean | undefined>;
 }
 
-/** Parses OpenAmp's intentionally small process-level CLI surface. */
+/** Parses Pied Piper's intentionally small process-level CLI surface. */
 export function parseArguments(args: string[]): ParsedArguments {
   const options: ParsedArguments = { help: false, plugins: false };
   for (let index = 0; index < args.length; index += 1) {
@@ -78,7 +78,7 @@ export function parseArguments(args: string[]): ParsedArguments {
     else if (argument === "--observation-pack") options.observationPack = true;
     else if (argument === "--no-observation-pack")
       options.observationPack = false;
-    else throw new Error(`Unknown OpenAmp option: ${argument}`);
+    else throw new Error(`Unknown Pied Piper option: ${argument}`);
   }
   if (options.resume && options.base) {
     throw new Error("--base cannot change an existing --resume change");
@@ -91,22 +91,22 @@ export function parseArguments(args: string[]): ParsedArguments {
   return options;
 }
 
-/** Returns the public OpenAmp command help. */
+/** Returns the public Pied Piper command help. */
 export function helpText(): string {
   return [
-    "OpenAmp - interactive Pi agent collaboration",
+    "Pied Piper - interactive Pi agent collaboration",
     "",
     "Usage:",
     "  openamp [--base <ref>] [--observation-pack|--no-observation-pack]",
     "  openamp --resume <change-id> [--plugins]",
     "  openamp --oracle-model <provider/model>",
     "",
-    "OpenAmp creates a dedicated feature worktree, keeps Pi sessions durable,",
+    "Pied Piper creates a dedicated feature worktree, keeps Pi sessions durable,",
     "delegates through /agents, and opens validated pull requests without merging.",
   ].join("\n");
 }
 
-/** Presents the native checkbox list that selects optional OpenAmp plugins. */
+/** Presents the native checkbox list that selects optional Pied Piper plugins. */
 async function selectPlugins(
   initialObservationPack: boolean,
 ): Promise<boolean | undefined> {
@@ -150,7 +150,7 @@ export function mainSessionTools(observationPack: boolean): string[] {
   ];
 }
 
-/** Starts or resumes one OpenAmp native Pi TUI session. */
+/** Starts or resumes one Pied Piper native Pi TUI session. */
 export async function runOpenAmp(
   args: string[],
   options: RunOpenAmpOptions = {},
@@ -172,7 +172,7 @@ export async function runOpenAmp(
           )
         : undefined);
     if (parsed.plugins && selection === undefined) {
-      throw new Error("OpenAmp plugin selection cancelled");
+      throw new Error("Pied Piper plugin selection cancelled");
     }
     if (selection !== undefined) {
       await store.update((state) => {
@@ -184,7 +184,7 @@ export async function runOpenAmp(
       parsed.observationPack ??
       (await (options.selectPlugins ?? selectPlugins)(false));
     if (selection === undefined) {
-      throw new Error("OpenAmp plugin selection cancelled");
+      throw new Error("Pied Piper plugin selection cancelled");
     }
     store = await createChange(cwd, {
       base: parsed.base,
