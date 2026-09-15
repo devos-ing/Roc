@@ -78,7 +78,7 @@ async function boot(
   return { session, runner, widgets, statuses, supervisor };
 }
 
-test("native Pi checklist tool persists progress, rejects stale writes, and restores its widget without changing delivery", async () => {
+test("native Pi progress persists checklist and final-review states without changing delivery", async () => {
   const root = await mkdtemp(join(tmpdir(), "openamp-progress-integration-"));
   const sessions: Awaited<ReturnType<typeof boot>>[] = [];
   try {
@@ -133,6 +133,77 @@ test("native Pi checklist tool persists progress, rejects stale writes, and rest
     expect(store.state.phase).toBe(initialPhase);
     expect(store.state.review).toBeNull();
     expect(store.state.publication).toBeNull();
+    expect(first.widgets.get("openamp-progress")?.join("\n")).toContain(
+      "Final review: not requested",
+    );
+
+    const reviewedHead = store.state.mainHead;
+    const reviewedBase = store.state.baseCommit;
+    const reviewedGeneration = store.state.inputGeneration;
+    if (!reviewedHead || !reviewedBase)
+      throw new Error("Review fixture commits missing");
+    const reviewer: AgentRun = {
+      id: "reviewer-progress",
+      role: "reviewer",
+      prompt: "Review the progress fixture",
+      status: "running",
+      parentSessionId: null,
+      deliveryOnly: true,
+      createdAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      cwd: store.state.workspace,
+      sessionId: null,
+      model: "astra",
+      effort: "high",
+      resultId: null,
+      inputGeneration: store.state.inputGeneration,
+    };
+    await store.update((state) => {
+      state.runs[reviewer.id] = reviewer;
+    });
+    expect(first.widgets.get("openamp-progress")?.join("\n")).toContain(
+      "Final review: requested · reviewer running",
+    );
+
+    await store.update((state) => {
+      const savedReviewer = state.runs[reviewer.id];
+      if (!savedReviewer) throw new Error("Running reviewer fixture missing");
+      savedReviewer.status = "completed";
+      state.review = {
+        decision: "accepted",
+        findings: [],
+        head: reviewedHead,
+        base: reviewedBase,
+        specHash: "accepted-requirements",
+        inputGeneration: state.inputGeneration,
+      };
+    });
+    expect(first.widgets.get("openamp-progress")?.join("\n")).toContain(
+      `Final review: accepted · reviewed ${reviewedHead.slice(0, 7)}`,
+    );
+
+    await store.update((state) => {
+      if (!state.review) throw new Error("Accepted review fixture missing");
+      state.review.decision = "rejected";
+    });
+    expect(first.widgets.get("openamp-progress")?.join("\n")).toContain(
+      `Final review: rejected · reviewed ${reviewedHead.slice(0, 7)}`,
+    );
+
+    for (const mismatch of ["head", "base", "input"] as const) {
+      await store.update((state) => {
+        state.mainHead = reviewedHead;
+        state.baseCommit = reviewedBase;
+        state.inputGeneration = reviewedGeneration;
+        if (mismatch === "head") state.mainHead = "f".repeat(40);
+        if (mismatch === "base") state.baseCommit = "e".repeat(40);
+        if (mismatch === "input") state.inputGeneration += 1;
+      });
+      expect(first.widgets.get("openamp-progress")?.join("\n")).toContain(
+        `Final review: stale rejected · reviewed ${reviewedHead.slice(0, 7)}`,
+      );
+    }
 
     const before = await readChange(store.path);
     await expect(
@@ -218,6 +289,9 @@ test("native Pi checklist tool persists progress, rejects stale writes, and rest
       "Plan 1/4 done · r2",
     );
     expect(reloaded.state.plan?.items).toEqual(items);
+    expect(third.widgets.get("openamp-progress")?.join("\n")).toContain(
+      `Final review: stale rejected · reviewed ${reviewedHead.slice(0, 7)}`,
+    );
     expect(reloaded.state.phase).toBe(initialPhase);
   } finally {
     for (const active of sessions) {

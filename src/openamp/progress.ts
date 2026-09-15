@@ -224,6 +224,20 @@ export function progressLines(
     lines.push(
       `Last: ${state.activity.owner} · ${state.activity.tool} · ${state.activity.status}`,
     );
+  const activeReviewer = active.find((run) => run.role === "reviewer");
+  if (activeReviewer) {
+    lines.push(`Final review: requested · reviewer ${activeReviewer.status}`);
+  } else if (state.review) {
+    const current =
+      state.review.head === state.mainHead &&
+      state.review.base === state.baseCommit &&
+      state.review.inputGeneration === state.inputGeneration;
+    lines.push(
+      `Final review: ${current ? "" : "stale "}${state.review.decision} · reviewed ${progressText(state.review.head, 7)}`,
+    );
+  } else {
+    lines.push("Final review: not requested");
+  }
   lines.push(`Delivery: ${progressText(state.phase, 60)}`);
   return lines;
 }
