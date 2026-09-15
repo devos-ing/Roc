@@ -5,7 +5,7 @@ import {
 import { remoteMutationReason } from "./command.js";
 
 /** Installs the normal-path remote mutation boundary in a Pi process. */
-export default function openAmpBoundary(pi: ExtensionAPI): void {
+export default function piedPiperBoundary(pi: ExtensionAPI): void {
   pi.on("tool_call", (event) => {
     if (!isToolCallEventType("bash", event)) return undefined;
     const reason = remoteMutationReason(event.input.command);

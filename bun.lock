@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "roc-it",
+      "name": "piedpiper",
       "dependencies": {
         "@clack/prompts": "1.7.0",
         "@earendil-works/pi-coding-agent": "0.82.1",

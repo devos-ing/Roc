@@ -22,16 +22,22 @@ character playing a small flute, with three thread ribbons following behind it.
 
 ### Changed
 
-- Renamed the public product from OpenAmp to Pied Piper.
+- Renamed the public product and technical runtime from OpenAmp to Pied Piper.
 - Added the cute Pi piper avatar to the English and Traditional Chinese READMEs.
 - Updated current CLI messages, progress displays, errors, documentation, and
   contributor guidance to use the Pied Piper name.
 
 ### Compatibility
 
-This change does not rename the `openamp` npm package or command, the
-`openamp/<change-id>` branch prefix, the `src/openamp` and `dist/openamp` paths,
-saved change state, or existing repository URLs. Historical Roc and OpenAmp
+The technical rename changes the npm package and command to `piedpiper`, the
+`piedpiper/<change-id>` branch prefix, the `src/piedpiper` and `dist/piedpiper`
+paths, new state and session directories, and new result and widget identifiers.
+`openamp` has no executable alias.
+
+Existing `.openamp` state is retained and consulted only when the matching Pied
+Piper state is absent. Pied Piper validates the legacy record, preserves its
+recorded branches and worktrees, copies active session data before writing the
+new state path, and leaves legacy files unchanged. Historical Roc and OpenAmp
 plans keep the names that were accurate when maintainers wrote them.
 
 ## Earlier releases

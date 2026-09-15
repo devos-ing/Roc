@@ -11,7 +11,7 @@ Run the interactive source entry with `bun dev` or directly with Node:
 
 ```bash
 bun dev -- --help
-node src/openamp/main.mjs --help
+node dist/piedpiper/main.js --help
 ```
 
 Use a disposable Git repository for live Pied Piper tests. Starting a new change
@@ -40,5 +40,6 @@ Architecture: [docs/architecture.md](docs/architecture.md). Historical Roc
 operator material is under [docs/legacy](docs/legacy/).
 
 Only maintainers publish releases. The stable `vX.Y.Z` tag must exactly match
-`package.json`; the release workflow runs all checks, publishes `openamp` with
+`package.json`; the release workflow runs all checks, publishes `piedpiper` with
 npm trusted publishing, verifies integrity, and creates the GitHub release.
+`openamp` has no executable alias.

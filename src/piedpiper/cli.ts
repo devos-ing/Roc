@@ -1,6 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { isCancel, multiselect } from "@clack/prompts";
 import {
   type AgentSessionRuntime,
@@ -15,9 +15,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { agentEnvironment } from "./command.js";
 import { ChangeDelivery, type DeliveryOptions } from "./delivery.js";
-import { createOpenAmpExtension } from "./extension.js";
+import { createPiedPiperExtension } from "./extension.js";
 import {
-  createOpenAmpObservationPackExtension,
+  createPiedPiperObservationPackExtension,
   OBSERVATION_PACK_TOOL,
   validateObservationPackRuntime,
 } from "./observation-pack.js";
@@ -27,7 +27,12 @@ import {
   parseOracleModel,
   type SupervisorOptions,
 } from "./supervisor.js";
-import { ChangeWorkspace, createChange, resumeChange } from "./workspace.js";
+import {
+  ChangeWorkspace,
+  createChange,
+  resumeChange,
+  sessionDirectory,
+} from "./workspace.js";
 
 interface ParsedArguments {
   resume?: string;
@@ -43,7 +48,7 @@ type InteractiveModeConstructor = new (
   options: InteractiveModeOptions,
 ) => { run(): Promise<void> };
 
-export interface RunOpenAmpOptions {
+export interface RunPiedPiperOptions {
   stdout?: Pick<NodeJS.WriteStream, "write">;
   cwd?: string;
   supervisorOptions?: SupervisorOptions;
@@ -97,9 +102,9 @@ export function helpText(): string {
     "Pied Piper - interactive Pi agent collaboration",
     "",
     "Usage:",
-    "  openamp [--base <ref>] [--observation-pack|--no-observation-pack]",
-    "  openamp --resume <change-id> [--plugins]",
-    "  openamp --oracle-model <provider/model>",
+    "  piedpiper [--base <ref>] [--observation-pack|--no-observation-pack]",
+    "  piedpiper --resume <change-id> [--plugins]",
+    "  piedpiper --oracle-model <provider/model>",
     "",
     "Pied Piper creates a dedicated feature worktree, keeps Pi sessions durable,",
     "delegates through /agents, and opens validated pull requests without merging.",
@@ -151,9 +156,9 @@ export function mainSessionTools(observationPack: boolean): string[] {
 }
 
 /** Starts or resumes one Pied Piper native Pi TUI session. */
-export async function runOpenAmp(
+export async function runPiedPiper(
   args: string[],
-  options: RunOpenAmpOptions = {},
+  options: RunPiedPiperOptions = {},
 ): Promise<number> {
   const parsed = parseArguments(args);
   if (parsed.help) {
@@ -211,7 +216,7 @@ export async function runOpenAmp(
     options.deliveryOptions,
   );
   const agentDir = getAgentDir();
-  const isolatedHome = await mkdtemp(join(tmpdir(), "openamp-agent-home-"));
+  const isolatedHome = await mkdtemp(join(tmpdir(), "piedpiper-agent-home-"));
   const originalEnvironment = { ...process.env };
   const childEnvironment = agentEnvironment(process.env, isolatedHome);
   const changedEnvironmentNames = new Set([
@@ -227,18 +232,16 @@ export async function runOpenAmp(
       process.env[name] = childEnvironment[name];
     }
   }
-  const extension = createOpenAmpExtension(
+  const extension = createPiedPiperExtension(
     store,
     supervisor,
     workspace,
     delivery,
   );
-  const sessionDirectory = store.state.commonDir
-    ? join(store.state.commonDir, "openamp", "sessions")
-    : join(dirname(store.path), "sessions");
+  const sessionPath = sessionDirectory(store.state);
   const sessionManager = store.state.sessionFile
-    ? SessionManager.open(store.state.sessionFile, sessionDirectory)
-    : SessionManager.create(store.state.workspace, sessionDirectory);
+    ? SessionManager.open(store.state.sessionFile, sessionPath)
+    : SessionManager.create(store.state.workspace, sessionPath);
 
   const createRuntime: CreateAgentSessionRuntimeFactory = async ({
     cwd: runtimeCwd,
@@ -253,7 +256,7 @@ export async function runOpenAmp(
         extensionFactories: [
           extension,
           ...(observationPack
-            ? [await createOpenAmpObservationPackExtension()]
+            ? [await createPiedPiperObservationPackExtension()]
             : []),
         ],
       },
