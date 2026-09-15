@@ -87,7 +87,7 @@ export function helpText(): string {
     "  openamp --resume <change-id> [--plugins]",
     "",
     "OpenAmp creates a dedicated feature worktree, keeps Pi sessions durable,",
-    "delegates through /agents, and opens reviewed pull requests without merging.",
+    "delegates through /agents, and opens validated pull requests without merging.",
   ].join("\n");
 }
 
@@ -121,6 +121,9 @@ export function mainSessionTools(observationPack: boolean): string[] {
     "grep",
     "find",
     "ls",
+    "bash",
+    "edit",
+    "write",
     "delegate",
     "agent_status",
     "integrate_result",

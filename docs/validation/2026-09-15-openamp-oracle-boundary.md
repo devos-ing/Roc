@@ -1,5 +1,7 @@
 # Oracle tool-boundary implementation evidence
 
+Historical: the user subsequently chose Amp-style main-thread coding and optional review. The main read-only policy below is superseded.
+
 Date: 2026-09-15. Scope: first bounded M0 implementation step, not M0 acceptance.
 
 ## Delivered behavior

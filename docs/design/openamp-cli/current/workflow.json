@@ -2,185 +2,159 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "OpenAmp \u00b7 Plan, implement, review",
+    "title": "OpenAmp \u00b7 Code, consult when useful, deliver",
     "locale": "en",
     "quality_profile": "showcase",
     "viewBox": [
-      1300,
-      610
+      1120,
+      540
     ]
   },
   "components": [
     {
-      "id": "plan",
-      "type": "backend",
-      "label": "1 \u00b7 Plan",
-      "sublabel": "Oracle \u00b7 high effort",
-      "pos": [
-        40,
-        60
-      ],
-      "size": [
-        220,
-        86
-      ]
-    },
-    {
-      "id": "handoff",
-      "type": "backend",
-      "label": "2 \u00b7 Handoff",
-      "sublabel": "Checklist + scoped brief",
-      "pos": [
-        380,
-        60
-      ],
-      "size": [
-        240,
-        86
-      ]
-    },
-    {
-      "id": "implement",
-      "type": "backend",
-      "label": "3 \u00b7 Implement",
-      "sublabel": "Cheaper Pi model \u00b7 every edit",
-      "pos": [
-        950,
-        60
-      ],
-      "size": [
-        280,
-        86
-      ]
-    },
-    {
-      "id": "result",
-      "type": "database",
-      "label": "4 \u00b7 Freeze result",
-      "sublabel": "Confirm writer exit + base/head",
-      "pos": [
-        950,
-        280
-      ],
-      "size": [
-        280,
-        86
-      ]
-    },
-    {
-      "id": "review",
-      "type": "security",
-      "label": "5 \u00b7 Fresh review",
-      "sublabel": "Requirements + diff + evidence",
-      "tag": "ORACLE PROFILE \u00b7 READ ONLY",
-      "pos": [
-        380,
-        280
-      ],
-      "size": [
-        280,
-        86
-      ]
-    },
-    {
-      "id": "accepted",
+      "id": "request",
       "type": "frontend",
-      "label": "6 \u00b7 Reviewed result",
-      "sublabel": "Acceptance matches revision",
+      "label": "Your request",
+      "sublabel": "One main conversation",
       "pos": [
         40,
-        490
+        60
+      ],
+      "size": [
+        210,
+        86
+      ]
+    },
+    {
+      "id": "main-work",
+      "type": "backend",
+      "label": "Main coding thread",
+      "sublabel": "Plan \u00b7 edit \u00b7 check \u00b7 fix",
+      "pos": [
+        380,
+        60
+      ],
+      "size": [
+        250,
+        86
+      ]
+    },
+    {
+      "id": "validate",
+      "type": "backend",
+      "label": "Validate result",
+      "sublabel": "Checks + current Git revision",
+      "pos": [
+        760,
+        60
+      ],
+      "size": [
+        250,
+        86
+      ]
+    },
+    {
+      "id": "publish",
+      "type": "frontend",
+      "label": "Create or update PR",
+      "sublabel": "User decides whether to merge",
+      "pos": [
+        760,
+        310
+      ],
+      "size": [
+        280,
+        86
+      ]
+    },
+    {
+      "id": "oracle-help",
+      "type": "security",
+      "label": "Oracle \u00b7 optional",
+      "sublabel": "Advice or requested final review",
+      "pos": [
+        380,
+        310
+      ],
+      "size": [
+        280,
+        86
+      ]
+    },
+    {
+      "id": "worker-help",
+      "type": "backend",
+      "label": "Independent child \u00b7 optional",
+      "sublabel": "Returns its result to main",
+      "pos": [
+        40,
+        310
       ],
       "size": [
         270,
-        86
-      ]
-    },
-    {
-      "id": "attention",
-      "type": "security",
-      "label": "Needs attention",
-      "sublabel": "Keep work \u00b7 report blocker",
-      "tag": "NO BLIND REPLAY",
-      "pos": [
-        950,
-        490
-      ],
-      "size": [
-        280,
         86
       ]
     }
   ],
   "connections": [
     {
-      "id": "plan-handoff",
-      "from": "plan",
-      "to": "handoff"
+      "id": "request-main",
+      "from": "request",
+      "to": "main-work"
     },
     {
-      "id": "handoff-implement",
-      "from": "handoff",
-      "to": "implement",
-      "label": "start one writer"
+      "id": "main-validate",
+      "from": "main-work",
+      "to": "validate",
+      "label": "ready"
     },
     {
-      "id": "implement-result",
-      "from": "implement",
-      "to": "result",
-      "label": "checks + commit",
-      "labelDy": 70
+      "id": "validated-delivery",
+      "from": "validate",
+      "to": "publish",
+      "label": "validated head",
+      "labelDy": 70,
+      "fromSide": "bottom",
+      "toSide": "top"
     },
     {
-      "id": "result-review",
-      "from": "result",
-      "to": "review",
-      "label": "fresh review call",
-      "labelDy": 28
+      "id": "consult-oracle",
+      "from": "main-work",
+      "to": "oracle-help",
+      "label": "consult as needed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 120
     },
     {
-      "id": "review-accepted",
-      "from": "review",
-      "to": "accepted",
-      "label": "pass",
-      "variant": "emphasis"
-    },
-    {
-      "id": "review-fix",
-      "from": "review",
-      "to": "implement",
-      "label": "findings \u2192 fix",
-      "variant": "dashed"
-    },
-    {
-      "id": "result-attention",
-      "from": "result",
-      "to": "attention",
-      "label": "failure / interruption",
-      "variant": "security",
-      "labelDy": 70
+      "id": "delegate-independent",
+      "from": "main-work",
+      "to": "worker-help",
+      "label": "independent task",
+      "fromSide": "bottom",
+      "toSide": "top"
     }
   ],
   "cards": [
     {
       "dot": "cyan",
-      "title": "M0 \u00b7 Complete local loop",
+      "title": "Main thread stays in charge",
       "items": [
-        "Checklist, current role and tool activity stay visible."
+        "It plans, writes code and applies advice. Child results return to this thread."
       ]
     },
     {
       "dot": "emerald",
-      "title": "M1 + M2 \u00b7 Reliability and delivery",
+      "title": "Final review is opt-in",
       "items": [
-        "M1: recovery and context evidence. M2: verified PR; manual merge."
+        "Requested review must pass. Skipped review is labeled, never claimed as accepted."
       ]
     },
     {
       "dot": "amber",
-      "title": "M3 \u00b7 Sandbox later",
+      "title": "Wait expiry keeps work running",
       "items": [
-        "Proposed design. Fixes resume the implementer, then get fresh review."
+        "Same child, same run ID. Explicit cancellation stops it. Oracle/wait changes remain planned."
       ]
     }
   ]

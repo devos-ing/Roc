@@ -2,11 +2,11 @@
 
 [English](README.md) · [繁體中文](README.zh-HK.md)
 
-OpenAmp is an interactive CLI built on Pi. A conversational main agent can
-delegate focused research or implementation, integrate verified worktree
-results, and automatically open a pull request when the change is ready.
-Independent read-only review is mandatory before every modifying PR revision;
-only the user decides whether to merge.
+OpenAmp is an interactive CLI built on Pi. The main coding agent plans, edits,
+runs checks, and can delegate independent research or implementation. It can
+automatically open a pull request when the change is ready. Independent review
+is optional: request it before delivery when useful. Requested review must pass,
+and unreviewed PRs are explicitly labeled. Only the user decides whether to merge.
 
 ## Requirements
 

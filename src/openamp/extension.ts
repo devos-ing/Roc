@@ -199,13 +199,12 @@ export function createOpenAmpExtension(
 
       pi.on("before_agent_start", (event) => ({
         systemPrompt: [
-          ...(event.systemPrompt ? [event.systemPrompt] : []),
-          `You are the main planning Oracle for OpenAmp change ${store.state.id}.`,
+          event.systemPrompt,
+          `You are the main coding agent for OpenAmp change ${store.state.id}.`,
           `Work only in ${store.state.workspace}.`,
-          "Plan and review the work, and delegate every code edit and review correction to a writer agent. Do not edit code yourself.",
-          "Research agents are read-only; writer agents use isolated worktrees.",
+          "Plan, edit code, run checks, and apply fixes in this main thread. Delegate independent work only when useful. Research agents are read-only; delegated writers use isolated worktrees.",
           "Use integrate_result for selected writer results. Never push, create/modify/merge a PR, or call GitHub mutation APIs.",
-          "When the requested modifying work is complete, call deliver_change with exact current requirements and validation commands. Delivery requires independent review and opens or updates the PR; only the user merges.",
+          "When the requested modifying work is complete, call deliver_change with exact current requirements and validation commands. Delivery validates and opens or updates the PR; independent review is optional. Set review=true only when review is requested. Only the user merges.",
         ].join("\n"),
       }));
 
@@ -217,33 +216,23 @@ export function createOpenAmpExtension(
       });
 
       pi.on("tool_call", (event) => {
-        const oracleReason =
-          "The planning Oracle plans and reviews; writer agents make code edits.";
-        if (["bash", "edit", "write"].includes(event.toolName)) {
-          const mutationReason = isToolCallEventType("bash", event)
-            ? remoteMutationReason(event.input.command)
-            : undefined;
-          return {
-            block: true,
-            reason: mutationReason
-              ? `${oracleReason} ${mutationReason}`
-              : oracleReason,
-          };
-        }
-        return undefined;
+        if (!isToolCallEventType("bash", event)) return undefined;
+        const reason = remoteMutationReason(event.input.command);
+        return reason ? { block: true, reason } : undefined;
       });
 
-      pi.on("user_bash", () => {
-        const reason =
-          "The planning Oracle is read-only; arbitrary shell access is blocked. Delegate code edits and checks to a writer agent.";
-        return {
-          result: {
-            output: reason,
-            exitCode: 1,
-            cancelled: false,
-            truncated: false,
-          },
-        };
+      pi.on("user_bash", (event) => {
+        const reason = remoteMutationReason(event.command);
+        return reason
+          ? {
+              result: {
+                output: reason,
+                exitCode: 1,
+                cancelled: false,
+                truncated: false,
+              },
+            }
+          : undefined;
       });
 
       pi.registerTool({
@@ -315,10 +304,16 @@ export function createOpenAmpExtension(
         name: "deliver_change",
         label: "Deliver change",
         description:
-          "Validate, independently review, and publish the current change as a PR",
+          "Validate and publish the current change as a PR, optionally requesting independent review",
         parameters: Type.Object({
           title: Type.String({ minLength: 1 }),
           requirements: Type.String({ minLength: 1 }),
+          review: Type.Optional(
+            Type.Boolean({
+              description:
+                "Request a fresh independent review before publishing; defaults to false",
+            }),
+          ),
           validation_commands: Type.Array(Type.String({ minLength: 1 }), {
             minItems: 1,
           }),
@@ -327,6 +322,7 @@ export function createOpenAmpExtension(
           const pullRequest = await delivery.deliver(
             {
               title: parameters.title,
+              review: parameters.review ?? false,
               requirements: parameters.requirements,
               validationCommands: parameters.validation_commands,
               inputGeneration: store.state.inputGeneration ?? 0,

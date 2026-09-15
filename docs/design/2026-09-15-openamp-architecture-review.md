@@ -2,6 +2,8 @@
 
 Date: 2026-09-15. Status: architecture research complete; simplified plan reviewed. This preserves the audit of the [September 13 plan](2026-09-13-openamp-cli-plan.md). The [minimal plan](2026-09-15-openamp-minimal-plan.md) is the current implementation proposal.
 
+> Superseded role direction: the user subsequently chose Amp-style main-thread coding with optional Oracle advice and optional final review. Use the current minimal plan; this audit preserves the earlier investigation.
+
 ## Audit scope correction
 
 This audit examined the old local checkout at `0469ef7` and its dirty files. Before implementation, the remote was refreshed and `main` at `ff9861f` was found to contain a working OpenAmp runtime and optional ObservationPack. Statements below about absent runtime and legacy files are historical evidence, not the current baseline. Use the minimal plan's implementation-baseline section and current source for implementation.

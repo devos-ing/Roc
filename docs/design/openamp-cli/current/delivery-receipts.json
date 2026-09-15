@@ -5,15 +5,15 @@
       "ok": true,
       "command": "deliver",
       "type": "architecture",
-      "input": "/Users/roy/Documents/ChatGPT/agile-agents/docs/design/openamp-cli/current/architecture.json",
-      "output": "/Users/roy/Documents/ChatGPT/agile-agents/docs/design/openamp-cli/current/architecture.html",
+      "input": "/Users/roy/Documents/ChatGPT/agile-agents/.worktrees/openamp-oracle-workflow/docs/design/openamp-cli/current/architecture.json",
+      "output": "/Users/roy/Documents/ChatGPT/agile-agents/.worktrees/openamp-oracle-workflow/docs/design/openamp-cli/current/architecture.html",
       "specification": {
-        "sha256": "22c5273e3b197e2618e77339f349fa961c12421e6247aea01f35291f1374b32c",
-        "bytes": 4319
+        "sha256": "38b47b9dd3f789a1b747c4d73bfffb7a6074c5a904d21430fd20332db00f95de",
+        "bytes": 4609
       },
       "artifact": {
-        "sha256": "3a8d1af2dc7d77785349f1fafdbf8696274ff4801b64ed0a9dc30a3d3ec98f0c",
-        "bytes": 713664
+        "sha256": "7bb6881f07608b7b16dfe3633f5bfe2490e433b3bb79a6cb742e0c8789e76d15",
+        "bytes": 714496
       },
       "validation": {
         "checksPassed": 9,
@@ -29,15 +29,15 @@
       "ok": true,
       "command": "deliver",
       "type": "architecture",
-      "input": "/Users/roy/Documents/ChatGPT/agile-agents/docs/design/openamp-cli/current/workflow.json",
-      "output": "/Users/roy/Documents/ChatGPT/agile-agents/docs/design/openamp-cli/current/workflow.html",
+      "input": "/Users/roy/Documents/ChatGPT/agile-agents/.worktrees/openamp-oracle-workflow/docs/design/openamp-cli/current/workflow.json",
+      "output": "/Users/roy/Documents/ChatGPT/agile-agents/.worktrees/openamp-oracle-workflow/docs/design/openamp-cli/current/workflow.html",
       "specification": {
-        "sha256": "4006fc33f996d98774c80b67bf6e59e568d3db502a4ce80a49d005984d43df61",
-        "bytes": 3634
+        "sha256": "939bb7a8acfa34a1c7cd8378485fd72d215508672ff9f82ca1533fae8dd38039",
+        "bytes": 3204
       },
       "artifact": {
-        "sha256": "63b90801d782e8917ce3a42418466b83ee6866f2dc96045847381c650e83c670",
-        "bytes": 707830
+        "sha256": "40cbed9acaba97c4fff3a47ca25c753dadfa50ef4dae0d9abe283e46923d0d20",
+        "bytes": 706609
       },
       "validation": {
         "checksPassed": 9,
@@ -50,22 +50,15 @@
     }
   ],
   "visual_review": "passed",
-  "correction_rounds": 1,
-  "inspected_themes": [
-    "light",
-    "dark"
+  "correction_rounds": {
+    "architecture": 0,
+    "workflow": 1
+  },
+  "inspectedScreenshotVariants": [
+    "1440x900.light",
+    "2048x1320.dark"
   ],
-  "inspected_screenshot_sizes": [
-    [
-      1440,
-      900
-    ],
-    [
-      2048,
-      1320
-    ]
-  ],
-  "containment_sizes": [
+  "containmentSizes": [
     [
       1440,
       900
@@ -83,9 +76,5 @@
       1320
     ]
   ],
-  "notes": [
-    "Workflow is rendered as an architecture-style execution graph to retain readable explicit layout.",
-    "Automated visual-check sidecars retain visualReview=pending; this receipt records the separate image inspection.",
-    "Both diagrams describe proposed behavior, not implemented functionality."
-  ]
+  "scope": "Amp-style design: main codes; Oracle advice/delegation/final review optional. Some capabilities are still planned."
 }

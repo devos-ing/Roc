@@ -1,13 +1,13 @@
 # OpenAmp current plan and diagrams
 
-The [minimal implementation plan](../2026-09-15-openamp-minimal-plan.md) defines the approved Oracle-led direction. It adapts the existing runtime; the source baseline correction is recorded in that plan.
+The [minimal implementation plan](../2026-09-15-openamp-minimal-plan.md) defines the approved Amp-style main-coding direction. It adapts the existing runtime; the source baseline correction is recorded in that plan.
 
 - [Current architecture graph](current/architecture.html)
 - [Current implementation and fresh-review flow](current/workflow.html)
 - [Validated diagram receipts](current/delivery-receipts.json)
 - [Historical local architecture audit](../2026-09-15-openamp-architecture-review.md)
 
-The current graphs describe the target workflow. The earlier handoff and evidence below describe the already implemented first OpenAmp runtime. Its optional-adviser Oracle proposal is superseded by the current role policy.
+The current graphs describe the target workflow. The earlier handoff and evidence below describe the already implemented first OpenAmp runtime. Its optional-adviser Oracle concept now matches the chosen direction; use the current minimal plan for model, review, and delivery policy.
 
 ---
 

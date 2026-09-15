@@ -2,7 +2,7 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "OpenAmp \u00b7 Pi-native architecture",
+    "title": "OpenAmp \u00b7 Amp-style main coding thread",
     "locale": "en",
     "quality_profile": "showcase",
     "viewBox": [
@@ -26,11 +26,11 @@
       ]
     },
     {
-      "id": "plan-oracle",
+      "id": "main-coder",
       "type": "backend",
-      "label": "Planning Oracle",
-      "sublabel": "Persistent \u00b7 read-only code tools",
-      "tag": "ORACLE PROFILE \u00b7 HIGH",
+      "label": "Main coding thread",
+      "sublabel": "Plans \u00b7 edits \u00b7 checks \u00b7 fixes",
+      "tag": "MAIN MODEL PROFILE",
       "pos": [
         390,
         40
@@ -44,8 +44,8 @@
       "id": "coordination",
       "type": "backend",
       "label": "OpenAmp extension",
-      "sublabel": "Delegate \u00b7 track \u00b7 stop \u00b7 recover",
-      "tag": "ONE CHILD AT A TIME",
+      "sublabel": "Consult \u00b7 delegate \u00b7 track \u00b7 deliver",
+      "tag": "CURATED PI EXTENSION",
       "pos": [
         730,
         40
@@ -58,7 +58,7 @@
     {
       "id": "role-models",
       "type": "external",
-      "label": "Two model profiles",
+      "label": "Main + Oracle models",
       "sublabel": "Codex / GLM / DeepSeek",
       "tag": "PI PROVIDERS + AUTH",
       "pos": [
@@ -71,10 +71,10 @@
       ]
     },
     {
-      "id": "pi-history",
+      "id": "task-state",
       "type": "database",
-      "label": "Pi session storage",
-      "sublabel": "Transcripts + task entries",
+      "label": "Session + task state",
+      "sublabel": "Pi transcript; OpenAmp metadata",
       "tag": "NATIVE COMPACTION",
       "pos": [
         40,
@@ -86,11 +86,11 @@
       ]
     },
     {
-      "id": "code-writer",
-      "type": "backend",
-      "label": "Implementer",
-      "sublabel": "Cheaper model \u00b7 every code edit",
-      "tag": "PERSIST SESSION FOR FIXES",
+      "id": "oracle-adviser",
+      "type": "security",
+      "label": "Oracle \u00b7 optional",
+      "sublabel": "Read-only advice + review",
+      "tag": "STRONGER MODEL \u00b7 HIGH",
       "pos": [
         580,
         260
@@ -101,11 +101,11 @@
       ]
     },
     {
-      "id": "fresh-review",
-      "type": "security",
-      "label": "Fresh Oracle review",
-      "sublabel": "Read-only \u00b7 inherits Oracle profile",
-      "tag": "AFTER WRITER EXITS",
+      "id": "delegated-worker",
+      "type": "backend",
+      "label": "Delegated work \u00b7 optional",
+      "sublabel": "Independent task \u00b7 owned workspace",
+      "tag": "RETURNS RESULTS TO MAIN",
       "pos": [
         1030,
         260
@@ -116,10 +116,10 @@
       ]
     },
     {
-      "id": "feature-files",
+      "id": "workspaces",
       "type": "database",
-      "label": "One feature checkout",
-      "sublabel": "Fixed base/head + check evidence",
+      "label": "Owned local workspaces",
+      "sublabel": "Main feature + worker worktrees",
       "tag": "LOCAL \u00b7 SANDBOX LATER",
       "pos": [
         760,
@@ -135,14 +135,14 @@
     {
       "id": "talk-plan",
       "from": "task-ui",
-      "to": "plan-oracle",
+      "to": "main-coder",
       "label": "discuss"
     },
     {
       "id": "plan-delegate",
-      "from": "plan-oracle",
+      "from": "main-coder",
       "to": "coordination",
-      "label": "handoff"
+      "label": "coordinate"
     },
     {
       "id": "profile-selection",
@@ -152,40 +152,49 @@
     },
     {
       "id": "native-persistence",
-      "from": "plan-oracle",
-      "to": "pi-history",
+      "from": "main-coder",
+      "to": "task-state",
       "label": "persist task"
     },
     {
       "id": "start-writer",
       "from": "coordination",
-      "to": "code-writer",
-      "label": "implement",
+      "to": "oracle-adviser",
+      "label": "ask when useful",
       "fromSide": "bottom",
       "toSide": "top"
     },
     {
       "id": "start-review",
       "from": "coordination",
-      "to": "fresh-review",
-      "label": "review fixed revision"
+      "to": "delegated-worker",
+      "label": "delegate as needed"
     },
     {
       "id": "code-changes",
-      "from": "code-writer",
-      "to": "feature-files",
-      "label": "write + verify",
+      "from": "oracle-adviser",
+      "to": "workspaces",
+      "label": "inspect code",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "variant": "security"
+    },
+    {
+      "id": "inspect-diff",
+      "from": "delegated-worker",
+      "to": "workspaces",
+      "label": "edit own tree",
+      "variant": "default",
       "fromSide": "bottom",
       "toSide": "top"
     },
     {
-      "id": "inspect-diff",
-      "from": "fresh-review",
-      "to": "feature-files",
-      "label": "read + compare",
-      "variant": "security",
+      "id": "main-code-work",
+      "from": "main-coder",
+      "to": "workspaces",
+      "label": "edit + check",
       "fromSide": "bottom",
-      "toSide": "top"
+      "toSide": "left"
     }
   ],
   "cards": [
@@ -198,16 +207,16 @@
     },
     {
       "dot": "emerald",
-      "title": "Small OpenAmp extension",
+      "title": "No mandatory Oracle stage",
       "items": [
-        "Checklist, compact handoffs, child lifecycle and review records."
+        "Main thread owns the work. Oracle advice and final review are optional."
       ]
     },
     {
       "dot": "amber",
-      "title": "Planned, not implemented",
+      "title": "Scope and current status",
       "items": [
-        "ObservationPack optional. PR delivery M2; sandbox M3."
+        "Oracle routing is planned. Validation remains; merge is manual; sandbox later."
       ]
     }
   ]

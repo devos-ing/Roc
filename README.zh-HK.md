@@ -4,7 +4,8 @@
 
 OpenAmp 是以 Pi 建立的互動 CLI。對話式主 agent 可按需要委派調查或實作、
 整合經核對的 worktree 結果，並在修改 ready 時自動建立 pull request。
-每次修改型 PR 版本都必須先通過獨立唯讀 Review；是否合併只由使用者決定。
+主 agent 會規劃、修改程式碼及執行檢查。獨立唯讀 Review 改為按需要要求；
+若要求 Review，必須通過才交付。未要求 Review 的 PR 會明確標示；是否合併只由使用者決定。
 
 ## 環境需求
 

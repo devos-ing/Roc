@@ -1,6 +1,6 @@
 # OpenAmp 互動 CLI 架構草案
 
-> Workflow policy update: the [2026-09-15 minimal plan](2026-09-15-openamp-minimal-plan.md) supersedes the role model and milestone sequence below. Oracle plans without code edits, implementation owns every edit, and final review uses a fresh Oracle session. Existing runtime and validation evidence remain relevant.
+> Workflow policy update: the [2026-09-15 minimal plan](2026-09-15-openamp-minimal-plan.md) supersedes the role model and milestone sequence below. The main coding thread plans and edits; Oracle advice and final review are optional. Requested final review uses a fresh session. Existing runtime and validation evidence remain relevant.
 
 日期：2026-09-13。狀態：使用者已選定互動 CLI，以及主 agent 按需要委派 Pi 子 agent。以下實作選擇是提案，尚未以原型驗證。OpenAmp 是暫名。
 
