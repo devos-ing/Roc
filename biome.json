@@ -10,8 +10,13 @@
     "includes": [
       "**",
       "!!output/archify",
-      "!!docs/design/openamp-cli/*.html",
-      "!!src/third-party/sol-pi/**"
+      "!!docs",
+      "!!.agents",
+      "!!.claude",
+      "!!src/third-party/sol-pi",
+      "!**/AGENTS.md",
+      "!**/CLAUDE.md",
+      "!**/SKILL.md"
     ]
   },
   "formatter": {
