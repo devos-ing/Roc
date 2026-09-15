@@ -1,8 +1,12 @@
-# OpenAmp
+<p align="center">
+  <img src="output/imagegen/pied-piper-avatar-cute.png" alt="Pied Piper 專案頭像" width="220" />
+</p>
+
+# Pied Piper
 
 [English](README.md) · [繁體中文](README.zh-HK.md)
 
-OpenAmp 是以 Pi 建立的互動 CLI。對話式主 agent 可按需要委派調查或實作、
+Pied Piper 是以 Pi 建立的互動 CLI。對話式主 agent 可按需要委派調查或實作、
 整合經核對的 worktree 結果，並在修改 ready 時自動建立 pull request。
 主 agent 會規劃、修改程式碼及執行檢查。獨立唯讀 Review 改為按需要要求；
 若要求 Review，必須通過才交付。未要求 Review 的 PR 會明確標示；是否合併只由使用者決定。
@@ -21,9 +25,9 @@ npm install --global openamp
 openamp
 ```
 
-OpenAmp 會建立專用的 `openamp/<change-id>` 功能 worktree。啟動它的原 checkout
+Pied Piper 會建立專用的 `openamp/<change-id>` 功能 worktree。啟動它的原 checkout
 及當中的未提交檔案保持不變。TUI 會顯示解析後的 workspace、branch、Pi 模型
-及 OpenAmp 狀態。
+及 Pied Piper 狀態。
 
 ```bash
 openamp --base main
@@ -42,7 +46,7 @@ openamp --resume change-abc123def456
 commit 供明確整合。一般 agent command boundary 會拒絕遠端 Git／GitHub 修改。
 只有 Delivery 可以 push、建立或更新 PR；它不會呼叫 merge 或啟用 auto-merge。
 
-不在 Git repository 時，OpenAmp 仍提供可恢復的 Pi 對話，但停用 writer 委派及
+不在 Git repository 時，Pied Piper 仍提供可恢復的 Pi 對話，但停用 writer 委派及
 PR 交付。GitHub 暫時不可用時，本地修改及狀態會保留，登入後可再交付。
 
 ## 工作清單與進度
@@ -72,12 +76,13 @@ bun run typecheck
 bun test
 ```
 
-OpenAmp 以 TypeScript 實作。npm package 只包含編譯後的 `dist/openamp` Node.js
+Pied Piper 以 TypeScript 實作。npm package 只包含編譯後的 `dist/openamp` Node.js
 runtime，不會把 TypeScript source 當作 executable 發布。
 
 設計及 milestone 證據位於
-[`docs/design/openamp-cli`](docs/design/openamp-cli/README.md)。舊 Roc Issue backlog
-與 daemon 原始碼仍可在 repository history 找到，但不再屬於 OpenAmp package
-或 executable surface。
+[`docs/design/openamp-cli`](docs/design/openamp-cli/README.md)。OpenAmp 是這套互動
+架構的開發名稱。舊 Roc Issue backlog 與 daemon 原始碼仍可在 repository history
+找到，但不再屬於 Pied Piper package 或 executable surface。
 
+產品歷史：[CHANGELOG.md](CHANGELOG.md)。
 授權：[Apache 2.0](LICENSE)。

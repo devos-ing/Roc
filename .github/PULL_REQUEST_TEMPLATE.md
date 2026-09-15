@@ -17,7 +17,7 @@ Keep each criterion's wording and include its result and specific evidence.
 Use passed, failed, or unverified. Leave missing evidence unverified.
 Tie automated Review evidence to the reviewed commit. Recheck evidence after
 the head changes. A successful test or overall Review is not evidence for
-every criterion. Checkbox edits do not change Roc's execution or merge rules. -->
+every criterion. Checkbox edits do not change Pied Piper's execution or merge rules. -->
 
 - [ ] Criterion: <!-- original criterion -->
   - Result: unverified

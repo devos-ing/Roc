@@ -16,3 +16,12 @@ Definition in domain language, without implementation details.
 
 The calendar window that groups a goal, tasks, and usage. It can be Daily,
 Weekly, or a custom number of days.
+
+### Pied Piper
+
+The public product brand for the Pi-based interactive coding system.
+
+### Piper
+
+The coordinating role that keeps implementation threads visible and guides them
+toward the user's intended result.

@@ -58,7 +58,7 @@ export function remoteMutationReason(command: string): string | undefined {
     .replace(/\\([^\r\n])/gu, "$1")
     .replace(/["']/gu, "");
   return REMOTE_MUTATION.some((pattern) => pattern.test(inspectable))
-    ? "OpenAmp agents cannot mutate Git or GitHub remotes; only Delivery can publish and only the user can merge"
+    ? "Pied Piper agents cannot mutate Git or GitHub remotes; only Delivery can publish and only the user can merge"
     : undefined;
 }
 
@@ -94,7 +94,7 @@ export function agentEnvironment(
   return result;
 }
 
-/** Removes ambient repository overrides from OpenAmp-owned Git commands. */
+/** Removes ambient repository overrides from Pied Piper-owned Git commands. */
 function localGitEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
@@ -176,7 +176,7 @@ export async function runGit(
       "-c",
       "commit.gpgSign=false",
       "-c",
-      "user.name=OpenAmp",
+      "user.name=Pied Piper",
       "-c",
       "user.email=openamp@local",
       ...args,

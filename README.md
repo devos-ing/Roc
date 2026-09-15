@@ -1,8 +1,12 @@
-# OpenAmp
+<p align="center">
+  <img src="output/imagegen/pied-piper-avatar-cute.png" alt="Pied Piper project avatar" width="220" />
+</p>
+
+# Pied Piper
 
 [English](README.md) · [繁體中文](README.zh-HK.md)
 
-OpenAmp is an interactive CLI built on Pi. The main coding agent plans, edits,
+Pied Piper is an interactive CLI built on Pi. The main coding agent plans, edits,
 runs checks, and can delegate independent research or implementation. It can
 automatically open a pull request when the change is ready. Independent review
 is optional: request it before delivery when useful. Requested review must pass,
@@ -22,9 +26,9 @@ npm install --global openamp
 openamp
 ```
 
-OpenAmp creates a dedicated `openamp/<change-id>` feature worktree, leaving the
+Pied Piper creates a dedicated `openamp/<change-id>` feature worktree, leaving the
 checkout where it was launched—including uncommitted files—unchanged. The TUI
-shows the resolved workspace, branch, Pi model, and OpenAmp status.
+shows the resolved workspace, branch, Pi model, and Pied Piper status.
 
 ```bash
 openamp --base main
@@ -40,11 +44,11 @@ Useful interactive commands:
 - Pi's native model, login, session, cancellation, and compaction commands remain available.
 
 Research children are read-only. Writer children use independent worktrees and
-return verified commits for explicit integration. OpenAmp's normal agent command
+return verified commits for explicit integration. Pied Piper's normal agent command
 boundary rejects remote Git/GitHub mutations. Delivery alone may push and create
 or update a PR; it never calls merge or enables auto-merge.
 
-Outside a Git repository, OpenAmp still provides a durable Pi conversation but
+Outside a Git repository, Pied Piper still provides a durable Pi conversation but
 disables writer delegation and PR delivery. If GitHub is unavailable, local work
 and state remain available for a later retry.
 
@@ -83,12 +87,14 @@ bun run typecheck
 bun test
 ```
 
-OpenAmp is implemented in TypeScript. npm packages contain the compiled
+Pied Piper is implemented in TypeScript. npm packages contain the compiled
 `dist/openamp` Node.js runtime rather than executable TypeScript source.
 
 The design and milestone evidence are in
-[`docs/design/openamp-cli`](docs/design/openamp-cli/README.md). The previous Roc
-Issue backlog and daemon sources remain in repository history, but are not part
-of the OpenAmp package or executable surface.
+[`docs/design/openamp-cli`](docs/design/openamp-cli/README.md). OpenAmp was the
+working name for this interactive architecture. The previous Roc Issue backlog
+and daemon sources remain in repository history, but are not part of the Pied
+Piper package or executable surface.
 
+Product history: [CHANGELOG.md](CHANGELOG.md).
 License: [Apache 2.0](LICENSE).

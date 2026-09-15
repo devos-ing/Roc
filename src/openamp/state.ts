@@ -164,7 +164,7 @@ async function assertSafeTarget(path: string): Promise<void> {
   try {
     const stat = await lstat(path);
     if (stat.isSymbolicLink() || !stat.isFile()) {
-      throw new Error(`OpenAmp state target is not a regular file: ${path}`);
+      throw new Error(`Pied Piper state target is not a regular file: ${path}`);
     }
   } catch (error) {
     if (!isRecord(error) || error.code !== "ENOENT") throw error;
@@ -175,7 +175,7 @@ async function assertSafeTarget(path: string): Promise<void> {
 async function assertSafeParents(path: string): Promise<void> {
   const absolute = resolve(path);
   if (!isAbsolute(absolute))
-    throw new Error("OpenAmp state path must be absolute");
+    throw new Error("Pied Piper state path must be absolute");
   const root = parse(absolute).root;
   const relativeParts = dirname(absolute)
     .slice(root.length)
@@ -187,7 +187,7 @@ async function assertSafeParents(path: string): Promise<void> {
     const stat = await lstat(current);
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
       throw new Error(
-        `OpenAmp state parent is not a real directory: ${current}`,
+        `Pied Piper state parent is not a real directory: ${current}`,
       );
     }
   }
@@ -218,7 +218,7 @@ export async function writeJsonAtomic(
   }
 }
 
-/** Loads and minimally validates one versioned OpenAmp change record. */
+/** Loads and minimally validates one versioned Pied Piper change record. */
 export async function readChange(path: string): Promise<ChangeState> {
   await assertSafeTarget(path);
   const value: unknown = JSON.parse(await readFile(path, "utf8"));
@@ -230,7 +230,7 @@ export async function readChange(path: string): Promise<ChangeState> {
     !isRecord(value.runs) ||
     !isRecord(value.results)
   ) {
-    throw new Error(`Invalid OpenAmp change state: ${path}`);
+    throw new Error(`Invalid Pied Piper change state: ${path}`);
   }
   if (value.plan !== undefined) value.plan = parseTaskPlan(value.plan);
   if (value.activity !== undefined)
@@ -270,7 +270,9 @@ export class ChangeStore {
       try {
         this.#observer?.();
       } catch {
-        process.stderr.write("OpenAmp: progress display could not refresh.\n");
+        process.stderr.write(
+          "Pied Piper: progress display could not refresh.\n",
+        );
       }
       return this.state;
     });

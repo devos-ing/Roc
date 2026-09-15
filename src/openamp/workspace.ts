@@ -88,7 +88,7 @@ async function resolveBase(
       .replace(/^origin\//u, "");
   }
   if (resolved.exitCode !== 0 || !FULL_SHA.test(resolved.stdout)) {
-    throw new Error(`Cannot resolve OpenAmp base ref: ${ref}`);
+    throw new Error(`Cannot resolve Pied Piper base ref: ${ref}`);
   }
   return { baseCommit: resolved.stdout, baseBranch };
 }
@@ -202,7 +202,8 @@ export async function resumeChange(
   cwd: string,
   id: string,
 ): Promise<ChangeStore> {
-  if (!CHANGE_ID.test(id)) throw new Error(`Invalid OpenAmp change ID: ${id}`);
+  if (!CHANGE_ID.test(id))
+    throw new Error(`Invalid Pied Piper change ID: ${id}`);
   const identity = await repositoryIdentity(cwd);
   const candidates = [
     ...(identity ? [repositoryStatePath(identity, id)] : []),
@@ -215,21 +216,21 @@ export async function resumeChange(
       break;
     }
   }
-  if (!resolvedPath) throw new Error(`OpenAmp change not found: ${id}`);
+  if (!resolvedPath) throw new Error(`Pied Piper change not found: ${id}`);
   const state = await readChange(resolvedPath);
   if (!(await exists(state.workspace))) {
-    throw new Error(`OpenAmp workspace is missing: ${state.workspace}`);
+    throw new Error(`Pied Piper workspace is missing: ${state.workspace}`);
   }
   if (state.repoRoot) {
     const actual = await repositoryIdentity(state.workspace);
     if (!actual || actual.commonDir !== state.commonDir) {
-      throw new Error("OpenAmp workspace belongs to a different repository");
+      throw new Error("Pied Piper workspace belongs to a different repository");
     }
     const branch = (await runGit(state.workspace, ["branch", "--show-current"]))
       .stdout;
     if (branch !== state.branch) {
       throw new Error(
-        `OpenAmp workspace branch changed: ${branch || "detached"}`,
+        `Pied Piper workspace branch changed: ${branch || "detached"}`,
       );
     }
     await reconcilePendingIntegration(state);
@@ -252,7 +253,8 @@ export async function createChange(
   options: { id?: string; base?: string; observationPack?: boolean } = {},
 ): Promise<ChangeStore> {
   const id = options.id ?? `change-${crypto.randomUUID().slice(0, 12)}`;
-  if (!CHANGE_ID.test(id)) throw new Error(`Invalid OpenAmp change ID: ${id}`);
+  if (!CHANGE_ID.test(id))
+    throw new Error(`Invalid Pied Piper change ID: ${id}`);
   const identity = await repositoryIdentity(cwd);
   const now = new Date().toISOString();
   if (!identity) {
@@ -292,7 +294,7 @@ export async function createChange(
   const workspace = join(worktreeRoot, id);
   await mkdir(worktreeRoot, { recursive: true });
   if (await exists(workspace)) {
-    throw new Error(`OpenAmp workspace already exists: ${workspace}`);
+    throw new Error(`Pied Piper workspace already exists: ${workspace}`);
   }
   await runGit(identity.repoRoot, [
     "worktree",
@@ -332,7 +334,7 @@ export async function createChange(
   return new ChangeStore(path, state);
 }
 
-/** Owns local Git mutations for one OpenAmp feature workspace. */
+/** Owns local Git mutations for one Pied Piper feature workspace. */
 export class ChangeWorkspace {
   readonly store: ChangeStore;
 
