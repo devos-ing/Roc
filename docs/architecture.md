@@ -26,25 +26,25 @@ web service, or merge worker.
 
 ## Ownership boundaries
 
-- `src/openamp/cli.ts` starts or resumes the Pi runtime in the durable feature
+- `src/piedpiper/cli.ts` starts or resumes the Pi runtime in the durable feature
   workspace. Pi remains the source of truth for the chat transcript and model
   lifecycle.
 - The main Pi session is the coding agent: it plans, edits, runs checks, and
   applies corrections. Independent work can be delegated. A separate optional
   Oracle adviser uses a persisted exact Pi model at high effort.
-- `src/openamp/extension.ts` supplies delegation, status, integration, and
+- `src/piedpiper/extension.ts` supplies delegation, status, integration, and
   delivery operations to the main session. It also owns native progress widgets,
   `/plan`, and main tool activity events. Result messages retain stable IDs.
-- `src/openamp/supervisor.ts` owns at most two Pi RPC child processes, targeted
+- `src/piedpiper/supervisor.ts` owns at most two Pi RPC child processes, targeted
   steering/cancellation, durable run states, and result-first delivery.
-- `src/openamp/workspace.ts` creates feature and writer worktrees, validates Git
+- `src/piedpiper/workspace.ts` creates feature and writer worktrees, validates Git
   identity, commits checkpoints, and integrates one result at a time.
-- `src/openamp/delivery.ts` owns validation, optional independent read-only
+- `src/piedpiper/delivery.ts` owns validation, optional independent read-only
   review, publication intent, command ledger, remote reconciliation, and PR
   creation/update. It has no merge operation.
-- `src/openamp/progress.ts` validates revisioned checklists, reconciles terminal
+- `src/piedpiper/progress.ts` validates revisioned checklists, reconciles terminal
   child activity, and formats bounded UI and current-plan context.
-- `src/openamp/state.ts` atomically stores only coordination evidence under the
+- `src/piedpiper/state.ts` atomically stores only coordination evidence under the
   Git common directory. It does not copy the Pi transcript or credentials.
 
 ## Safety invariants
@@ -77,6 +77,11 @@ become `interrupted` and are not blindly replayed. A result is persisted before
 its stable ID is inserted into the parent Pi session; recovery scans session
 entries before insertion to avoid duplicate delivery. Conflicts and unknown Git
 outcomes retain worktrees and require attention instead of reset.
+
+New repository state lives under `<git-common-dir>/piedpiper/changes`; global
+state lives under `~/.piedpiper/changes`. Resume reads matching legacy
+`.openamp` state only when new state is absent. It validates the legacy record,
+copies active session data, writes new state, and leaves legacy files unchanged.
 
 The retired Roc daemon architecture and operator guide remain in
 [`docs/legacy`](legacy/) for migration and historical recovery only.

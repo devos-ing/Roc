@@ -39,7 +39,8 @@ function branchContainsResult(
     .some(
       (entry) =>
         entry.type === "custom_message" &&
-        entry.customType === "openamp-result" &&
+        (entry.customType === "piedpiper-result" ||
+          entry.customType === "openamp-result") &&
         (entry.details as { resultId?: string } | undefined)?.resultId ===
           resultId,
     );
@@ -53,14 +54,14 @@ function requireResult(state: ChangeState, resultId: string): AgentResult {
 }
 
 /** Creates the Pi extension that exposes Pied Piper collaboration and delivery. */
-export function createOpenAmpExtension(
+export function createPiedPiperExtension(
   store: ChangeStore,
   supervisor: AgentSupervisor,
   workspace: ChangeWorkspace,
   delivery: ChangeDelivery,
 ): InlineExtension {
   return {
-    name: "openamp",
+    name: "piedpiper",
     factory(pi: ExtensionAPI) {
       let currentContext: ExtensionContext | undefined;
       const pendingDeliveries = new Set<string>();
@@ -141,11 +142,11 @@ export function createOpenAmpExtension(
             ),
           );
         context.ui.setStatus(
-          "openamp",
+          "piedpiper",
           `${store.state.id} · ${active.length} agent${active.length === 1 ? "" : "s"} · ${store.state.phase}`,
         );
         context.ui.setWidget(
-          "openamp-progress",
+          "piedpiper-progress",
           progressLines(store.state, planExpanded, mainBusy),
         );
       }
@@ -184,7 +185,7 @@ export function createOpenAmpExtension(
         try {
           pi.sendMessage(
             {
-              customType: "openamp-result",
+              customType: "piedpiper-result",
               content: [
                 `Pied Piper child result ${result.id} from ${result.runId} (${result.role}).`,
                 run.model
@@ -256,7 +257,7 @@ export function createOpenAmpExtension(
           );
         });
         context.ui.setTitle(`Pied Piper · ${store.state.id}`);
-        context.ui.setWidget("openamp-change", [
+        context.ui.setWidget("piedpiper-change", [
           `Pied Piper ${store.state.id}`,
           `workspace: ${store.state.workspace}`,
           `branch: ${store.state.branch ?? "none (conversation only)"}`,
@@ -591,7 +592,7 @@ export function createOpenAmpExtension(
       pi.registerCommand("agents", {
         description: "Show Pied Piper child agents",
         handler: async (_arguments, context) => {
-          context.ui.setWidget("openamp-agents", [
+          context.ui.setWidget("piedpiper-agents", [
             "Pied Piper agents",
             ...agentLines(supervisor),
           ]);

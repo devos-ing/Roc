@@ -18,7 +18,11 @@ import type {
   ChangeState,
   ChangeStore,
 } from "./state.js";
-import type { AgentWorkspace, ChangeWorkspace } from "./workspace.js";
+import {
+  type AgentWorkspace,
+  type ChangeWorkspace,
+  sessionDirectory,
+} from "./workspace.js";
 
 const BOUNDARY_EXTENSION = fileURLToPath(
   new URL("./boundary.js", import.meta.url),
@@ -436,7 +440,7 @@ export class AgentSupervisor {
           ...childArgsForRole(
             run.role,
             observationPack,
-            `${this.store.state.commonDir ?? this.store.path}.sessions`,
+            sessionDirectory(this.store.state, true),
           ),
           ...(run.requestedEffort ? ["--thinking", run.requestedEffort] : []),
         ],

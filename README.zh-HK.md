@@ -21,17 +21,17 @@ Pied Piper 是以 Pi 建立的互動 CLI。對話式主 agent 可按需要委派
 ## 開始使用
 
 ```bash
-npm install --global openamp
-openamp
+npm install --global piedpiper
+piedpiper
 ```
 
-Pied Piper 會建立專用的 `openamp/<change-id>` 功能 worktree。啟動它的原 checkout
+Pied Piper 會建立專用的 `piedpiper/<change-id>` 功能 worktree。啟動它的原 checkout
 及當中的未提交檔案保持不變。TUI 會顯示解析後的 workspace、branch、Pi 模型
 及 Pied Piper 狀態。
 
 ```bash
-openamp --base main
-openamp --resume change-abc123def456
+piedpiper --base main
+piedpiper --resume change-abc123def456
 ```
 
 互動命令：
@@ -60,7 +60,7 @@ PR 交付。GitHub 暫時不可用時，本地修改及狀態會保留，登入�
 主 coding model 繼續使用 Pi 原生模型設定。可為目前工作指定獨立 Oracle：
 
 ```bash
-openamp --oracle-model openai-codex/gpt-6-astra
+piedpiper --oracle-model openai-codex/gpt-6-astra
 ```
 
 使用 Pi 中已登入的完整 `provider/model`。設定隨 change 保存；恢復時不傳此參數便保留原設定。Oracle 必須先確認指定模型及 `high` effort，才會收到問題，不會暗中換模型。
@@ -76,13 +76,16 @@ bun run typecheck
 bun test
 ```
 
-Pied Piper 以 TypeScript 實作。npm package 只包含編譯後的 `dist/openamp` Node.js
-runtime，不會把 TypeScript source 當作 executable 發布。
+Pied Piper 以 TypeScript 實作。npm package 只包含編譯後的 `dist/piedpiper` Node.js
+runtime，不會把 TypeScript source 當作 executable 發布。`openamp` 沒有 executable alias。
 
 設計及 milestone 證據位於
-[`docs/design/openamp-cli`](docs/design/openamp-cli/README.md)。OpenAmp 是這套互動
+[`docs/design/openamp-cli`](docs/design/openamp-cli/README.md)。OpenAmp 仍是這套互動
 架構的開發名稱。舊 Roc Issue backlog 與 daemon 原始碼仍可在 repository history
 找到，但不再屬於 Pied Piper package 或 executable surface。
+
+現有 `.openamp` change state 會保留。恢復工作時，Pied Piper 會先驗證舊記錄，
+再把使用中的 session 資料複製到新的 state 與 session 路徑。舊檔案保持不變。
 
 產品歷史：[CHANGELOG.md](CHANGELOG.md)。
 授權：[Apache 2.0](LICENSE)。

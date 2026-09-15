@@ -19,16 +19,22 @@ implementation threads and can ask a separate Oracle for advice.
 - Current runtime messages use the Pied Piper name.
 - Historical design and validation records retain their original terminology.
 
-## Compatibility
+## Compatibility superseded by the technical rename
 
-The migration does not rename the `openamp` npm package or command, the
-`openamp/<change-id>` branch prefix, `src/openamp`, `dist/openamp`, saved change
-state, or repository URLs. Those identifiers remain stable until a separately
-approved breaking migration.
+The technical rename supersedes the earlier compatibility decision. New
+installations use the `piedpiper` npm package and executable, with no `openamp`
+executable alias. New production sources and compiled output use
+`src/piedpiper` and `dist/piedpiper`. New branches, worktrees, state paths,
+session paths, and runtime identifiers use Pied Piper names.
+
+Resume reads existing `.openamp` state only when new state is absent. It
+validates the requested ID and workspace identity, copies active session data
+before writing new state, preserves recorded branches and worktrees, and never
+removes legacy files.
 
 ## Non-goals
 
-- Renaming or publishing the npm package.
+- Publishing an unverified npm package.
 - Renaming the GitHub repository.
 - Rewriting historical plans, validation evidence, or release tags.
 - Changing runtime behavior.

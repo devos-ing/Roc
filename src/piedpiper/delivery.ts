@@ -330,7 +330,7 @@ export class ChangeDelivery {
         input.inputGeneration ?? this.store.state.inputGeneration ?? 0;
       this.#assertRequirementsCurrent(inputGeneration, signal);
       const head = await this.workspace.checkpoint(
-        `openamp(${this.store.state.id}): complete requested change`,
+        `piedpiper(${this.store.state.id}): complete requested change`,
       );
       if (!head) throw new Error("Delivery requires a Git feature head");
       if (head === this.store.state.baseCommit) {

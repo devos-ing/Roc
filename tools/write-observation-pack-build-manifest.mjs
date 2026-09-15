@@ -5,10 +5,10 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceRoot =
-  process.env.OPENAMP_OBSERVATION_SOURCE_ROOT ??
+  process.env.PIEDPIPER_OBSERVATION_SOURCE_ROOT ??
   join(root, "src", "third-party", "sol-pi");
 const outputRoot =
-  process.env.OPENAMP_OBSERVATION_OUTPUT_ROOT ??
+  process.env.PIEDPIPER_OBSERVATION_OUTPUT_ROOT ??
   join(root, "dist", "third-party", "sol-pi");
 const manifestPath = join(sourceRoot, "PROVENANCE.json");
 const expectedManifestFingerprint =

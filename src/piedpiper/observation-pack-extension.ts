@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { validateObservationPackRuntime } from "./observation-pack.js";
 
 /** Verifies and registers ObservationPack when Pi loads this package-owned extension. */
-export default async function registerOpenAmpObservationPack(
+export default async function registerPiedPiperObservationPack(
   pi: ExtensionAPI,
 ): Promise<void> {
   await validateObservationPackRuntime();

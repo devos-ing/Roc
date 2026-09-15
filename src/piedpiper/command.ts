@@ -178,7 +178,7 @@ export async function runGit(
       "-c",
       "user.name=Pied Piper",
       "-c",
-      "user.email=openamp@local",
+      "user.email=piedpiper@local",
       ...args,
     ],
     { cwd, ...options, env: localGitEnvironment(options.env) },

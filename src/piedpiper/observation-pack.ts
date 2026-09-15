@@ -186,7 +186,7 @@ export async function validateObservationPackRuntime(): Promise<void> {
 }
 
 /** Validates then loads the vendor factory for an enabled native Pi session. */
-export async function createOpenAmpObservationPackExtension(): Promise<ExtensionFactory> {
+export async function createPiedPiperObservationPackExtension(): Promise<ExtensionFactory> {
   await validateObservationPackRuntime();
   const { createObservationPackExtension } = await import(
     "../third-party/sol-pi/extensions/observation-pack/index.js"

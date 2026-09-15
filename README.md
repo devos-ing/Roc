@@ -22,17 +22,17 @@ and unreviewed PRs are explicitly labeled. Only the user decides whether to merg
 ## Start
 
 ```bash
-npm install --global openamp
-openamp
+npm install --global piedpiper
+piedpiper
 ```
 
-Pied Piper creates a dedicated `openamp/<change-id>` feature worktree, leaving the
+Pied Piper creates a dedicated `piedpiper/<change-id>` feature worktree, leaving the
 checkout where it was launched—including uncommitted files—unchanged. The TUI
 shows the resolved workspace, branch, Pi model, and Pied Piper status.
 
 ```bash
-openamp --base main
-openamp --resume change-abc123def456
+piedpiper --base main
+piedpiper --resume change-abc123def456
 ```
 
 Useful interactive commands:
@@ -70,8 +70,8 @@ Checklist completion never counts as PR review approval.
 Keep choosing the main coding model with Pi's native model controls. Configure a separate Oracle for a change:
 
 ```bash
-openamp --oracle-model openai-codex/gpt-6-astra
-openamp --resume change-abc123def456 --oracle-model openai-codex/gpt-6-astra
+piedpiper --oracle-model openai-codex/gpt-6-astra
+piedpiper --resume change-abc123def456 --oracle-model openai-codex/gpt-6-astra
 ```
 
 Use an exact authenticated `provider/model` from Pi. The selection persists with the change; resuming without the flag keeps it. Explicitly changing it affects new consultations, while existing runs keep their recorded selection. The Oracle must confirm that model and `high` effort before receiving a prompt. No silent fallback is used. A configured Oracle is also used for requested final reviews; without one, existing review model defaults remain.
@@ -88,13 +88,18 @@ bun test
 ```
 
 Pied Piper is implemented in TypeScript. npm packages contain the compiled
-`dist/openamp` Node.js runtime rather than executable TypeScript source.
+`dist/piedpiper` Node.js runtime rather than executable TypeScript source.
+`openamp` has no executable alias.
 
 The design and milestone evidence are in
-[`docs/design/openamp-cli`](docs/design/openamp-cli/README.md). OpenAmp was the
+[`docs/design/openamp-cli`](docs/design/openamp-cli/README.md). OpenAmp remains the
 working name for this interactive architecture. The previous Roc Issue backlog
 and daemon sources remain in repository history, but are not part of the Pied
 Piper package or executable surface.
+
+Existing `.openamp` change state is retained. On resume, Pied Piper validates
+the legacy record and copies active session data into the new state and session
+paths. It leaves legacy files unchanged.
 
 Product history: [CHANGELOG.md](CHANGELOG.md).
 License: [Apache 2.0](LICENSE).

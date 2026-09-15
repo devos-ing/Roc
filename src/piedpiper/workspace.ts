@@ -1,6 +1,22 @@
-import { access, mkdir, realpath } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+} from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { runGit } from "./command.js";
 import {
   type ChangeState,
@@ -12,6 +28,7 @@ import {
 
 const FULL_SHA = /^[0-9a-f]{40}$/u;
 const CHANGE_ID = /^[a-z0-9][a-z0-9-]{5,63}$/u;
+const SESSION_ID = /^[a-z0-9][a-z0-9._-]*$/iu;
 
 /** Identifies the repository root and shared Git metadata directory. */
 interface RepositoryIdentity {
@@ -95,12 +112,156 @@ async function resolveBase(
 
 /** Returns the durable change-state path for one repository identity. */
 function repositoryStatePath(identity: RepositoryIdentity, id: string): string {
+  return join(identity.commonDir, "piedpiper", "changes", `${id}.json`);
+}
+
+/** Returns the repository state path used before the technical rename. */
+function legacyRepositoryStatePath(
+  identity: RepositoryIdentity,
+  id: string,
+): string {
   return join(identity.commonDir, "openamp", "changes", `${id}.json`);
 }
 
 /** Returns the fallback state path used for a conversation outside Git. */
 function globalStatePath(id: string): string {
+  return join(homedir(), ".piedpiper", "changes", `${id}.json`);
+}
+
+/** Returns the global state path used before the technical rename. */
+function legacyGlobalStatePath(id: string): string {
   return join(homedir(), ".openamp", "changes", `${id}.json`);
+}
+
+/** Returns the main or child Pi session directory for a change. */
+export function sessionDirectory(
+  state: Pick<ChangeState, "commonDir">,
+  agents = false,
+): string {
+  const root = state.commonDir
+    ? join(state.commonDir, "piedpiper")
+    : join(homedir(), ".piedpiper");
+  return join(root, "sessions", ...(agents ? ["agents"] : []));
+}
+
+/** Returns whether a candidate path stays inside an expected parent directory. */
+function isInside(parent: string, candidate: string): boolean {
+  const child = relative(parent, candidate);
+  return child !== "" && !child.startsWith("..") && !isAbsolute(child);
+}
+
+/** Creates an owned private directory while rejecting symlinked destinations. */
+async function ensurePrivateDirectory(path: string): Promise<void> {
+  const stat = await lstat(path).catch((error: unknown) => {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return undefined;
+    throw error;
+  });
+  if (stat) {
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`Pied Piper session destination conflicts: ${path}`);
+    }
+    await chmod(path, 0o700);
+    return;
+  }
+  await mkdir(path, { mode: 0o700 });
+  await chmod(path, 0o700);
+}
+
+/** Creates and validates the private session directory owned by Pied Piper. */
+async function ensureSessionDirectory(state: ChangeState): Promise<string> {
+  let current = state.commonDir ?? (await realpath(homedir()));
+  for (const segment of [
+    state.commonDir ? "piedpiper" : ".piedpiper",
+    "sessions",
+  ]) {
+    current = join(current, segment);
+    await ensurePrivateDirectory(current);
+  }
+  return current;
+}
+
+/** Copies a session file or archive while rejecting links and conflicting bytes. */
+async function copySessionPath(
+  source: string,
+  destination: string,
+): Promise<void> {
+  const sourceStat = await lstat(source);
+  if (sourceStat.isSymbolicLink()) {
+    throw new Error(`Pied Piper session source cannot be a symlink: ${source}`);
+  }
+  if (sourceStat.isDirectory()) {
+    await ensurePrivateDirectory(dirname(destination));
+    await ensurePrivateDirectory(destination);
+    for (const entry of await readdir(source)) {
+      await copySessionPath(join(source, entry), join(destination, entry));
+    }
+    return;
+  }
+  if (!sourceStat.isFile()) {
+    throw new Error(
+      `Pied Piper session source is not a regular file: ${source}`,
+    );
+  }
+  const destinationStat = await lstat(destination).catch((error: unknown) => {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return undefined;
+    throw error;
+  });
+  if (destinationStat) {
+    if (destinationStat.isSymbolicLink() || !destinationStat.isFile()) {
+      throw new Error(
+        `Pied Piper session destination conflicts: ${destination}`,
+      );
+    }
+    const [sourceBytes, destinationBytes] = await Promise.all([
+      readFile(source),
+      readFile(destination),
+    ]);
+    if (!sourceBytes.equals(destinationBytes)) {
+      throw new Error(
+        `Pied Piper session destination conflicts: ${destination}`,
+      );
+    }
+  } else {
+    await copyFile(source, destination);
+  }
+  await chmod(destination, 0o600);
+}
+
+/** Copies a legacy active session and its archive into Pied Piper storage. */
+async function migrateLegacySession(state: ChangeState): Promise<void> {
+  if (!state.sessionFile) return;
+  if (state.sessionId && !SESSION_ID.test(state.sessionId)) {
+    throw new Error("Pied Piper session ID is unsafe");
+  }
+  const source = resolve(state.sessionFile);
+  const legacyRoot = state.commonDir
+    ? join(state.commonDir, "openamp", "sessions")
+    : join(homedir(), ".openamp", "changes", "sessions");
+  const [sourceStat, resolvedLegacyRoot, resolvedSource] = await Promise.all([
+    lstat(source),
+    realpath(legacyRoot),
+    realpath(source),
+  ]);
+  if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) {
+    throw new Error("Pied Piper legacy session must be a regular file");
+  }
+  if (!isInside(resolvedLegacyRoot, resolvedSource)) {
+    throw new Error("Pied Piper legacy session is outside its session root");
+  }
+  const destinationRoot = await ensureSessionDirectory(state);
+  const destination = join(destinationRoot, basename(resolvedSource));
+  await copySessionPath(resolvedSource, destination);
+  if (state.sessionId) {
+    const archive = join(dirname(resolvedSource), "sol-pi", state.sessionId);
+    if (await exists(archive)) {
+      const archiveRoot = join(destinationRoot, "sol-pi");
+      await ensurePrivateDirectory(archiveRoot);
+      await copySessionPath(archive, join(archiveRoot, state.sessionId));
+    }
+  }
+  state.sessionFile = destination;
 }
 
 /** Reconciles a crash between a completed cherry-pick and its durable receipt. */
@@ -206,24 +367,53 @@ export async function resumeChange(
     throw new Error(`Invalid Pied Piper change ID: ${id}`);
   const identity = await repositoryIdentity(cwd);
   const candidates = [
-    ...(identity ? [repositoryStatePath(identity, id)] : []),
-    globalStatePath(id),
+    ...(identity
+      ? [
+          {
+            path: repositoryStatePath(identity, id),
+            destination: repositoryStatePath(identity, id),
+            legacy: false,
+          },
+          {
+            path: legacyRepositoryStatePath(identity, id),
+            destination: repositoryStatePath(identity, id),
+            legacy: true,
+          },
+        ]
+      : []),
+    {
+      path: globalStatePath(id),
+      destination: globalStatePath(id),
+      legacy: false,
+    },
+    {
+      path: legacyGlobalStatePath(id),
+      destination: globalStatePath(id),
+      legacy: true,
+    },
   ];
-  let resolvedPath: string | undefined;
+  let selected: (typeof candidates)[number] | undefined;
   for (const candidate of candidates) {
-    if (await exists(candidate)) {
-      resolvedPath = candidate;
+    if (await exists(candidate.path)) {
+      selected = candidate;
       break;
     }
   }
-  if (!resolvedPath) throw new Error(`Pied Piper change not found: ${id}`);
-  const state = await readChange(resolvedPath);
+  if (!selected) throw new Error(`Pied Piper change not found: ${id}`);
+  const state = await readChange(selected.path);
+  if (state.id !== id) {
+    throw new Error(`Pied Piper change ID does not match: ${selected.path}`);
+  }
   if (!(await exists(state.workspace))) {
     throw new Error(`Pied Piper workspace is missing: ${state.workspace}`);
   }
   if (state.repoRoot) {
     const actual = await repositoryIdentity(state.workspace);
-    if (!actual || actual.commonDir !== state.commonDir) {
+    if (
+      !actual ||
+      actual.repoRoot !== state.repoRoot ||
+      actual.commonDir !== state.commonDir
+    ) {
       throw new Error("Pied Piper workspace belongs to a different repository");
     }
     const branch = (await runGit(state.workspace, ["branch", "--show-current"]))
@@ -234,6 +424,10 @@ export async function resumeChange(
       );
     }
     await reconcilePendingIntegration(state);
+  } else if (state.commonDir) {
+    throw new Error(
+      "Pied Piper non-repository state has a repository identity",
+    );
   }
   reconcilePendingPublicationLedger(state);
   for (const run of Object.values(state.runs)) {
@@ -242,7 +436,11 @@ export async function resumeChange(
       run.finishedAt = new Date().toISOString();
     }
   }
-  const store = new ChangeStore(resolvedPath, state);
+  if (selected.legacy) await migrateLegacySession(state);
+  const store = new ChangeStore(selected.destination, state);
+  if (selected.legacy) {
+    await writeJsonAtomic(selected.destination, state);
+  }
   await store.update(() => undefined);
   return store;
 }
@@ -289,8 +487,8 @@ export async function createChange(
   }
 
   const { baseCommit, baseBranch } = await resolveBase(identity, options.base);
-  const branch = `openamp/${id}`;
-  const worktreeRoot = `${identity.repoRoot}.openamp-worktrees`;
+  const branch = `piedpiper/${id}`;
+  const worktreeRoot = `${identity.repoRoot}.piedpiper-worktrees`;
   const workspace = join(worktreeRoot, id);
   await mkdir(worktreeRoot, { recursive: true });
   if (await exists(workspace)) {
@@ -359,7 +557,7 @@ export class ChangeWorkspace {
 
   /** Commits pending main-agent changes and records the resulting checkpoint. */
   async checkpoint(
-    message = "openamp: checkpoint conversation changes",
+    message = "piedpiper: checkpoint conversation changes",
   ): Promise<string | null> {
     if (!this.store.state.repoRoot) return null;
     if ((await this.status()) !== "") {
@@ -383,9 +581,9 @@ export class ChangeWorkspace {
     }
     const baseCommit = await this.checkpoint();
     if (!baseCommit) throw new Error("Writer workspace requires a Git head");
-    const root = `${this.store.state.repoRoot}.openamp-agents`;
+    const root = `${this.store.state.repoRoot}.piedpiper-agents`;
     const path = join(root, this.store.state.id, runId);
-    const branch = `openamp-agent/${this.store.state.id}/${runId}`;
+    const branch = `piedpiper-agent/${this.store.state.id}/${runId}`;
     await mkdir(dirname(path), { recursive: true });
     await runGit(this.store.state.repoRoot, [
       "worktree",
@@ -414,7 +612,7 @@ export class ChangeWorkspace {
       await runGit(workspace.path, [
         "commit",
         "-m",
-        `openamp(${runId}): delegated changes`,
+        `piedpiper(${runId}): delegated changes`,
       ]);
     }
     const head = (await runGit(workspace.path, ["rev-parse", "HEAD"])).stdout;

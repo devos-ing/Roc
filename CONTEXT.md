@@ -19,7 +19,8 @@ Weekly, or a custom number of days.
 
 ### Pied Piper
 
-The public product brand for the Pi-based interactive coding system.
+The Pi-based interactive coding system published as the `piedpiper` package and
+command.
 
 ### Piper
 
