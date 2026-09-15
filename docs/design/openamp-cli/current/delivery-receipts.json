@@ -8,12 +8,12 @@
       "input": "/Users/roy/Documents/ChatGPT/agile-agents/.worktrees/openamp-oracle-workflow/docs/design/openamp-cli/current/architecture.json",
       "output": "/Users/roy/Documents/ChatGPT/agile-agents/.worktrees/openamp-oracle-workflow/docs/design/openamp-cli/current/architecture.html",
       "specification": {
-        "sha256": "533a3c6469a5afb6e6d6c13fa5b785e116247a0a1940f870e3d1235f77cd6d8e",
-        "bytes": 4621
+        "sha256": "34dff96d247bd6c8504060ea37bc478d2b0601f6f08ff6e9ad187179db406566",
+        "bytes": 4618
       },
       "artifact": {
-        "sha256": "ab7a1eefa18195964a77a2bce78c652a584c4cb277deae1ae44f9ba3dd81f209",
-        "bytes": 714508
+        "sha256": "2da084e011bf1df5dcd5e1e4c5720c3e32895532104cea44c279f781e949599a",
+        "bytes": 714505
       },
       "validation": {
         "checksPassed": 9,
@@ -32,12 +32,12 @@
       "input": "/Users/roy/Documents/ChatGPT/agile-agents/.worktrees/openamp-oracle-workflow/docs/design/openamp-cli/current/workflow.json",
       "output": "/Users/roy/Documents/ChatGPT/agile-agents/.worktrees/openamp-oracle-workflow/docs/design/openamp-cli/current/workflow.html",
       "specification": {
-        "sha256": "bfd453cc0fb974f25f8ecf9e43146693b202acb91a8af1d8c6b0feb1eaa8b588",
-        "bytes": 3199
+        "sha256": "5c4aabe7bba1c7282b4a99db03f758575cddf8dc8e90ddd24a71853dde5cd9cd",
+        "bytes": 3201
       },
       "artifact": {
-        "sha256": "d2f65ae9217c557cf6824df6b687931b579347a7ab51bc73b3a7de228d81f1f2",
-        "bytes": 706604
+        "sha256": "d3b95c47400f62b3dc8f6ec09e020ee9041da865de4956bef4d90b7ac3e36d7d",
+        "bytes": 706606
       },
       "validation": {
         "checksPassed": 9,
@@ -73,5 +73,5 @@
       1320
     ]
   ],
-  "scope": "Oracle consultation and non-cancelling waits are implemented; checklist improvements remain."
+  "scope": "Persistent checklist, native progress widgets, optional Oracle, and non-cancelling waits are implemented. Full M0 acceptance remains."
 }

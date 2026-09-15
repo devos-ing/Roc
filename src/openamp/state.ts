@@ -1,5 +1,10 @@
 import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, parse, resolve } from "node:path";
+import {
+  parseActivity,
+  parseTaskPlan,
+  reconcileToolActivity,
+} from "./progress.js";
 
 export const STATE_VERSION = 1;
 
@@ -70,6 +75,27 @@ export interface ReviewDecision {
   summary?: string;
 }
 
+export interface ChecklistItem {
+  id: string;
+  text: string;
+  status: "pending" | "in_progress" | "blocked" | "completed";
+  note?: string;
+}
+
+export interface TaskPlan {
+  revision: number;
+  updatedAt: string;
+  items: ChecklistItem[];
+}
+
+export interface ToolActivity {
+  owner: "main" | AgentRole;
+  runId?: string;
+  tool: string;
+  status: "running" | "completed" | "failed" | "interrupted";
+  at: string;
+}
+
 export interface ChangeState {
   version: number;
   id: string;
@@ -87,6 +113,8 @@ export interface ChangeState {
   sessionFile: string | null;
   observationPack: boolean;
   oracleModel?: string;
+  plan?: TaskPlan;
+  activity?: ToolActivity;
   inputGeneration: number;
   phase: string;
   runs: Record<string, AgentRun>;
@@ -204,12 +232,16 @@ export async function readChange(path: string): Promise<ChangeState> {
   ) {
     throw new Error(`Invalid OpenAmp change state: ${path}`);
   }
+  if (value.plan !== undefined) value.plan = parseTaskPlan(value.plan);
+  if (value.activity !== undefined)
+    value.activity = parseActivity(value.activity);
   return value as unknown as ChangeState;
 }
 
 /** Serializes state updates so one process remains the sole metadata writer. */
 export class ChangeStore {
   #pending: Promise<unknown> = Promise.resolve();
+  #observer?: () => void;
 
   readonly path: string;
   readonly state: ChangeState;
@@ -220,12 +252,26 @@ export class ChangeStore {
     this.state = state;
   }
 
+  /** Installs the current UI observer and returns teardown that cannot detach its replacement. */
+  observeChanges(observer: () => void): () => void {
+    this.#observer = observer;
+    return () => {
+      if (this.#observer === observer) this.#observer = undefined;
+    };
+  }
+
   /** Persists the current state after applying one synchronous mutation. */
   async update(mutate: (state: ChangeState) => void): Promise<ChangeState> {
     const operation = this.#pending.then(async () => {
       mutate(this.state);
+      reconcileToolActivity(this.state);
       this.state.updatedAt = new Date().toISOString();
       await writeJsonAtomic(this.path, this.state);
+      try {
+        this.#observer?.();
+      } catch {
+        process.stderr.write("OpenAmp: progress display could not refresh.\n");
+      }
       return this.state;
     });
     this.#pending = operation.catch(() => undefined);

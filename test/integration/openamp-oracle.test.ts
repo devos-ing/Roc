@@ -21,6 +21,7 @@ class ControlledOracle {
   finishImmediately = false;
   cleanupFails = false;
   preflightRejected = false;
+  omitToolEnd = false;
 
   constructor(readonly options: RpcClientOptions) {}
   async start() {}
@@ -52,10 +53,25 @@ class ControlledOracle {
     };
   }
   finish() {
-    for (const listener of this.listeners) listener({ type: "agent_settled" });
+    const event = {
+      type: "tool_execution_end",
+      toolName: "read",
+      isError: false,
+      result: "DO_NOT_SAVE_CHILD_OUTPUT",
+    };
+    for (const listener of this.listeners) {
+      if (!this.omitToolEnd) listener(event);
+      listener({ type: "agent_settled" });
+    }
   }
   async prompt() {
     this.promptCount += 1;
+    const event = {
+      type: "tool_execution_start",
+      toolName: "read",
+      args: { secret: "DO_NOT_SAVE_CHILD_ARGS" },
+    };
+    for (const listener of this.listeners) listener(event);
     this.prompted.resolve();
     if (this.finishImmediately) this.finish();
   }
@@ -99,7 +115,7 @@ test("Oracle keeps its selected route across wait expiry and delivers once, with
     let nextFast = false;
     let nextCleanupFailure = false;
     let nextPreflightRejection = false;
-    const created = Promise.withResolvers<void>();
+    let created = Promise.withResolvers<ControlledOracle>();
     supervisor = new AgentSupervisor(store, new ChangeWorkspace(store), {
       maxActive: 1,
       agentDir: "/controlled/pi-config",
@@ -110,7 +126,7 @@ test("Oracle keeps its selected route across wait expiry and delivers once, with
         client.cleanupFails = nextCleanupFailure;
         client.preflightRejected = nextPreflightRejection;
         clients.push(client);
-        created.resolve();
+        created.resolve(client);
         return client;
       },
     });
@@ -153,6 +169,10 @@ test("Oracle keeps its selected route across wait expiry and delivers once, with
     expect(persisted.runs[first.id]?.effort).toBe("high");
     expect(persisted.runs[first.id]?.parentSessionId).toBe("parent-session");
     expect(client.stopCount).toBe(1);
+    expect(persisted.activity?.owner).toBe("oracle");
+    expect(persisted.activity?.tool).toBe("read");
+    expect(persisted.activity?.status).toBe("completed");
+    expect(JSON.stringify(persisted)).not.toContain("DO_NOT_SAVE_CHILD");
 
     nextMismatch = true;
     const mismatch = await supervisor.delegate({
@@ -186,14 +206,18 @@ test("Oracle keeps its selected route across wait expiry and delivers once, with
     expect(store.state.runs[rejectedPrompt.id]?.status).toBe("failed");
     expect(delivered).toHaveLength(2);
     nextPreflightRejection = false;
+    created = Promise.withResolvers<ControlledOracle>();
     const cancelled = await supervisor.delegate({
       role: "oracle",
       prompt: "Cancel this advice",
     });
-    await supervisor.waitForStatus(cancelled.id, 10);
+    const cancellingClient = await created.promise;
+    await cancellingClient.prompted.promise;
+    cancellingClient.omitToolEnd = true;
     await supervisor.cancel(cancelled.id);
     await expect(supervisor.wait(cancelled.id)).rejects.toThrow();
     expect(store.state.runs[cancelled.id]?.status).toBe("cancelled");
+    expect(store.state.activity?.status).toBe("interrupted");
     expect(delivered).toHaveLength(2);
 
     nextFast = true;
@@ -205,9 +229,19 @@ test("Oracle keeps its selected route across wait expiry and delivers once, with
     await supervisor.waitForStatus(cleanup.id, 300);
     expect(store.state.runs[cleanup.id]?.status).toBe("cancelling");
     expect(delivered).toHaveLength(2);
+    await store.update((state) => {
+      state.activity = {
+        owner: "main",
+        tool: "edit",
+        status: "running",
+        at: new Date().toISOString(),
+      };
+    });
     await expect(supervisor.shutdown()).rejects.toThrow(
       "could not confirm all child cleanup",
     );
+    expect(store.state.activity?.owner).toBe("main");
+    expect(store.state.activity?.status).toBe("running");
     const retained = clients.at(-1);
     if (!retained) throw new Error("Cleanup fixture missing");
     retained.cleanupFails = false;

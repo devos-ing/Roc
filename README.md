@@ -33,6 +33,7 @@ openamp --resume change-abc123def456
 
 Useful interactive commands:
 
+- `/plan` expands or collapses the saved checklist and its evidence notes.
 - `/agents` shows researcher and writer state.
 - `/agent-send <run-id> <message>` steers one active child.
 - `/agent-cancel <run-id>` cancels one child without restarting it.
@@ -46,6 +47,19 @@ or update a PR; it never calls merge or enables auto-merge.
 Outside a Git repository, OpenAmp still provides a durable Pi conversation but
 disables writer delegation and PR delivery. If GitHub is unavailable, local work
 and state remain available for a later retry.
+
+## Checklist and progress
+
+For multi-step work, the main agent maintains a checklist with `update_plan`.
+The native Pi widget shows completed counts, current and blocked steps, active
+children, recent tool activity, and delivery status. `/plan` shows all steps.
+
+The checklist supports up to 12 items and one current step. Completed items
+require an evidence note; blocked items require a reason. Notes are agent reports,
+not independent verification. The saved checklist returns when you resume and
+is included in each new main-agent turn after compaction. Tool activity stores
+names and status only, without duplicating arguments or outputs in task state.
+Checklist completion never counts as PR review approval.
 
 ## Optional Oracle advice
 

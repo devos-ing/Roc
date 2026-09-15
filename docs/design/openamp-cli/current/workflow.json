@@ -154,7 +154,7 @@
       "dot": "amber",
       "title": "Wait expiry keeps work running",
       "items": [
-        "Same child, same run ID. Explicit cancellation stops it. Checklist improvements remain."
+        "Same child, same run ID. Explicit cancellation stops it. Saved checklist tracks progress."
       ]
     }
   ]

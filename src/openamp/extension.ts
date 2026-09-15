@@ -7,6 +7,13 @@ import {
 import { Type } from "typebox";
 import { remoteMutationReason } from "./command.js";
 import type { ChangeDelivery } from "./delivery.js";
+import {
+  MAX_PLAN_ITEMS,
+  planContext,
+  progressLines,
+  progressText,
+  updateTaskPlan,
+} from "./progress.js";
 import type { AgentResult, ChangeState, ChangeStore } from "./state.js";
 import type { AgentSupervisor } from "./supervisor.js";
 import type { ChangeWorkspace } from "./workspace.js";
@@ -57,6 +64,8 @@ export function createOpenAmpExtension(
     factory(pi: ExtensionAPI) {
       let currentContext: ExtensionContext | undefined;
       const pendingDeliveries = new Set<string>();
+      let mainBusy = false;
+      let planExpanded = false;
 
       /** Returns bounded status for the same owned child and cancels only on an explicit abort. */
       async function waitForChild(
@@ -135,7 +144,19 @@ export function createOpenAmpExtension(
           "openamp",
           `${store.state.id} · ${active.length} agent${active.length === 1 ? "" : "s"} · ${store.state.phase}`,
         );
+        context.ui.setWidget(
+          "openamp-progress",
+          progressLines(store.state, planExpanded, mainBusy),
+        );
       }
+
+      const stopObserving = store.observeChanges(() =>
+        refreshStatus(currentContext),
+      );
+      pi.on("session_shutdown", () => {
+        stopObserving();
+        currentContext = undefined;
+      });
 
       /** Injects one persisted result into only its original parent session. */
       async function deliverResult(
@@ -206,6 +227,8 @@ export function createOpenAmpExtension(
 
       pi.on("session_start", async (_event, context) => {
         currentContext = context;
+        mainBusy = false;
+        planExpanded = false;
         pendingDeliveries.clear();
         const sessionId = context.sessionManager.getSessionId();
         const persistedUserInputs = context.sessionManager
@@ -215,6 +238,16 @@ export function createOpenAmpExtension(
               entry.type === "message" && entry.message?.role === "user",
           ).length;
         await store.update((state) => {
+          if (
+            state.activity?.status === "running" &&
+            (state.activity.owner === "main" ||
+              !state.activity.runId ||
+              !["starting", "running", "cancelling"].includes(
+                state.runs[state.activity.runId]?.status ?? "",
+              ))
+          ) {
+            state.activity.status = "interrupted";
+          }
           state.sessionId = sessionId;
           state.sessionFile = context.sessionManager.getSessionFile() ?? null;
           state.inputGeneration = Math.max(
@@ -253,6 +286,46 @@ export function createOpenAmpExtension(
         }
       });
 
+      pi.on("agent_start", (_event, context) => {
+        currentContext = context;
+        mainBusy = true;
+        refreshStatus(context);
+      });
+
+      pi.on("agent_settled", async (_event, context) => {
+        mainBusy = false;
+        await store.update((state) => {
+          if (
+            state.activity?.owner === "main" &&
+            state.activity.status === "running"
+          )
+            state.activity.status = "interrupted";
+        });
+        refreshStatus(context);
+      });
+
+      pi.on("tool_execution_start", async (event) => {
+        await store.update((state) => {
+          state.activity = {
+            owner: "main",
+            tool: progressText(event.toolName, 80),
+            status: "running",
+            at: new Date().toISOString(),
+          };
+        });
+      });
+
+      pi.on("tool_execution_end", async (event) => {
+        await store.update((state) => {
+          state.activity = {
+            owner: "main",
+            tool: progressText(event.toolName, 80),
+            status: event.isError ? "failed" : "completed",
+            at: new Date().toISOString(),
+          };
+        });
+      });
+
       pi.on("session_before_switch", async (_event, context) => {
         const active = supervisor
           .list()
@@ -276,6 +349,8 @@ export function createOpenAmpExtension(
           event.systemPrompt,
           `You are the main coding agent for OpenAmp change ${store.state.id}.`,
           `Work only in ${store.state.workspace}.`,
+          "For multi-step work, maintain a short checklist with update_plan. Use stable step IDs and the current expected_revision; only one step may be in progress. Completed steps need concrete evidence in note, and blocked steps need a reason. Use agent_status to refresh a stale revision. Checklist completion is reported progress, not validation or publication approval. Do not create a checklist for a simple question.",
+          planContext(store.state),
           "Plan, edit code, run checks, and apply fixes in this main thread. Delegate independent work only when useful. Research agents are read-only; delegated writers use isolated worktrees.",
           "Use ask_oracle for a focused second opinion on difficult planning, debugging, tradeoffs, or review. Oracle use is optional; you remain responsible for edits and checking its advice. If it is still running, use agent_wait on the returned ID rather than starting another consultation. Advice arrives once as an OpenAmp result message and never grants publication approval.",
           "Use integrate_result for selected writer results. Never push, create/modify/merge a PR, or call GitHub mutation APIs.",
@@ -308,6 +383,41 @@ export function createOpenAmpExtension(
               },
             }
           : undefined;
+      });
+
+      pi.registerTool({
+        name: "update_plan",
+        label: "Update checklist",
+        description:
+          "Persist the current change's checklist without changing delivery approval; use evidence notes for completed steps and reasons for blockers",
+        parameters: Type.Object({
+          expected_revision: Type.Integer({ minimum: 0 }),
+          items: Type.Array(
+            Type.Object({
+              id: Type.String({ minLength: 1, maxLength: 40 }),
+              text: Type.String({ minLength: 1, maxLength: 160 }),
+              status: Type.Union([
+                Type.Literal("pending"),
+                Type.Literal("in_progress"),
+                Type.Literal("blocked"),
+                Type.Literal("completed"),
+              ]),
+              note: Type.Optional(Type.String({ maxLength: 240 })),
+            }),
+            { maxItems: MAX_PLAN_ITEMS },
+          ),
+        }),
+        execute: async (_id, parameters) => {
+          const plan = await updateTaskPlan(
+            store,
+            parameters.expected_revision,
+            parameters.items,
+          );
+          return {
+            content: [{ type: "text", text: planContext(store.state) }],
+            details: { revision: plan.revision },
+          };
+        },
       });
 
       pi.registerTool({
@@ -402,10 +512,18 @@ export function createOpenAmpExtension(
       pi.registerTool({
         name: "agent_status",
         label: "Agent status",
-        description: "List OpenAmp child-agent roles and lifecycle states",
+        description:
+          "Read the current checklist revision and child-agent lifecycle states",
         parameters: Type.Object({}),
         execute: async () => ({
-          content: [{ type: "text", text: agentLines(supervisor).join("\n") }],
+          content: [
+            {
+              type: "text",
+              text: [planContext(store.state), ...agentLines(supervisor)].join(
+                "\n",
+              ),
+            },
+          ],
           details: {},
         }),
       });
@@ -477,6 +595,14 @@ export function createOpenAmpExtension(
             "OpenAmp agents",
             ...agentLines(supervisor),
           ]);
+          refreshStatus(context);
+        },
+      });
+
+      pi.registerCommand("plan", {
+        description: "Expand or collapse the current change's checklist",
+        handler: async (_arguments, context) => {
+          planExpanded = !planExpanded;
           refreshStatus(context);
         },
       });

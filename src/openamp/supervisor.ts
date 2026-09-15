@@ -10,6 +10,7 @@ import {
   OBSERVATION_PACK_TOOL,
   validateObservationPackRuntime,
 } from "./observation-pack.js";
+import { progressText } from "./progress.js";
 import type {
   AgentResult,
   AgentRole,
@@ -38,7 +39,13 @@ interface ChildClient {
   steer(message: string): Promise<unknown>;
   abort(): Promise<unknown>;
   stop(): Promise<unknown>;
-  onEvent?(listener: (event: { type: string }) => void): () => void;
+  onEvent?(
+    listener: (event: {
+      type: string;
+      toolName?: string;
+      isError?: boolean;
+    }) => void,
+  ): () => void;
 }
 
 export interface SupervisorOptions {
@@ -473,6 +480,33 @@ export class AgentSupervisor {
       unsubscribe = client.onEvent?.((event) => {
         if (event.type === "agent_start") started = true;
         if (event.type === "agent_settled") settled = true;
+        if (
+          (event.type === "tool_execution_start" ||
+            event.type === "tool_execution_end") &&
+          typeof event.toolName === "string"
+        ) {
+          const tool = progressText(event.toolName, 80);
+          void this.store
+            .update((state) => {
+              state.activity = {
+                owner: run.role,
+                runId,
+                tool,
+                status:
+                  event.type === "tool_execution_start"
+                    ? "running"
+                    : event.isError === true
+                      ? "failed"
+                      : "completed",
+                at: new Date().toISOString(),
+              };
+            })
+            .catch(() => {
+              process.stderr.write(
+                "OpenAmp: child activity could not be saved.\n",
+              );
+            });
+        }
       });
       await client.prompt(`${roleConstraint}\n\nAssignment:\n${run.prompt}`);
       if (this.#isCancelling(runId)) return;

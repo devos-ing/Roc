@@ -142,6 +142,7 @@ export function mainSessionTools(observationPack: boolean): string[] {
     "delegate",
     "ask_oracle",
     "agent_wait",
+    "update_plan",
     "agent_status",
     "integrate_result",
     "deliver_change",

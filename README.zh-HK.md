@@ -32,6 +32,7 @@ openamp --resume change-abc123def456
 
 互動命令：
 
+- `/plan` 展開或收起已保存的工作清單及證據備註。
 - `/agents` 顯示 researcher 與 writer 狀態。
 - `/agent-send <run-id> <message>` 向一個執行中的子 agent 補充指令。
 - `/agent-cancel <run-id>` 取消指定子 agent，而且不會暗中重啟。
@@ -43,6 +44,12 @@ commit 供明確整合。一般 agent command boundary 會拒絕遠端 Git／Git
 
 不在 Git repository 時，OpenAmp 仍提供可恢復的 Pi 對話，但停用 writer 委派及
 PR 交付。GitHub 暫時不可用時，本地修改及狀態會保留，登入後可再交付。
+
+## 工作清單與進度
+
+多步驟工作由主 agent 使用 `update_plan` 更新清單。Pi 原生 widget 顯示完成數量、目前步驟、阻塞原因、執行中的子 agent、最近工具活動及交付狀態。輸入 `/plan` 可查看全部步驟。
+
+清單最多 12 項，同時只可有一項進行中。完成項目需要證據備註，阻塞項目需要原因；備註是 agent 的紀錄，不代表獨立驗證。恢復工作時會載入清單，每次主 agent 開始新回合也會收到最新清單，包括 compaction 之後。工具活動只保存名稱及狀態，不會在工作狀態中複製參數或輸出。勾選清單不等於 PR 審查核准。
 
 ## 按需要詢問 Oracle
 

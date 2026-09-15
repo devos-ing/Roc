@@ -33,7 +33,8 @@ web service, or merge worker.
   applies corrections. Independent work can be delegated. A separate optional
   Oracle adviser uses a persisted exact Pi model at high effort.
 - `src/openamp/extension.ts` supplies delegation, status, integration, and
-  delivery operations to the main session. Result messages retain stable IDs.
+  delivery operations to the main session. It also owns native progress widgets,
+  `/plan`, and main tool activity events. Result messages retain stable IDs.
 - `src/openamp/supervisor.ts` owns at most two Pi RPC child processes, targeted
   steering/cancellation, durable run states, and result-first delivery.
 - `src/openamp/workspace.ts` creates feature and writer worktrees, validates Git
@@ -41,6 +42,8 @@ web service, or merge worker.
 - `src/openamp/delivery.ts` owns validation, optional independent read-only
   review, publication intent, command ledger, remote reconciliation, and PR
   creation/update. It has no merge operation.
+- `src/openamp/progress.ts` validates revisioned checklists, reconciles terminal
+  child activity, and formats bounded UI and current-plan context.
 - `src/openamp/state.ts` atomically stores only coordination evidence under the
   Git common directory. It does not copy the Pi transcript or credentials.
 
@@ -99,3 +102,21 @@ cleanup process.
 `ask_oracle` creates a read-only Oracle run with the current change's explicit model selection, requested high effort, and parent-session identity. Requested routes are immutable per run and effective settings are checked before the prompt. Children inherit Pi's config directory even when the main process uses an isolated home. A configured Oracle also serves requested final review; its ordinary advice never satisfies the Delivery gate.
 
 `agent_wait` returns status for the same run on expiry and does not stop or replace it. The supervisor subscribes before prompting, follows Pi's settled event, and uses bounded state requests to detect a dead process or rejected prompt preflight. Quiet but active inference continues. Results are saved after the Pi client stops and delivered through the existing parent-message deduplication path. Failed cleanup retains ownership and reports attention rather than claiming shutdown success.
+
+## Persistent progress
+
+The existing change state stores an optional revisioned plan and the latest tool
+activity. `update_plan` rejects stale revisions, more than 12 items, multiple
+current steps, completed items without evidence notes, and blocked items without
+reasons. These notes record what the agent reports; they do not approve delivery.
+
+A store observer refreshes native Pi widgets after persisted changes, including
+asynchronous child events. Session replacement transfers observer ownership.
+The widget defaults to three unfinished steps and expands through `/plan`.
+Each main-agent turn receives the current bounded plan as data. Pi continues to
+own transcripts and compaction; OpenAmp does not append a second activity log.
+
+Tool events persist owner, run ID, tool name, status, and time. Arguments and
+outputs stay out of this record. Main settlement interrupts a dangling main
+tool. Terminal child states reconcile only activity owned by that child, so an
+older result cannot overwrite newer main or child activity.
